@@ -35,6 +35,7 @@ import {
 import { Store, permissionsFor, publicUser, stripChannelKey } from "./store.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { formatQuota } from "./quota.js";
+import { registerMore } from "./more-routes.js";
 import type { Env, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -108,9 +109,16 @@ export function adminRouter(): Router<Env> {
       register_enabled: await s.optionBool("RegisterEnabled", true),
       password_login_enabled: await s.optionBool("PasswordLoginEnabled", true),
       password_register_enabled: await s.optionBool("PasswordRegisterEnabled", true),
-      email_verification: false,
+      email_verification: await s.optionBool("EmailVerificationEnabled", false),
       github_oauth: await s.optionBool("GitHubOAuthEnabled", false),
       github_client_id: await s.option("GitHubClientId"),
+      discord_oauth: await s.optionBool("DiscordOAuthEnabled", false),
+      discord_client_id: await s.option("DiscordClientId"),
+      linuxdo_oauth: await s.optionBool("LinuxDOOAuthEnabled", false),
+      linuxdo_client_id: await s.option("LinuxDOClientId"),
+      oidc_auth: await s.optionBool("OIDCAuthEnabled", false),
+      passkey: await s.optionBool("PasskeyEnabled", true),
+      rankings_enabled: await s.optionBool("RankingsEnabled", true),
       setup,
       checkin_enabled: await s.optionBool("CheckinEnabled", true),
       self_use_mode_enabled: await s.optionBool("SelfUseModeEnabled", true),
@@ -120,15 +128,15 @@ export function adminRouter(): Router<Env> {
         home: true,
         console: true,
         pricing: { enabled: true, requireAuth: false },
-        rankings: { enabled: false, requireAuth: false },
+        rankings: { enabled: await s.optionBool("RankingsEnabled", true), requireAuth: false },
         docs: true,
         about: true,
       }),
       SidebarModulesAdmin: JSON.stringify({
         chat: { enabled: true, playground: true, chat: true },
-        console: { enabled: true, detail: true, token: true, log: true, audit: true, midjourney: true, task: false },
+        console: { enabled: true, detail: true, token: true, log: true, audit: true, midjourney: true, task: true },
         personal: { enabled: true, topup: true, personal: true, security: true },
-        admin: { enabled: true, channel: true, models: true, redemption: true, user: true, setting: true, subscription: false },
+        admin: { enabled: true, channel: true, models: true, redemption: true, user: true, setting: true, subscription: true },
       }),
       runtime: "randallflare-workerd",
       original_project: "https://github.com/QuantumNous/new-api",
@@ -138,8 +146,8 @@ export function adminRouter(): Router<Env> {
   r.get("/api/notice", async (c) => apiOk(await store(c).option("Notice")));
   r.get("/api/about", async (c) => apiOk(await store(c).option("About")));
   r.get("/api/home_page_content", async (c) => apiOk(await store(c).option("HomePageContent")));
-  r.get("/api/user-agreement", () => apiOk(""));
-  r.get("/api/privacy-policy", () => apiOk(""));
+  r.get("/api/user-agreement", async (c) => apiOk(await store(c).option("UserAgreement")));
+  r.get("/api/privacy-policy", async (c) => apiOk(await store(c).option("PrivacyPolicy")));
 
   r.get("/api/pricing", async (c) => {
     const s = store(c);
@@ -167,6 +175,12 @@ export function adminRouter(): Router<Env> {
     const user = await s.getUserByUsername(body.username);
     if (!user || !(await verifyPassword(body.password, user.password))) return apiFail("用户名或密码错误");
     if (user.status !== USER_ENABLED) return apiFail("用户已被封禁");
+    if (Number(user.totp_enabled) === 1) {
+      const { randomHex } = await import("./constants.js");
+      const flow = randomHex(16);
+      await s.insertAuthFlow({ token: flow, type: "2fa_login", user_id: user.id, expires_at: nowSec() + 300, payload: "" });
+      return apiOk({ require_2fa: true, flow_token: flow });
+    }
     const issued = await issueSession(s, c.env, user, c.req);
     await s.audit(user.id, user.username, "login", "Logged in successfully via password", clientIp(c.req));
     const res = apiOk(issued.data);
@@ -176,6 +190,10 @@ export function adminRouter(): Router<Env> {
   });
 
   r.post("/api/user/auth/logout", async (c) => {
+    const s = store(c);
+    const { currentSid } = await import("./auth.js");
+    const sid = await currentSid(c, s);
+    if (sid) await s.revokeSession(sid);
     const res = apiOk(null, "已退出");
     const headers = new Headers(res.headers);
     headers.append("set-cookie", clearSessionCookie(isSecureRequest(c.req)));
@@ -201,12 +219,23 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     if (!(await s.optionBool("RegisterEnabled", true))) return apiFail("注册已禁用");
     if (!(await s.optionBool("PasswordRegisterEnabled", true))) return apiFail("密码注册已禁用");
-    const body = (await readJson(c.req)) as { username?: string; password?: string; display_name?: string; aff_code?: string };
+    const body = (await readJson(c.req)) as {
+      username?: string;
+      password?: string;
+      display_name?: string;
+      aff_code?: string;
+      email?: string;
+      verification_code?: string;
+    };
     const username = (body.username || "").trim();
     const password = body.password || "";
     if (username.length < 1 || username.length > 20) return apiFail("用户名长度不合法");
     if (password.length < 8 || password.length > 128) return apiFail("密码长度必须在 8 到 128 之间");
     if (await s.getUserByUsername(username)) return apiFail("用户已存在");
+    if (await s.optionBool("EmailVerificationEnabled", false)) {
+      if (!body.email || !body.verification_code) return apiFail("请填写邮箱验证码");
+      if (!(await s.consumeEmailCode(body.email, body.verification_code, "verify"))) return apiFail("验证码无效或已过期");
+    }
     let inviter = 0;
     if (body.aff_code) {
       const inv = await s.getUserByAff(body.aff_code);
@@ -219,14 +248,23 @@ export function adminRouter(): Router<Env> {
       display_name: body.display_name || username,
       role: ROLE_USER,
       quota,
+      email: body.email || "",
       aff_code: generateAffCode(),
       inviter_id: inviter,
     });
+    if (body.email) await s.updateUser(id, { email: body.email, email_verified: 1 });
     if (inviter) {
       const bonus = await s.optionNum("QuotaForInviter", 0);
       const invitee = await s.optionNum("QuotaForInvitee", 0);
       if (bonus) await s.addQuota(inviter, bonus);
       if (invitee) await s.addQuota(id, invitee);
+      const inv = await s.getUserById(inviter);
+      if (inv) {
+        await s.updateUser(inviter, {
+          aff_count: (inv.aff_count || 0) + 1,
+          aff_quota: (inv.aff_quota || 0) + bonus,
+        });
+      }
     }
     const user = await s.getUserById(id);
     const issued = await issueSession(s, c.env, user!, c.req);
@@ -298,7 +336,12 @@ export function adminRouter(): Router<Env> {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
-    return apiOk({ aff_code: user?.aff_code, aff_count: 0, aff_quota: 0, aff_history: 0 });
+    return apiOk({
+      aff_code: user?.aff_code,
+      aff_count: user?.aff_count || 0,
+      aff_quota: user?.aff_quota || 0,
+      aff_history: user?.aff_quota || 0,
+    });
   });
 
   r.get("/api/user/checkin", async (c) => {
@@ -957,6 +1000,7 @@ export function adminRouter(): Router<Env> {
     if (red.status !== 1) return apiFail("兑换码不可用");
     await s.updateRedemption(red.id, { status: 3, redeemed_time: nowSec(), used_user_id: u.id });
     await s.addQuota(u.id, red.quota);
+    await s.insertTopup({ user_id: u.id, amount: red.quota, payment_method: "redemption", trade_no: red.key });
     await s.insertLog({ user_id: u.id, type: 1, content: `redeem ${red.key}`, username: u.username, quota: red.quota });
     return apiOk({ quota: red.quota }, "兑换成功");
   });
@@ -1019,7 +1063,7 @@ export function adminRouter(): Router<Env> {
   r.get("/dashboard/billing/usage", billingUsage);
   r.get("/v1/dashboard/billing/usage", billingUsage);
 
-  r.get("/api/oauth/github", githubOAuth);
+  registerMore(r);
 
   return r;
 }
@@ -1057,50 +1101,6 @@ async function billingUsage(c: C): Promise<Response> {
     }),
     { headers: { "content-type": "application/json" } },
   );
-}
-
-async function githubOAuth(c: C): Promise<Response> {
-  const s = store(c);
-  if (!(await s.optionBool("GitHubOAuthEnabled", false))) return apiFail("GitHub OAuth 未启用");
-  const clientId = await s.option("GitHubClientId");
-  const secret = await s.option("GitHubClientSecret");
-  const code = c.url.searchParams.get("code");
-  if (!code) {
-    const origin = new URL(c.req.url).origin;
-    const redirect = `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(clientId)}&scope=user:email&redirect_uri=${encodeURIComponent(origin + "/api/oauth/github")}`;
-    return Response.redirect(redirect, 302);
-  }
-  const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
-    method: "POST",
-    headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ client_id: clientId, client_secret: secret, code }),
-  });
-  const tokenJson = (await tokenRes.json()) as { access_token?: string };
-  if (!tokenJson.access_token) return apiFail("GitHub 授权失败");
-  const userRes = await fetch("https://api.github.com/user", {
-    headers: { authorization: `Bearer ${tokenJson.access_token}`, "user-agent": "edge-api" },
-  });
-  const gh = (await userRes.json()) as { id?: number; login?: string };
-  if (!gh.id) return apiFail("无法读取 GitHub 用户");
-  let user = await s.getUserByGithub(String(gh.id));
-  if (!user) {
-    const username = (gh.login || `gh_${gh.id}`).slice(0, 20);
-    const exists = await s.getUserByUsername(username);
-    const finalName = exists ? `gh_${gh.id}` : username;
-    const id = await s.insertUser({
-      username: finalName,
-      display_name: gh.login || finalName,
-      github_id: String(gh.id),
-      quota: await s.optionNum("QuotaForNewUser", 0),
-      aff_code: generateAffCode(),
-    });
-    user = await s.getUserById(id);
-  }
-  const issued = await issueSession(s, c.env, user!, c.req);
-  const origin = new URL(c.req.url).origin;
-  const headers = new Headers({ location: origin + "/#/dashboard" });
-  headers.append("set-cookie", issued.cookie);
-  return new Response(null, { status: 302, headers });
 }
 
 void parseBool;

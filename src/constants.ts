@@ -1,4 +1,4 @@
-export const VERSION = "edge-api/1.0.0 (new-api RandallFlare port)";
+export const VERSION = "edge-api/1.1.0 (new-api RandallFlare port)";
 export const START_TIME = Date.now();
 
 export const ROLE_GUEST = 0;
@@ -72,6 +72,29 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   DocsLink: "https://github.com/QuantumNous/new-api",
   ServerAddress: "",
   SessionSecret: "",
+  DiscordOAuthEnabled: "false",
+  DiscordClientId: "",
+  DiscordClientSecret: "",
+  LinuxDOOAuthEnabled: "false",
+  LinuxDOClientId: "",
+  LinuxDOClientSecret: "",
+  OIDCAuthEnabled: "false",
+  OIDCClientId: "",
+  OIDCClientSecret: "",
+  OIDCAuthorizationEndpoint: "",
+  OIDCTokenEndpoint: "",
+  OIDCUserinfoEndpoint: "",
+  WeChatAuthEnabled: "false",
+  TelegramOAuthEnabled: "false",
+  PasskeyEnabled: "true",
+  RankingsEnabled: "true",
+  ExposeRatioEnabled: "false",
+  UserAgreement: "",
+  PrivacyPolicy: "",
+  ResendApiKey: "",
+  ResendFrom: "",
+  StripeEnabled: "false",
+  EpayEnabled: "false",
 };
 
 export function nowSec(): number {

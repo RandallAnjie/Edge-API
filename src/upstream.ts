@@ -17,7 +17,11 @@ export type RelayMode =
   | "rerank"
   | "responses"
   | "models"
-  | "passthrough";
+  | "passthrough"
+  | "video"
+  | "alpha_search"
+  | "engines_embeddings"
+  | "realtime";
 
 export interface UpstreamTarget {
   url: string;
@@ -26,7 +30,7 @@ export interface UpstreamTarget {
   method: string;
 }
 
-function joinUrl(base: string, path: string): string {
+export function joinUrl(base: string, path: string): string {
   const b = base.replace(/\/+$/, "");
   const p = path.startsWith("/") ? path : `/${path}`;
   if (b.endsWith("/v1") && p.startsWith("/v1/")) return b + p.slice(3);
@@ -56,6 +60,14 @@ function openaiPath(mode: RelayMode, requestPath: string): string {
       return "/v1/rerank";
     case "responses":
       return "/v1/responses";
+    case "video":
+      return requestPath.startsWith("/") ? requestPath : `/${requestPath}`;
+    case "alpha_search":
+      return "/v1/alpha/search";
+    case "engines_embeddings":
+      return requestPath.startsWith("/") ? requestPath : `/${requestPath}`;
+    case "realtime":
+      return requestPath.includes("?") ? requestPath : "/v1/realtime";
     case "models":
       return "/v1/models";
     default:
@@ -74,6 +86,7 @@ export function buildUpstream(
   model: string,
   body: unknown,
   extraHeaders: Record<string, string> = {},
+  method = "POST",
 ): UpstreamTarget {
   const kind = channelKind(channel.type);
   const base = resolveBaseUrl(channel.type, channel.base_url);
@@ -196,7 +209,7 @@ export function buildUpstream(
     payload = { ...(payload as Record<string, unknown>), ...paramOverride };
   }
 
-  return { url, headers, body: payload, method: "POST" };
+  return { url, headers, body: payload, method };
 }
 
 function payloadIsObject(v: unknown): v is Record<string, unknown> {

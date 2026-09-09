@@ -1,0 +1,25 @@
+import type { Store } from "./store.js";
+
+export async function mailConfigured(store: Store): Promise<boolean> {
+  return Boolean(await store.option("ResendApiKey"));
+}
+
+export async function sendMail(store: Store, to: string, subject: string, html: string): Promise<void> {
+  const key = await store.option("ResendApiKey");
+  if (!key) throw new Error("邮件未配置");
+  const from = (await store.option("ResendFrom")) || "Edge API <noreply@bigrandall.io>";
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+    body: JSON.stringify({ from, to, subject, html }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error("邮件发送失败: " + text.slice(0, 300));
+  }
+}
+
+export function sixDigitCode(): string {
+  const n = crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000;
+  return n.toString().padStart(6, "0");
+}

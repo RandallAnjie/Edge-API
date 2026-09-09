@@ -16,31 +16,44 @@ QuantumNous [new-api](https://github.com/QuantumNous/new-api) 的 **RandallFlare
 
 - 首次安装 `/api/setup`、站点状态 `/api/status`
 - 登录 / 注册 / 刷新 / 退出（HMAC session + Cookie + Bearer）
-- 用户：自身资料、改密、签到、兑换码充值、GitHub OAuth（可配置）
-- 管理员：用户 CRUD、启用/禁用/升降级/加额度
-- 渠道：创建、编辑、删除、批量状态、复制、测试、拉取上游模型、多 Key、模型映射、Header Override
-- 令牌：额度、无限额度、过期、IP 白名单、模型限制
-- 日志、统计、按日消耗、审计日志
-- 兑换码、分组、系统 options、定价、公告
+- 用户：自身资料、改密、签到、兑换码充值、邀请划转、删除账号、会话列表/注销
+- 安全：TOTP 2FA、备份码、登录会话、管理访问令牌、Passkey（WebAuthn）
+- OAuth：GitHub / Discord / LinuxDO / OIDC / 自定义提供商表
+- 邮件：Resend HTTP（验证码、重置密码）；未配置时明确返回「邮件未配置」
+- 管理员：用户 CRUD、启用/禁用/升降级/加额度、渠道测试全部/按标签/批量删除
+- 渠道：创建、编辑、删除、批量状态、复制、测试、拉取上游模型、多 Key、模型映射、Header Override、余额探测
+- 令牌：额度、无限额度、过期、IP 白名单、模型限制、搜索、批量删除、批量显示 Key
+- 日志、统计、按日消耗、审计日志、排行榜、倍率公开（可选）
+- 兑换码（搜索/批量/清理失效）、分组、系统 options、定价、公告、用户协议/隐私政策
+- 订阅：套餐 CRUD、余额购买、管理员绑定、定时过期
+- 对话会话（D1）、厂商/预填分组/模型元数据
 - Playground：`POST /pg/chat/completions`
 - Midjourney 任务列表；`/mj/*` 转发到 MJ 渠道
+- 异步任务表：视频生成与 `/v1/tasks/:key`
 - OpenAI 账单兼容：`/v1/dashboard/billing/subscription|usage`
+- Token 只读：`/api/usage/token`、`/api/log/token`
 
 **中继（TokenAuth，`Authorization: Bearer sk-...`）**
 
 - `POST /v1/chat/completions`（含 SSE）
 - `POST /v1/completions` `/v1/embeddings` `/v1/messages`
 - `POST /v1/images/generations` `/v1/moderations` `/v1/audio/*` `/v1/rerank` `/v1/responses`
+- `POST /v1/alpha/search`、`POST /v1/engines/:model/embeddings`
+- `POST /v1/video/generations`、`GET /v1/video/generations/:id`、`POST /v1/videos/:id/remix`
+- `POST/GET /v1/tasks/:key`（产物可写入可选 R2）
+- `GET /v1/realtime` WebSocket 升级代理
 - Gemini 原生 `POST /v1beta/models/{model}:generateContent`
 - `GET /v1/models`、`GET /v1/models/:model`
+- Files / fine-tunes / images/variations 与上游一致返回 501
 - 渠道优先级 + 权重随机 + 失败重试
 - OpenAI ↔ Anthropic / Gemini 协议转换
 - Azure / OpenAI 兼容 / Anthropic / Gemini / Ollama / Cloudflare / 阿里兼容模式 / 智谱 / 火山 / 自定义 URL
+- multipart（音频等）原样转发 Content-Type 与 body
 - 额度：ModelRatio × CompletionRatio × GroupRatio；用户额度 + 令牌额度双扣
 
 **后台 UI**
 
-单页控制台覆盖：首页、定价、关于、初始化、登录注册、仪表盘、Playground、令牌、日志、钱包、个人设置、渠道、模型、用户、兑换码、审计、MJ、系统设置。页脚保留上游署名与仓库链接。
+单页控制台覆盖：首页、定价、排行榜、关于、协议/隐私、初始化、登录（2FA/OAuth/找回密码）、注册、仪表盘、对话、Playground、令牌、日志筛选、钱包/邀请、订阅、个人设置、安全、渠道（测试全部）、模型、用户、兑换码、审计、MJ、异步任务、系统设置分组。页脚保留上游署名与仓库链接。
 
 ## 部署到 RandallFlare
 
@@ -57,6 +70,7 @@ npx rrangler deploy --name edge-api
 
 - D1 `edge-api` → `env.DB`
 - KV `edge-api-kv` → `env.KV`
+- R2 `edge-api-artifacts` → `env.R2`（任务产物，可选）
 - `public/` 静态资源 → `env.ASSETS`
 
 公开域名形如 `https://edge-api-<username>.edge.bigrandall.io/`（以 `rrangler worker get edge-api` 为准）。
@@ -79,7 +93,7 @@ npm run typecheck
 npm run dev          # rrangler dev --port 8787，需本机 workerd
 ```
 
-`npm test` 用 Node 内置 SQLite 模拟 D1，覆盖初始化、登录、渠道、令牌、中继、兑换码。
+`npm test` 用 Node 内置 SQLite 模拟 D1，覆盖初始化、登录、2FA、渠道、令牌批量、中继、multipart 音频、兑换码、订阅、排行榜。
 
 `rrangler` 0.4.8 的 `dev` **不会**注入 D1/KV 绑定（生产 `deploy` 会创建并绑定）。没有 D1 时 Worker 仍提供静态控制台与 `/health`；`/api/*` 与 `/v1/*` 需要部署后的 `env.DB`。
 
@@ -100,11 +114,11 @@ npm run dev          # rrangler dev --port 8787，需本机 workerd
 控制台类型目录与 new-api `constant/channel.go` 对齐（含 OpenAI、Azure、Anthropic、Gemini、OpenRouter、DeepSeek、硅基流动、xAI 等）。  
 需要厂商 SDK 签名的渠道（部分 AWS/Vertex 服务账号）在未提供 HTTP 兼容 Key 时会返回结构化错误；配置了兼容 Base URL 的仍按 HTTP 中继。
 
-任务插件、邮件 SMTP、Stripe/Epay 等支付收银台不在 workerd 内运行；对应路由不会静默吞掉，而是返回明确失败/未启用。
+任务插件 Go 运行时、SMTP、Stripe/Epay 收银台、io.net 部署集群不在 workerd 内运行；对应路由返回明确失败/未启用，不会静默吞掉。邮件请配置 `ResendApiKey`。订阅用余额购买。
 
 ## 配置项（系统设置）
 
-常用 options：`SystemName`、`QuotaPerUnit`（默认 500000 ≈ $1）、`RegisterEnabled`、`CheckinEnabled`、`CheckinQuota`、`RetryTimes`、`ModelRatio`、`GroupRatio`、`GitHubOAuthEnabled` / `GitHubClientId` / `GitHubClientSecret`（Secret 不在 GET /api/option 回显）。
+常用 options：`SystemName`、`QuotaPerUnit`（默认 500000 ≈ $1）、`RegisterEnabled`、`CheckinEnabled`、`CheckinQuota`、`RetryTimes`、`ModelRatio`、`GroupRatio`、OAuth ClientId、`ResendApiKey` / `ResendFrom`（HTTP 发信）、`RankingsEnabled`、`ExposeRatioEnabled`、`UserAgreement` / `PrivacyPolicy`。Secret 类不在 GET /api/option 回显。
 
 ## License
 

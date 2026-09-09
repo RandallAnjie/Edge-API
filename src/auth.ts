@@ -7,6 +7,7 @@ import {
   USER_ENABLED,
   csv,
   nowSec,
+  randomHex,
 } from "./constants.js";
 import { extractRequestApiKey, signSession, verifySession } from "./crypto.js";
 import { apiFail, cookieGet, isSecureRequest, openaiError, sessionCookie } from "./http.js";
@@ -27,24 +28,40 @@ export async function sessionSecret(env: Env, store: Store): Promise<string> {
   return s;
 }
 
-export async function issueSession(store: Store, env: Env, user: UserRow, req: Request): Promise<{
+export async function issueSession(
+  store: Store,
+  env: Env,
+  user: UserRow,
+  req: Request,
+): Promise<{
   token: string;
   cookie: string;
   data: Record<string, unknown>;
+  sid: string;
 }> {
   const secret = await sessionSecret(env, store);
+  const sid = randomHex(16);
+  const exp = nowSec() + SESSION_TTL_SEC;
   const token = await signSession(
-    { uid: user.id, role: user.role, username: user.username, exp: nowSec() + SESSION_TTL_SEC },
+    { uid: user.id, role: user.role, username: user.username, exp, sid },
     secret,
   );
+  await store.insertSession({
+    sid,
+    user_id: user.id,
+    ip: req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || "",
+    ua: (req.headers.get("user-agent") || "").slice(0, 200),
+    expires_at: exp,
+  });
   await store.updateUser(user.id, { last_login_at: nowSec() });
   const cookie = sessionCookie(token, SESSION_TTL_SEC, isSecureRequest(req));
   const data = {
     access_token: token,
     token_type: "Bearer",
+    sid,
     user: { ...publicUser(user), permissions: permissionsFor(user.role) },
   };
-  return { token, cookie, data };
+  return { token, cookie, data, sid };
 }
 
 export async function readSession(c: Context<Env>, store: Store): Promise<SessionUser | null> {
@@ -55,9 +72,24 @@ export async function readSession(c: Context<Env>, store: Store): Promise<Sessio
     raw = auth.slice(7).trim();
   }
   if (!raw) return null;
-  const payload = await verifySession(raw, secret);
-  if (!payload) return null;
-  const user = await store.getUserById(payload.uid);
+
+  let user: UserRow | null = null;
+  let sid = "";
+
+  if (raw.includes(".")) {
+    const payload = await verifySession(raw, secret);
+    if (!payload) return null;
+    if (payload.sid) {
+      const sess = await store.getSession(payload.sid);
+      if (!sess || sess.revoked || (sess.expires_at > 0 && sess.expires_at < nowSec())) return null;
+      sid = payload.sid;
+      await store.touchSession(sid);
+    }
+    user = await store.getUserById(payload.uid);
+  } else {
+    user = await store.getUserByField("access_token", raw);
+  }
+
   if (!user || user.status !== USER_ENABLED) return null;
   return {
     id: user.id,
@@ -70,6 +102,7 @@ export async function readSession(c: Context<Env>, store: Store): Promise<Sessio
     used_quota: user.used_quota,
     request_count: user.request_count,
     email: user.email,
+    sid,
   };
 }
 
@@ -129,4 +162,16 @@ export async function rateLimit(env: Env, tokenId: number): Promise<boolean> {
   if (cur >= RATE_LIMIT_PER_MIN) return false;
   await env.KV.put(key, String(cur + 1), { expirationTtl: 120 });
   return true;
+}
+
+export async function currentSid(c: Context<Env>, store: Store): Promise<string> {
+  const secret = await sessionSecret(c.env, store);
+  let raw = cookieGet(c.req, "session");
+  const auth = c.req.headers.get("authorization") || "";
+  if (!raw && auth.toLowerCase().startsWith("bearer ") && !auth.slice(7).trim().startsWith("sk-")) {
+    raw = auth.slice(7).trim();
+  }
+  if (!raw || !raw.includes(".")) return "";
+  const payload = await verifySession(raw, secret);
+  return payload?.sid || "";
 }

@@ -16,7 +16,21 @@ CREATE TABLE IF NOT EXISTS users (
   inviter_id INTEGER NOT NULL DEFAULT 0,
   checkin_at INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT 0,
-  last_login_at INTEGER NOT NULL DEFAULT 0
+  last_login_at INTEGER NOT NULL DEFAULT 0,
+  totp_secret TEXT NOT NULL DEFAULT '',
+  totp_enabled INTEGER NOT NULL DEFAULT 0,
+  totp_backup TEXT NOT NULL DEFAULT '',
+  access_token TEXT NOT NULL DEFAULT '',
+  discord_id TEXT NOT NULL DEFAULT '',
+  oidc_id TEXT NOT NULL DEFAULT '',
+  linuxdo_id TEXT NOT NULL DEFAULT '',
+  wechat_id TEXT NOT NULL DEFAULT '',
+  telegram_id TEXT NOT NULL DEFAULT '',
+  settings TEXT NOT NULL DEFAULT '',
+  aff_quota INTEGER NOT NULL DEFAULT 0,
+  aff_count INTEGER NOT NULL DEFAULT 0,
+  billing_preference TEXT NOT NULL DEFAULT 'quota',
+  email_verified INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS api_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,7 +74,8 @@ CREATE TABLE IF NOT EXISTS channels (
   remark TEXT NOT NULL DEFAULT '',
   settings TEXT NOT NULL DEFAULT '',
   openai_organization TEXT NOT NULL DEFAULT '',
-  test_model TEXT NOT NULL DEFAULT ''
+  test_model TEXT NOT NULL DEFAULT '',
+  balance TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS request_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,6 +146,141 @@ CREATE TABLE IF NOT EXISTS mj_tasks (
   start_time INTEGER NOT NULL DEFAULT 0,
   finish_time INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS login_sessions (
+  sid TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  last_seen INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER NOT NULL DEFAULT 0,
+  ip TEXT NOT NULL DEFAULT '',
+  ua TEXT NOT NULL DEFAULT '',
+  revoked INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS auth_flows (
+  token TEXT PRIMARY KEY,
+  type TEXT NOT NULL DEFAULT '',
+  user_id INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER NOT NULL DEFAULT 0,
+  payload TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS email_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL,
+  code TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'verify',
+  expires_at INTEGER NOT NULL,
+  used INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS topups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  amount INTEGER NOT NULL DEFAULT 0,
+  money REAL NOT NULL DEFAULT 0,
+  trade_no TEXT NOT NULL DEFAULT '',
+  payment_method TEXT NOT NULL DEFAULT 'redemption',
+  status TEXT NOT NULL DEFAULT 'success',
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS subscription_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  price_quota INTEGER NOT NULL DEFAULT 0,
+  duration_days INTEGER NOT NULL DEFAULT 30,
+  grant_quota INTEGER NOT NULL DEFAULT 0,
+  "group" TEXT NOT NULL DEFAULT '',
+  models TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS user_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
+  start_at INTEGER NOT NULL DEFAULT 0,
+  expire_at INTEGER NOT NULL DEFAULT 0,
+  status INTEGER NOT NULL DEFAULT 1,
+  remaining_quota INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL UNIQUE,
+  user_id INTEGER NOT NULL DEFAULT 0,
+  token_id INTEGER NOT NULL DEFAULT 0,
+  channel_id INTEGER NOT NULL DEFAULT 0,
+  platform TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'SUBMITTED',
+  progress TEXT NOT NULL DEFAULT '',
+  model_name TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  fail_reason TEXT NOT NULL DEFAULT '',
+  result TEXT NOT NULL DEFAULT '',
+  properties TEXT NOT NULL DEFAULT '',
+  submit_time INTEGER NOT NULL DEFAULT 0,
+  start_time INTEGER NOT NULL DEFAULT 0,
+  finish_time INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS conversations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id INTEGER NOT NULL,
+  role TEXT NOT NULL DEFAULT 'user',
+  content TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS vendors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  icon TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS prefill_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL DEFAULT '',
+  items TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS oauth_providers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL DEFAULT '',
+  slug TEXT NOT NULL UNIQUE,
+  client_id TEXT NOT NULL DEFAULT '',
+  client_secret TEXT NOT NULL DEFAULT '',
+  auth_url TEXT NOT NULL DEFAULT '',
+  token_url TEXT NOT NULL DEFAULT '',
+  user_info_url TEXT NOT NULL DEFAULT '',
+  scopes TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS passkeys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  credential_id TEXT NOT NULL UNIQUE,
+  public_key TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS model_meta (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  model_name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
+  vendor_id INTEGER NOT NULL DEFAULT 0,
+  icon TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_key ON api_tokens(key);
 CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
@@ -139,7 +289,32 @@ CREATE INDEX IF NOT EXISTS idx_logs_user ON request_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_logs_type ON request_logs(type);
 CREATE INDEX IF NOT EXISTS idx_quota_user_day ON quota_data(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_mj_user ON mj_tasks(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON login_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_tid ON tasks(task_id);
+CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id);
+CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_topups_user ON topups(user_id);
+CREATE INDEX IF NOT EXISTS idx_email_codes ON email_codes(email, type);
 `;
+
+const USER_ALTERS = [
+  "ALTER TABLE users ADD COLUMN totp_secret TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN totp_backup TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN access_token TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN discord_id TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN oidc_id TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN linuxdo_id TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN wechat_id TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN telegram_id TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN settings TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN aff_quota INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN aff_count INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN billing_preference TEXT NOT NULL DEFAULT 'quota'",
+  "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE channels ADD COLUMN balance TEXT NOT NULL DEFAULT ''",
+];
 
 import type { D1Database } from "./types.js";
 
@@ -148,6 +323,13 @@ let schemaReady = false;
 export async function ensureSchema(db: D1Database): Promise<void> {
   if (schemaReady) return;
   await db.exec(SCHEMA_SQL);
+  for (const sql of USER_ALTERS) {
+    try {
+      await db.exec(sql);
+    } catch {
+      /* column already exists on fresh installs */
+    }
+  }
   schemaReady = true;
 }
 

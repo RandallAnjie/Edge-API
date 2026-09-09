@@ -31,10 +31,21 @@ export interface AssetsBinding {
   fetch(request: Request): Promise<Response>;
 }
 
+export interface R2Object {
+  arrayBuffer(): Promise<ArrayBuffer>;
+  httpMetadata?: { contentType?: string };
+}
+
+export interface R2Bucket {
+  put(key: string, value: ArrayBuffer | string, options?: { httpMetadata?: { contentType?: string } }): Promise<unknown>;
+  get(key: string): Promise<R2Object | null>;
+}
+
 export interface Env {
   DB: D1Database;
   KV?: KVNamespace;
   ASSETS?: AssetsBinding;
+  R2?: R2Bucket;
   SESSION_SECRET?: string;
   SYSTEM_NAME?: string;
 }
@@ -62,6 +73,20 @@ export interface UserRow {
   checkin_at: number;
   created_at: number;
   last_login_at: number;
+  totp_secret?: string;
+  totp_enabled?: number;
+  totp_backup?: string;
+  access_token?: string;
+  discord_id?: string;
+  oidc_id?: string;
+  linuxdo_id?: string;
+  wechat_id?: string;
+  telegram_id?: string;
+  settings?: string;
+  aff_quota?: number;
+  aff_count?: number;
+  billing_preference?: string;
+  email_verified?: number;
 }
 
 export interface TokenRow {
@@ -108,6 +133,7 @@ export interface ChannelRow {
   settings: string;
   openai_organization: string;
   test_model: string;
+  balance?: string;
 }
 
 export interface LogRow {
@@ -153,6 +179,7 @@ export interface SessionUser {
   used_quota: number;
   request_count: number;
   email: string;
+  sid?: string;
 }
 
 export interface AuthToken {

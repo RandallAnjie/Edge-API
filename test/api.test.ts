@@ -161,3 +161,194 @@ test("status reports setup after init", async () => {
   assert.equal(st.body.data.setup, true);
   assert.equal(st.body.data.system_name, "Edge API Test");
 });
+
+async function boot(e: Env) {
+  await json(
+    new Request("http://local/api/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12", confirmPassword: "password12" }),
+    }),
+    e,
+  );
+  const login = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12" }),
+    }),
+    e,
+  );
+  const token = login.body.data.access_token as string;
+  const auth = { authorization: "Bearer " + token, "content-type": "application/json" };
+  return { token, auth, login };
+}
+
+test("2FA setup then login challenge", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const setup = await json(new Request("http://local/api/user/2fa/setup", { method: "POST", headers: auth }), e);
+  assert.equal(setup.body.success, true, setup.body.message);
+  const secret = setup.body.data.secret as string;
+  const { totpCode } = await import("../src/totp.js");
+  const code = await totpCode(secret);
+  const en = await json(
+    new Request("http://local/api/user/2fa/enable", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ code }),
+    }),
+    e,
+  );
+  assert.equal(en.body.success, true, en.body.message);
+  assert.ok(Array.isArray(en.body.data.backup_codes));
+
+  const challenge = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(challenge.body.data.require_2fa, true);
+  const flow = challenge.body.data.flow_token as string;
+  const code2 = await totpCode(secret);
+  const done = await json(
+    new Request("http://local/api/user/login/2fa", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ flow_token: flow, code: code2 }),
+    }),
+    e,
+  );
+  assert.equal(done.body.success, true, done.body.message);
+  assert.ok(done.body.data.access_token);
+});
+
+test("rankings + subscription buy + token batch", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const rank = await json(new Request("http://local/api/rankings"), e);
+  assert.equal(rank.body.success, true);
+  assert.ok(Array.isArray(rank.body.data));
+
+  const plan = await json(
+    new Request("http://local/api/subscription/admin/plans", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ title: "pro", price_quota: 100, grant_quota: 1000, duration_days: 30 }),
+    }),
+    e,
+  );
+  assert.equal(plan.body.success, true, plan.body.message);
+  const planId = plan.body.data.id as number;
+  const buy = await json(
+    new Request("http://local/api/subscription/balance/pay", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ plan_id: planId }),
+    }),
+    e,
+  );
+  assert.equal(buy.body.success, true, buy.body.message);
+
+  const t1 = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "a", unlimited_quota: true }),
+    }),
+    e,
+  );
+  const t2 = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "b", unlimited_quota: true }),
+    }),
+    e,
+  );
+  const batch = await json(
+    new Request("http://local/api/token/batch", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ ids: [t1.body.data.id, t2.body.data.id] }),
+    }),
+    e,
+  );
+  assert.equal(batch.body.success, true);
+  assert.equal(batch.body.data.count, 2);
+});
+
+test("session revoke + 501 files + multipart audio relay", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const sess = await json(new Request("http://local/api/user/sessions", { headers: auth }), e);
+  assert.equal(sess.body.success, true);
+  assert.ok((sess.body.data as { sid: string }[]).length >= 1);
+  const sid = (sess.body.data as { sid: string; current?: boolean }[]).find((x) => x.current)?.sid;
+  assert.ok(sid);
+
+  const files = await json(new Request("http://local/v1/files", { headers: { authorization: "Bearer sk-nope" } }), e);
+  assert.equal(files.res.status, 401);
+
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "mock", type: 1, key: "sk-up", models: "whisper-1", group: "default", base_url: "https://example.invalid" }),
+    }),
+    e,
+  );
+  const tk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "cli", unlimited_quota: true }),
+    }),
+    e,
+  );
+  const sk = tk.body.data.key as string;
+
+  const filesAuth = await json(new Request("http://local/v1/files", { headers: { authorization: "Bearer " + sk } }), e);
+  assert.equal(filesAuth.res.status, 501);
+
+  const boundary = "----edgeapi";
+  const body =
+    `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\nContent-Type: audio/wav\r\n\r\nRIFF\r\n` +
+    `--${boundary}--\r\n`;
+  const originalFetch = globalThis.fetch;
+  let seenUrl = "";
+  let seenCt = "";
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    seenUrl = String(input);
+    if (init?.headers && typeof init.headers === "object" && !(init.headers instanceof Headers)) {
+      seenCt = String((init.headers as Record<string, string>)["content-type"] || "");
+    }
+    return new Response(JSON.stringify({ text: "hello" }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const relay = await json(
+      new Request("http://local/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": `multipart/form-data; boundary=${boundary}` },
+        body,
+      }),
+      e,
+    );
+    assert.equal(relay.res.status, 200);
+    assert.match(seenUrl, /transcriptions/);
+    assert.match(seenCt, /multipart/);
+    assert.equal(relay.body.text, "hello");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+

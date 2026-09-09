@@ -69,13 +69,16 @@ export class Router<E = unknown> {
 
   async dispatch(c: Context<E>): Promise<Response | null> {
     const parts = c.url.pathname.split("/").filter(Boolean);
+    let best: { handler: Handler<E>; params: Params; score: number } | null = null;
     for (const r of this.routes) {
       if (r.method !== c.req.method && r.method !== "*") continue;
       const params = match(r.parts, parts);
       if (!params) continue;
-      c.params = params;
-      return r.handler(c);
+      const score = r.parts.filter((p) => p.startsWith(":") || p === "*").length;
+      if (!best || score < best.score) best = { handler: r.handler, params, score };
     }
-    return null;
+    if (!best) return null;
+    c.params = best.params;
+    return best.handler(c);
   }
 }

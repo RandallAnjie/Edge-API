@@ -67,18 +67,25 @@ function layout(content) {
         <div class="nav-sec">公开</div>
         ${nav("home", "首页")}
         ${nav("pricing", "模型定价")}
+        ${nav("rankings", "排行榜", !!state.status?.rankings_enabled)}
         ${nav("about", "关于")}
+        ${nav("agreement", "用户协议")}
+        ${nav("privacy", "隐私政策")}
         ${u ? `
         <div class="nav-sec">对话</div>
+        ${nav("chat", "对话")}
         ${nav("playground", "Playground")}
         <div class="nav-sec">控制台</div>
         ${nav("dashboard", "仪表盘")}
         ${nav("tokens", "令牌")}
         ${nav("logs", "日志")}
         ${nav("mj", "Midjourney")}
+        ${nav("tasks", "异步任务")}
         <div class="nav-sec">个人</div>
         ${nav("wallet", "钱包 / 兑换")}
+        ${nav("subscriptions", "订阅")}
         ${nav("profile", "个人设置")}
+        ${nav("security", "安全")}
         ${admin ? `
         <div class="nav-sec">管理</div>
         ${nav("channels", "渠道")}
@@ -183,28 +190,56 @@ async function pageSetup() {
 
 async function pageLogin() {
   const gh = state.status?.github_oauth && state.status?.github_client_id;
+  const dc = state.status?.discord_oauth && state.status?.discord_client_id;
+  const ld = state.status?.linuxdo_oauth && state.status?.linuxdo_client_id;
+  const oidc = state.status?.oidc_auth;
   return `
   <div class="auth"><div class="card">
     <h1>登录 ${esc(state.status?.system_name || "")}</h1>
     <form id="loginForm">
       <div class="field"><label>用户名</label><input name="username" required /></div>
       <div class="field"><label>密码</label><input name="password" type="password" required /></div>
+      <div id="twofaField" class="field hidden"><label>2FA 验证码</label><input name="code" inputmode="numeric" /></div>
+      <input type="hidden" name="flow_token" />
       <button class="btn primary" type="submit">登录</button>
       ${state.status?.register_enabled ? ` <a class="btn" href="#/register">注册</a>` : ""}
-      ${gh ? ` <a class="btn" href="/api/oauth/github">GitHub 登录</a>` : ""}
+      <a class="btn" href="#/forgot">忘记密码</a>
     </form>
+    <div class="row" style="margin-top:12px">
+      ${gh ? ` <a class="btn" href="/api/oauth/github">GitHub</a>` : ""}
+      ${dc ? ` <a class="btn" href="/api/oauth/discord">Discord</a>` : ""}
+      ${ld ? ` <a class="btn" href="/api/oauth/linuxdo">LinuxDO</a>` : ""}
+      ${oidc ? ` <a class="btn" href="/api/oauth/oidc">OIDC</a>` : ""}
+    </div>
   </div></div>`;
 }
 
 async function pageRegister() {
+  const needEmail = state.status?.email_verification;
   return `
   <div class="auth"><div class="card">
     <h1>注册</h1>
     <form id="regForm">
       <div class="field"><label>用户名</label><input name="username" required maxlength="20" /></div>
       <div class="field"><label>密码</label><input name="password" type="password" required minlength="8" /></div>
+      ${needEmail ? `<div class="field"><label>邮箱</label><input name="email" type="email" required />
+        <div class="row"><input name="verification_code" placeholder="验证码" /><button class="btn" type="button" id="sendCode">发送验证码</button></div></div>` : ""}
       <div class="field"><label>邀请码（可选）</label><input name="aff_code" /></div>
       <button class="btn primary" type="submit">注册</button>
+    </form>
+  </div></div>`;
+}
+
+async function pageForgot() {
+  return `
+  <div class="auth"><div class="card">
+    <h1>重置密码</h1>
+    <form id="forgotForm">
+      <div class="field"><label>邮箱</label><input name="email" type="email" required /></div>
+      <div class="row"><button class="btn" type="button" id="sendReset">发送验证码</button></div>
+      <div class="field"><label>验证码</label><input name="code" /></div>
+      <div class="field"><label>新密码</label><input name="password" type="password" required minlength="8" /></div>
+      <button class="btn primary">重置</button>
     </form>
   </div></div>`;
 }
@@ -304,11 +339,19 @@ async function pageTokens() {
 
 async function pageLogs() {
   const path = state.user?.role >= 10 ? "/api/log/" : "/api/log/self";
-  const r = await api(path + "?page_size=50");
+  const q = new URLSearchParams(location.hash.split("?")[1] || "");
+  const type = q.get("type") || "";
+  const model = q.get("model_name") || "";
+  const r = await api(path + `?page_size=50&type=${encodeURIComponent(type)}&model_name=${encodeURIComponent(model)}`);
   const page = r.data?.data || { items: [] };
   const items = page.items || [];
   return layout(`
     <h1>日志</h1>
+    <form id="logFilter" class="row" style="margin-bottom:12px">
+      <input name="model_name" placeholder="模型" value="${esc(model)}" />
+      <select name="type"><option value="">全部类型</option><option value="2" ${type==="2"?"selected":""}>消费</option><option value="1" ${type==="1"?"selected":""}>充值</option><option value="5" ${type==="5"?"selected":""}>错误</option></select>
+      <button class="btn">筛选</button>
+    </form>
     <div class="table-wrap"><table>
       <thead><tr><th>时间</th><th>用户</th><th>令牌</th><th>模型</th><th>额度</th><th>tokens</th><th>耗时</th></tr></thead>
       <tbody>${items.map((l) => `<tr>
@@ -322,15 +365,38 @@ async function pageLogs() {
 }
 
 async function pageWallet() {
+  const aff = await api("/api/user/aff");
+  const a = aff.data?.data || {};
+  const hist = await api("/api/user/topup/self");
+  const items = hist.data?.data?.items || [];
   return layout(`
     <h1>钱包</h1>
     <p class="sub">剩余额度 ${money(state.user?.quota)} · 已用 ${money(state.user?.used_quota)}</p>
+    <div class="cards">
+      <div class="card"><div class="k">邀请码</div><div class="v" style="font-size:18px">${esc(a.aff_code)}</div></div>
+      <div class="card"><div class="k">邀请人数</div><div class="v">${esc(a.aff_count)}</div></div>
+      <div class="card"><div class="k">待划转邀请额度</div><div class="v">${money(a.aff_quota)}</div></div>
+    </div>
     <div class="card">
       <h3>兑换码充值</h3>
       <form id="topupForm" class="row">
         <input name="key" placeholder="输入兑换码" style="flex:1" />
         <button class="btn primary">兑换</button>
       </form>
+    </div>
+    <div class="card">
+      <h3>邀请额度划转到余额</h3>
+      <form id="affForm" class="row">
+        <input name="quota" type="number" placeholder="额度" style="flex:1" />
+        <button class="btn">划转</button>
+      </form>
+    </div>
+    <div class="card">
+      <div class="k">充值记录</div>
+      <div class="table-wrap" style="margin-top:10px"><table>
+        <thead><tr><th>时间</th><th>方式</th><th>额度</th><th>状态</th></tr></thead>
+        <tbody>${items.map((t) => `<tr><td>${new Date(t.created_at * 1000).toLocaleString()}</td><td>${esc(t.payment_method)}</td><td>${money(t.amount)}</td><td>${esc(t.status)}</td></tr>`).join("") || `<tr><td colspan="4">暂无</td></tr>`}</tbody>
+      </table></div>
     </div>
   `);
 }
@@ -358,7 +424,13 @@ async function pageChannels() {
   const types = await api("/api/channel/types");
   const tlist = types.data?.data || [];
   return layout(`
-    <div class="topbar"><h1>渠道</h1><button class="btn primary" id="newCh">添加渠道</button></div>
+    <div class="topbar">
+      <h1>渠道</h1>
+      <div class="row">
+        <button class="btn" id="testAll">测试全部</button>
+        <button class="btn primary" id="newCh">添加渠道</button>
+      </div>
+    </div>
     <div class="table-wrap"><table>
       <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>分组</th><th>优先级</th><th>权重</th><th>状态</th><th></th></tr></thead>
       <tbody>${items.map((ch) => `<tr>
@@ -472,11 +544,27 @@ async function pageRedemption() {
 async function pageSettings() {
   const r = await api("/api/option/");
   const items = r.data?.data || [];
+  const groups = {
+    站点: ["SystemName", "Logo", "Footer", "Notice", "About", "HomePageContent", "DocsLink", "UserAgreement", "PrivacyPolicy"],
+    额度: ["QuotaPerUnit", "DisplayInCurrency", "QuotaForNewUser", "QuotaForInviter", "QuotaForInvitee", "CheckinEnabled", "CheckinQuota"],
+    注册登录: ["RegisterEnabled", "PasswordLoginEnabled", "PasswordRegisterEnabled", "EmailVerificationEnabled", "GitHubOAuthEnabled", "GitHubClientId", "DiscordOAuthEnabled", "DiscordClientId", "LinuxDOOAuthEnabled", "LinuxDOClientId", "OIDCAuthEnabled", "OIDCClientId", "PasskeyEnabled"],
+    渠道: ["RetryTimes", "AutomaticDisableChannelEnabled", "AutomaticEnableChannelEnabled", "ChannelDisableThreshold"],
+    倍率: ["ModelRatio", "CompletionRatio", "GroupRatio", "ExposeRatioEnabled", "RankingsEnabled"],
+    邮件: ["ResendFrom"],
+  };
+  const used = new Set(Object.values(groups).flat());
+  const rest = items.filter((o) => !used.has(o.key));
+  const block = (title, keys) => {
+    const rows = items.filter((o) => keys.includes(o.key));
+    if (!rows.length) return "";
+    return `<div class="card"><h3>${title}</h3>${rows.map((o) => `<div class="field"><label>${esc(o.key)}</label><input name="${esc(o.key)}" value="${esc(o.value)}" /></div>`).join("")}</div>`;
+  };
   return layout(`
     <h1>系统设置</h1>
-    <p class="sub">对应 new-api 的 options 表。敏感 Key/Secret 不在列表中显示。</p>
+    <p class="sub">对应 new-api 的 options。敏感 Key/Secret 不回显。ResendApiKey 请用 PUT 单独写入。</p>
     <form id="optForm">
-      ${items.map((o) => `<div class="field"><label>${esc(o.key)}</label><input name="${esc(o.key)}" value="${esc(o.value)}" /></div>`).join("")}
+      ${Object.entries(groups).map(([t, k]) => block(t, k)).join("")}
+      ${rest.length ? `<div class="card"><h3>其他</h3>${rest.map((o) => `<div class="field"><label>${esc(o.key)}</label><input name="${esc(o.key)}" value="${esc(o.value)}" /></div>`).join("")}</div>` : ""}
       <button class="btn primary">保存全部</button>
     </form>
   `);
@@ -510,19 +598,160 @@ async function pageMj() {
   `);
 }
 
+async function pageRankings() {
+  const r = await api("/api/rankings");
+  const items = r.data?.data || [];
+  return layout(`
+    <h1>排行榜</h1>
+    <p class="sub">按近 7 日 quota_data 汇总。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>用户</th><th>额度</th><th>次数</th></tr></thead>
+      <tbody>${items.map((x) => `<tr><td>${esc(x.username)}</td><td>${money(x.quota)}</td><td>${esc(x.count)}</td></tr>`).join("") || `<tr><td colspan="3">暂无</td></tr>`}</tbody>
+    </table></div>
+  `);
+}
+
+async function pageLegal(kind) {
+  const r = await api(kind === "agreement" ? "/api/user-agreement" : "/api/privacy-policy");
+  const text = r.data?.data || "";
+  return layout(`
+    <h1>${kind === "agreement" ? "用户协议" : "隐私政策"}</h1>
+    <div class="card" style="white-space:pre-wrap">${esc(text) || "尚未配置，请在系统设置中填写 UserAgreement / PrivacyPolicy。"}</div>
+  `);
+}
+
+async function pageSecurity() {
+  const st = await api("/api/user/2fa/status");
+  const sess = await api("/api/user/sessions");
+  const tok = await api("/api/user/token/status");
+  const pk = await api("/api/user/passkey");
+  const sessions = sess.data?.data || [];
+  const enabled = st.data?.data?.enabled;
+  return layout(`
+    <h1>安全</h1>
+    <div class="card">
+      <h3>两步验证 TOTP</h3>
+      <p class="sub">${enabled ? "已启用" : "未启用"}</p>
+      ${enabled ? `<button class="btn danger" id="disable2fa">关闭 2FA</button>` : `<button class="btn primary" id="setup2fa">启用 2FA</button>`}
+      <pre id="otpauth" class="mono"></pre>
+    </div>
+    <div class="card">
+      <h3>管理访问令牌</h3>
+      <p class="sub">${tok.data?.data?.enabled ? "已生成（不回显）" : "未生成"}。用于 Bearer 调用 /api，不是 sk- 中继令牌。</p>
+      <button class="btn" id="genAccess">生成 / 轮换</button>
+      <button class="btn danger" id="revAccess">撤销</button>
+      <pre id="accessOut" class="mono"></pre>
+    </div>
+    <div class="card">
+      <h3>Passkey</h3>
+      <p class="sub">${(pk.data?.data?.credentials || []).length ? "已绑定 " + pk.data.data.credentials.length + " 个" : "未绑定"}</p>
+      <button class="btn" id="regPasskey">绑定当前设备</button>
+      <button class="btn danger" id="delPasskey">全部解绑</button>
+    </div>
+    <div class="card">
+      <div class="topbar"><h3>登录会话</h3><button class="btn" id="revokeOthers">注销其他会话</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>SID</th><th>IP</th><th>最近</th><th></th></tr></thead>
+        <tbody>${sessions.map((x) => `<tr><td class="mono">${esc(x.sid).slice(0,12)}…</td><td>${esc(x.ip)}</td><td>${new Date(x.last_seen*1000).toLocaleString()}</td>
+          <td>${x.current ? "当前" : `<button class="btn danger" data-sid="${esc(x.sid)}">注销</button>`}</td></tr>`).join("")}</tbody>
+      </table></div>
+    </div>
+  `);
+}
+
+async function pageChat() {
+  const convs = await api("/api/conversations");
+  const list = convs.data?.data || [];
+  const models = await api("/api/user/models");
+  const mlist = models.data?.data || [];
+  return layout(`
+    <h1>对话</h1>
+    <p class="sub">会话保存在 D1。发送走 Playground 中继。</p>
+    <div class="chat-layout">
+      <div class="card">
+        <button class="btn primary" id="newConv">新对话</button>
+        <div id="convList">${list.map((c) => `<a class="nav a" href="#/chat?id=${c.id}" style="display:block;margin:6px 0">${esc(c.title || "未命名")}</a>`).join("") || "<p class='sub'>暂无会话</p>"}</div>
+      </div>
+      <div class="chat">
+        <div class="row" style="padding:10px">
+          <select id="pgModel">${mlist.map((m) => `<option>${esc(m)}</option>`).join("") || `<option>gpt-4o-mini</option>`}</select>
+          <label><input type="checkbox" id="pgStream" checked /> 流式</label>
+        </div>
+        <div class="msgs" id="msgs"></div>
+        <div class="composer">
+          <textarea id="pgInput" placeholder="输入消息"></textarea>
+          <button class="btn primary" id="pgSend">发送</button>
+        </div>
+      </div>
+    </div>
+  `);
+}
+
+async function pageSubscriptions() {
+  const plans = await api("/api/subscription/plans");
+  const self = await api("/api/subscription/self");
+  const admin = state.user?.role >= 10;
+  const adminPlans = admin ? await api("/api/subscription/admin/plans") : { data: { data: [] } };
+  const plist = plans.data?.data || [];
+  const mine = self.data?.data || [];
+  return layout(`
+    <h1>订阅</h1>
+    <p class="sub">使用余额购买套餐（不走 Stripe）。到期由定时任务失效。</p>
+    <div class="cards">${plist.map((p) => `<div class="card"><div class="k">${esc(p.title)}</div><div class="v">${money(p.price_quota)}</div>
+      <p class="sub">${esc(p.description)} · ${p.duration_days} 天 · 赠送 ${money(p.grant_quota)}</p>
+      <button class="btn primary" data-buy="${p.id}">购买</button></div>`).join("") || `<div class="card">暂无套餐</div>`}</div>
+    <h3>我的订阅</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>套餐</th><th>到期</th><th>状态</th></tr></thead>
+      <tbody>${mine.map((s) => `<tr><td>${esc(s.plan_title || s.plan_id)}</td><td>${s.expire_at ? new Date(s.expire_at*1000).toLocaleString() : ""}</td><td>${s.status===1?"有效":"失效"}</td></tr>`).join("") || `<tr><td colspan="3">无</td></tr>`}</tbody>
+    </table></div>
+    ${admin ? `<div class="card" style="margin-top:16px"><h3>管理：创建套餐</h3>
+      <form id="planForm">
+        <div class="field"><label>标题</label><input name="title" required /></div>
+        <div class="field"><label>价格额度</label><input name="price_quota" type="number" value="500000" /></div>
+        <div class="field"><label>赠送额度</label><input name="grant_quota" type="number" value="500000" /></div>
+        <div class="field"><label>天数</label><input name="duration_days" type="number" value="30" /></div>
+        <button class="btn primary">创建</button>
+      </form>
+      <p class="sub">已有 ${ (adminPlans.data?.data || []).length } 个套餐</p>
+    </div>` : ""}
+  `);
+}
+
+async function pageTasks() {
+  const path = state.user?.role >= 10 ? "/api/task" : "/api/task/self";
+  const r = await api(path);
+  const items = r.data?.data?.items || [];
+  return layout(`
+    <h1>异步任务</h1>
+    <p class="sub">视频生成 /v1/video/generations 与 /v1/tasks/:key 会写入此表。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Task ID</th><th>平台</th><th>模型</th><th>状态</th><th>时间</th></tr></thead>
+      <tbody>${items.map((t) => `<tr><td class="mono">${esc(t.task_id)}</td><td>${esc(t.platform)}</td><td>${esc(t.model_name)}</td><td>${esc(t.status)}</td><td>${t.submit_time ? new Date(t.submit_time*1000).toLocaleString() : ""}</td></tr>`).join("") || `<tr><td colspan="5">暂无</td></tr>`}</tbody>
+    </table></div>
+  `);
+}
+
 const pages = {
   home: pageHome,
   about: pageAbout,
   pricing: pagePricing,
+  rankings: pageRankings,
+  agreement: () => pageLegal("agreement"),
+  privacy: () => pageLegal("privacy"),
   setup: pageSetup,
   login: pageLogin,
   register: pageRegister,
+  forgot: pageForgot,
   dashboard: pageDashboard,
   playground: pagePlayground,
+  chat: pageChat,
   tokens: pageTokens,
   logs: pageLogs,
   wallet: pageWallet,
+  subscriptions: pageSubscriptions,
   profile: pageProfile,
+  security: pageSecurity,
   channels: pageChannels,
   models: pageModels,
   users: pageUsers,
@@ -530,6 +759,7 @@ const pages = {
   settings: pageSettings,
   audit: pageAudit,
   mj: pageMj,
+  tasks: pageTasks,
 };
 
 async function afterRender(page) {
@@ -549,9 +779,26 @@ async function afterRender(page) {
   if (page === "login") {
     $("#loginForm").onsubmit = async (e) => {
       e.preventDefault();
-      const body = Object.fromEntries(new FormData(e.target).entries());
-      const r = await api("/api/user/login", { method: "POST", body });
+      const fd = new FormData(e.target);
+      const flow = fd.get("flow_token");
+      if (flow) {
+        const r = await api("/api/user/login/2fa", { method: "POST", body: { flow_token: flow, code: fd.get("code") } });
+        if (!r.data.success) return flash(r.data.message, true);
+        state.token = r.data.data.access_token;
+        sessionStorage.setItem("edge_token", state.token);
+        state.user = r.data.data.user;
+        location.hash = "/dashboard";
+        render();
+        return;
+      }
+      const r = await api("/api/user/login", { method: "POST", body: { username: fd.get("username"), password: fd.get("password") } });
       if (!r.data.success) return flash(r.data.message, true);
+      if (r.data.data?.require_2fa) {
+        e.target.flow_token.value = r.data.data.flow_token;
+        $("#twofaField").classList.remove("hidden");
+        flash("请输入 2FA 验证码");
+        return;
+      }
       state.token = r.data.data.access_token;
       sessionStorage.setItem("edge_token", state.token);
       state.user = r.data.data.user;
@@ -560,6 +807,11 @@ async function afterRender(page) {
     };
   }
   if (page === "register") {
+    $("#sendCode")?.addEventListener("click", async () => {
+      const email = document.querySelector("[name=email]")?.value;
+      const r = await api("/api/verification?email=" + encodeURIComponent(email));
+      flash(r.data.message || "ok", !r.data.success);
+    });
     $("#regForm").onsubmit = async (e) => {
       e.preventDefault();
       const body = Object.fromEntries(new FormData(e.target).entries());
@@ -572,6 +824,20 @@ async function afterRender(page) {
       render();
     };
   }
+  if (page === "forgot") {
+    $("#sendReset")?.addEventListener("click", async () => {
+      const email = document.querySelector("[name=email]")?.value;
+      const r = await api("/api/reset_password?email=" + encodeURIComponent(email));
+      flash(r.data.message || "ok", !r.data.success);
+    });
+    $("#forgotForm")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = Object.fromEntries(new FormData(e.target).entries());
+      const r = await api("/api/user/reset", { method: "POST", body });
+      flash(r.data.message || "ok", !r.data.success);
+      if (r.data.success) location.hash = "/login";
+    });
+  }
   if (page === "dashboard") {
     $("#checkinBtn")?.addEventListener("click", async () => {
       const r = await api("/api/user/checkin", { method: "POST" });
@@ -580,7 +846,15 @@ async function afterRender(page) {
     });
   }
   if (page === "playground") bindPlayground();
+  if (page === "chat") bindChat();
   if (page === "tokens") bindTokens();
+  if (page === "logs") {
+    $("#logFilter")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      location.hash = "/logs?type=" + encodeURIComponent(fd.get("type") || "") + "&model_name=" + encodeURIComponent(fd.get("model_name") || "");
+    });
+  }
   if (page === "wallet") {
     $("#topupForm").onsubmit = async (e) => {
       e.preventDefault();
@@ -590,6 +864,34 @@ async function afterRender(page) {
       await refreshUser();
       render();
     };
+    $("#affForm")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const quota = Number(new FormData(e.target).get("quota"));
+      const r = await api("/api/user/aff_transfer", { method: "POST", body: { quota } });
+      flash(r.data.message, !r.data.success);
+      await refreshUser();
+      render();
+    });
+  }
+  if (page === "security") bindSecurity();
+  if (page === "subscriptions") {
+    document.querySelectorAll("[data-buy]").forEach((b) => {
+      b.onclick = async () => {
+        const r = await api("/api/subscription/balance/pay", { method: "POST", body: { plan_id: Number(b.dataset.buy) } });
+        flash(r.data.message || "ok", !r.data.success);
+        if (r.data.success) render();
+      };
+    });
+    $("#planForm")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = Object.fromEntries(new FormData(e.target).entries());
+      body.price_quota = Number(body.price_quota);
+      body.grant_quota = Number(body.grant_quota);
+      body.duration_days = Number(body.duration_days);
+      const r = await api("/api/subscription/admin/plans", { method: "POST", body });
+      flash(r.data.message || "ok", !r.data.success);
+      if (r.data.success) render();
+    });
   }
   if (page === "profile") {
     $("#profForm").onsubmit = async (e) => {
@@ -619,6 +921,171 @@ function flash(msg, err = false) {
   state.notice = err ? "" : msg;
   const n = $(".notice");
   if (n) n.textContent = msg;
+}
+
+function bindChat() {
+  const q = new URLSearchParams(location.hash.split("?")[1] || "");
+  let convId = Number(q.get("id") || 0);
+  const history = [];
+  const msgs = $("#msgs");
+  async function load() {
+    if (!convId) return;
+    const r = await api("/api/conversations/" + convId);
+    const list = r.data?.data?.messages || [];
+    msgs.innerHTML = "";
+    history.length = 0;
+    for (const m of list) {
+      history.push({ role: m.role, content: m.content });
+      const d = document.createElement("div");
+      d.className = "bubble " + m.role;
+      d.textContent = m.content;
+      msgs.appendChild(d);
+    }
+    if (r.data?.data?.model) $("#pgModel").value = r.data.data.model;
+  }
+  load();
+  $("#newConv").onclick = async () => {
+    const r = await api("/api/conversations", { method: "POST", body: { title: "新对话", model: $("#pgModel").value } });
+    location.hash = "/chat?id=" + r.data.data.id;
+    render();
+  };
+  $("#pgSend").onclick = send;
+  $("#pgInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+  async function send() {
+    const input = $("#pgInput");
+    const text = input.value.trim();
+    if (!text) return;
+    if (!convId) {
+      const r = await api("/api/conversations", { method: "POST", body: { title: text.slice(0, 40), model: $("#pgModel").value } });
+      convId = r.data.data.id;
+      history.replaceState(null, "", "#/chat?id=" + convId);
+    }
+    input.value = "";
+    history.push({ role: "user", content: text });
+    await api(`/api/conversations/${convId}/messages`, { method: "POST", body: { role: "user", content: text } });
+    const d = document.createElement("div");
+    d.className = "bubble user";
+    d.textContent = text;
+    msgs.appendChild(d);
+    const bubble = document.createElement("div");
+    bubble.className = "bubble assistant";
+    msgs.appendChild(bubble);
+    const stream = $("#pgStream").checked;
+    const model = $("#pgModel").value;
+    const res = await fetch("/pg/chat/completions", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json", ...(state.token ? { authorization: "Bearer " + state.token } : {}) },
+      body: JSON.stringify({ model, stream, messages: history }),
+    });
+    let acc = "";
+    if (stream && res.body) {
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === "[DONE]") continue;
+          try {
+            acc += JSON.parse(data).choices?.[0]?.delta?.content || "";
+            bubble.textContent = acc;
+          } catch {}
+        }
+      }
+    } else {
+      const json = await res.json();
+      acc = json.choices?.[0]?.message?.content || json.message || JSON.stringify(json);
+      bubble.textContent = acc;
+    }
+    history.push({ role: "assistant", content: acc });
+    await api(`/api/conversations/${convId}/messages`, { method: "POST", body: { role: "assistant", content: acc } });
+  }
+}
+
+function bindSecurity() {
+  $("#setup2fa")?.addEventListener("click", async () => {
+    const setup = await api("/api/user/2fa/setup", { method: "POST" });
+    if (!setup.data.success) return flash(setup.data.message, true);
+    $("#otpauth").textContent = setup.data.data.otpauth_url + "\nsecret: " + setup.data.data.secret;
+    const code = prompt("请输入认证器中的 6 位验证码");
+    if (!code) return;
+    const en = await api("/api/user/2fa/enable", { method: "POST", body: { code } });
+    flash(en.data.message || "ok", !en.data.success);
+    if (en.data.success && en.data.data?.backup_codes) alert("备用码：\n" + en.data.data.backup_codes.join("\n"));
+    if (en.data.success) render();
+  });
+  $("#disable2fa")?.addEventListener("click", async () => {
+    const code = prompt("输入 2FA 验证码");
+    const r = await api("/api/user/2fa/disable", { method: "POST", body: { code } });
+    flash(r.data.message, !r.data.success);
+    if (r.data.success) render();
+  });
+  $("#genAccess").onclick = async () => {
+    const r = await api("/api/user/token", { method: "POST" });
+    $("#accessOut").textContent = r.data.data?.access_token || r.data.message;
+  };
+  $("#revAccess").onclick = async () => {
+    await api("/api/user/token", { method: "DELETE" });
+    flash("已撤销");
+    render();
+  };
+  $("#revokeOthers").onclick = async () => {
+    await api("/api/user/sessions/revoke-others", { method: "POST" });
+    render();
+  };
+  document.querySelectorAll("[data-sid]").forEach((b) => {
+    b.onclick = async () => {
+      await api("/api/user/sessions/" + b.dataset.sid, { method: "DELETE" });
+      render();
+    };
+  });
+  $("#regPasskey")?.addEventListener("click", async () => {
+    if (!window.PublicKeyCredential) return flash("浏览器不支持 Passkey", true);
+    const begin = await api("/api/user/passkey/register/begin", { method: "POST" });
+    if (!begin.data.success) return flash(begin.data.message, true);
+    const opt = begin.data.data.publicKey;
+    const challenge = Uint8Array.from(atob(opt.challenge.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+    opt.challenge = challenge;
+    opt.user.id = new TextEncoder().encode(opt.user.id);
+    try {
+      const cred = await navigator.credentials.create({ publicKey: opt });
+      const att = cred.response;
+      const publicKey = btoa(String.fromCharCode(...new Uint8Array(att.getPublicKey())));
+      const credential_id = btoa(String.fromCharCode(...new Uint8Array(cred.rawId)))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+      const r = await api("/api/user/passkey/register/finish", {
+        method: "POST",
+        body: {
+          flow_id: begin.data.data.flow_id,
+          credential_id,
+          public_key: publicKey.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+          name: cred.id,
+        },
+      });
+      flash(r.data.message || "ok", !r.data.success);
+      if (r.data.success) render();
+    } catch (err) {
+      flash(err.message || String(err), true);
+    }
+  });
+  $("#delPasskey")?.addEventListener("click", async () => {
+    await api("/api/user/passkey", { method: "DELETE" });
+    render();
+  });
 }
 
 function bindPlayground() {
@@ -734,6 +1201,11 @@ function bindChannels() {
     form.reset();
     modal.classList.remove("hidden");
   };
+  $("#testAll")?.addEventListener("click", async () => {
+    const r = await api("/api/channel/test");
+    flash(r.data.success ? "测试完成" : r.data.message, !r.data.success);
+    if (r.data.success) alert(JSON.stringify(r.data.data, null, 2).slice(0, 2000));
+  });
   $("#closeCh").onclick = () => modal.classList.add("hidden");
   form.onsubmit = async (e) => {
     e.preventDefault();

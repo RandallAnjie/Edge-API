@@ -65,7 +65,8 @@ export class Store {
     const out: { key: string; value: string }[] = [];
     const keys = new Set([...Object.keys(DEFAULT_OPTIONS), ...map.keys()]);
     for (const key of keys) {
-      if (/token$|secret$|key$/i.test(key) && key !== "GitHubClientId") continue;
+      const publicId = /ClientId$/i.test(key);
+      if (/token$|secret$|key$/i.test(key) && !publicId) continue;
       out.push({ key, value: map.get(key) ?? DEFAULT_OPTIONS[key] ?? "" });
     }
     return out.sort((a, b) => a.key.localeCompare(b.key));
@@ -93,6 +94,25 @@ export class Store {
 
   async getUserByGithub(githubId: string): Promise<UserRow | null> {
     return this.db.prepare("SELECT * FROM users WHERE github_id = ?").bind(githubId).first<UserRow>();
+  }
+
+  async getUserByEmail(email: string): Promise<UserRow | null> {
+    return this.db.prepare("SELECT * FROM users WHERE email = ?").bind(email).first<UserRow>();
+  }
+
+  async getUserByField(field: string, value: string): Promise<UserRow | null> {
+    const allowed = new Set([
+      "github_id",
+      "discord_id",
+      "oidc_id",
+      "linuxdo_id",
+      "wechat_id",
+      "telegram_id",
+      "access_token",
+      "email",
+    ]);
+    if (!allowed.has(field)) return null;
+    return this.db.prepare(`SELECT * FROM users WHERE ${field} = ?`).bind(value).first<UserRow>();
   }
 
   async getUserByAff(code: string): Promise<UserRow | null> {
@@ -234,16 +254,37 @@ export class Store {
     await this.db.prepare("DELETE FROM api_tokens WHERE id = ? AND user_id = ?").bind(id, userId).run();
   }
 
-  async listTokens(userId: number, offset: number, limit: number): Promise<{ items: TokenRow[]; total: number }> {
+  async listTokens(
+    userId: number,
+    offset: number,
+    limit: number,
+    keyword = "",
+  ): Promise<{ items: TokenRow[]; total: number }> {
+    let where = "user_id = ?";
+    const binds: unknown[] = [userId];
+    if (keyword) {
+      where += " AND (name LIKE ? OR key LIKE ?)";
+      const q = `%${keyword}%`;
+      binds.push(q, q);
+    }
     const totalRow = await this.db
-      .prepare("SELECT COUNT(*) as c FROM api_tokens WHERE user_id = ?")
-      .bind(userId)
+      .prepare(`SELECT COUNT(*) as c FROM api_tokens WHERE ${where}`)
+      .bind(...binds)
       .first<{ c: number }>();
     const { results } = await this.db
-      .prepare("SELECT * FROM api_tokens WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?")
-      .bind(userId, limit, offset)
+      .prepare(`SELECT * FROM api_tokens WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, limit, offset)
       .all<TokenRow>();
     return { items: results, total: num(totalRow?.c) };
+  }
+
+  async deleteTokensBatch(userId: number, ids: number[]): Promise<number> {
+    let n = 0;
+    for (const id of ids) {
+      const r = await this.db.prepare("DELETE FROM api_tokens WHERE id = ? AND user_id = ?").bind(id, userId).run();
+      n += Number(r.meta.changes || 0);
+    }
+    return n;
   }
 
   async getChannel(id: number): Promise<ChannelRow | null> {
@@ -303,6 +344,25 @@ export class Store {
   async deleteDisabledChannels(): Promise<number> {
     const r = await this.db.prepare("DELETE FROM channels WHERE status != 1").run();
     return Number(r.meta.changes || 0);
+  }
+
+  async deleteChannelsBatch(ids: number[]): Promise<number> {
+    let n = 0;
+    for (const id of ids) {
+      const r = await this.db.prepare("DELETE FROM channels WHERE id = ?").bind(id).run();
+      n += Number(r.meta.changes || 0);
+    }
+    return n;
+  }
+
+  async setChannelsByTag(tag: string, status: number): Promise<number> {
+    const r = await this.db.prepare("UPDATE channels SET status = ? WHERE tag = ?").bind(status, tag).run();
+    return Number(r.meta.changes || 0);
+  }
+
+  async channelsByTag(tag: string): Promise<ChannelRow[]> {
+    const { results } = await this.db.prepare("SELECT * FROM channels WHERE tag = ?").bind(tag).all<ChannelRow>();
+    return results;
   }
 
   async listChannels(opts: {
@@ -531,13 +591,41 @@ export class Store {
     return this.db.prepare("SELECT * FROM redemptions WHERE id = ?").bind(id).first<RedemptionRow>();
   }
 
-  async listRedemptions(offset: number, limit: number): Promise<{ items: RedemptionRow[]; total: number }> {
-    const totalRow = await this.db.prepare("SELECT COUNT(*) as c FROM redemptions").first<{ c: number }>();
+  async listRedemptions(
+    offset: number,
+    limit: number,
+    keyword = "",
+  ): Promise<{ items: RedemptionRow[]; total: number }> {
+    let where = "1=1";
+    const binds: unknown[] = [];
+    if (keyword) {
+      where += " AND (name LIKE ? OR key LIKE ?)";
+      const q = `%${keyword}%`;
+      binds.push(q, q);
+    }
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM redemptions WHERE ${where}`)
+      .bind(...binds)
+      .first<{ c: number }>();
     const { results } = await this.db
-      .prepare("SELECT * FROM redemptions ORDER BY id DESC LIMIT ? OFFSET ?")
-      .bind(limit, offset)
+      .prepare(`SELECT * FROM redemptions WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, limit, offset)
       .all<RedemptionRow>();
     return { items: results, total: num(totalRow?.c) };
+  }
+
+  async deleteRedemptionsBatch(ids: number[]): Promise<number> {
+    let n = 0;
+    for (const id of ids) {
+      const r = await this.db.prepare("DELETE FROM redemptions WHERE id = ?").bind(id).run();
+      n += Number(r.meta.changes || 0);
+    }
+    return n;
+  }
+
+  async deleteInvalidRedemptions(): Promise<number> {
+    const r = await this.db.prepare("DELETE FROM redemptions WHERE status != 1").run();
+    return Number(r.meta.changes || 0);
   }
 
   async updateRedemption(id: number, patch: Record<string, unknown>): Promise<void> {
@@ -640,6 +728,521 @@ export class Store {
     const l = await this.db.prepare("SELECT COUNT(*) as c FROM request_logs").first<{ c: number }>();
     return { users: num(u?.c), channels: num(c?.c), tokens: num(t?.c), logs: num(l?.c) };
   }
+
+  async insertSession(row: {
+    sid: string;
+    user_id: number;
+    ip: string;
+    ua: string;
+    expires_at: number;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        "INSERT INTO login_sessions (sid, user_id, created_at, last_seen, expires_at, ip, ua, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+      )
+      .bind(row.sid, row.user_id, nowSec(), nowSec(), row.expires_at, row.ip, row.ua)
+      .run();
+  }
+
+  async getSession(sid: string): Promise<{
+    sid: string;
+    user_id: number;
+    revoked: number;
+    expires_at: number;
+    ip: string;
+    ua: string;
+    created_at: number;
+    last_seen: number;
+  } | null> {
+    return this.db.prepare("SELECT * FROM login_sessions WHERE sid = ?").bind(sid).first();
+  }
+
+  async touchSession(sid: string): Promise<void> {
+    await this.db.prepare("UPDATE login_sessions SET last_seen = ? WHERE sid = ?").bind(nowSec(), sid).run();
+  }
+
+  async revokeSession(sid: string, userId?: number): Promise<void> {
+    if (userId != null) {
+      await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE sid = ? AND user_id = ?").bind(sid, userId).run();
+      return;
+    }
+    await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE sid = ?").bind(sid).run();
+  }
+
+  async revokeOtherSessions(userId: number, keepSid: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE login_sessions SET revoked = 1 WHERE user_id = ? AND sid != ?")
+      .bind(userId, keepSid)
+      .run();
+  }
+
+  async listSessions(userId: number): Promise<unknown[]> {
+    const { results } = await this.db
+      .prepare("SELECT sid, created_at, last_seen, ip, ua, revoked, expires_at FROM login_sessions WHERE user_id = ? ORDER BY last_seen DESC")
+      .bind(userId)
+      .all();
+    return results;
+  }
+
+  async insertAuthFlow(row: { token: string; type: string; user_id: number; expires_at: number; payload?: string }): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO auth_flows (token, type, user_id, expires_at, payload) VALUES (?, ?, ?, ?, ?)")
+      .bind(row.token, row.type, row.user_id, row.expires_at, row.payload ?? "")
+      .run();
+  }
+
+  async getAuthFlow(token: string): Promise<{ token: string; type: string; user_id: number; expires_at: number; payload: string } | null> {
+    return this.db.prepare("SELECT * FROM auth_flows WHERE token = ?").bind(token).first();
+  }
+
+  async deleteAuthFlow(token: string): Promise<void> {
+    await this.db.prepare("DELETE FROM auth_flows WHERE token = ?").bind(token).run();
+  }
+
+  async insertEmailCode(email: string, code: string, type: string, ttlSec = 600): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO email_codes (email, code, type, expires_at, used) VALUES (?, ?, ?, ?, 0)")
+      .bind(email, code, type, nowSec() + ttlSec)
+      .run();
+  }
+
+  async consumeEmailCode(email: string, code: string, type: string): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT id FROM email_codes WHERE email = ? AND code = ? AND type = ? AND used = 0 AND expires_at >= ? ORDER BY id DESC LIMIT 1")
+      .bind(email, code, type, nowSec())
+      .first<{ id: number }>();
+    if (!row) return false;
+    await this.db.prepare("UPDATE email_codes SET used = 1 WHERE id = ?").bind(row.id).run();
+    return true;
+  }
+
+  async insertTopup(row: {
+    user_id: number;
+    amount: number;
+    money?: number;
+    trade_no?: string;
+    payment_method?: string;
+    status?: string;
+  }): Promise<number> {
+    const r = await this.db
+      .prepare(
+        "INSERT INTO topups (user_id, amount, money, trade_no, payment_method, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        row.user_id,
+        row.amount,
+        row.money ?? 0,
+        row.trade_no ?? "",
+        row.payment_method ?? "redemption",
+        row.status ?? "success",
+        nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async listTopups(userId: number | null, offset: number, limit: number): Promise<{ items: unknown[]; total: number }> {
+    const where = userId ? "user_id = ?" : "1=1";
+    const binds: unknown[] = userId ? [userId] : [];
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM topups WHERE ${where}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM topups WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, limit, offset)
+      .all();
+    return { items: results, total: num(totalRow?.c) };
+  }
+
+  async rankings(start: number, end: number, limit = 50): Promise<unknown[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT username, user_id, SUM(quota) as quota, SUM(token_used) as token_used, SUM(count) as count
+         FROM quota_data WHERE created_at >= ? AND created_at <= ?
+         GROUP BY user_id, username ORDER BY quota DESC LIMIT ?`,
+      )
+      .bind(start, end, limit)
+      .all();
+    return results;
+  }
+
+  async listPlans(enabledOnly = false): Promise<unknown[]> {
+    const sql = enabledOnly
+      ? "SELECT * FROM subscription_plans WHERE enabled = 1 ORDER BY id"
+      : "SELECT * FROM subscription_plans ORDER BY id";
+    const { results } = await this.db.prepare(sql).all();
+    return results;
+  }
+
+  async getPlan(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM subscription_plans WHERE id = ?").bind(id).first();
+  }
+
+  async insertPlan(p: Record<string, unknown>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        `INSERT INTO subscription_plans (title, description, price_quota, duration_days, grant_quota, "group", models, enabled, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        p.title ?? "",
+        p.description ?? "",
+        Number(p.price_quota || 0),
+        Number(p.duration_days || 30),
+        Number(p.grant_quota || 0),
+        p.group ?? "",
+        p.models ?? "",
+        p.enabled == null ? 1 : Number(p.enabled),
+        nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updatePlan(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      const col = k === "group" ? `"group"` : k;
+      cols.push(`${col} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(id);
+    await this.db.prepare(`UPDATE subscription_plans SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async listUserSubs(userId: number): Promise<unknown[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT s.*, p.title as plan_title FROM user_subscriptions s
+         LEFT JOIN subscription_plans p ON p.id = s.plan_id
+         WHERE s.user_id = ? ORDER BY s.id DESC`,
+      )
+      .bind(userId)
+      .all();
+    return results;
+  }
+
+  async insertUserSub(row: {
+    user_id: number;
+    plan_id: number;
+    start_at: number;
+    expire_at: number;
+    remaining_quota: number;
+  }): Promise<number> {
+    const r = await this.db
+      .prepare(
+        "INSERT INTO user_subscriptions (user_id, plan_id, start_at, expire_at, status, remaining_quota, created_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
+      )
+      .bind(row.user_id, row.plan_id, row.start_at, row.expire_at, row.remaining_quota, nowSec())
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateUserSub(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE user_subscriptions SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async deleteUserSub(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM user_subscriptions WHERE id = ?").bind(id).run();
+  }
+
+  async expireSubscriptions(): Promise<void> {
+    await this.db
+      .prepare("UPDATE user_subscriptions SET status = 2 WHERE status = 1 AND expire_at > 0 AND expire_at < ?")
+      .bind(nowSec())
+      .run();
+  }
+
+  async insertTask(row: Record<string, unknown>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        `INSERT INTO tasks (task_id, user_id, token_id, channel_id, platform, action, status, progress, model_name, prompt, fail_reason, result, properties, submit_time)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        row.task_id ?? crypto.randomUUID(),
+        row.user_id ?? 0,
+        row.token_id ?? 0,
+        row.channel_id ?? 0,
+        row.platform ?? "",
+        row.action ?? "",
+        row.status ?? "SUBMITTED",
+        row.progress ?? "0%",
+        row.model_name ?? "",
+        row.prompt ?? "",
+        row.fail_reason ?? "",
+        typeof row.result === "string" ? row.result : JSON.stringify(row.result ?? ""),
+        typeof row.properties === "string" ? row.properties : JSON.stringify(row.properties ?? {}),
+        nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async getTaskByTid(taskId: string): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM tasks WHERE task_id = ?").bind(taskId).first();
+  }
+
+  async updateTaskByTid(taskId: string, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(taskId);
+    await this.db.prepare(`UPDATE tasks SET ${cols.join(", ")} WHERE task_id = ?`).bind(...vals).run();
+  }
+
+  async listTasks(userId: number | null, offset: number, limit: number): Promise<{ items: unknown[]; total: number }> {
+    const where = userId ? "user_id = ?" : "1=1";
+    const binds: unknown[] = userId ? [userId] : [];
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM tasks WHERE ${where}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM tasks WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, limit, offset)
+      .all();
+    return { items: results, total: num(totalRow?.c) };
+  }
+
+  async listConversations(userId: number): Promise<unknown[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC")
+      .bind(userId)
+      .all();
+    return results;
+  }
+
+  async getConversation(id: number, userId: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM conversations WHERE id = ? AND user_id = ?").bind(id, userId).first();
+  }
+
+  async insertConversation(userId: number, title: string, model: string): Promise<number> {
+    const r = await this.db
+      .prepare("INSERT INTO conversations (user_id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(userId, title, model, nowSec(), nowSec())
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateConversation(id: number, userId: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    cols.push("updated_at = ?");
+    vals.push(nowSec(), id, userId);
+    await this.db.prepare(`UPDATE conversations SET ${cols.join(", ")} WHERE id = ? AND user_id = ?`).bind(...vals).run();
+  }
+
+  async deleteConversation(id: number, userId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(id).run();
+    await this.db.prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").bind(id, userId).run();
+  }
+
+  async listMessages(conversationId: number): Promise<unknown[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY id")
+      .bind(conversationId)
+      .all();
+    return results;
+  }
+
+  async insertMessage(conversationId: number, role: string, content: string): Promise<number> {
+    const r = await this.db
+      .prepare("INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)")
+      .bind(conversationId, role, content, nowSec())
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async listVendors(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM vendors ORDER BY id").all();
+    return results;
+  }
+
+  async getVendor(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM vendors WHERE id = ?").bind(id).first();
+  }
+
+  async insertVendor(name: string, description = "", icon = ""): Promise<number> {
+    const r = await this.db
+      .prepare("INSERT INTO vendors (name, description, icon, created_at) VALUES (?, ?, ?, ?)")
+      .bind(name, description, icon, nowSec())
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateVendor(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE vendors SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async deleteVendor(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM vendors WHERE id = ?").bind(id).run();
+  }
+
+  async listPrefill(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM prefill_groups ORDER BY id").all();
+    return results;
+  }
+
+  async insertPrefill(name: string, type: string, items: string): Promise<number> {
+    const r = await this.db
+      .prepare("INSERT INTO prefill_groups (name, type, items, created_at) VALUES (?, ?, ?, ?)")
+      .bind(name, type, items, nowSec())
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updatePrefill(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE prefill_groups SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async deletePrefill(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM prefill_groups WHERE id = ?").bind(id).run();
+  }
+
+  async listOAuthProviders(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM oauth_providers ORDER BY id").all();
+    return results;
+  }
+
+  async getOAuthProvider(idOrSlug: string | number): Promise<Record<string, unknown> | null> {
+    if (typeof idOrSlug === "number" || /^\d+$/.test(String(idOrSlug))) {
+      return this.db.prepare("SELECT * FROM oauth_providers WHERE id = ?").bind(Number(idOrSlug)).first();
+    }
+    return this.db.prepare("SELECT * FROM oauth_providers WHERE slug = ?").bind(String(idOrSlug)).first();
+  }
+
+  async insertOAuthProvider(p: Record<string, unknown>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        "INSERT INTO oauth_providers (name, slug, client_id, client_secret, auth_url, token_url, user_info_url, scopes, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        p.name ?? "",
+        p.slug ?? "",
+        p.client_id ?? "",
+        p.client_secret ?? "",
+        p.auth_url ?? "",
+        p.token_url ?? "",
+        p.user_info_url ?? "",
+        p.scopes ?? "",
+        p.enabled == null ? 1 : Number(p.enabled),
+        nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateOAuthProvider(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE oauth_providers SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async deleteOAuthProvider(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM oauth_providers WHERE id = ?").bind(id).run();
+  }
+
+  async listPasskeys(userId: number): Promise<{ id: number; credential_id: string; public_key: string; name: string; created_at: number }[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM passkeys WHERE user_id = ?")
+      .bind(userId)
+      .all<{ id: number; credential_id: string; public_key: string; name: string; created_at: number }>();
+    return results;
+  }
+
+  async getPasskeyByCred(credentialId: string): Promise<{
+    id: number;
+    user_id: number;
+    credential_id: string;
+    public_key: string;
+  } | null> {
+    return this.db.prepare("SELECT * FROM passkeys WHERE credential_id = ?").bind(credentialId).first();
+  }
+
+  async insertPasskey(userId: number, credentialId: string, publicKey: string, name = ""): Promise<number> {
+    const r = await this.db
+      .prepare("INSERT INTO passkeys (user_id, credential_id, public_key, name, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(userId, credentialId, publicKey, name, nowSec())
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async deletePasskeys(userId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM passkeys WHERE user_id = ?").bind(userId).run();
+  }
+
+  async listModelMeta(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM model_meta ORDER BY id").all();
+    return results;
+  }
+
+  async insertModelMeta(model_name: string, description = "", vendor_id = 0): Promise<number> {
+    const r = await this.db
+      .prepare("INSERT INTO model_meta (model_name, description, vendor_id, created_at) VALUES (?, ?, ?, ?)")
+      .bind(model_name, description, vendor_id, nowSec())
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateModelMeta(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE model_meta SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async deleteModelMeta(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM model_meta WHERE id = ?").bind(id).run();
+  }
+
+  async cleanupExpired(cutoff: number): Promise<void> {
+    await this.db.prepare("DELETE FROM email_codes WHERE expires_at < ?").bind(cutoff).run();
+    await this.db.prepare("DELETE FROM auth_flows WHERE expires_at < ?").bind(cutoff).run();
+    await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE expires_at > 0 AND expires_at < ?").bind(nowSec()).run();
+    await this.expireSubscriptions();
+  }
 }
 
 export function publicUser(u: UserRow): Record<string, unknown> {
@@ -651,12 +1254,22 @@ export function publicUser(u: UserRow): Record<string, unknown> {
     status: u.status,
     email: u.email,
     github_id: u.github_id,
+    discord_id: u.discord_id || "",
+    linuxdo_id: u.linuxdo_id || "",
+    oidc_id: u.oidc_id || "",
     group: u.group,
     quota: u.quota,
     used_quota: u.used_quota,
     request_count: u.request_count,
     aff_code: u.aff_code,
+    aff_quota: u.aff_quota || 0,
+    aff_count: u.aff_count || 0,
+    billing_preference: u.billing_preference || "quota",
+    totp_enabled: Number(u.totp_enabled) === 1,
+    email_verified: Number(u.email_verified) === 1,
     has_password: !!u.password,
+    has_access_token: Boolean(u.access_token),
+    settings: u.settings || "",
   };
 }
 

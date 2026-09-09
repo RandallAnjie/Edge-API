@@ -1,5 +1,4 @@
 import { LOG_CONSUME, LOG_ERROR, parseBool } from "./constants.js";
-import { channelKind } from "./catalog.js";
 import {
   anthropicToOpenAI,
   estimatePromptTokens,
@@ -15,10 +14,11 @@ import {
 } from "./convert.js";
 import { clientIp, openaiError } from "./http.js";
 import { computeQuota, remainingOk } from "./quota.js";
-import { orderChannels } from "./select.js";
+import { orderChannels, pickChannelKey } from "./select.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
-import { buildUpstream, modelsUrl, type RelayMode } from "./upstream.js";
+import { applyModelMapping, buildUpstream, joinUrl, modelsUrl, type RelayMode } from "./upstream.js";
+import { channelKind, resolveBaseUrl } from "./catalog.js";
 
 export type ClientFormat = "openai" | "anthropic" | "gemini";
 
@@ -35,6 +35,9 @@ export interface RelayRequest {
   path: string;
   ctx?: ExecutionContextLike;
   playground?: boolean;
+  rawBody?: ArrayBuffer;
+  rawContentType?: string;
+  method?: string;
 }
 
 function asObj(v: unknown): Record<string, unknown> {
@@ -60,12 +63,21 @@ function retryable(status: number): boolean {
 }
 
 async function fetchUpstream(target: ReturnType<typeof buildUpstream>, timeoutMs = 120_000): Promise<Response> {
+  void timeoutMs;
   const init: RequestInit = {
     method: target.method,
     headers: target.headers,
   };
-  if (target.method !== "GET" && target.body != null) {
-    init.body = typeof target.body === "string" ? target.body : JSON.stringify(target.body);
+  if (target.method !== "GET" && target.method !== "HEAD" && target.body != null) {
+    if (target.body instanceof ArrayBuffer) {
+      init.body = target.body;
+    } else if (ArrayBuffer.isView(target.body)) {
+      init.body = target.body as BufferSource;
+    } else if (typeof target.body === "string") {
+      init.body = target.body;
+    } else {
+      init.body = JSON.stringify(target.body);
+    }
   }
   return fetch(target.url, init);
 }
@@ -170,10 +182,23 @@ export async function relay(opts: RelayRequest): Promise<Response> {
 
   for (const channel of tried) {
     const kind = channelKind(channel.type);
-    const outbound = convertOutbound(kind, clientFormat, opts.body);
-    const target = buildUpstream(channel, mode, path, model, outbound, {
-      "anthropic-version": opts.req.headers.get("anthropic-version") || "",
-    });
+    const outbound = opts.rawBody ? opts.body : convertOutbound(kind, clientFormat, opts.body);
+    const target = buildUpstream(
+      channel,
+      mode,
+      path,
+      model,
+      opts.rawBody ? null : outbound,
+      {
+        "anthropic-version": opts.req.headers.get("anthropic-version") || "",
+      },
+      opts.method || opts.req.method || "POST",
+    );
+    if (opts.rawBody) {
+      target.body = opts.rawBody;
+      if (opts.rawContentType) target.headers["content-type"] = opts.rawContentType;
+      else delete target.headers["content-type"];
+    }
     const started = Date.now();
     let res: Response;
     try {
@@ -502,3 +527,67 @@ async function readBodyMaybe(req: Request): Promise<unknown> {
 }
 
 void parseBool;
+
+declare const WebSocketPair: { new (): { 0: WebSocket; 1: WebSocket } };
+
+export async function proxyRealtime(req: Request, channel: ChannelRow, model: string): Promise<Response> {
+  if (typeof WebSocketPair === "undefined") {
+    return openaiError(501, "当前运行时不支持 WebSocket", "not_implemented");
+  }
+  const pair = new WebSocketPair();
+  const client = pair[0];
+  const server = pair[1];
+  const base = resolveBaseUrl(channel.type, channel.base_url);
+  const apiKey = pickChannelKey(channel.key);
+  const mapped = applyModelMapping(channel, model || "gpt-4o-realtime-preview");
+  const url = joinUrl(base, `/v1/realtime?model=${encodeURIComponent(mapped)}`);
+  const headers: Record<string, string> = {
+    Upgrade: "websocket",
+    Authorization: `Bearer ${apiKey}`,
+    "OpenAI-Beta": "realtime=v1",
+  };
+  const protocol = req.headers.get("sec-websocket-protocol");
+  if (protocol) headers["Sec-WebSocket-Protocol"] = protocol;
+  const upstream = await fetch(url, { headers });
+  const ws = (upstream as Response & { webSocket?: WebSocket }).webSocket;
+  if (!ws) {
+    const text = await upstream.text().catch(() => "");
+    return openaiError(502, text.slice(0, 400) || "上游未升级为 WebSocket", "upstream_error");
+  }
+  (server as unknown as { accept(): void }).accept();
+  (ws as unknown as { accept(): void }).accept();
+  server.addEventListener("message", (ev: MessageEvent) => {
+    try {
+      ws.send(ev.data as string);
+    } catch {
+      /* ignore */
+    }
+  });
+  ws.addEventListener("message", (ev: MessageEvent) => {
+    try {
+      server.send(ev.data as string);
+    } catch {
+      /* ignore */
+    }
+  });
+  const close = () => {
+    try {
+      server.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      ws.close();
+    } catch {
+      /* ignore */
+    }
+  };
+  server.addEventListener("close", close);
+  ws.addEventListener("close", close);
+  return new Response(null, {
+    status: 101,
+    webSocket: client,
+    headers: protocol ? { "sec-websocket-protocol": protocol.split(",")[0].trim() } : undefined,
+  } as ResponseInit);
+}
+

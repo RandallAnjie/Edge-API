@@ -1,19 +1,37 @@
-import { START_TIME, VERSION } from "./constants.js";
+import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, rateLimit } from "./auth.js";
 import { apiFail, openaiError, readJson, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
-import { listModelsForAuth, playgroundRelay, proxyMj, relay, retrieveModel, detectModel, detectStream } from "./relay.js";
+import {
+  listModelsForAuth,
+  playgroundRelay,
+  proxyMj,
+  proxyRealtime,
+  relay,
+  retrieveModel,
+  detectModel,
+  detectStream,
+} from "./relay.js";
 import type { ClientFormat } from "./relay.js";
+import { orderChannels } from "./select.js";
 import type { RelayMode } from "./upstream.js";
 import { extractGeminiModelAction } from "./convert.js";
 import { ensureSchema } from "./schema.js";
 import { Store } from "./store.js";
-import type { Env, ExecutionContextLike } from "./types.js";
+import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
 
 const api = adminRouter();
 
+const NOT_IMPLEMENTED = new Set([
+  "POST /v1/images/variations",
+  "GET /v1/files",
+  "POST /v1/files",
+  "GET /v1/fine-tunes",
+  "POST /v1/fine-tunes",
+]);
+
 function clientFormatFrom(req: Request, path: string): ClientFormat {
-  if (path.startsWith("/v1beta") || path.startsWith("/v1/models/") && (req.headers.get("x-goog-api-key") || new URL(req.url).searchParams.get("key"))) {
+  if (path.startsWith("/v1beta") || (path.startsWith("/v1/models/") && (req.headers.get("x-goog-api-key") || new URL(req.url).searchParams.get("key")))) {
     if (path.includes(":")) return "gemini";
   }
   if (path.startsWith("/v1beta")) return "gemini";
@@ -33,21 +51,51 @@ function relayModeFrom(path: string, method: string): RelayMode | null {
   if (path === "/v1/audio/translations") return "audio_translation";
   if (path === "/v1/rerank") return "rerank";
   if (path === "/v1/responses" || path === "/v1/responses/compact") return "responses";
+  if (path === "/v1/alpha/search") return "alpha_search";
+  if (path.startsWith("/v1/engines/") && path.endsWith("/embeddings")) return "engines_embeddings";
+  if (path === "/v1/video/generations" || path.startsWith("/v1/video/generations/")) return "video";
+  if (path.startsWith("/v1/videos/") && path.endsWith("/remix")) return "video";
+  if (path.startsWith("/v1/tasks/")) return "passthrough";
   if (path.startsWith("/v1beta/models") && method === "POST") return "gemini";
   if (path.startsWith("/v1/models/") && method === "POST") return "gemini";
   return null;
+}
+
+function notImplemented(method: string, path: string): boolean {
+  if (NOT_IMPLEMENTED.has(`${method} ${path}`)) return true;
+  if (path.startsWith("/v1/files/")) return true;
+  if (path.startsWith("/v1/fine-tunes/")) return true;
+  if (method === "DELETE" && path.startsWith("/v1/models/")) return true;
+  return false;
+}
+
+function extractFormField(buf: ArrayBuffer, name: string): string {
+  const text = new TextDecoder("latin1").decode(buf.slice(0, 16_384));
+  const re = new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)`);
+  return (text.match(re)?.[1] || "").trim();
+}
+
+function ctxStore(req: Request, env: Env, ctx: ExecutionContextLike) {
+  return {
+    req,
+    env,
+    url: new URL(req.url),
+    params: {} as Record<string, string>,
+    waitUntil: (p: Promise<unknown>) => ctx.waitUntil(p),
+  };
 }
 
 async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const store = new Store(env.DB);
-  const auth = await authenticateApiToken(
-    { req, env, url, params: {}, waitUntil: (p) => ctx.waitUntil(p) },
-    store,
-  );
+  const auth = await authenticateApiToken(ctxStore(req, env, ctx), store);
   if (auth instanceof Response) return auth;
   if (!(await rateLimit(env, auth.token.id))) return openaiError(429, "请求过于频繁", "rate_limit");
+
+  if (notImplemented(req.method, path)) {
+    return openaiError(501, "尚未实现该接口", "not_implemented");
+  }
 
   if (req.method === "GET" && (path === "/v1/models" || path === "/v1beta/models" || path === "/v1beta/openai/models")) {
     const fmt: ClientFormat =
@@ -59,14 +107,54 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     return listModelsForAuth(store, auth, fmt);
   }
 
-  if (req.method === "GET" && path.startsWith("/v1/models/")) {
+  if (req.method === "GET" && path.startsWith("/v1/models/") && !path.includes(":")) {
     const model = decodeURIComponent(path.slice("/v1/models/".length));
     return retrieveModel(store, auth, model);
   }
 
   if (path.startsWith("/mj/") || path.match(/^\/[^/]+\/mj\//)) {
-    const mjPath = path.replace(/^\/[^/]+(\/mj\/)/, "/mj/").replace(/^\/mj/, "");
     return proxyMj(req, store, auth, path.startsWith("/mj") ? path.slice(3) || "/" : path);
+  }
+
+  if (path === "/v1/realtime") {
+    if ((req.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
+      return openaiError(426, "Realtime 需要 WebSocket Upgrade", "upgrade_required");
+    }
+    const model = url.searchParams.get("model") || "gpt-4o-realtime-preview";
+    const channels = orderChannels(await store.enabledChannels(), model, auth.usingGroup);
+    if (!channels.length) return openaiError(503, `没有可用渠道（模型 ${model}）`, "no_available_channel");
+    return proxyRealtime(req, channels[0], model);
+  }
+
+  if (req.method === "GET" && path.startsWith("/v1/video/generations/")) {
+    const taskId = decodeURIComponent(path.slice("/v1/video/generations/".length));
+    const local = await store.getTaskByTid(taskId);
+    if (local) {
+      return new Response(JSON.stringify(local), { headers: { "content-type": "application/json" } });
+    }
+    return relayJson(req, env, store, auth, "video", path, { id: taskId }, ctx, "GET");
+  }
+
+  if (req.method === "GET" && path.startsWith("/v1/tasks/")) {
+    const rest = path.slice("/v1/tasks/".length);
+    const [taskId, ...tail] = rest.split("/");
+    if (tail[0] === "artifacts") {
+      const artifactKey = tail[1];
+      if (tail[2] === "content" && env.R2 && artifactKey) {
+        const obj = await env.R2.get(`tasks/${taskId}/${artifactKey}`);
+        if (!obj) return openaiError(404, "artifact 不存在", "not_found");
+        return new Response(await obj.arrayBuffer(), {
+          headers: { "content-type": obj.httpMetadata?.contentType || "application/octet-stream" },
+        });
+      }
+      const local = await store.getTaskByTid(taskId);
+      return new Response(JSON.stringify({ data: local ? [local] : [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const local = await store.getTaskByTid(taskId);
+    if (local) return new Response(JSON.stringify(local), { headers: { "content-type": "application/json" } });
+    return openaiError(404, "任务不存在", "not_found");
   }
 
   const mode = relayModeFrom(path, req.method);
@@ -75,13 +163,30 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   }
 
   let body: unknown = {};
+  let rawBody: ArrayBuffer | undefined;
+  let rawContentType: string | undefined;
   if (req.method !== "GET" && req.method !== "HEAD") {
     const ct = req.headers.get("content-type") || "";
     if (ct.includes("multipart/form-data")) {
-      body = {};
-      const targetPath = path;
-      const buf = await req.arrayBuffer();
-      return proxyRaw(req, env, store, auth, mode, targetPath, buf, ctx);
+      rawBody = await req.arrayBuffer();
+      rawContentType = ct;
+      const modelField = extractFormField(rawBody, "model") || url.searchParams.get("model") || "";
+      return relay({
+        req,
+        env,
+        store,
+        auth,
+        mode,
+        clientFormat: "openai",
+        model: modelField || "whisper-1",
+        body: {},
+        stream: false,
+        path,
+        ctx,
+        rawBody,
+        rawContentType,
+        method: req.method,
+      });
     }
     try {
       body = await readJson(req);
@@ -95,9 +200,12 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     const gem = extractGeminiModelAction(path);
     if (gem) model = gem.model;
   }
+  if (path.startsWith("/v1/engines/") && path.endsWith("/embeddings")) {
+    model = decodeURIComponent(path.slice("/v1/engines/".length, -"/embeddings".length));
+  }
 
   const fmt = clientFormatFrom(req, path);
-  return relay({
+  const res = await relay({
     req,
     env,
     store,
@@ -109,32 +217,59 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     stream: detectStream(body, req),
     path,
     ctx,
+    method: req.method,
   });
+
+  if (req.method === "POST" && (path === "/v1/video/generations" || path.startsWith("/v1/tasks/") || path.endsWith("/remix"))) {
+    const clone = res.clone();
+    const text = await clone.text().catch(() => "");
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const taskId = String(parsed.id || parsed.task_id || parsed.taskId || crypto.randomUUID());
+      await store.insertTask({
+        task_id: taskId,
+        user_id: auth.user.id,
+        token_id: auth.token.id,
+        platform: path.startsWith("/v1/video") ? "video" : "task",
+        action: path,
+        status: String(parsed.status || "SUBMITTED"),
+        model_name: model,
+        prompt: String((body as { prompt?: string }).prompt || ""),
+        result: text.slice(0, 8000),
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return res;
 }
 
-async function proxyRaw(
+async function relayJson(
   req: Request,
   env: Env,
   store: Store,
-  auth: Awaited<ReturnType<typeof authenticateApiToken>> extends Response ? never : Awaited<ReturnType<typeof authenticateApiToken>>,
+  auth: AuthToken,
   mode: RelayMode,
   path: string,
-  raw: ArrayBuffer,
+  body: unknown,
   ctx: ExecutionContextLike,
+  method: string,
 ): Promise<Response> {
-  const model = new URL(req.url).searchParams.get("model") || "";
+  const model = detectModel(body, path, new URL(req.url));
   return relay({
     req,
     env,
     store,
-    auth: auth as never,
+    auth,
     mode,
     clientFormat: "openai",
-    model,
-    body: {},
+    model: model || "sora",
+    body,
     stream: false,
     path,
     ctx,
+    method,
   });
 }
 
@@ -189,19 +324,9 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
         return withCors(req, await handleRelay(req, env, ctx));
       }
 
-      const c = {
-        req,
-        env,
-        url,
-        params: {} as Record<string, string>,
-        waitUntil: (p: Promise<unknown>) => ctx.waitUntil(p),
-      };
+      const c = ctxStore(req, env, ctx);
       const routed = await api.dispatch(c);
       if (routed) return withCors(req, routed);
-
-      if (path === "/v1/realtime") {
-        return openaiError(501, "Realtime WebSocket 需要上游渠道支持；请使用标准 chat/completions。", "not_implemented");
-      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (path.startsWith("/v1") || path.startsWith("/v1beta")) {
@@ -235,6 +360,8 @@ export default {
         const cutoff = Math.floor(Date.now() / 1000) - 90 * 86400;
         await env.DB.prepare("DELETE FROM request_logs WHERE created_at < ?").bind(cutoff).run();
         await env.DB.prepare("DELETE FROM audit_logs WHERE created_at < ?").bind(cutoff).run();
+        const store = new Store(env.DB);
+        await store.cleanupExpired(nowSec());
       })(),
     );
   },

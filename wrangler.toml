@@ -14,5 +14,9 @@ database_name = "edge-api"
 binding = "KV"
 title = "edge-api-kv"
 
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "edge-api-artifacts"
+
 [vars]
 SYSTEM_NAME = "Edge API"

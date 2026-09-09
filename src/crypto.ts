@@ -62,6 +62,7 @@ export interface SessionPayload {
   role: number;
   username: string;
   exp: number;
+  sid?: string;
 }
 
 export async function signSession(payload: SessionPayload, secret: string): Promise<string> {

@@ -94,6 +94,8 @@ label { display: block; color: var(--muted); font-size: 12px; margin: 0 0 6px; }
 .bubble.assistant { background: #151d33; }
 .composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
 .composer textarea { min-height: 54px; }
+.chat-layout { display: grid; grid-template-columns: 220px 1fr; gap: 12px; }
+@media (max-width: 860px) { .chat-layout { grid-template-columns: 1fr; } }
 .footer {
   margin-top: 40px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); padding-top: 16px;
 }
