@@ -3,13 +3,16 @@ import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, 
 import { httpStats, performanceStats, resetMetrics } from "./metrics.js";
 import {
   completePendingTopup,
+  handleCreemWebhook,
   handleEpayNotify,
   handleStripeWebhook,
   paymentEnabled,
   requestAmount,
+  requestCreemPay,
   requestEpay,
-  requestHttpPay,
   requestStripePay,
+  requestWaffoPancakePay,
+  requestWaffoPay,
   topupInfo,
 } from "./payments.js";
 import { mailConfigured, sendMail, sixDigitCode } from "./mail.js";
@@ -40,6 +43,7 @@ import {
 } from "./auth.js";
 import { Store } from "./store.js";
 import { testChannel, fetchUpstreamModels } from "./relay.js";
+import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
 import { enrichModelMeta } from "./dto.js";
 import { computeStatusCounts, ionetApiKey, ionetRequest, ionetSettings, IONET_NOT_CONFIGURED, mapIoNetDeployment } from "./ionet.js";
 import type { Env } from "./types.js";
@@ -333,14 +337,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const channels = await s.enabledChannels();
-    const results = [];
-    for (const ch of channels) {
-      const result = await testChannel(s, ch);
-      await s.updateChannel(ch.id, { balance: result.success ? "ok" : result.message.slice(0, 200), test_time: nowSec() });
-      results.push({ id: ch.id, name: ch.name, ...result });
-    }
-    return apiOk(results);
+    return updateAllChannelBalances(s);
   });
 
   r.get("/api/channel/update_balance/:id", async (c) => {
@@ -349,9 +346,7 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
-    const result = await testChannel(s, ch);
-    await s.updateChannel(ch.id, { balance: result.success ? "ok" : result.message.slice(0, 200), test_time: nowSec() });
-    return result.success ? apiOk({ balance: "ok", time: result.time }) : apiFail(result.message, result);
+    return updateOneChannelBalance(s, ch);
   });
 
   r.post("/api/channel/tag/disabled", async (c) => {
@@ -386,8 +381,8 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const channels = await s.enabledChannels();
-    return apiOk({ count: channels.length, message: "abilities derived from channel.models" });
+    const { results } = await c.env.DB.prepare("SELECT id FROM channels").all();
+    return apiOk({ success: results.length, fails: 0 });
   });
 
   r.post("/api/channel/:id/codex/refresh", async (c) => {
@@ -494,9 +489,9 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const planId = Number(c.params.id);
-    const { results } = await c.env.DB.prepare("SELECT id FROM user_subscriptions WHERE plan_id = ?").bind(planId).all<{ id: number }>();
-    for (const row of results) await s.updateUserSub(row.id, { status: 2 });
-    return apiOk({ count: results.length });
+    if (planId <= 0) return apiFail("无效的ID");
+    const body = (await readJson(c.req).catch(() => ({}))) as { advance_reset_time?: boolean };
+    return resetPlanSubscriptions(c, s, planId, undefined, Boolean(body.advance_reset_time));
   });
 
   r.post("/api/subscription/admin/users/:id/subscriptions", async (c) => {
@@ -521,16 +516,17 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const subs = (await s.listUserSubs(Number(c.params.id))) as { id: number }[];
-    for (const sub of subs) await s.updateUserSub(sub.id, { status: 2 });
-    return apiOk({ count: subs.length });
+    const userId = Number(c.params.id);
+    if (userId <= 0) return apiFail("无效的用户ID");
+    const body = (await readJson(c.req)) as { plan_id?: number; advance_reset_time?: boolean };
+    if (!body.plan_id) return apiFail("参数错误");
+    return resetPlanSubscriptions(c, s, Number(body.plan_id), userId, Boolean(body.advance_reset_time));
   });
 
   r.post("/api/subscription/epay/notify", (c) => handleEpayNotify(store(c), c.req, c.url));
   r.get("/api/subscription/epay/notify", (c) => handleEpayNotify(store(c), c.req, c.url));
   r.get("/api/subscription/epay/return", () => apiOk({ ok: true }));
   r.post("/api/subscription/epay/return", () => apiOk({ ok: true }));
-  r.post("/api/subscription/waffo-pancake/pay", async (c) => payKind(c, "waffo"));
 
   r.post("/api/option/payment_compliance", async (c) => {
     const s = store(c);
@@ -1251,11 +1247,11 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     return requestAmount(s, (await readJson(c.req)) as { amount?: number });
   });
-  r.post("/api/user/waffo-pancake/pay", async (c) => payUser(c, "waffo"));
+  r.post("/api/user/waffo-pancake/pay", async (c) => payUser(c, "waffo_pancake"));
   r.post("/api/user/epay/notify", (c) => handleEpayNotify(store(c), c.req, c.url));
   r.get("/api/user/epay/notify", (c) => handleEpayNotify(store(c), c.req, c.url));
   r.post("/api/stripe/webhook", (c) => handleStripeWebhook(store(c), c.req));
-  r.post("/api/creem/webhook", (c) => genericPayWebhook(c, "creem"));
+  r.post("/api/creem/webhook", (c) => handleCreemWebhook(store(c), c.req));
   r.post("/api/waffo/webhook", (c) => genericPayWebhook(c, "waffo"));
   r.post("/api/waffo/webhook/:env", (c) => genericPayWebhook(c, "waffo"));
   r.post("/api/waffo-pancake/webhook/:env", (c) => genericPayWebhook(c, "waffo"));
@@ -1263,6 +1259,7 @@ export function registerParity(r: Router<Env>): void {
   r.post("/api/subscription/epay/pay", async (c) => payKind(c, "epay"));
   r.post("/api/subscription/stripe/pay", async (c) => payKind(c, "stripe"));
   r.post("/api/subscription/creem/pay", async (c) => payKind(c, "creem"));
+  r.post("/api/subscription/waffo-pancake/pay", async (c) => payKind(c, "waffo_pancake"));
 
   r.get("/api/perf-metrics", async (c) => {
     const model = c.url.searchParams.get("model");
@@ -1432,19 +1429,52 @@ async function testIoNet(c: C): Promise<Response> {
   return apiOk({ hardware_count: hardware.length, total_available: Number(payload.total || 0) });
 }
 
-async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo"): Promise<Response> {
+async function resetPlanSubscriptions(
+  c: C,
+  s: Store,
+  planId: number,
+  userId: number | undefined,
+  advanceResetTime: boolean,
+): Promise<Response> {
+  const plan = await s.getPlan(planId);
+  if (!plan) return apiFail("无效的ID");
+  const grant = Number(plan.grant_quota || 0);
+  let sql = "SELECT id, user_id FROM user_subscriptions WHERE plan_id = ? AND status = 1";
+  const binds: unknown[] = [planId];
+  if (userId) {
+    sql += " AND user_id = ?";
+    binds.push(userId);
+  }
+  const { results } = await c.env.DB.prepare(sql).bind(...binds).all<{ id: number; user_id: number }>();
+  const users = new Set<number>();
+  for (const row of results) {
+    await s.updateUserSub(row.id, { remaining_quota: grant });
+    users.add(row.user_id);
+  }
+  return apiOk({
+    plan_id: planId,
+    matched_count: results.length,
+    reset_count: results.length,
+    user_count: users.size,
+    advance_reset_time: advanceResetTime,
+  });
+}
+
+async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waffo_pancake"): Promise<Response> {
   const s = store(c);
   const u = await requireUser(c, s);
   if (isResponse(u)) return u;
   const user = await s.getUserById(u.id);
   if (!user) return apiFail("用户不存在");
-  const body = (await readJson(c.req)) as { amount?: number; payment_method?: string; success_url?: string; cancel_url?: string };
-  if (kind === "stripe") return requestStripePay(s, user, c.req, body);
-  if (kind === "epay") return requestEpay(s, user, c.req, body);
-  return requestHttpPay(s, user, c.req, kind, body);
+  const body = (await readJson(c.req)) as Record<string, unknown>;
+  if (kind === "stripe") return requestStripePay(s, user, c.req, body as { amount?: number; payment_method?: string; success_url?: string; cancel_url?: string });
+  if (kind === "epay") return requestEpay(s, user, c.req, body as { amount?: number; payment_method?: string });
+  if (kind === "creem") return requestCreemPay(s, user, c.req, body as { product_id?: string; payment_method?: string });
+  if (kind === "waffo_pancake") return requestWaffoPancakePay(s, user, c.req, body as { amount?: number });
+  return requestWaffoPay(s, user, c.req, body as { amount?: number });
 }
 
-async function payKind(c: C, kind: "stripe" | "epay" | "creem" | "waffo"): Promise<Response> {
+async function payKind(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waffo_pancake"): Promise<Response> {
   return payUser(c, kind);
 }
 

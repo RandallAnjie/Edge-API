@@ -1,10 +1,10 @@
 import { nowSec, parseJson, randomHex } from "./constants.js";
 import { hmacSha256Hex, timingSafeEqualStr } from "./crypto.js";
-import { apiFail, apiOk, json, readJson } from "./http.js";
+import { apiFail, apiOk, json, payErr, payOk, readJson } from "./http.js";
 import type { Store } from "./store.js";
 import type { UserRow } from "./types.js";
 
-export async function paymentEnabled(store: Store, kind: "stripe" | "epay" | "creem" | "waffo"): Promise<boolean> {
+export async function paymentEnabled(store: Store, kind: "stripe" | "epay" | "creem" | "waffo" | "waffo_pancake"): Promise<boolean> {
   if (kind === "stripe") {
     return (await store.optionBool("StripeEnabled", false)) && Boolean(await stripeSecret(store));
   }
@@ -12,7 +12,15 @@ export async function paymentEnabled(store: Store, kind: "stripe" | "epay" | "cr
     return (await store.optionBool("EpayEnabled", false)) && Boolean(await store.option("EpayPid")) && Boolean(await store.option("EpayKey"));
   }
   if (kind === "creem") {
-    return (await store.optionBool("CreemEnabled", false)) && Boolean(await store.option("CreemApiKey"));
+    const products = ((await store.option("CreemProducts")) || "").trim();
+    return Boolean(await store.option("CreemApiKey")) && products !== "" && products !== "[]";
+  }
+  if (kind === "waffo_pancake") {
+    return (
+      Boolean(await store.option("WaffoPancakeMerchantID")) &&
+      Boolean((await store.option("WaffoPancakePrivateKey")) || (await store.option("WaffoPancakeApiKey"))) &&
+      Boolean(await store.option("WaffoPancakeProductID"))
+    );
   }
   return (await store.optionBool("WaffoEnabled", false)) && Boolean(await store.option("WaffoApiKey"));
 }
@@ -26,7 +34,7 @@ export async function topupInfo(store: Store): Promise<Record<string, unknown>> 
   const epay = await paymentEnabled(store, "epay");
   const creem = await paymentEnabled(store, "creem");
   const waffo = await paymentEnabled(store, "waffo");
-  const waffoPancake = (await store.optionBool("WaffoPancakeEnabled", false)) && waffo;
+  const waffoPancake = await paymentEnabled(store, "waffo_pancake");
   const complianceConfirmed = await store.optionBool("PaymentComplianceConfirmed", false);
   const payMethods = complianceConfirmed
     ? parseJson<Record<string, string>[]>(await store.option("PayMethods"), [
@@ -251,47 +259,189 @@ export async function handleEpayNotify(store: Store, req: Request, url: URL): Pr
   return new Response("success", { headers: { "content-type": "text/plain" } });
 }
 
-export async function requestHttpPay(
+type CreemProduct = { productId?: string; name?: string; price?: number; quota?: number; currency?: string };
+
+export async function requestCreemPay(
   store: Store,
   user: UserRow,
   req: Request,
-  kind: "creem" | "waffo",
-  body: { amount?: number; success_url?: string },
+  body: { product_id?: string; payment_method?: string },
 ): Promise<Response> {
-  if (!(await paymentEnabled(store, kind))) return apiFail(kind === "creem" ? "Creem 未配置" : "Waffo 未配置");
-  const amount = Number(body.amount || 0);
-  const min = await store.optionNum("MinTopup", 1);
-  if (amount < min) return apiFail(`充值数量不能小于 ${min}`);
-  const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
-  const money = payMoney(amount, await store.optionNum("Price", 7.3));
-  const trade = (kind === "creem" ? "cr_" : "wf_") + randomHex(12);
-  const credited = Math.round(amount * quotaPerUnit);
+  if ((body.payment_method || "creem") !== "creem") return payErr("不支持的支付渠道");
+  if (!body.product_id) return payErr("请选择产品");
+  const apiKey = await store.option("CreemApiKey");
+  if (!apiKey) return payErr("未配置Creem API密钥");
+  const products = parseJson<CreemProduct[]>(await store.option("CreemProducts"), []);
+  if (!products.length) return payErr("产品配置错误");
+  const selected = products.find((p) => p.productId === body.product_id);
+  if (!selected) return payErr("产品不存在");
+  const trade = "ref_" + randomHex(16);
   await store.insertTopup({
     user_id: user.id,
-    amount: credited,
-    money,
+    amount: Number(selected.quota || 0),
+    money: Number(selected.price || 0),
     trade_no: trade,
-    payment_method: kind,
+    payment_method: "creem",
     status: "pending",
   });
-  const endpoint =
-    kind === "creem"
-      ? (await store.option("CreemCheckoutUrl")) || "https://api.creem.io/v1/checkouts"
-      : (await store.option("WaffoCheckoutUrl")) || "https://api.waffo.com/v1/checkout";
-  const apiKey = kind === "creem" ? await store.option("CreemApiKey") : await store.option("WaffoApiKey");
+  const testMode = await store.optionBool("CreemTestMode", false);
+  const endpoint = (await store.option("CreemCheckoutUrl")) || (testMode ? "https://test-api.creem.io/v1/checkouts" : "https://api.creem.io/v1/checkouts");
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": apiKey },
+    body: JSON.stringify({
+      product_id: selected.productId,
+      request_id: trade,
+      customer: { email: user.email || `${user.username}@users.invalid` },
+      metadata: {
+        username: user.username,
+        reference_id: trade,
+        product_name: selected.name || "",
+        quota: String(selected.quota || 0),
+      },
+    }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { checkout_url?: string; id?: string };
+  if (!res.ok || !data.checkout_url) return payErr("拉起支付失败");
+  void req;
+  return payOk({ checkout_url: data.checkout_url, order_id: trade });
+}
+
+export async function requestWaffoPay(
+  store: Store,
+  user: UserRow,
+  req: Request,
+  body: { amount?: number; pay_method_index?: number; pay_method_type?: string; pay_method_name?: string },
+): Promise<Response> {
+  if (!(await paymentEnabled(store, "waffo"))) return payErr("Waffo 支付未启用");
+  const amount = Number(body.amount || 0);
+  const min = await store.optionNum("WaffoMinTopUp", await store.optionNum("MinTopup", 1));
+  if (amount < min) return payErr(`充值数量不能小于 ${min}`);
+  const money = payMoney(amount, await store.optionNum("Price", 7.3));
+  if (money < 0.01) return payErr("充值金额过低");
+  const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
+  const trade = `WAFFO-${user.id}-${Date.now()}-${randomHex(3)}`;
+  await store.insertTopup({
+    user_id: user.id,
+    amount: Math.round(amount * quotaPerUnit),
+    money,
+    trade_no: trade,
+    payment_method: "waffo",
+    status: "pending",
+  });
+  const endpoint = (await store.option("WaffoCheckoutUrl")) || "https://api.waffo.com/v1/checkout";
+  const apiKey = await store.option("WaffoApiKey");
   const res = await fetch(endpoint, {
     method: "POST",
     headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
     body: JSON.stringify({
-      amount: money,
-      currency: "USD",
-      success_url: body.success_url || paymentReturnPath(req, "/wallet?show_history=true"),
-      metadata: { user_id: user.id, trade_no: trade, quota: credited },
+      paymentRequestId: trade,
+      merchantOrderId: trade,
+      orderAmount: money.toFixed(2),
+      notifyUrl: (await store.option("WaffoNotifyUrl")) || `${new URL(req.url).origin}/api/waffo/webhook`,
+      successRedirectURL: paymentReturnPath(req, "/wallet?show_history=true"),
+      failedRedirectURL: paymentReturnPath(req, "/wallet?show_history=true"),
+      payMethodIndex: body.pay_method_index,
+      payMethodType: body.pay_method_type,
+      payMethodName: body.pay_method_name,
+      userId: String(user.id),
+      userEmail: user.email || "",
     }),
   });
-  const data = (await res.json().catch(() => ({}))) as { url?: string; checkout_url?: string; message?: string };
-  if (!res.ok) return apiFail((data.message as string) || `${kind} checkout 创建失败`);
-  return apiOk({ url: data.url || data.checkout_url, trade_no: trade });
+  const data = (await res.json().catch(() => ({}))) as {
+    payment_url?: string;
+    checkout_url?: string;
+    url?: string;
+    orderAction?: string;
+  };
+  const paymentUrl = data.payment_url || data.checkout_url || data.url || data.orderAction || "";
+  if (!res.ok || !paymentUrl) return payErr("拉起支付失败");
+  return payOk({ payment_url: paymentUrl, order_id: trade });
+}
+
+export async function requestWaffoPancakePay(
+  store: Store,
+  user: UserRow,
+  req: Request,
+  body: { amount?: number },
+): Promise<Response> {
+  if (!(await paymentEnabled(store, "waffo_pancake"))) return payErr("Waffo Pancake 支付未启用");
+  const amount = Number(body.amount || 0);
+  const min = await store.optionNum("WaffoPancakeMinTopUp", await store.optionNum("MinTopup", 1));
+  if (amount < min) return payErr(`充值数量不能小于 ${min}`);
+  const money = payMoney(amount, await store.optionNum("Price", 7.3));
+  const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
+  const trade = `WAFFO-PANCAKE-${user.id}-${Date.now()}-${randomHex(3)}`;
+  await store.insertTopup({
+    user_id: user.id,
+    amount: Math.round(amount * quotaPerUnit),
+    money,
+    trade_no: trade,
+    payment_method: "waffo_pancake",
+    status: "pending",
+  });
+  const endpoint = (await store.option("WaffoPancakeCheckoutUrl")) || "https://api.waffo.com/v1/pancake/checkout";
+  const apiKey = (await store.option("WaffoPancakeApiKey")) || (await store.option("WaffoPancakePrivateKey"));
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
+    body: JSON.stringify({
+      productId: await store.option("WaffoPancakeProductID"),
+      merchantId: await store.option("WaffoPancakeMerchantID"),
+      orderMerchantExternalId: trade,
+      amount: money.toFixed(2),
+      buyerEmail: user.email || "",
+      expiresInSeconds: 45 * 60,
+      successUrl: paymentReturnPath(req, "/wallet?show_history=true"),
+    }),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    checkout_url?: string;
+    checkoutUrl?: string;
+    session_id?: string;
+    sessionId?: string;
+    expires_at?: number | string;
+    expiresAt?: number | string;
+    token?: string;
+    token_expires_at?: number | string;
+    tokenExpiresAt?: number | string;
+  };
+  const checkoutUrl = data.checkout_url || data.checkoutUrl || "";
+  if (!res.ok || !checkoutUrl) return payErr("拉起支付失败");
+  return payOk({
+    checkout_url: checkoutUrl,
+    session_id: data.session_id || data.sessionId || "",
+    expires_at: data.expires_at || data.expiresAt || nowSec() + 45 * 60,
+    order_id: trade,
+    token: data.token || "",
+    token_expires_at: data.token_expires_at || data.tokenExpiresAt || nowSec() + 45 * 60,
+  });
+}
+
+export async function requestHttpPay(
+  store: Store,
+  user: UserRow,
+  req: Request,
+  kind: "creem" | "waffo" | "waffo_pancake",
+  body: Record<string, unknown>,
+): Promise<Response> {
+  if (kind === "creem") return requestCreemPay(store, user, req, body as { product_id?: string; payment_method?: string });
+  if (kind === "waffo_pancake") return requestWaffoPancakePay(store, user, req, body as { amount?: number });
+  return requestWaffoPay(store, user, req, body as { amount?: number });
+}
+
+export async function handleCreemWebhook(store: Store, req: Request): Promise<Response> {
+  const secret = await store.option("CreemWebhookSecret");
+  const raw = await req.text();
+  if (secret) {
+    const signature = req.headers.get("creem-signature") || "";
+    const expected = await hmacSha256Hex(secret, raw);
+    if (!timingSafeEqualStr(expected, signature)) return new Response("invalid signature", { status: 401 });
+  }
+  const event = parseJson<{ eventType?: string; object?: { request_id?: string; order?: { id?: string } } }>(raw, {});
+  const trade = String(event.object?.request_id || "");
+  if (trade) await completePendingTopup(store, trade);
+  return new Response(null, { status: 200 });
 }
 
 export async function completePendingTopup(store: Store, tradeNo: string): Promise<boolean> {

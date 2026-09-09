@@ -23,7 +23,7 @@ import {
   hashPassword,
   verifyPassword,
 } from "./crypto.js";
-import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, json, pageData, pageQuery, readJson } from "./http.js";
+import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, json, pageData, pageQuery, readJson, serveRevalidatedJSON } from "./http.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -61,8 +61,8 @@ export function adminRouter(): Router<Env> {
   r.get("/api/setup", async (c) => {
     const s = store(c);
     const done = await s.setupDone();
-    const root = await s.rootExists();
-    return apiOk({ status: done, root_init: root, database_type: "d1" });
+    if (done) return apiOk({ status: true, root_init: false, database_type: "" });
+    return apiOk({ status: false, root_init: await s.rootExists(), database_type: "d1" });
   });
 
   r.post("/api/setup", async (c) => {
@@ -101,11 +101,11 @@ export function adminRouter(): Router<Env> {
 
   r.get("/api/status", async (c) => apiOk(await buildStatus(store(c), c.env)));
 
-  r.get("/api/notice", async (c) => apiOk(await store(c).option("Notice")));
-  r.get("/api/about", async (c) => apiOk(await store(c).option("About")));
-  r.get("/api/home_page_content", async (c) => apiOk(await store(c).option("HomePageContent")));
-  r.get("/api/user-agreement", async (c) => apiOk(await store(c).option("UserAgreement")));
-  r.get("/api/privacy-policy", async (c) => apiOk(await store(c).option("PrivacyPolicy")));
+  r.get("/api/notice", async (c) => serveRevalidatedJSON(c.req, await store(c).option("Notice")));
+  r.get("/api/about", async (c) => serveRevalidatedJSON(c.req, await store(c).option("About")));
+  r.get("/api/home_page_content", async (c) => serveRevalidatedJSON(c.req, await store(c).option("HomePageContent")));
+  r.get("/api/user-agreement", async (c) => serveRevalidatedJSON(c.req, await store(c).option("UserAgreement")));
+  r.get("/api/privacy-policy", async (c) => serveRevalidatedJSON(c.req, await store(c).option("PrivacyPolicy")));
 
   r.get("/api/pricing", async (c) => {
     const s = store(c);

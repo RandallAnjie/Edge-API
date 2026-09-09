@@ -195,7 +195,7 @@ test("authz catalog + channel GET update_balance + email bind without mail", asy
   try {
     const bal = await json(new Request("http://local/api/channel/update_balance", { headers: auth }), e);
     assert.equal(bal.body.success, true);
-    assert.ok(Array.isArray(bal.body.data));
+    assert.equal(bal.body.message, "");
   } finally {
     globalThis.fetch = originalFetch;
   }

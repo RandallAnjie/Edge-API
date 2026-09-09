@@ -113,6 +113,8 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
     passkey_user_verification: (await store.option("PasskeyUserVerification")) || "preferred",
     passkey_attachment: await store.option("PasskeyAttachment"),
     setup,
+    display_token_stat_enabled: await store.optionBool("DisplayTokenStatEnabled", true),
+    oauth_register_enabled: await store.optionBool("RegisterEnabled", true),
     user_agreement_enabled: Boolean(agreement),
     privacy_policy_enabled: Boolean(privacy),
     checkin_enabled: await store.optionBool("CheckinEnabled", true),

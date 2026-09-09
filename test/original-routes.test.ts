@@ -132,6 +132,11 @@ const ORIGINAL_API: { method: string; path: string }[] = [
   { method: "GET", path: "/api/models/missing" },
   { method: "GET", path: "/api/deployments/" },
   { method: "GET", path: "/api/deployments/settings" },
+  { method: "GET", path: "/api/user/self/groups" },
+  { method: "GET", path: "/api/data/self" },
+  { method: "GET", path: "/api/data/flow/self?start_timestamp=1&end_timestamp=2" },
+  { method: "GET", path: "/api/log/search" },
+  { method: "POST", path: "/api/channel/fix" },
   { method: "GET", path: "/dashboard/billing/subscription" },
 ];
 
@@ -529,5 +534,206 @@ test("original JSON fields for status, models, deployments, performance, data, u
 
   const statusType = await json(new Request("http://local/api/status"), e);
   assert.equal((statusType.body.data as { quota_display_type: string }).quota_display_type, "USD");
+  assert.equal(typeof (statusType.body.data as { display_token_stat_enabled: boolean }).display_token_stat_enabled, "boolean");
+  assert.equal(typeof (statusType.body.data as { oauth_register_enabled: boolean }).oauth_register_enabled, "boolean");
+
+  const setupDone = await json(new Request("http://local/api/setup"), e);
+  const setupData = setupDone.body.data as { status: boolean; root_init: boolean; database_type: string };
+  assert.equal(setupDone.body.success, true);
+  assert.equal(setupData.status, true);
+  assert.equal(setupData.root_init, false);
+  assert.equal(setupData.database_type, "");
+
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "Notice", value: "hello-notice" }),
+    }),
+    e,
+  );
+  const notice = await json(new Request("http://local/api/notice"), e);
+  assert.equal(notice.body.success, true);
+  assert.equal(notice.body.data, "hello-notice");
+  assert.match(notice.res.headers.get("etag") || "", /^W\/"/);
+  assert.equal(notice.res.headers.get("cache-control"), "no-cache");
+  const notice304 = await json(
+    new Request("http://local/api/notice", { headers: { "if-none-match": notice.res.headers.get("etag") || "" } }),
+    e,
+  );
+  assert.equal(notice304.res.status, 304);
+
+  const searchLogs = await json(new Request("http://local/api/log/search", { headers: auth }), e);
+  assert.equal(searchLogs.body.success, false);
+  assert.equal(searchLogs.body.message, "该接口已废弃");
+
+  const creemUnconfigured = await json(
+    new Request("http://local/api/user/creem/pay", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ product_id: "prod_1", payment_method: "creem" }),
+    }),
+    e,
+  );
+  assert.equal(creemUnconfigured.body.message, "error");
+  assert.equal(creemUnconfigured.body.data, "未配置Creem API密钥");
+
+  const waffoDisabled = await json(
+    new Request("http://local/api/user/waffo/pay", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ amount: 10 }),
+    }),
+    e,
+  );
+  assert.equal(waffoDisabled.body.message, "error");
+  assert.equal(waffoDisabled.body.data, "Waffo 支付未启用");
+
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({
+        key: "CreemProducts",
+        value: JSON.stringify([{ productId: "prod_1", name: "Pack", price: 10, quota: 500000 }]),
+      }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "CreemApiKey", value: "ck_test" }),
+    }),
+    e,
+  );
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(typeof input === "string" || input instanceof URL ? input : input.url);
+    if (url.includes("creem.io") || url.includes("/v1/checkouts")) {
+      return new Response(JSON.stringify({ checkout_url: "https://checkout.creem.io/pay", id: "ch_1" }), { status: 200 });
+    }
+    if (url.includes("/v1/dashboard/billing/subscription")) {
+      return new Response(JSON.stringify({ hard_limit_usd: 20, has_payment_method: true }), { status: 200 });
+    }
+    if (url.includes("/v1/dashboard/billing/usage")) {
+      return new Response(JSON.stringify({ total_usage: 100 }), { status: 200 });
+    }
+    return new Response("nope", { status: 500 });
+  }) as typeof fetch;
+  try {
+    const creemPay = await json(
+      new Request("http://local/api/user/creem/pay", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ product_id: "prod_1", payment_method: "creem" }),
+      }),
+      e,
+    );
+    assert.equal(creemPay.body.message, "success");
+    const creemData = creemPay.body.data as { checkout_url: string; order_id: string };
+    assert.equal(creemData.checkout_url, "https://checkout.creem.io/pay");
+    assert.equal(typeof creemData.order_id, "string");
+
+    await json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ key: "WaffoEnabled", value: "true" }),
+      }),
+      e,
+    );
+    await json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ key: "WaffoApiKey", value: "wk_test" }),
+      }),
+      e,
+    );
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(typeof input === "string" || input instanceof URL ? input : input.url);
+      if (url.includes("waffo")) {
+        return new Response(JSON.stringify({ payment_url: "https://pay.waffo.com/x", orderAction: "https://pay.waffo.com/x" }), { status: 200 });
+      }
+      if (url.includes("/v1/dashboard/billing/subscription")) {
+        return new Response(JSON.stringify({ hard_limit_usd: 20, has_payment_method: true }), { status: 200 });
+      }
+      if (url.includes("/v1/dashboard/billing/usage")) {
+        return new Response(JSON.stringify({ total_usage: 100 }), { status: 200 });
+      }
+      return new Response("nope", { status: 500 });
+    }) as typeof fetch;
+    const waffoPay = await json(
+      new Request("http://local/api/user/waffo/pay", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ amount: 10 }),
+      }),
+      e,
+    );
+    assert.equal(waffoPay.body.message, "success");
+    const waffoData = waffoPay.body.data as { payment_url: string; order_id: string };
+    assert.equal(waffoData.payment_url, "https://pay.waffo.com/x");
+    assert.equal(typeof waffoData.order_id, "string");
+
+    const chCreated = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ name: "bal-openai", type: 1, key: "sk-balance", models: "gpt-4o", group: "default", base_url: "https://api.openai.com" }),
+      }),
+      e,
+    );
+    const chId = Number((chCreated.body.data as { id?: number })?.id || 0);
+    assert.ok(chId);
+    const oneBal = await json(new Request("http://local/api/channel/update_balance/" + chId, { headers: auth }), e);
+    assert.equal(oneBal.body.success, true);
+    assert.equal(oneBal.body.balance, 19);
+    assert.equal(oneBal.body.data, undefined);
+
+    const fix = await json(new Request("http://local/api/channel/fix", { method: "POST", headers: auth }), e);
+    assert.equal(fix.body.success, true);
+    const fixData = fix.body.data as { success: number; fails: number };
+    assert.equal(typeof fixData.success, "number");
+    assert.equal(fixData.fails, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const plan = await json(
+    new Request("http://local/api/subscription/admin/plans", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ title: "reset-plan", grant_quota: 1000, duration_days: 30, price_quota: 0 }),
+    }),
+    e,
+  );
+  const planId = Number((plan.body.data as { id?: number })?.id || 0);
+  assert.ok(planId);
+  await json(
+    new Request(`http://local/api/subscription/admin/users/1/subscriptions`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ plan_id: planId }),
+    }),
+    e,
+  );
+  const reset = await json(
+    new Request(`http://local/api/subscription/admin/plans/${planId}/subscriptions/reset`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ advance_reset_time: false }),
+    }),
+    e,
+  );
+  assert.equal(reset.body.success, true);
+  const rd = reset.body.data as { plan_id: number; matched_count: number; reset_count: number; user_count: number; advance_reset_time: boolean };
+  assert.equal(rd.plan_id, planId);
+  assert.equal(typeof rd.matched_count, "number");
+  assert.equal(typeof rd.reset_count, "number");
+  assert.equal(typeof rd.user_count, "number");
+  assert.equal(rd.advance_reset_time, false);
 });
 

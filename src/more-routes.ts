@@ -30,7 +30,7 @@ import { generateTokenKey, displayTokenKey, accessTokenFingerprint } from "./cry
 import { publicToken, verificationRequirements, publicLog, rankingsResponse, exposedRatioConfig, enrichModelMeta } from "./dto.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
-import { apiFail, apiFailCode, apiOk, clientIp, json, pageData, pageQuery, readJson } from "./http.js";
+import { apiFail, apiFailCode, apiOk, clientIp, json, pageData, pageQuery, readJson, serveRevalidatedJSON } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -51,6 +51,7 @@ import {
 import { httpStats } from "./metrics.js";
 import { Store, publicUser } from "./store.js";
 import { testChannel } from "./relay.js";
+import { updateOneChannelBalance } from "./channel-balance.js";
 import type { Env, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -60,8 +61,8 @@ function store(c: C): Store {
 }
 
 export function registerMore(r: Router<Env>): void {
-  r.get("/api/user-agreement", async (c) => apiOk(await store(c).option("UserAgreement")));
-  r.get("/api/privacy-policy", async (c) => apiOk(await store(c).option("PrivacyPolicy")));
+  r.get("/api/user-agreement", async (c) => serveRevalidatedJSON(c.req, await store(c).option("UserAgreement")));
+  r.get("/api/privacy-policy", async (c) => serveRevalidatedJSON(c.req, await store(c).option("PrivacyPolicy")));
 
   r.get("/api/status/test", async (c) => {
     const s = store(c);
@@ -876,9 +877,7 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
-    const result = await testChannel(s, ch);
-    await s.updateChannel(ch.id, { balance: result.success ? "ok" : result.message.slice(0, 200), test_time: nowSec() });
-    return result.success ? apiOk({ balance: "ok", time: result.time }) : apiFail(result.message, result);
+    return updateOneChannelBalance(s, ch);
   });
 
   r.get("/api/redemption/search", async (c) => {

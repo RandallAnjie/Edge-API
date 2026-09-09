@@ -1,3 +1,4 @@
+import { bytesToHex, sha256Bytes } from "./crypto.js";
 import type { PageQuery } from "./types.js";
 
 export function json(status: number, body: unknown, extra?: HeadersInit): Response {
@@ -21,6 +22,46 @@ export function apiFail(message: string, data: unknown = null, status = 200): Re
 
 export function apiFailCode(message: string, code: string, status = 200): Response {
   return json(status, { success: false, message, code, data: null });
+}
+
+/** Original Stripe/Epay/Creem/Waffo checkout envelope: `{message, data}` plus extra `success`. */
+export function payOk(data: unknown): Response {
+  return json(200, { message: "success", data, success: true });
+}
+
+export function payErr(data: unknown): Response {
+  return json(200, { message: "error", data, success: false });
+}
+
+const PUBLIC_CONTENT_ETAG_NS = "public-content:v1";
+
+function etagMatches(ifNoneMatch: string, etag: string): boolean {
+  const raw = ifNoneMatch.trim();
+  if (!raw) return false;
+  if (raw === "*") return true;
+  const want = etag.replace(/^W\//, "");
+  for (const part of raw.split(",")) {
+    const candidate = part.trim().replace(/^W\//, "");
+    if (candidate === want) return true;
+  }
+  return false;
+}
+
+/** Original GetNotice/GetAbout/GetHomePageContent/GetUserAgreement/GetPrivacyPolicy. */
+export async function serveRevalidatedJSON(req: Request, content: string): Promise<Response> {
+  const data = content ?? "";
+  const digest = await sha256Bytes(new TextEncoder().encode(`${PUBLIC_CONTENT_ETAG_NS}\0${data}`));
+  const etag = `W/"${bytesToHex(digest)}"`;
+  const headers: Record<string, string> = {
+    "content-type": "application/json; charset=utf-8",
+    etag,
+    "cache-control": "no-cache",
+    vary: "Accept-Encoding",
+  };
+  if (etagMatches(req.headers.get("if-none-match") || "", etag)) {
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(JSON.stringify({ success: true, message: "", data }), { status: 200, headers });
 }
 
 export function openaiError(
