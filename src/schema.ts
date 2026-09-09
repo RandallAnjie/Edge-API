@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   model_limits TEXT NOT NULL DEFAULT '',
   allow_ips TEXT NOT NULL DEFAULT '',
   used_quota INTEGER NOT NULL DEFAULT 0,
-  "group" TEXT NOT NULL DEFAULT ''
+  "group" TEXT NOT NULL DEFAULT '',
+  auto_groups TEXT NOT NULL DEFAULT '',
+  cross_group_retry INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS channels (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,7 +77,11 @@ CREATE TABLE IF NOT EXISTS channels (
   settings TEXT NOT NULL DEFAULT '',
   openai_organization TEXT NOT NULL DEFAULT '',
   test_model TEXT NOT NULL DEFAULT '',
-  balance TEXT NOT NULL DEFAULT ''
+  balance TEXT NOT NULL DEFAULT '',
+  balance_updated_time INTEGER NOT NULL DEFAULT 0,
+  other_info TEXT NOT NULL DEFAULT '',
+  channel_info TEXT NOT NULL DEFAULT '',
+  setting TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS request_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -348,6 +354,12 @@ const USER_ALTERS = [
   "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE channels ADD COLUMN balance TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE login_sessions ADD COLUMN login_method TEXT NOT NULL DEFAULT 'password'",
+  "ALTER TABLE api_tokens ADD COLUMN auto_groups TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE api_tokens ADD COLUMN cross_group_retry INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE channels ADD COLUMN balance_updated_time INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE channels ADD COLUMN other_info TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE channels ADD COLUMN channel_info TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE channels ADD COLUMN setting TEXT NOT NULL DEFAULT ''",
 ];
 
 import type { D1Database } from "./types.js";

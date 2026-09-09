@@ -134,6 +134,23 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   FAQEnabled: "false",
   MinTopup: "1",
   PaymentComplianceConfirmed: "false",
+  PaymentComplianceTermsVersion: "v1",
+  TopUpLink: "",
+  AmountOptions: JSON.stringify([10, 20, 50, 100, 200, 500]),
+  AmountDiscount: "{}",
+  PayMethods: JSON.stringify([
+    { name: "支付宝", icon: "SiAlipay", type: "alipay" },
+    { name: "微信", icon: "SiWechat", type: "wxpay" },
+    { name: "自定义1", icon: "LuCreditCard", type: "custom1", min_topup: "50" },
+  ]),
+  UserUsableGroups: JSON.stringify({ default: "默认分组", vip: "vip分组" }),
+  AutoGroups: JSON.stringify(["default"]),
+  MaxTokenAutoGroups: "5",
+  GroupSpecialUsableGroup: "{}",
+  StripeMinTopUp: "1",
+  WaffoMinTopUp: "1",
+  WaffoPancakeMinTopUp: "1",
+  WaffoPancakeEnabled: "false",
   IoNetApiKey: "",
 };
 

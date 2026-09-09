@@ -11,8 +11,16 @@ export function apiOk(data: unknown = null, message = ""): Response {
   return json(200, { success: true, message, data });
 }
 
+export function apiOkExtra(data: unknown, extra: Record<string, unknown>, message = ""): Response {
+  return json(200, { success: true, message, data, ...extra });
+}
+
 export function apiFail(message: string, data: unknown = null, status = 200): Response {
   return json(status, { success: false, message, data });
+}
+
+export function apiFailCode(message: string, code: string, status = 200): Response {
+  return json(status, { success: false, message, code, data: null });
 }
 
 export function openaiError(

@@ -27,9 +27,33 @@ function hashPage() {
     "forgot-password": "forgot",
     reset: "forgot",
     otp: "login",
-    "chat2link": "chat",
+    chat2link: "chat",
+    oauth: "login",
+    console: "dashboard",
   };
-  return aliases[raw] || raw.split("/")[0];
+  if (aliases[raw]) return aliases[raw];
+  const first = raw.split("/")[0];
+  const prefix = {
+    "system-settings": "settings",
+    "usage-logs": "logs",
+    keys: "tokens",
+    "sign-in": "login",
+    "sign-up": "register",
+    "task-plugins": "plugins",
+    "system-info": "sysinfo",
+    "redemption-codes": "redemption",
+    "privacy-policy": "privacy",
+    "user-agreement": "agreement",
+    "forgot-password": "forgot",
+    chat2link: "chat",
+    errors: "home",
+    oauth: "login",
+    pricing: "pricing",
+    dashboard: "dashboard",
+    models: "models",
+    chat: "chat",
+  };
+  return prefix[first] || first;
 }
 
 async function api(path, opts = {}) {
@@ -186,12 +210,14 @@ async function pageAbout() {
 async function pagePricing() {
   const r = await api("/api/pricing");
   const items = r.data?.data || [];
+  const vendors = r.data?.vendors || [];
   return layout(`
     <h1>模型定价</h1>
-    <p class="sub">来自已启用渠道的模型列表。倍率可在系统设置 ModelRatio 中调整。</p>
+    <p class="sub">对应原项目 GetPricing：data / vendors / group_ratio / usable_group / supported_endpoint / auto_groups。倍率可在系统设置 ModelRatio 中调整。</p>
+    ${vendors.length ? `<p class="sub">厂商 ${vendors.length} 个 · 分组 ${Object.keys(r.data?.usable_group || {}).join(", ") || "default"}</p>` : ""}
     <div class="table-wrap"><table>
-      <thead><tr><th>模型</th><th>倍率</th><th>参考</th></tr></thead>
-      <tbody>${items.map((m) => `<tr><td class="mono">${esc(m.model_name)}</td><td>${esc(m.model_ratio)}</td><td>${esc(m.owner_by)}</td></tr>`).join("") || `<tr><td colspan="3">暂无模型，请先添加渠道</td></tr>`}</tbody>
+      <thead><tr><th>模型</th><th>倍率</th><th>补全</th><th>分组</th></tr></thead>
+      <tbody>${items.map((m) => `<tr><td class="mono">${esc(m.model_name)}</td><td>${esc(m.model_ratio)}</td><td>${esc(m.completion_ratio)}</td><td>${esc((m.enable_groups || []).join(", "))}</td></tr>`).join("") || `<tr><td colspan="4">暂无模型，请先添加渠道</td></tr>`}</tbody>
     </table></div>
   `);
 }
@@ -397,7 +423,10 @@ async function pageWallet() {
   const aff = await api("/api/user/aff");
   const a = aff.data?.data || {};
   const hist = await api("/api/user/topup/self");
+  const info = await api("/api/user/topup/info");
+  const pay = info.data?.data || {};
   const items = hist.data?.data?.items || [];
+  const methods = pay.pay_methods || [];
   return layout(`
     <h1>钱包</h1>
     <p class="sub">剩余额度 ${money(state.user?.quota)} · 已用 ${money(state.user?.used_quota)}</p>
@@ -405,6 +434,15 @@ async function pageWallet() {
       <div class="card"><div class="k">邀请码</div><div class="v" style="font-size:18px">${esc(a.aff_code)}</div></div>
       <div class="card"><div class="k">邀请人数</div><div class="v">${esc(a.aff_count)}</div></div>
       <div class="card"><div class="k">待划转邀请额度</div><div class="v">${money(a.aff_quota)}</div></div>
+    </div>
+    <div class="card">
+      <h3>在线充值</h3>
+      <p class="sub">
+        Epay ${pay.enable_online_topup ? "开" : "关"} · Stripe ${pay.enable_stripe_topup ? "开" : "关"} ·
+        Creem ${pay.enable_creem_topup ? "开" : "关"} · Waffo ${pay.enable_waffo_topup ? "开" : "关"} ·
+        最低 ${esc(pay.min_topup)} · 兑换码 ${pay.enable_redemption ? "开" : "关"}
+      </p>
+      <p class="sub">${methods.length ? "支付方式：" + methods.map((m) => m.name || m.type).join("、") : "未配置在线支付（需在系统设置填写密钥并确认合规条款）"}</p>
     </div>
     <div class="card">
       <h3>兑换码充值</h3>
@@ -681,7 +719,7 @@ async function pageSecurity() {
       <div class="topbar"><h3>登录会话</h3><button class="btn" id="revokeOthers">注销其他会话</button></div>
       <div class="table-wrap"><table>
         <thead><tr><th>SID</th><th>IP</th><th>最近</th><th></th></tr></thead>
-        <tbody>${sessions.map((x) => `<tr><td class="mono">${esc(x.sid).slice(0,12)}…</td><td>${esc(x.ip)}</td><td>${new Date(x.last_seen*1000).toLocaleString()}</td>
+        <tbody>${sessions.map((x) => `<tr><td class="mono">${esc(x.sid).slice(0,12)}…</td><td>${esc(x.ip)}</td><td>${new Date((x.last_active_at || x.last_seen)*1000).toLocaleString()}</td>
           <td>${x.current ? "当前" : `<button class="btn danger" data-sid="${esc(x.sid)}">注销</button>`}</td></tr>`).join("")}</tbody>
       </table></div>
     </div>

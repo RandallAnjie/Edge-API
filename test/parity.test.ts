@@ -231,6 +231,15 @@ test("2FA login still require_2fa plus original LoginChallenge fields", async ()
   );
   assert.equal(en.body.success, true, en.body.message);
 
+  const status = await json(new Request("http://local/api/user/2fa/status", { headers: auth }), e);
+  assert.equal(status.body.data.enabled, true);
+  assert.equal(status.body.data.locked, false);
+  assert.equal(status.body.data.backup_codes_remaining, 8);
+
+  const v2 = await json(new Request("http://local/api/verify/methods?scope=2fa.disable", { headers: auth }), e);
+  assert.equal(v2.body.success, true);
+  assert.ok(v2.body.data.methods.some((m: { method: string }) => m.method === "2fa"));
+
   const challenge = await json(
     new Request("http://local/api/user/login", {
       method: "POST",
@@ -278,4 +287,146 @@ test("payments topup info reflects config; oauth state returns flow_token", asyn
   assert.equal(st.body.success, true);
   assert.equal(typeof st.body.data.flow_token, "string");
   assert.equal(st.body.data.state, st.body.data.flow_token);
+});
+
+test("GetPricing / topup info / verify methods / token booleans / channel DTO match original JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "pricing-ch",
+        type: 1,
+        key: "sk-a\nsk-b",
+        models: "gpt-4o-mini",
+        group: "default",
+        base_url: "https://example.invalid",
+      }),
+    }),
+    e,
+  );
+
+  const pricing = await json(new Request("http://local/api/pricing", { headers: auth }), e);
+  assert.equal(pricing.body.success, true);
+  for (const k of ["data", "vendors", "group_ratio", "usable_group", "supported_endpoint", "auto_groups", "pricing_version"]) {
+    assert.ok(k in pricing.body, "missing GetPricing field " + k);
+  }
+  assert.ok(Array.isArray(pricing.body.data));
+  assert.ok(pricing.body.data.some((m: { model_name: string }) => m.model_name === "gpt-4o-mini"));
+  const row = pricing.body.data.find((m: { model_name: string }) => m.model_name === "gpt-4o-mini");
+  assert.ok(Array.isArray(row.enable_groups));
+  assert.ok(row.enable_groups.includes("default"));
+  assert.equal(typeof row.completion_ratio, "number");
+  assert.ok(Array.isArray(row.supported_endpoint_types));
+  assert.equal(typeof pricing.body.group_ratio.default, "number");
+  assert.equal(typeof pricing.body.usable_group.default, "string");
+  assert.ok(pricing.body.supported_endpoint.openai?.path);
+  assert.ok(Array.isArray(pricing.body.auto_groups));
+
+  const info = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
+  const d = info.body.data;
+  for (const k of [
+    "enable_online_topup",
+    "enable_stripe_topup",
+    "enable_creem_topup",
+    "enable_waffo_topup",
+    "enable_waffo_pancake_topup",
+    "enable_redemption",
+    "payment_compliance_confirmed",
+    "pay_methods",
+    "min_topup",
+    "amount_options",
+    "discount",
+    "topup_link",
+  ]) {
+    assert.ok(k in d, "missing topup/info field " + k);
+  }
+  assert.equal(d.enable_online_topup, false);
+  assert.equal(d.enable_stripe_topup, false);
+  assert.ok(Array.isArray(d.pay_methods));
+  assert.ok(Array.isArray(d.amount_options));
+
+  const methods = await json(new Request("http://local/api/verify/methods?scope=account.password.change", { headers: auth }), e);
+  assert.equal(methods.body.success, true);
+  assert.equal(methods.body.data.scope, "account.password.change");
+  assert.ok(Array.isArray(methods.body.data.methods));
+  assert.ok(methods.body.data.methods.some((m: { method: string; available: boolean }) => m.method === "password" && m.available));
+  assert.ok(Array.isArray(methods.body.data.oauth_providers));
+  assert.equal(typeof methods.body.data.password_encryption_enabled, "boolean");
+
+  const badScope = await json(new Request("http://local/api/verify/methods", { headers: auth }), e);
+  assert.equal(badScope.body.success, false);
+  assert.equal(badScope.body.code, "SECURITY_PROOF_SCOPE_MISMATCH");
+
+  const st2 = await json(new Request("http://local/api/user/2fa/status", { headers: auth }), e);
+  assert.equal(st2.body.data.enabled, false);
+  assert.equal(st2.body.data.locked, false);
+
+  const tk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "bools", unlimited_quota: true, model_limits_enabled: false }),
+    }),
+    e,
+  );
+  const listed = await json(new Request("http://local/api/token/", { headers: auth }), e);
+  const item = listed.body.data.items.find((t: { name: string }) => t.name === "bools");
+  assert.equal(item.unlimited_quota, true);
+  assert.equal(typeof item.unlimited_quota, "boolean");
+  assert.equal(typeof item.model_limits_enabled, "boolean");
+  assert.equal(item.cross_group_retry, false);
+  assert.equal(item.auto_groups, null);
+  void tk;
+
+  const chs = await json(new Request("http://local/api/channel/", { headers: auth }), e);
+  assert.ok(chs.body.data.type_counts);
+  assert.equal(typeof chs.body.data.type_counts["1"], "number");
+  const ch = chs.body.data.items[0];
+  assert.equal(typeof ch.balance, "number");
+  assert.equal(typeof ch.balance_updated_time, "number");
+  assert.equal(typeof ch.channel_info.is_multi_key, "boolean");
+  assert.equal(ch.channel_info.is_multi_key, true);
+  assert.equal(ch.key, "");
+  assert.ok("setting" in ch);
+  assert.ok("settings" in ch);
+
+  const self = await json(new Request("http://local/api/user/self", { headers: auth }), e);
+  for (const k of ["setting", "linux_do_id", "stripe_customer", "sidebar_modules", "has_password", "permissions"]) {
+    assert.ok(k in self.body.data, "missing GetSelf field " + k);
+  }
+  assert.ok(self.body.data.permissions.admin_permissions);
+
+  const groups = await json(new Request("http://local/api/user/groups", { headers: auth }), e);
+  assert.equal(typeof groups.body.data.default.ratio, "number");
+  assert.equal(typeof groups.body.data.default.desc, "string");
+
+  const auto = await json(new Request("http://local/api/token/auto-groups", { headers: auth }), e);
+  assert.ok(Array.isArray(auto.body.data.groups));
+  assert.equal(typeof auto.body.data.max_count, "number");
+
+  const img = await json(new Request("http://local/mj/image/abc"), e);
+  assert.notEqual(img.res.status, 401);
+
+  const mjTok = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "mj", unlimited_quota: true }),
+    }),
+    e,
+  );
+  const nested = await json(
+    new Request("http://local/fast/mj/submit/imagine", {
+      method: "POST",
+      headers: { authorization: "Bearer " + mjTok.body.data.key, "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "a cat" }),
+    }),
+    e,
+  );
+  assert.notEqual(nested.body?.error?.code, "not_implemented");
 });

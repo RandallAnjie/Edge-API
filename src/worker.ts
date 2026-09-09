@@ -22,6 +22,17 @@ import { hit } from "./metrics.js";
 import { matchPluginRoute } from "./plugin-dispatch.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
 
+function mjRelayPath(path: string): string {
+  if (path.startsWith("/mj/") || path === "/mj") return path.slice(3) || "/";
+  const nested = path.match(/^\/[^/]+\/mj(\/.*)$/);
+  if (nested) return nested[1] || "/";
+  return path;
+}
+
+function isMjImagePath(path: string): boolean {
+  return /^\/mj\/image\/[^/]+$/.test(path) || /^\/[^/]+\/mj\/image\/[^/]+$/.test(path);
+}
+
 const api = adminRouter();
 
 const NOT_IMPLEMENTED = new Set([
@@ -92,6 +103,13 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   const url = new URL(req.url);
   const path = url.pathname;
   const store = new Store(env.DB);
+
+  if (req.method === "GET" && isMjImagePath(path)) {
+    hit("relay");
+    const guest = { token: { id: 0 }, user: { id: 0 }, usingGroup: "default" } as AuthToken;
+    return proxyMj(req, store, guest, mjRelayPath(path));
+  }
+
   const auth = await authenticateApiToken(ctxStore(req, env, ctx), store);
   if (auth instanceof Response) return auth;
   if (!(await rateLimit(env, auth.token.id))) return openaiError(429, "请求过于频繁", "rate_limit");
@@ -117,7 +135,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   }
 
   if (path.startsWith("/mj/") || path.match(/^\/[^/]+\/mj\//)) {
-    return proxyMj(req, store, auth, path.startsWith("/mj") ? path.slice(3) || "/" : path);
+    return proxyMj(req, store, auth, mjRelayPath(path));
   }
 
   if (path === "/v1/realtime") {

@@ -105,6 +105,8 @@ export interface TokenRow {
   allow_ips: string;
   used_quota: number;
   group: string;
+  auto_groups?: string;
+  cross_group_retry?: number;
 }
 
 export interface ChannelRow {
@@ -134,6 +136,10 @@ export interface ChannelRow {
   openai_organization: string;
   test_model: string;
   balance?: string;
+  balance_updated_time?: number;
+  other_info?: string;
+  channel_info?: string;
+  setting?: string;
 }
 
 export interface LogRow {

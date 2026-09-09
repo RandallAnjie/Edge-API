@@ -66,6 +66,7 @@ function sessionViews(
       user_agent: x.ua,
       created_at: x.created_at,
       last_active_at: x.last_seen,
+      last_seen: x.last_seen,
       expires_at: x.expires_at,
     }));
 }

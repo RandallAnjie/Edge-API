@@ -16,12 +16,11 @@ import {
   generateAffCode,
   generateRedemptionKey,
   generateTokenKey,
-  hashPassword,
-  maskKey,
   displayTokenKey,
+  hashPassword,
   verifyPassword,
 } from "./crypto.js";
-import { apiFail, apiOk, clientIp, clearAuthCookies, isSecureRequest, pageData, pageQuery, readJson } from "./http.js";
+import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, pageData, pageQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -34,6 +33,7 @@ import {
   sessionResponse,
 } from "./auth.js";
 import { Store, permissionsFor, publicUser, stripChannelKey } from "./store.js";
+import { publicToken, buildPricing, userGroupsView } from "./dto.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { formatQuota } from "./quota.js";
 import { registerMore } from "./more-routes.js";
@@ -102,18 +102,16 @@ export function adminRouter(): Router<Env> {
 
   r.get("/api/pricing", async (c) => {
     const s = store(c);
-    const models = await s.enabledModels("default");
-    const modelRatio = JSON.parse((await s.option("ModelRatio")) || "{}") as Record<string, number>;
-    const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
-    return apiOk(
-      models.map((m) => ({
-        model_name: m,
-        quota_type: 0,
-        model_ratio: modelRatio[m] ?? 1,
-        model_price: ((modelRatio[m] ?? 1) / quotaPerUnit) * 500000,
-        owner_by: "edge-api",
-      })),
-    );
+    const session = await readSession(c, s);
+    const pricing = await buildPricing(s, session?.group || "");
+    return apiOkExtra(pricing.data, {
+      vendors: pricing.vendors,
+      group_ratio: pricing.group_ratio,
+      usable_group: pricing.usable_group,
+      supported_endpoint: pricing.supported_endpoint,
+      auto_groups: pricing.auto_groups,
+      pricing_version: pricing.pricing_version,
+    });
   });
 
   r.get("/api/channel/types", () => apiOk(CHANNEL_TYPES.filter((t) => t.id > 0)));
@@ -286,17 +284,15 @@ export function adminRouter(): Router<Env> {
 
   r.get("/api/user/groups", async (c) => {
     const s = store(c);
-    const groups = await s.uniqueGroups();
-    const data: Record<string, { ratio: number; desc: string }> = {};
-    for (const g of groups) data[g] = { ratio: 1, desc: g };
-    return apiOk(data);
+    const session = await readSession(c, s);
+    return apiOk(await userGroupsView(s, session?.group || ""));
   });
 
   r.get("/api/user/self/groups", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return apiOk({ [u.group || "default"]: { ratio: 1, desc: u.group || "default" } });
+    return apiOk(await userGroupsView(s, u.group || "default"));
   });
 
   r.get("/api/user/aff", async (c) => {
@@ -471,13 +467,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
     const { items, total } = await s.listTokens(u.id, q.offset, q.page_size);
-    return apiOk(
-      pageData(
-        items.map((t) => ({ ...t, key: "sk-" + maskKey(t.key) })),
-        total,
-        q,
-      ),
-    );
+    return apiOk(pageData(items.map(publicToken), total, q));
   });
 
   r.get("/api/token/:id", async (c) => {
@@ -486,7 +476,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const t = await s.getTokenById(Number(c.params.id), u.id);
     if (!t) return apiFail("令牌不存在");
-    return apiOk({ ...t, key: "sk-" + maskKey(t.key) });
+    return apiOk(publicToken(t));
   });
 
   r.post("/api/token/:id/key", async (c) => {
@@ -511,6 +501,8 @@ export function adminRouter(): Router<Env> {
       model_limits?: string;
       allow_ips?: string;
       group?: string;
+      auto_groups?: string[];
+      cross_group_retry?: boolean;
     };
     const key = generateTokenKey();
     const id = await s.insertToken({
@@ -524,6 +516,8 @@ export function adminRouter(): Router<Env> {
       model_limits: body.model_limits || "",
       allow_ips: body.allow_ips || "",
       group: body.group || "",
+      auto_groups: Array.isArray(body.auto_groups) ? JSON.stringify(body.auto_groups) : "",
+      cross_group_retry: body.cross_group_retry ? 1 : 0,
       status: TOKEN_ENABLED,
     });
     return apiOk({ id, key: displayTokenKey(key) }, "创建成功");
@@ -541,6 +535,8 @@ export function adminRouter(): Router<Env> {
     }
     if (body.unlimited_quota != null) patch.unlimited_quota = body.unlimited_quota ? 1 : 0;
     if (body.model_limits_enabled != null) patch.model_limits_enabled = body.model_limits_enabled ? 1 : 0;
+    if (body.cross_group_retry != null) patch.cross_group_retry = body.cross_group_retry ? 1 : 0;
+    if (body.auto_groups != null) patch.auto_groups = Array.isArray(body.auto_groups) ? JSON.stringify(body.auto_groups) : String(body.auto_groups);
     await s.updateToken(Number(body.id), u.id, patch);
     return apiOk(null, "更新成功");
   });
@@ -614,8 +610,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
-    if (u.role < ROLE_ROOT) return apiOk({ ...ch, key: maskKey(ch.key) });
-    return apiOk(ch);
+    return apiOk(stripChannelKey(ch));
   });
 
   r.post("/api/channel/:id/key", async (c) => {
@@ -653,6 +648,10 @@ export function adminRouter(): Router<Env> {
       openai_organization: String(ch.openai_organization || ""),
       test_model: String(ch.test_model || ""),
       settings: typeof ch.settings === "string" ? ch.settings : JSON.stringify(ch.settings || ""),
+      setting: typeof ch.setting === "string" ? ch.setting : JSON.stringify(ch.setting || ch.settings || ""),
+      other_info: String(ch.other_info || ""),
+      channel_info: typeof ch.channel_info === "string" ? ch.channel_info : JSON.stringify(ch.channel_info || ""),
+      balance: String(ch.balance ?? ""),
     });
     await s.audit(u.id, u.username, "channel.create", `create channel ${ch.name}`, clientIp(c.req));
     return apiOk({ id }, "创建成功");
@@ -687,6 +686,10 @@ export function adminRouter(): Router<Env> {
       "settings",
       "openai_organization",
       "test_model",
+      "setting",
+      "other_info",
+      "channel_info",
+      "balance",
     ]) {
       if (ch[k] != null) patch[k] = typeof ch[k] === "object" ? JSON.stringify(ch[k]) : ch[k];
     }

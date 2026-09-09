@@ -26,13 +26,66 @@ export async function topupInfo(store: Store): Promise<Record<string, unknown>> 
   const epay = await paymentEnabled(store, "epay");
   const creem = await paymentEnabled(store, "creem");
   const waffo = await paymentEnabled(store, "waffo");
+  const waffoPancake = (await store.optionBool("WaffoPancakeEnabled", false)) && waffo;
+  const complianceConfirmed = await store.optionBool("PaymentComplianceConfirmed", false);
+  const payMethods = complianceConfirmed
+    ? parseJson<Record<string, string>[]>(await store.option("PayMethods"), [
+        { name: "支付宝", icon: "SiAlipay", type: "alipay" },
+        { name: "微信", icon: "SiWechat", type: "wxpay" },
+        { name: "自定义1", icon: "LuCreditCard", type: "custom1", min_topup: "50" },
+      ])
+    : [];
+  const methods = [...payMethods];
+  const pushUnique = (type: string, method: Record<string, string>) => {
+    if (!methods.some((m) => m.type === type)) methods.push(method);
+  };
+  if (stripe) {
+    pushUnique("stripe", {
+      name: "Stripe",
+      type: "stripe",
+      color: "#635BFF",
+      min_topup: String(await store.optionNum("StripeMinTopUp", 1)),
+    });
+  }
+  if (waffoPancake) {
+    pushUnique("waffo_pancake", {
+      name: "Waffo Pancake",
+      type: "waffo_pancake",
+      color: "#F97316",
+      min_topup: String(await store.optionNum("WaffoPancakeMinTopUp", 1)),
+    });
+  }
+  if (waffo) {
+    pushUnique("waffo", {
+      name: "Waffo (Global Payment)",
+      type: "waffo",
+      color: "#3B82F6",
+      min_topup: String(await store.optionNum("WaffoMinTopUp", 1)),
+    });
+  }
   return {
-    enable_online_topup: stripe || epay || creem || waffo,
+    enable_online_topup: epay,
+    enable_stripe_topup: stripe,
+    enable_creem_topup: creem,
+    enable_waffo_topup: waffo,
+    enable_waffo_pancake_topup: waffoPancake,
+    enable_redemption: complianceConfirmed,
+    payment_compliance_confirmed: complianceConfirmed,
+    payment_compliance_terms_version: (await store.option("PaymentComplianceTermsVersion")) || "v1",
+    waffo_pay_methods: waffo ? parseJson(await store.option("WaffoPayMethods"), []) : null,
+    creem_products: parseJson(await store.option("CreemProducts"), []),
+    pay_methods: methods,
+    min_topup: await store.optionNum("MinTopup", 1),
+    stripe_min_topup: await store.optionNum("StripeMinTopUp", 1),
+    waffo_min_topup: await store.optionNum("WaffoMinTopUp", 1),
+    waffo_pancake_min_topup: await store.optionNum("WaffoPancakeMinTopUp", 1),
+    amount_options: parseJson<number[]>(await store.option("AmountOptions"), [10, 20, 50, 100, 200, 500]),
+    discount: parseJson<Record<string, number>>(await store.option("AmountDiscount"), {}),
+    topup_link: await store.option("TopUpLink"),
     stripe,
     epay,
     creem,
     waffo,
-    min_topup: await store.optionNum("MinTopup", 1),
     quota_per_unit: await store.optionNum("QuotaPerUnit", 500000),
     stripe_unit_price: await store.optionNum("StripeUnitPrice", 8),
     price: await store.optionNum("Price", 7.3),

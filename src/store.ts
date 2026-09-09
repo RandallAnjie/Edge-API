@@ -222,8 +222,8 @@ export class Store {
   async insertToken(t: Partial<TokenRow>): Promise<number> {
     const r = await this.db
       .prepare(
-        `INSERT INTO api_tokens (user_id, key, status, name, created_time, expired_time, remain_quota, unlimited_quota, model_limits_enabled, model_limits, allow_ips, "group")
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO api_tokens (user_id, key, status, name, created_time, expired_time, remain_quota, unlimited_quota, model_limits_enabled, model_limits, allow_ips, "group", auto_groups, cross_group_retry)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         t.user_id,
@@ -238,6 +238,8 @@ export class Store {
         t.model_limits ?? "",
         t.allow_ips ?? "",
         t.group ?? "",
+        t.auto_groups ?? "",
+        bool01(t.cross_group_retry),
       )
       .run();
     return Number(r.meta.last_row_id || 0);
@@ -300,8 +302,8 @@ export class Store {
   async insertChannel(c: Partial<ChannelRow>): Promise<number> {
     const r = await this.db
       .prepare(
-        `INSERT INTO channels (type, key, status, name, weight, created_time, base_url, other, models, "group", model_mapping, status_code_mapping, priority, auto_ban, tag, header_override, param_override, remark, settings, openai_organization, test_model)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO channels (type, key, status, name, weight, created_time, base_url, other, models, "group", model_mapping, status_code_mapping, priority, auto_ban, tag, header_override, param_override, remark, settings, openai_organization, test_model, balance, balance_updated_time, other_info, channel_info, setting)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         c.type ?? 1,
@@ -325,6 +327,11 @@ export class Store {
         c.settings ?? "",
         c.openai_organization ?? "",
         c.test_model ?? "",
+        c.balance ?? "",
+        c.balance_updated_time ?? 0,
+        c.other_info ?? "",
+        c.channel_info ?? "",
+        c.setting ?? "",
       )
       .run();
     return Number(r.meta.last_row_id || 0);
@@ -1454,6 +1461,16 @@ export class Store {
 }
 
 export function publicUser(u: UserRow): Record<string, unknown> {
+  const settingRaw = u.settings || "";
+  let sidebar_modules = "";
+  let stripe_customer = "";
+  try {
+    const parsed = JSON.parse(settingRaw || "{}") as Record<string, unknown>;
+    sidebar_modules = String(parsed.sidebar_modules || parsed.SidebarModules || "");
+    stripe_customer = String(parsed.stripe_customer || parsed.stripeCustomer || "");
+  } catch {
+    /* setting is not JSON */
+  }
   return {
     id: u.id,
     username: u.username,
@@ -1478,10 +1495,10 @@ export function publicUser(u: UserRow): Record<string, unknown> {
     inviter_id: u.inviter_id,
     linux_do_id: u.linuxdo_id || "",
     linuxdo_id: u.linuxdo_id || "",
-    setting: u.settings || "",
-    settings: u.settings || "",
-    stripe_customer: "",
-    sidebar_modules: "",
+    setting: settingRaw,
+    settings: settingRaw,
+    stripe_customer,
+    sidebar_modules,
     billing_preference: u.billing_preference || "quota",
     totp_enabled: Number(u.totp_enabled) === 1,
     email_verified: Number(u.email_verified) === 1,
@@ -1502,7 +1519,4 @@ export function permissionsFor(role: number): Record<string, unknown> {
   };
 }
 
-export function stripChannelKey(c: ChannelRow): Record<string, unknown> {
-  const { key: _k, ...rest } = c;
-  return { ...rest, key: "" };
-}
+export { publicToken, publicChannel, stripChannelKey } from "./dto.js";

@@ -25,9 +25,10 @@ import {
   oauthAuthorizeUrl,
   verifyTelegramLogin,
 } from "./oauth.js";
-import { generateTokenKey, maskKey, displayTokenKey } from "./crypto.js";
+import { generateTokenKey, displayTokenKey } from "./crypto.js";
+import { publicToken, verificationRequirements } from "./dto.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
-import { apiFail, apiOk, clientIp, json, pageData, pageQuery, readJson } from "./http.js";
+import { apiFail, apiFailCode, apiOk, clientIp, json, pageData, pageQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -151,7 +152,14 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
-    return apiOk({ enabled: Number(user?.totp_enabled) === 1 });
+    const enabled = Number(user?.totp_enabled) === 1;
+    const backup = String(user?.totp_backup || "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const data: Record<string, unknown> = { enabled, locked: false };
+    if (enabled) data.backup_codes_remaining = backup.length;
+    return apiOk(data);
   });
 
   r.post("/api/user/2fa/setup", async (c) => {
@@ -667,14 +675,18 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
     const { items, total } = await s.listTokens(u.id, q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
-    return apiOk(pageData(items.map((t) => ({ ...t, key: "sk-" + maskKey(t.key) })), total, q));
+    return apiOk(pageData(items.map(publicToken), total, q));
   });
 
   r.get("/api/token/auto-groups", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.uniqueGroups());
+    const { userAutoGroups } = await import("./dto.js");
+    return apiOk({
+      groups: await userAutoGroups(s, u.group || "default"),
+      max_count: await s.optionNum("MaxTokenAutoGroups", 5),
+    });
   });
 
   r.post("/api/token/batch", async (c) => {
@@ -1180,23 +1192,53 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
-    return apiOk({
-      totp: Number(user?.totp_enabled) === 1,
-      passkey: (await s.listPasskeys(u.id)).length > 0,
-      email: Boolean(user?.email),
-    });
+    if (!user) return apiFail("用户不存在");
+    const scope = c.url.searchParams.get("scope") || "";
+    const reqs = await verificationRequirements(s, user, scope);
+    if (!reqs.ok) return apiFailCode(reqs.message, reqs.code, reqs.status);
+    return apiOk(reqs.data);
   });
 
   r.post("/api/verify", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { method?: string; code?: string };
+    const body = (await readJson(c.req)) as { method?: string; scope?: string; code?: string; password?: string };
     const user = await s.getUserById(u.id);
-    if (body.method === "totp" && user && (await verifyTotp(user.totp_secret || "", body.code || ""))) {
-      return apiOk({ ok: true });
+    if (!user) return apiFail("用户不存在");
+    const method = body.method === "totp" ? "2fa" : body.method || "";
+    const scope = body.scope || "";
+    const reqs = await verificationRequirements(s, user, scope);
+    if (!reqs.ok) return apiFailCode(reqs.message, reqs.code, reqs.status);
+    const methods = (reqs.data.methods as { method: string; available: boolean }[]) || [];
+    if (!methods.some((m) => m.method === method && m.available)) {
+      return apiFailCode("This verification method is not allowed for this action.", "SECURITY_PROOF_METHOD_MISMATCH");
     }
-    return apiFail("校验失败");
+    if (method === "2fa") {
+      const totpOk = await verifyTotp(user.totp_secret || "", body.code || "");
+      const backup = totpOk ? { ok: false, rest: user.totp_backup || "" } : verifyBackupCode(user.totp_backup || "", body.code || "");
+      if (!totpOk && !backup.ok) return apiFailCode("Verification failed.", "SECURITY_VERIFICATION_FAILED");
+      if (backup.ok) await s.updateUser(user.id, { totp_backup: backup.rest });
+    } else if (method === "password") {
+      const { verifyPassword } = await import("./crypto.js");
+      if (!(await verifyPassword(body.password || "", user.password))) {
+        return apiFailCode("Verification failed.", "SECURITY_VERIFICATION_FAILED");
+      }
+    } else if (method === "passkey" || method === "oauth") {
+      return apiFailCode("Verification flow required.", "SECURITY_VERIFICATION_FLOW_REQUIRED", 400);
+    } else {
+      return apiFailCode("This verification method is not allowed for this action.", "SECURITY_PROOF_METHOD_MISMATCH");
+    }
+    const proof = randomHex(24);
+    const expires = nowSec() + 300;
+    await s.insertAuthFlow({
+      token: proof,
+      type: "security_proof",
+      user_id: u.id,
+      expires_at: expires,
+      payload: JSON.stringify({ method, scope }),
+    });
+    return apiOk({ proof_token: proof, expires_at: expires, method, scope, ok: true });
   });
 
   registerParity(r);
