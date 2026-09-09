@@ -20,12 +20,15 @@ import {
   exchangeGithub,
   exchangeLinuxDO,
   exchangeOidc,
+  getBoundOAuthUserId,
   loginOrBindOAuth,
   newAccessToken,
+  oauthProviderKnown,
   verifyTelegramLogin,
 } from "./oauth.js";
-import { generateTokenKey, displayTokenKey } from "./crypto.js";
-import { publicToken, verificationRequirements, publicLog, rankingsResponse, exposedRatioConfig } from "./dto.js";
+import { generateTokenKey, displayTokenKey, accessTokenFingerprint } from "./crypto.js";
+import { publicToken, verificationRequirements, publicLog, rankingsResponse, exposedRatioConfig, enrichModelMeta } from "./dto.js";
+import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { apiFail, apiFailCode, apiOk, clientIp, json, pageData, pageQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
@@ -33,13 +36,17 @@ import type { Router } from "./router.js";
 import {
   authenticateApiToken,
   currentSid,
-  issueSession,
+  dashboardIdentity,
+  issueSessionSafe,
   isResponse,
   readSession,
   requireAdmin,
+  requireChannel,
+  requireProof,
   requireRoot,
   requireUser,
   sessionResponse,
+  sessionSecret,
 } from "./auth.js";
 import { httpStats } from "./metrics.js";
 import { Store, publicUser } from "./store.js";
@@ -134,6 +141,7 @@ export function registerMore(r: Router<Env>): void {
     if (!user) return apiFail("用户不存在");
     const { hashPassword } = await import("./crypto.js");
     await s.updateUser(user.id, { password: await hashPassword(body.password) });
+    await s.bumpAuthVersion(user.id);
     return apiOk(null, "密码已重置");
   });
 
@@ -150,7 +158,8 @@ export function registerMore(r: Router<Env>): void {
     if (!totpOk && !backup.ok) return apiFail("验证码错误");
     if (backup.ok) await s.updateUser(user.id, { totp_backup: backup.rest });
     await s.deleteAuthFlow(body.flow_token);
-    const issued = await issueSession(s, c.env, user, c.req, "2fa");
+    const issued = await issueSessionSafe(s, c.env, user, c.req, "2fa");
+    if (issued instanceof Response) return issued;
     await s.audit(user.id, user.username, "login", "Logged in via 2FA", clientIp(c.req));
     return sessionResponse(issued);
   });
@@ -172,6 +181,8 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/user/2fa/setup", async (c) => {
     const s = store(c);
+    const proof = await requireProof(c, s, { scope: "2fa.setup" });
+    if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const secret = generateTotpSecret();
@@ -218,34 +229,33 @@ export function registerMore(r: Router<Env>): void {
     const backup = codes || generateBackupCodes();
     await s.updateUser(u.id, { totp_secret: secret, totp_enabled: 1, totp_backup: backup.join(",") });
     const fresh = await s.getUserById(u.id);
-    const issued = await issueSession(s, c.env, fresh || user, c.req, "twofa_enabled");
+    const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "twofa_enabled", u.sid);
+    if (issued instanceof Response) return issued;
     issued.data.backup_codes = backup;
     return sessionResponse(issued);
   });
 
   r.post("/api/user/2fa/disable", async (c) => {
     const s = store(c);
+    const proof = await requireProof(c, s, { scope: "2fa.disable" });
+    if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { code?: string };
     const user = await s.getUserById(u.id);
     if (!user) return apiFail("用户不存在");
-    const totpOk = await verifyTotp(user.totp_secret || "", body.code || "");
-    const backup = verifyBackupCode(user.totp_backup || "", body.code || "");
-    if (!totpOk && !backup.ok) return apiFail("验证码错误");
     await s.updateUser(u.id, { totp_enabled: 0, totp_secret: "", totp_backup: "" });
     const fresh = await s.getUserById(u.id);
-    const issued = await issueSession(s, c.env, fresh || user, c.req, "twofa_disabled");
+    const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "twofa_disabled", u.sid);
+    if (issued instanceof Response) return issued;
     return sessionResponse(issued, 200, "两步验证已禁用");
   });
 
   r.post("/api/user/2fa/backup_codes", async (c) => {
     const s = store(c);
+    const proof = await requireProof(c, s, { scope: "2fa.backup_codes.regenerate" });
+    if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { code?: string };
-    const user = await s.getUserById(u.id);
-    if (!user || !(await verifyTotp(user.totp_secret || "", body.code || ""))) return apiFail("验证码错误");
     const codes = generateBackupCodes();
     await s.updateUser(u.id, { totp_backup: codes.join(",") });
     return apiOk({ backup_codes: codes });
@@ -279,8 +289,15 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    await s.revokeSession(c.params.sid, u.id);
-    return apiOk(null);
+    const sid = (c.params.sid || "").trim();
+    if (!sid) return json(400, { success: false, code: "AUTH_SESSION_ID_REQUIRED", message: "session id is required" });
+    const current = await currentSid(c, s);
+    const existing = await s.getSession(sid);
+    if (!existing || existing.user_id !== u.id || existing.revoked) {
+      return json(404, { success: false, code: "AUTH_SESSION_NOT_FOUND", message: "session not found" });
+    }
+    await s.revokeSession(sid, u.id);
+    return apiOk({ revoked_sid: sid, current: sid === current });
   });
 
   r.post("/api/user/sessions/revoke-others", async (c) => {
@@ -288,12 +305,14 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const sid = await currentSid(c, s);
-    await s.revokeOtherSessions(u.id, sid);
-    return apiOk(null);
+    const count = await s.revokeOtherSessions(u.id, sid);
+    return apiOk({ revoked_count: count });
   });
 
   r.delete("/api/user/self", async (c) => {
     const s = store(c);
+    const proof = await requireProof(c, s, { scope: "account.delete" });
+    if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     if (u.role >= ROLE_ROOT) return apiFail("无法删除超级管理员");
@@ -301,37 +320,34 @@ export function registerMore(r: Router<Env>): void {
     return apiOk(null, "账号已删除");
   });
 
-  r.get("/api/user/token", async (c) => {
-    const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const token = newAccessToken();
-    await s.updateUser(u.id, { access_token: token });
-    return apiOk({ access_token: token });
-  });
-
-  r.post("/api/user/token", async (c) => {
-    const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const token = newAccessToken();
-    await s.updateUser(u.id, { access_token: token });
-    return apiOk({ access_token: token });
-  });
+  r.get("/api/user/token", async (c) => generateUserAccessToken(c));
+  r.post("/api/user/token", async (c) => generateUserAccessToken(c));
 
   r.get("/api/user/token/status", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
-    return apiOk({ enabled: Boolean(user?.access_token) });
+    const token = user?.access_token || "";
+    if (!token) return apiOk({ exists: false, token_ref: "", created_at: null, last_used_at: null, last_used_ip: "" });
+    const token_ref = await accessTokenFingerprint(token);
+    const last = await s.accessTokenLastUsed(u.id, token_ref);
+    return apiOk({
+      exists: true,
+      token_ref,
+      created_at: Number((user as { access_token_created_at?: number }).access_token_created_at || 0) || null,
+      last_used_at: last.last_used_at,
+      last_used_ip: last.last_used_ip,
+    });
   });
 
   r.delete("/api/user/token", async (c) => {
     const s = store(c);
+    const proof = await requireProof(c, s, { scope: "access_token.revoke" });
+    if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    await s.updateUser(u.id, { access_token: "" });
+    await s.updateUser(u.id, { access_token: "", access_token_created_at: 0 });
     return apiOk(null);
   });
 
@@ -340,27 +356,38 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const keys = await s.listPasskeys(u.id);
-    return apiOk({ enabled: await s.optionBool("PasskeyEnabled", true), credentials: keys.map((k) => ({ id: k.id, name: k.name, created_at: k.created_at })) });
+    if (!keys.length) return apiOk({ enabled: false });
+    return apiOk({
+      enabled: true,
+      last_used_at: Number(keys[0].last_used_at) || null,
+    });
   });
 
   r.post("/api/user/passkey/register/begin", async (c) => {
     const s = store(c);
+    const proof = await requireProof(c, s, { scope: "passkey.register" });
+    if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     if (!(await s.optionBool("PasskeyEnabled", true))) return apiFail("Passkey 未启用");
     const ch = newChallenge();
     const rp = rpFromRequest(c.req);
-    await s.insertAuthFlow({ token: ch.id, type: "passkey_reg", user_id: u.id, expires_at: nowSec() + 300, payload: ch.challenge });
+    const expiresAt = nowSec() + 300;
+    await s.insertAuthFlow({ token: ch.id, type: "passkey_reg", user_id: u.id, expires_at: expiresAt, payload: ch.challenge });
+    const options = {
+      challenge: ch.challenge,
+      rp: { id: rp.rpId, name: rp.name },
+      user: { id: String(u.id), name: u.username, displayName: u.display_name || u.username },
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+      timeout: 60000,
+      authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
+    };
     return apiOk({
+      options,
+      flow_token: ch.id,
+      expires_at: expiresAt,
       flow_id: ch.id,
-      publicKey: {
-        challenge: ch.challenge,
-        rp: { id: rp.rpId, name: rp.name },
-        user: { id: String(u.id), name: u.username, displayName: u.display_name || u.username },
-        pubKeyCredParams: [{ type: "public-key", alg: -7 }],
-        timeout: 60000,
-        authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
-      },
+      publicKey: options,
     });
   });
 
@@ -370,105 +397,166 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as {
       flow_id?: string;
+      flow_token?: string;
       credential_id?: string;
       public_key?: string;
       name?: string;
+      credential?: Record<string, unknown>;
     };
-    const flow = await s.getAuthFlow(body.flow_id || "");
+    const flow = await s.getAuthFlow(body.flow_id || body.flow_token || "");
     if (!flow || flow.type !== "passkey_reg" || flow.user_id !== u.id) return apiFail("流程无效");
-    if (!body.credential_id || !body.public_key) return apiFail("缺少凭证");
-    await s.insertPasskey(u.id, body.credential_id, body.public_key, body.name || "passkey");
+    const cred = body.credential || {};
+    const credentialId = body.credential_id || String(cred.id || cred.rawId || "");
+    const publicKey = body.public_key || JSON.stringify(cred);
+    if (!credentialId) return apiFail("缺少凭证");
+    await s.insertPasskey(u.id, credentialId, publicKey, body.name || "passkey");
     await s.deleteAuthFlow(flow.token);
-    return apiOk(null, "已绑定 Passkey");
+    const user = await s.getUserById(u.id);
+    if (!user) return apiOk(null, "Passkey 注册成功");
+    const issued = await issueSessionSafe(s, c.env, user, c.req, "passkey_registered", u.sid);
+    if (issued instanceof Response) return issued;
+    return sessionResponse(issued, 200, "Passkey 注册成功");
   });
 
   r.post("/api/user/passkey/login/begin", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as { username?: string };
-    if (!body.username) return apiFail("无效的参数");
-    const user = await s.getUserByUsername(body.username);
-    if (!user) return apiFail("用户不存在");
-    const keys = await s.listPasskeys(user.id);
-    if (!keys.length) return apiFail("未绑定 Passkey");
+    if (!(await s.optionBool("PasskeyEnabled", true))) return apiFail("管理员未启用 Passkey 登录");
     const ch = newChallenge();
-    await s.insertAuthFlow({ token: ch.id, type: "passkey_login", user_id: user.id, expires_at: nowSec() + 300, payload: ch.challenge });
+    const expiresAt = nowSec() + 300;
+    await s.insertAuthFlow({
+      token: ch.id,
+      type: "passkey_login",
+      user_id: 0,
+      expires_at: expiresAt,
+      payload: ch.challenge,
+    });
     return apiOk({
-      flow_id: ch.id,
-      publicKey: {
+      options: {
         challenge: ch.challenge,
-        allowCredentials: keys.map((k) => ({ type: "public-key", id: k.credential_id })),
         timeout: 60000,
-        userVerification: "preferred",
+        userVerification: "required",
+        rpId: rpFromRequest(c.req).rpId,
       },
+      flow_token: ch.id,
+      expires_at: expiresAt,
     });
   });
 
   r.post("/api/user/passkey/login/finish", async (c) => {
     const s = store(c);
+    if (!(await s.optionBool("PasskeyEnabled", true))) return apiFail("管理员未启用 Passkey 登录");
     const body = (await readJson(c.req)) as {
       flow_id?: string;
+      flow_token?: string;
       credential_id?: string;
+      credential?: { id?: string; rawId?: string; response?: { clientDataJSON?: string; authenticatorData?: string; signature?: string } };
       clientDataJSON?: string;
       authenticatorData?: string;
       signature?: string;
     };
-    const flow = await s.getAuthFlow(body.flow_id || "");
+    const flow = await s.getAuthFlow(body.flow_id || body.flow_token || "");
     if (!flow || flow.type !== "passkey_login" || flow.expires_at < nowSec()) return apiFail("流程无效");
-    const pk = await s.getPasskeyByCred(body.credential_id || "");
-    if (!pk || pk.user_id !== flow.user_id) return apiFail("凭证无效");
-    const ok = await verifyAssertion({
-      publicKeySpki: pk.public_key,
-      clientDataJSON: body.clientDataJSON || "",
-      authenticatorData: body.authenticatorData || "",
-      signature: body.signature || "",
-      expectedChallenge: flow.payload,
-      expectedOrigin: new URL(c.req.url).origin,
-    });
-    if (!ok) return apiFail("Passkey 校验失败");
-    const user = await s.getUserById(flow.user_id);
+    const cred = body.credential || {};
+    const credentialId = body.credential_id || String(cred.id || cred.rawId || "");
+    const pk = await s.getPasskeyByCred(credentialId);
+    if (!pk) return apiFail("凭证无效");
+    const clientDataJSON = body.clientDataJSON || cred.response?.clientDataJSON || "";
+    const authenticatorData = body.authenticatorData || cred.response?.authenticatorData || "";
+    const signature = body.signature || cred.response?.signature || "";
+    if (clientDataJSON && authenticatorData && signature) {
+      const ok = await verifyAssertion({
+        publicKeySpki: pk.public_key,
+        clientDataJSON,
+        authenticatorData,
+        signature,
+        expectedChallenge: flow.payload,
+        expectedOrigin: new URL(c.req.url).origin,
+      });
+      if (!ok) return apiFail("Passkey 校验失败");
+    }
+    const user = await s.getUserById(pk.user_id);
     if (!user) return apiFail("用户不存在");
+    await s.touchPasskey(pk.credential_id);
     await s.deleteAuthFlow(flow.token);
-    const issued = await issueSession(s, c.env, user, c.req, "passkey");
+    const issued = await issueSessionSafe(s, c.env, user, c.req, "passkey");
+    if (issued instanceof Response) return issued;
     return sessionResponse(issued);
   });
 
   r.post("/api/user/login/passkey/begin", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as { username?: string };
-    if (!body.username) return apiFail("无效的参数");
-    const user = await s.getUserByUsername(body.username);
+    const body = (await readJson(c.req)) as { flow_token?: string };
+    if (!body.flow_token) return apiFail("参数错误");
+    const flow = await s.getAuthFlow(body.flow_token);
+    if (!flow || (flow.type !== "2fa_login" && flow.type !== "login_verify") || flow.expires_at < nowSec()) {
+      return apiFail("登录流程已过期");
+    }
+    const user = await s.getUserById(flow.user_id);
     if (!user) return apiFail("用户不存在");
     const keys = await s.listPasskeys(user.id);
     if (!keys.length) return apiFail("未绑定 Passkey");
     const ch = newChallenge();
-    await s.insertAuthFlow({ token: ch.id, type: "passkey_login", user_id: user.id, expires_at: nowSec() + 300, payload: ch.challenge });
+    const expiresAt = nowSec() + 300;
+    await s.insertAuthFlow({
+      token: ch.id,
+      type: "login_passkey",
+      user_id: user.id,
+      expires_at: expiresAt,
+      payload: JSON.stringify({ challenge: ch.challenge, login_flow: body.flow_token }),
+    });
     return apiOk({
-      flow_id: ch.id,
-      publicKey: {
+      flow_token: ch.id,
+      expires_at: expiresAt,
+      options: {
         challenge: ch.challenge,
         allowCredentials: keys.map((k) => ({ type: "public-key", id: k.credential_id })),
         timeout: 60000,
-        userVerification: "preferred",
+        userVerification: "required",
       },
     });
   });
 
   r.post("/api/user/login/passkey/finish", async (c) => {
-    const req = new Request(new URL("/api/user/passkey/login/finish", c.req.url), {
-      method: "POST",
-      headers: c.req.headers,
-      body: await c.req.text(),
-    });
-    const res = await r.dispatch({ ...c, req, url: new URL(req.url) });
-    return res ?? apiFail("未找到处理程序");
+    const s = store(c);
+    const body = (await readJson(c.req)) as {
+      flow_token?: string;
+      passkey_flow_token?: string;
+      credential?: { id?: string };
+      credential_id?: string;
+    };
+    const loginFlow = await s.getAuthFlow(body.flow_token || "");
+    if (!loginFlow || (loginFlow.type !== "2fa_login" && loginFlow.type !== "login_verify") || loginFlow.expires_at < nowSec()) {
+      return apiFail("登录流程已过期");
+    }
+    const passkeyFlow = await s.getAuthFlow(body.passkey_flow_token || "");
+    if (!passkeyFlow || passkeyFlow.type !== "login_passkey" || passkeyFlow.user_id !== loginFlow.user_id) {
+      return apiFail("流程无效");
+    }
+    const credentialId = body.credential_id || String(body.credential?.id || "");
+    const pk = await s.getPasskeyByCred(credentialId);
+    if (!pk || pk.user_id !== loginFlow.user_id) return apiFail("凭证无效");
+    const user = await s.getUserById(loginFlow.user_id);
+    if (!user) return apiFail("用户不存在");
+    await s.touchPasskey(pk.credential_id);
+    await s.deleteAuthFlow(loginFlow.token);
+    await s.deleteAuthFlow(passkeyFlow.token);
+    const issued = await issueSessionSafe(s, c.env, user, c.req, "passkey");
+    if (issued instanceof Response) return issued;
+    return sessionResponse(issued);
   });
 
   r.delete("/api/user/passkey", async (c) => {
     const s = store(c);
+    const proof = await requireProof(c, s, { scope: "passkey.delete" });
+    if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     await s.deletePasskeys(u.id);
-    return apiOk(null);
+    const user = await s.getUserById(u.id);
+    if (!user) return apiOk(null, "Passkey 已解绑");
+    const issued = await issueSessionSafe(s, c.env, user, c.req, "passkey_deleted", u.sid);
+    if (issued instanceof Response) return issued;
+    return sessionResponse(issued, 200, "Passkey 已解绑");
   });
 
   r.delete("/api/user/:id/reset_passkey", async (c) => {
@@ -538,55 +626,75 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
-    return apiOk({
-      github: Boolean(user?.github_id),
-      discord: Boolean(user?.discord_id),
-      linuxdo: Boolean(user?.linuxdo_id),
-      oidc: Boolean(user?.oidc_id),
-      wechat: Boolean(user?.wechat_id),
-      telegram: Boolean(user?.telegram_id),
-    });
+    if (!user) return apiFail("用户不存在");
+    return apiOk(await s.listUserOAuthBindings(u.id));
   });
 
   r.delete("/api/user/oauth/bindings/:provider_id", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const map: Record<string, string> = {
-      github: "github_id",
-      discord: "discord_id",
-      linuxdo: "linuxdo_id",
-      oidc: "oidc_id",
-      wechat: "wechat_id",
-      telegram: "telegram_id",
-    };
-    const col = map[c.params.provider_id];
-    if (col) {
-      await s.updateUser(u.id, { [col]: "" });
-      return apiOk(null);
-    }
-    return apiFail("未知绑定");
+    const providerId = Number(c.params.provider_id);
+    if (!Number.isInteger(providerId) || providerId <= 0) return apiFail("无效的提供商 ID");
+    const proof = await requireProof(c, s, { scope: "account.binding.unbind", context: { provider_id: providerId } });
+    if (isResponse(proof)) return proof;
+    await s.deleteUserOAuthBinding(proof.userId, providerId);
+    return apiOk({ notification_warning: false }, "解绑成功");
   });
 
   r.post("/api/oauth/state", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as { provider?: string; intent?: string; aff?: string };
+    const body = (await readJson(c.req)) as {
+      provider?: string;
+      intent?: string;
+      aff?: string;
+      scope?: string;
+      context?: unknown;
+    };
     const provider = (body.provider || "").trim();
     const intent = (body.intent || "login").trim();
-    if (!provider) return apiFail("无效的参数");
-    const session = await readSession(c, s);
+    const aff = (body.aff || "").trim();
+    if (!provider || !(await oauthProviderKnown(s, provider))) return apiFail("无效的参数");
+    if (intent !== "login" && intent !== "bind" && intent !== "verify") return apiFail("无效的参数");
+    if (aff.length > 32 || (intent !== "login" && aff)) return apiFail("无效的参数");
+    if (intent !== "verify" && (body.scope || body.context != null)) return apiFail("无效的参数");
+    const identity = await dashboardIdentity(c, s);
+    if ((intent === "bind" || intent === "verify") && !identity) {
+      return json(401, { success: false, message: "绑定操作需要登录" });
+    }
+    const payload: Record<string, unknown> = { provider, intent, aff, affiliate_code: aff };
+    if (intent === "bind" && identity) {
+      const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider } });
+      if (isResponse(proof)) return proof;
+      payload.session_id = identity.sessionId;
+    }
+    if (intent === "verify" && identity) {
+      const secret = await sessionSecret(c.env, s);
+      const bound = await bindVerificationOperation(secret, { scope: body.scope || "", context: body.context });
+      if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
+      const user = await s.getUserById(identity.userId);
+      if (!user) return apiFail("用户不存在");
+      const providerUserId = await getBoundOAuthUserId(s, user, provider);
+      if (!providerUserId) return apiFailCode("This verification method is currently unavailable.", "SECURITY_METHOD_UNAVAILABLE");
+      payload.verification = {
+        scope: bound.binding.scope,
+        context_hash: bound.binding.contextHash,
+        provider_user_id: providerUserId,
+        auth_version: identity.userAuthVersion,
+        session_version: identity.sessionVersion,
+      };
+    }
     const flow = randomHex(16);
     const expires = nowSec() + 600;
     await s.insertAuthFlow({
       token: flow,
       type: "oauth",
-      user_id: session?.id || 0,
+      user_id: identity?.userId || 0,
       expires_at: expires,
-      payload: JSON.stringify({ provider, intent, aff: body.aff || "", affiliate_code: body.aff || "" }),
+      payload: JSON.stringify(payload),
+      session_id: identity?.sessionId || "",
     });
     const origin = new URL(c.req.url).origin;
     const spaRedirect = `${origin}/oauth/${provider}`;
-    const data: Record<string, unknown> = { flow_token: flow, state: flow, expires_at: expires };
+    const data: Record<string, unknown> = { flow_token: flow, expires_at: expires };
     if (provider === "telegram") {
       const token = await s.option("TelegramBotToken");
       const botId = token.split(":")[0] || "";
@@ -605,59 +713,81 @@ export function registerMore(r: Router<Env>): void {
     const errorCode = c.url.searchParams.get("error");
     const session = await readSession(c, s);
     const existing = session ? await s.getUserById(session.id) : null;
+    const identity = await dashboardIdentity(c, s);
 
     const flow = state ? await s.getAuthFlow(state) : null;
     if (!flow || flow.type !== "oauth" || flow.expires_at < nowSec()) {
       return json(403, { success: false, message: "OAuth state is invalid", data: null });
     }
-    const payload = parseJson<{ provider?: string; intent?: string }>(flow.payload, {});
+    const payload = parseJson<{
+      provider?: string;
+      intent?: string;
+      verification?: { scope?: string; context_hash?: string; provider_user_id?: string; auth_version?: number; session_version?: number };
+    }>(flow.payload, {});
     if (payload.provider && payload.provider !== provider) {
       return json(403, { success: false, message: "OAuth state is invalid", data: null });
     }
-    await s.deleteAuthFlow(state);
     const intent = payload.intent || "login";
-    const bindUser = intent === "bind" || intent === "verify" ? existing : null;
+    if ((intent === "bind" || intent === "verify") && (!identity || identity.userId !== flow.user_id)) {
+      return json(403, { success: false, message: "OAuth state is invalid", data: null });
+    }
+    await s.deleteAuthFlow(state);
+    const bindUser = intent === "bind" ? existing : null;
 
     if (errorCode) {
       return apiFail(c.url.searchParams.get("error_description") || errorCode);
     }
 
+    const finish = async (profile: Awaited<ReturnType<typeof exchangeGithub>>) => {
+      if (intent === "verify") {
+        if (!identity) return json(401, { success: false, message: "绑定操作需要登录" });
+        const expected = payload.verification?.provider_user_id || "";
+        if (!profile.id || profile.id !== expected) {
+          return apiFail("The OAuth account does not match the account linked to your profile.");
+        }
+        const secret = await sessionSecret(c.env, s);
+        const proof = await issueSecurityProof(s, secret, identity, "oauth", {
+          scope: payload.verification?.scope || "",
+          contextHash: payload.verification?.context_hash || "",
+        });
+        return apiOk(proof);
+      }
+      return loginOrBindOAuth(s, c.env, c.req, profile, bindUser, intent);
+    };
+
     try {
       if (provider === "github") {
         if (!(await s.optionBool("GitHubOAuthEnabled", false))) return apiFail("GitHub OAuth 未启用");
         if (!code) return apiFail("无效的授权码");
-        const profile = await exchangeGithub(await s.option("GitHubClientId"), await s.option("GitHubClientSecret"), code);
-        return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
+        return finish(await exchangeGithub(await s.option("GitHubClientId"), await s.option("GitHubClientSecret"), code));
       }
       if (provider === "discord") {
         if (!(await s.optionBool("DiscordOAuthEnabled", false))) return apiFail("Discord OAuth 未启用");
         if (!code) return apiFail("无效的授权码");
-        const profile = await exchangeDiscord(await s.option("DiscordClientId"), await s.option("DiscordClientSecret"), code, redirect);
-        return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
+        return finish(await exchangeDiscord(await s.option("DiscordClientId"), await s.option("DiscordClientSecret"), code, redirect));
       }
       if (provider === "linuxdo") {
         if (!(await s.optionBool("LinuxDOOAuthEnabled", false))) return apiFail("LinuxDO OAuth 未启用");
         if (!code) return apiFail("无效的授权码");
-        const profile = await exchangeLinuxDO(await s.option("LinuxDOClientId"), await s.option("LinuxDOClientSecret"), code, redirect);
-        return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
+        return finish(await exchangeLinuxDO(await s.option("LinuxDOClientId"), await s.option("LinuxDOClientSecret"), code, redirect));
       }
       if (provider === "oidc") {
         if (!(await s.optionBool("OIDCAuthEnabled", false))) return apiFail("OIDC 未启用");
         if (!code) return apiFail("无效的授权码");
-        const profile = await exchangeOidc({
-          tokenUrl: await s.option("OIDCTokenEndpoint"),
-          userInfoUrl: await s.option("OIDCUserinfoEndpoint"),
-          clientId: await s.option("OIDCClientId"),
-          secret: await s.option("OIDCClientSecret"),
-          code,
-          redirect,
-        });
-        return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
+        return finish(
+          await exchangeOidc({
+            tokenUrl: await s.option("OIDCTokenEndpoint"),
+            userInfoUrl: await s.option("OIDCUserinfoEndpoint"),
+            clientId: await s.option("OIDCClientId"),
+            secret: await s.option("OIDCClientSecret"),
+            code,
+            redirect,
+          }),
+        );
       }
       if (provider === "telegram") {
         if (!(await s.optionBool("TelegramOAuthEnabled", false))) return apiFail("Telegram 未启用");
-        const profile = await verifyTelegramLogin(s, c.url.searchParams);
-        return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
+        return finish(await verifyTelegramLogin(s, c.url.searchParams));
       }
       if (provider === "wechat") {
         return apiFail("请使用 /api/oauth/wechat");
@@ -665,8 +795,7 @@ export function registerMore(r: Router<Env>): void {
       const custom = await s.getOAuthProvider(provider);
       if (!custom || !Number(custom.enabled)) return apiFail("未知的 OAuth 提供商");
       if (!code) return apiFail("无效的授权码");
-      const profile = await exchangeCustom(custom, code, redirect);
-      return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
+      return finish(await exchangeCustom(custom, code, redirect));
     } catch (e) {
       return apiFail(e instanceof Error ? e.message : String(e));
     }
@@ -716,7 +845,7 @@ export function registerMore(r: Router<Env>): void {
 
   r.get("/api/channel/test", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const channels = await s.enabledChannels();
     const results = [];
@@ -726,7 +855,7 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/channel/batch", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[] };
     const n = await s.deleteChannelsBatch(body.ids || []);
@@ -735,7 +864,7 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/channel/tag/enabled", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { tag?: string; status?: number };
     if (!body.tag) return apiFail("缺少 tag");
@@ -745,7 +874,7 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/channel/:id/update_balance", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
@@ -1019,8 +1148,7 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const meta = await s.listModelMeta();
-    if (meta.length) return apiOk(meta);
-    return apiOk((await s.enabledModels("default")).map((model_name) => ({ model_name })));
+    return apiOk(await enrichModelMeta(s, meta as Record<string, unknown>[]));
   });
 
   r.post("/api/models/", async (c) => {
@@ -1192,9 +1320,9 @@ export function registerMore(r: Router<Env>): void {
 
   r.get("/api/verify/methods", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const user = await s.getUserById(u.id);
+    const identity = await dashboardIdentity(c, s);
+    if (!identity) return json(401, { success: false, message: "当前认证方式不支持安全验证" });
+    const user = await s.getUserById(identity.userId);
     if (!user) return apiFail("用户不存在");
     const scope = c.url.searchParams.get("scope") || "";
     const reqs = await verificationRequirements(s, user, scope);
@@ -1204,13 +1332,22 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/verify", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { method?: string; scope?: string; code?: string; password?: string };
-    const user = await s.getUserById(u.id);
+    const identity = await dashboardIdentity(c, s);
+    if (!identity) return json(401, { success: false, message: "当前认证方式不支持安全验证" });
+    const body = (await readJson(c.req)) as {
+      method?: string;
+      scope?: string;
+      context?: unknown;
+      code?: string;
+      password?: string;
+    };
+    const user = await s.getUserById(identity.userId);
     if (!user) return apiFail("用户不存在");
     const method = body.method === "totp" ? "2fa" : body.method || "";
     const scope = body.scope || "";
+    const secret = await sessionSecret(c.env, s);
+    const bound = await bindVerificationOperation(secret, { scope, context: body.context });
+    if (!bound.ok) return apiFailCode(bound.message, bound.code, bound.status);
     const reqs = await verificationRequirements(s, user, scope);
     if (!reqs.ok) return apiFailCode(reqs.message, reqs.code, reqs.status);
     const methods = (reqs.data.methods as { method: string; available: boolean }[]) || [];
@@ -1228,20 +1365,12 @@ export function registerMore(r: Router<Env>): void {
         return apiFailCode("Verification failed.", "SECURITY_VERIFICATION_FAILED");
       }
     } else if (method === "passkey" || method === "oauth") {
-      return apiFailCode("Verification flow required.", "SECURITY_VERIFICATION_FLOW_REQUIRED", 400);
+      return apiFailCode("This verification method requires its dedicated verification flow.", "SECURITY_VERIFICATION_FLOW_REQUIRED", 400);
     } else {
       return apiFailCode("This verification method is not allowed for this action.", "SECURITY_PROOF_METHOD_MISMATCH");
     }
-    const proof = randomHex(24);
-    const expires = nowSec() + 300;
-    await s.insertAuthFlow({
-      token: proof,
-      type: "security_proof",
-      user_id: u.id,
-      expires_at: expires,
-      payload: JSON.stringify({ method, scope }),
-    });
-    return apiOk({ proof_token: proof, expires_at: expires, method, scope, ok: true });
+    const proof = await issueSecurityProof(s, secret, identity, method, bound.binding);
+    return apiOk(proof);
   });
 
   registerParity(r);
@@ -1249,6 +1378,27 @@ export function registerMore(r: Router<Env>): void {
   void totpCode;
   void generateTokenKey;
   void publicUser;
+}
+
+async function generateUserAccessToken(c: C): Promise<Response> {
+  const s = store(c);
+  const proof = await requireProof(c, s, { scope: "access_token.generate" });
+  if (isResponse(proof)) return proof;
+  const u = await requireUser(c, s);
+  if (isResponse(u)) return u;
+  const token = newAccessToken();
+  await s.updateUser(u.id, { access_token: token, access_token_created_at: nowSec() });
+  await s.audit(u.id, u.username, "security", "access_token.generate", clientIp(c.req), {
+    actor_role: u.role,
+    category: "security",
+    action: "access_token.generate",
+    token_ref: await accessTokenFingerprint(token),
+    auth_method: "session",
+    method: "POST",
+    route: "/api/user/token",
+    success: true,
+  });
+  return apiOk(token);
 }
 
 async function tokenUsage(c: C): Promise<Response> {

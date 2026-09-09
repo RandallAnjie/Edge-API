@@ -13,6 +13,7 @@ import {
   nowSec,
   parseBool,
 } from "./constants.js";
+import { permissionDeltas } from "./authz.js";
 import { CHANNEL_TYPES } from "./catalog.js";
 import {
   generateAffCode,
@@ -22,14 +23,18 @@ import {
   hashPassword,
   verifyPassword,
 } from "./crypto.js";
-import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, pageData, pageQuery, readJson } from "./http.js";
+import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, json, pageData, pageQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
-  issueSession,
+  issueSessionSafe,
   isResponse,
   readSession,
+  refreshLoginSession,
   requireAdmin,
+  requireChannel,
+  requirePermission,
+  requireProof,
   requireRoot,
   requireUser,
   sessionResponse,
@@ -37,7 +42,6 @@ import {
 import { Store, permissionsFor, publicUser, stripChannelKey } from "./store.js";
 import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, dashboardListModels, channelListModels, publicOptions } from "./dto.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
-import { formatQuota } from "./quota.js";
 import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
 import type { Env, UserRow } from "./types.js";
@@ -137,7 +141,7 @@ export function adminRouter(): Router<Env> {
         type: totp ? "2fa_login" : "login_verify",
         user_id: user.id,
         expires_at: expires,
-        payload: JSON.stringify({ login_method: "password" }),
+        payload: JSON.stringify({ login_method: "password", auth_version: Number(user.auth_version || 1) || 1 }),
       });
       const methods = [];
       if (totp) methods.push({ method: "2fa", available: true });
@@ -150,7 +154,8 @@ export function adminRouter(): Router<Env> {
         methods,
       });
     }
-    const issued = await issueSession(s, c.env, user, c.req, "password");
+    const issued = await issueSessionSafe(s, c.env, user, c.req, "password");
+    if (issued instanceof Response) return issued;
     await s.audit(user.id, user.username, "login", "Logged in successfully via password", clientIp(c.req));
     return sessionResponse(issued);
   });
@@ -170,15 +175,10 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/user/auth/refresh", async (c) => {
     const s = store(c);
-    const { authUnauthorized, authSessionMismatch } = await import("./auth.js");
-    const u = await readSession(c, s);
-    if (!u) return authUnauthorized();
     const expected = (c.req.headers.get("X-Auth-Session") || "").trim();
-    if (expected && u.sid && expected !== u.sid) return authSessionMismatch();
-    const user = await s.getUserById(u.id);
-    if (!user) return authUnauthorized();
-    const issued = await issueSession(s, c.env, user, c.req, "password", u.sid || undefined);
-    return sessionResponse(issued);
+    const result = await refreshLoginSession(s, c.env, c.req, expected);
+    if (!result.ok) return result.response;
+    return sessionResponse(result.issued);
   });
 
   r.get("/api/user/login/encryption-key", async (c) => {
@@ -244,7 +244,8 @@ export function adminRouter(): Router<Env> {
       }
     }
     const user = await s.getUserById(id);
-    const issued = await issueSession(s, c.env, user!, c.req, "password");
+    const issued = await issueSessionSafe(s, c.env, user!, c.req, "password");
+    if (issued instanceof Response) return issued;
     return sessionResponse(issued);
   });
 
@@ -254,12 +255,9 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
     if (!user) return apiFail("用户不存在");
-    const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
-    const display = await s.optionBool("DisplayInCurrency", true);
     return apiOk({
       ...publicUser(user),
-      permissions: permissionsFor(user.role),
-      quota_display: formatQuota(user.quota, quotaPerUnit, display),
+      permissions: permissionsFor(user),
     });
   });
 
@@ -273,11 +271,19 @@ export function adminRouter(): Router<Env> {
     if (body.password) {
       const user = await s.getUserById(u.id);
       if (!user) return apiFail("用户不存在");
-      if (user.password && body.original_password) {
-        if (!(await verifyPassword(body.original_password, user.password))) return apiFail("原密码错误");
-      }
+      const firstPassword = !user.password;
+      const scope = firstPassword ? "account.password.set" : "account.password.change";
+      const proof = await requireProof(c, s, { scope });
+      if (isResponse(proof)) return proof;
       if (body.password.length < 8) return apiFail("密码长度必须在 8 到 128 之间");
       patch.password = await hashPassword(body.password);
+      await s.updateUser(u.id, patch);
+      await s.bumpAuthVersion(u.id);
+      const fresh = await s.getUserById(u.id);
+      const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "password_changed", u.sid);
+      if (issued instanceof Response) return issued;
+      issued.data.has_password = true;
+      return sessionResponse(issued);
     }
     await s.updateUser(u.id, patch);
     return apiOk(null, "更新成功");
@@ -412,7 +418,11 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Partial<UserRow> & { id?: number; password?: string };
+    const body = (await readJson(c.req)) as Partial<UserRow> & {
+      id?: number;
+      password?: string;
+      admin_permissions?: Record<string, Record<string, boolean>>;
+    };
     if (!body.id) return apiFail("无效的参数");
     const target = await s.getUserById(body.id);
     if (!target) return apiFail("用户不存在");
@@ -423,7 +433,20 @@ export function adminRouter(): Router<Env> {
     }
     if (body.password) patch.password = await hashPassword(body.password);
     if (body.role != null && body.role < u.role) patch.role = body.role;
+    if (body.admin_permissions) {
+      if (u.role < ROLE_ROOT) return apiFail("only root can update admin permissions");
+      const targetRole = Number(patch.role ?? target.role);
+      if (targetRole < ROLE_ADMIN) {
+        await s.clearUserCasbinPolicies(body.id);
+        patch.admin_permissions = "";
+      } else {
+        const deltas = permissionDeltas(targetRole, body.admin_permissions);
+        await s.setUserCasbinPolicies(body.id, deltas);
+        patch.admin_permissions = JSON.stringify(deltas);
+      }
+    }
     await s.updateUser(body.id, patch);
+    if (body.password) await s.bumpAuthVersion(body.id);
     return apiOk(null, "更新成功");
   });
 
@@ -583,7 +606,7 @@ export function adminRouter(): Router<Env> {
 
   r.slash("GET", "/api/channel/", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
     const statusParam = c.url.searchParams.get("status");
@@ -598,13 +621,17 @@ export function adminRouter(): Router<Env> {
       group: c.url.searchParams.get("group") || undefined,
       status,
       type: typeStr ? Number(typeStr) : undefined,
+      tag_mode: c.url.searchParams.get("tag_mode") === "true",
+      sort_by: c.url.searchParams.get("sort_by") || undefined,
+      sort_order: c.url.searchParams.get("sort_order") || undefined,
+      id_sort: c.url.searchParams.get("id_sort") === "true",
     });
     return apiOk(pageData(items.map(stripChannelKey), total, q, { type_counts }));
   });
 
   r.get("/api/channel/search", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
     const { items, total, type_counts } = await s.listChannels({
@@ -617,28 +644,28 @@ export function adminRouter(): Router<Env> {
 
   r.get("/api/channel/models", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     return apiOk(channelListModels());
   });
 
   r.get("/api/channel/models_enabled", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     return apiOk(await s.enabledModelsAll());
   });
 
   r.get("/api/channel/ops", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     return apiOk({ retry_times: await s.optionNum("RetryTimes", 3) });
   });
 
   r.get("/api/channel/:id", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
@@ -647,16 +674,23 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/channel/:id/key", async (c) => {
     const s = store(c);
+    const channelId = Number(c.params.id);
+    if (!Number.isInteger(channelId) || channelId <= 0) {
+      return json(400, { success: false, code: "SECURITY_CONTEXT_INVALID", message: "The action details are invalid." });
+    }
+    const proof = await requireProof(c, s, { scope: "channel.key.read", context: { channel_id: channelId } });
+    if (isResponse(proof)) return proof;
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const ch = await s.getChannel(Number(c.params.id));
+    const ch = await s.getChannel(channelId);
     if (!ch) return apiFail("渠道不存在");
-    return apiOk({ key: ch.key });
+    await s.audit(u.id, u.username, "channel.key_view", `view channel key ${ch.name}`, clientIp(c.req));
+    return apiOk({ key: ch.key }, "获取成功");
   });
 
   r.slash("POST", "/api/channel/", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as Record<string, unknown>;
     const ch = (body.channel || body) as Record<string, unknown>;
@@ -691,7 +725,7 @@ export function adminRouter(): Router<Env> {
 
   r.slash("PUT", "/api/channel/", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as Record<string, unknown>;
     const ch = (body.channel || body) as Record<string, unknown>;
@@ -731,7 +765,7 @@ export function adminRouter(): Router<Env> {
 
   r.slash("DELETE", "/api/channel/:id/", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     await s.deleteChannel(Number(c.params.id));
     return apiOk(null);
@@ -739,7 +773,7 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/channel/:id/status", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { status?: number };
     await s.updateChannel(Number(c.params.id), { status: Number(body.status) });
@@ -748,7 +782,7 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/channel/status/batch", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[]; status?: number };
     for (const id of body.ids || []) await s.updateChannel(id, { status: Number(body.status) });
@@ -757,7 +791,7 @@ export function adminRouter(): Router<Env> {
 
   r.delete("/api/channel/disabled", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const n = await s.deleteDisabledChannels();
     return apiOk({ count: n });
@@ -765,7 +799,7 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/channel/copy/:id", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
@@ -775,7 +809,7 @@ export function adminRouter(): Router<Env> {
 
   r.get("/api/channel/test/:id", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
@@ -785,7 +819,7 @@ export function adminRouter(): Router<Env> {
 
   r.get("/api/channel/fetch_models/:id", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
@@ -799,7 +833,7 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/channel/fetch_models", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { type?: number; key?: string; base_url?: string };
     try {
@@ -1031,10 +1065,34 @@ export function adminRouter(): Router<Env> {
 
   r.get("/api/audit", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requirePermission(c, s, "audit", "read");
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listAudit(q.offset, q.page_size);
+    if (q.page < 1 || q.page_size < 1 || q.page > 100000000) return apiFail("Invalid audit pagination");
+    const category = c.url.searchParams.get("category") || "";
+    const tokenRef = c.url.searchParams.get("token_ref") || "";
+    const exclude = c.url.searchParams.get("exclude_token_ref") || "";
+    if (category && !["login", "security", "operation", "access_token"].includes(category)) return apiFail("Invalid audit filters");
+    if ((tokenRef && !/^[0-9a-f]{64}$/.test(tokenRef)) || (exclude && !/^[0-9a-f]{64}$/.test(exclude))) {
+      return apiFail("Invalid audit filters");
+    }
+    const start = Number(c.url.searchParams.get("start_timestamp") || 0);
+    const end = Number(c.url.searchParams.get("end_timestamp") || 0);
+    if ((c.url.searchParams.get("start_timestamp") && start < 0) || (c.url.searchParams.get("end_timestamp") && end < 0) || (end > 0 && end < start)) {
+      return apiFail("Invalid audit time range");
+    }
+    const successRaw = c.url.searchParams.get("success") || "";
+    if (successRaw && successRaw !== "true" && successRaw !== "false") return apiFail("Invalid audit result");
+    const { items, total } = await s.listAudit(q.offset, q.page_size, {
+      username: c.url.searchParams.get("username") || "",
+      category,
+      token_ref: tokenRef,
+      exclude_token_ref: exclude,
+      request_id: c.url.searchParams.get("request_id") || "",
+      start_timestamp: start,
+      end_timestamp: end,
+      success: successRaw === "" ? undefined : successRaw === "true",
+    });
     return apiOk(pageData(items, total, q));
   });
 
@@ -1043,7 +1101,8 @@ export function adminRouter(): Router<Env> {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listAudit(q.offset, q.page_size, u.id);
+    if (q.page < 1 || q.page_size < 1 || q.page > 100000000) return apiFail("Invalid audit pagination");
+    const { items, total } = await s.listAudit(q.offset, q.page_size, { userId: u.id });
     return apiOk(pageData(items, total, q));
   });
 

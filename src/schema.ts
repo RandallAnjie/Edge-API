@@ -31,7 +31,10 @@ CREATE TABLE IF NOT EXISTS users (
   aff_count INTEGER NOT NULL DEFAULT 0,
   aff_history_quota INTEGER NOT NULL DEFAULT 0,
   billing_preference TEXT NOT NULL DEFAULT 'quota',
-  email_verified INTEGER NOT NULL DEFAULT 0
+  email_verified INTEGER NOT NULL DEFAULT 0,
+  auth_version INTEGER NOT NULL DEFAULT 1,
+  admin_permissions TEXT NOT NULL DEFAULT '',
+  access_token_created_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS api_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,12 +125,25 @@ CREATE TABLE IF NOT EXISTS redemptions (
 );
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL DEFAULT '',
   user_id INTEGER NOT NULL DEFAULT 0,
   username TEXT NOT NULL DEFAULT '',
+  actor_role INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   type TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT '',
+  token_ref TEXT NOT NULL DEFAULT '',
+  auth_method TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  user_agent TEXT NOT NULL DEFAULT '',
+  method TEXT NOT NULL DEFAULT '',
+  route TEXT NOT NULL DEFAULT '',
+  status INTEGER NOT NULL DEFAULT 0,
+  success INTEGER NOT NULL DEFAULT 1,
+  request_id TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL DEFAULT '',
-  ip TEXT NOT NULL DEFAULT ''
+  other TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS quota_data (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,14 +192,43 @@ CREATE TABLE IF NOT EXISTS login_sessions (
   ip TEXT NOT NULL DEFAULT '',
   ua TEXT NOT NULL DEFAULT '',
   revoked INTEGER NOT NULL DEFAULT 0,
-  login_method TEXT NOT NULL DEFAULT 'password'
+  login_method TEXT NOT NULL DEFAULT 'password',
+  refresh_hash TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 1,
+  user_auth_version INTEGER NOT NULL DEFAULT 1,
+  last_refresh_hash TEXT NOT NULL DEFAULT '',
+  last_rotated_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS auth_flows (
   token TEXT PRIMARY KEY,
   type TEXT NOT NULL DEFAULT '',
   user_id INTEGER NOT NULL DEFAULT 0,
   expires_at INTEGER NOT NULL DEFAULT 0,
-  payload TEXT NOT NULL DEFAULT ''
+  payload TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL DEFAULT '',
+  consumed_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS casbin_rule (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ptype TEXT NOT NULL DEFAULT 'p',
+  v0 TEXT NOT NULL DEFAULT '',
+  v1 TEXT NOT NULL DEFAULT '',
+  v2 TEXT NOT NULL DEFAULT '',
+  v3 TEXT NOT NULL DEFAULT '',
+  v4 TEXT NOT NULL DEFAULT '',
+  v5 TEXT NOT NULL DEFAULT '',
+  UNIQUE(ptype, v0, v1, v2, v3, v4, v5)
+);
+CREATE TABLE IF NOT EXISTS authz_roles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  built_in INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  sort INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS email_codes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -277,6 +322,7 @@ CREATE TABLE IF NOT EXISTS oauth_providers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL DEFAULT '',
   slug TEXT NOT NULL UNIQUE,
+  icon TEXT NOT NULL DEFAULT '',
   client_id TEXT NOT NULL DEFAULT '',
   client_secret TEXT NOT NULL DEFAULT '',
   auth_url TEXT NOT NULL DEFAULT '',
@@ -286,13 +332,23 @@ CREATE TABLE IF NOT EXISTS oauth_providers (
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS user_oauth_bindings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  provider_id INTEGER NOT NULL,
+  provider_user_id TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(user_id, provider_id),
+  UNIQUE(provider_id, provider_user_id)
+);
 CREATE TABLE IF NOT EXISTS passkeys (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
   credential_id TEXT NOT NULL UNIQUE,
   public_key TEXT NOT NULL,
   name TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL DEFAULT 0
+  created_at INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS model_meta (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -301,7 +357,13 @@ CREATE TABLE IF NOT EXISTS model_meta (
   vendor_id INTEGER NOT NULL DEFAULT 0,
   icon TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL DEFAULT 0
+  endpoints TEXT NOT NULL DEFAULT '',
+  status INTEGER NOT NULL DEFAULT 1,
+  sync_official INTEGER NOT NULL DEFAULT 1,
+  name_rule INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  created_time INTEGER NOT NULL DEFAULT 0,
+  updated_time INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_plugins (
   key TEXT PRIMARY KEY,
@@ -368,8 +430,33 @@ const USER_ALTERS = [
   "ALTER TABLE users ADD COLUMN aff_history_quota INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN billing_preference TEXT NOT NULL DEFAULT 'quota'",
   "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE users ADD COLUMN admin_permissions TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN access_token_created_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE audit_logs ADD COLUMN event_id TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE audit_logs ADD COLUMN actor_role INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE audit_logs ADD COLUMN category TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE audit_logs ADD COLUMN action TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE audit_logs ADD COLUMN token_ref TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE audit_logs ADD COLUMN auth_method TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE audit_logs ADD COLUMN user_agent TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE audit_logs ADD COLUMN method TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE audit_logs ADD COLUMN route TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE audit_logs ADD COLUMN status INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE audit_logs ADD COLUMN success INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE audit_logs ADD COLUMN request_id TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE audit_logs ADD COLUMN other TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE oauth_providers ADD COLUMN icon TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE passkeys ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE auth_flows ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE auth_flows ADD COLUMN consumed_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE channels ADD COLUMN balance TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE login_sessions ADD COLUMN login_method TEXT NOT NULL DEFAULT 'password'",
+  "ALTER TABLE login_sessions ADD COLUMN refresh_hash TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE login_sessions ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE login_sessions ADD COLUMN user_auth_version INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE login_sessions ADD COLUMN last_refresh_hash TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE login_sessions ADD COLUMN last_rotated_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE api_tokens ADD COLUMN auto_groups TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE api_tokens ADD COLUMN cross_group_retry INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE channels ADD COLUMN balance_updated_time INTEGER NOT NULL DEFAULT 0",
@@ -382,6 +469,12 @@ const USER_ALTERS = [
   "ALTER TABLE quota_data ADD COLUMN token_id INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE quota_data ADD COLUMN channel_id INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE quota_data ADD COLUMN node_name TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE model_meta ADD COLUMN endpoints TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE model_meta ADD COLUMN status INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE model_meta ADD COLUMN sync_official INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE model_meta ADD COLUMN name_rule INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE model_meta ADD COLUMN created_time INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE model_meta ADD COLUMN updated_time INTEGER NOT NULL DEFAULT 0",
 ];
 
 import type { D1Database } from "./types.js";
@@ -398,6 +491,16 @@ export async function ensureSchema(db: D1Database): Promise<void> {
       /* column already exists on fresh installs */
     }
   }
+  const now = Math.floor(Date.now() / 1000);
+  await db.exec(
+    `INSERT OR IGNORE INTO casbin_rule (ptype, v0, v1, v2, v3, v4, v5) VALUES ('p', 'role:admin', 'channel', 'read', 'allow', '', '');
+     INSERT OR IGNORE INTO casbin_rule (ptype, v0, v1, v2, v3, v4, v5) VALUES ('p', 'role:admin', 'channel', 'operate', 'allow', '', '');
+     INSERT OR IGNORE INTO casbin_rule (ptype, v0, v1, v2, v3, v4, v5) VALUES ('p', 'role:admin', 'channel', 'write', 'allow', '', '');
+     INSERT OR IGNORE INTO authz_roles (key, name, description, built_in, enabled, sort, created_at, updated_at)
+       VALUES ('root', 'Root', 'Built-in root authorization role', 1, 1, 0, ${now}, ${now});
+     INSERT OR IGNORE INTO authz_roles (key, name, description, built_in, enabled, sort, created_at, updated_at)
+       VALUES ('admin', 'Admin', 'Built-in admin authorization role', 1, 1, 10, ${now}, ${now});`,
+  );
   schemaReady = true;
 }
 

@@ -7,7 +7,7 @@ function b64url(data: ArrayBuffer | Uint8Array): string {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function b64urlToBytes(s: string): Uint8Array {
+export function b64urlToBytes(s: string): Uint8Array {
   const pad = "=".repeat((4 - (s.length % 4)) % 4);
   const b64 = (s + pad).replace(/-/g, "+").replace(/_/g, "/");
   const bin = atob(b64);
@@ -164,11 +164,202 @@ export async function sha256Bytes(input: string | Uint8Array): Promise<Uint8Arra
   return new Uint8Array(await crypto.subtle.digest("SHA-256", data as BufferSource));
 }
 
-export async function hmacSha256Hex(secret: string | Uint8Array, message: string): Promise<string> {
+export async function hmacSha256Raw(secret: string | Uint8Array, message: string | Uint8Array): Promise<Uint8Array> {
   const keyData = typeof secret === "string" ? new TextEncoder().encode(secret) : secret;
   const key = await crypto.subtle.importKey("raw", keyData as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
+  const msg = typeof message === "string" ? new TextEncoder().encode(message) : message;
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, msg as BufferSource));
+}
+
+export async function hmacSha256Hex(secret: string | Uint8Array, message: string): Promise<string> {
+  const sig = await hmacSha256Raw(secret, message);
   return [...sig].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function authSigningKey(sessionSecret: string, purpose: string): Promise<Uint8Array> {
+  return hmacSha256Raw(sessionSecret, `new-api/auth/${purpose}/v1`);
+}
+
+export function bytesToHex(bytes: Uint8Array): string {
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function hashRefreshSecret(sessionSecret: string, secret: string): Promise<string> {
+  return bytesToHex(await hmacSha256Raw(await authSigningKey(sessionSecret, "refresh"), secret));
+}
+
+export async function deriveNextRefreshSecret(sessionSecret: string, sid: string, currentSecret: string): Promise<string> {
+  return bytesToHex(await hmacSha256Raw(await authSigningKey(sessionSecret, "refresh-rotate"), `${sid}.${currentSecret}`));
+}
+
+const KEY_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+export function randomCharsKey(length: number): string {
+  const out: string[] = [];
+  const buf = new Uint8Array(length * 2);
+  crypto.getRandomValues(buf);
+  for (let i = 0; out.length < length && i < buf.length; i++) {
+    if (buf[i] >= KEY_CHARS.length * Math.floor(256 / KEY_CHARS.length)) continue;
+    out.push(KEY_CHARS[buf[i] % KEY_CHARS.length]);
+  }
+  while (out.length < length) {
+    const extra = crypto.getRandomValues(new Uint8Array(1))[0];
+    out.push(KEY_CHARS[extra % KEY_CHARS.length]);
+  }
+  return out.join("");
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function splitRefreshToken(raw: string): { sid: string; secret: string } | null {
+  const trimmed = raw.trim();
+  const dot = trimmed.indexOf(".");
+  if (dot <= 0) return null;
+  const sid = trimmed.slice(0, dot);
+  const secret = trimmed.slice(dot + 1);
+  if (!sid || !secret || secret.includes(".")) return null;
+  if (!UUID_RE.test(sid)) return null;
+  return { sid, secret };
+}
+
+export const AUTH_TOKEN_ISS = "new-api";
+export const AUTH_TOKEN_AUD = "new-api-dashboard";
+export const ACCESS_TOKEN_USE = "access";
+export const SECURITY_PROOF_TOKEN_USE = "security_proof";
+
+export function randomOpaqueToken(byteLen = 32): string {
+  return b64url(crypto.getRandomValues(new Uint8Array(byteLen)));
+}
+
+export async function authFlowTokenHash(sessionSecret: string, token: string): Promise<string> {
+  return hmacSha256Hex(`auth-flow-v1:${sessionSecret}`, token);
+}
+
+export async function verificationContextHash(sessionSecret: string, payload: string): Promise<string> {
+  const key = await authSigningKey(sessionSecret, "verification-context");
+  return bytesToHex(await hmacSha256Raw(key, payload));
+}
+
+export async function accessTokenFingerprint(token: string): Promise<string> {
+  const trimmed = token.replace(/ +$/, "");
+  if (!trimmed) return "";
+  return bytesToHex(await sha256Bytes(trimmed));
+}
+
+export interface AccessJwtPayload {
+  token_use: string;
+  sid: string;
+  uv: number;
+  sv: number;
+  iss: string;
+  sub: string;
+  aud: string;
+  exp: number;
+  nbf: number;
+  iat: number;
+  jti: string;
+}
+
+export async function signAccessJwt(
+  sessionSecret: string,
+  identity: { userId: number; sid: string; userAuthVersion: number; sessionVersion: number },
+  now: number,
+  exp: number,
+): Promise<string> {
+  const header = b64url(new TextEncoder().encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
+  const payload: AccessJwtPayload = {
+    token_use: ACCESS_TOKEN_USE,
+    sid: identity.sid,
+    uv: identity.userAuthVersion,
+    sv: identity.sessionVersion,
+    iss: AUTH_TOKEN_ISS,
+    sub: String(identity.userId),
+    aud: AUTH_TOKEN_AUD,
+    exp,
+    nbf: now - 5,
+    iat: now,
+    jti: crypto.randomUUID(),
+  };
+  const body = b64url(new TextEncoder().encode(JSON.stringify(payload)));
+  const key = await authSigningKey(sessionSecret, "access");
+  const sig = b64url(await hmacSha256Raw(key, `${header}.${body}`));
+  return `${header}.${body}.${sig}`;
+}
+
+export async function verifyAccessJwt(token: string, sessionSecret: string): Promise<AccessJwtPayload | null> {
+  return verifyAuthJwt<AccessJwtPayload>(token, sessionSecret, "access", ACCESS_TOKEN_USE);
+}
+
+export interface SecurityProofJwtPayload extends AccessJwtPayload {
+  method: string;
+  scopes: string[];
+  context_hash: string;
+}
+
+export async function signSecurityProofJwt(
+  sessionSecret: string,
+  identity: { userId: number; sid: string; userAuthVersion: number; sessionVersion: number },
+  extra: { method: string; scopes: string[]; contextHash: string; jti: string },
+  now: number,
+  exp: number,
+): Promise<string> {
+  const header = b64url(new TextEncoder().encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
+  const payload: SecurityProofJwtPayload = {
+    token_use: SECURITY_PROOF_TOKEN_USE,
+    sid: identity.sid,
+    uv: identity.userAuthVersion,
+    sv: identity.sessionVersion,
+    method: extra.method,
+    scopes: extra.scopes,
+    context_hash: extra.contextHash,
+    iss: AUTH_TOKEN_ISS,
+    sub: String(identity.userId),
+    aud: AUTH_TOKEN_AUD,
+    exp,
+    nbf: now - 5,
+    iat: now,
+    jti: extra.jti,
+  };
+  const body = b64url(new TextEncoder().encode(JSON.stringify(payload)));
+  const key = await authSigningKey(sessionSecret, "security_proof");
+  const sig = b64url(await hmacSha256Raw(key, `${header}.${body}`));
+  return `${header}.${body}.${sig}`;
+}
+
+export async function verifySecurityProofJwt(token: string, sessionSecret: string): Promise<SecurityProofJwtPayload | null> {
+  const payload = await verifyAuthJwt<SecurityProofJwtPayload>(token, sessionSecret, "security_proof", SECURITY_PROOF_TOKEN_USE);
+  if (!payload) return null;
+  if (!payload.method || !Array.isArray(payload.scopes) || payload.scopes.length !== 1 || !payload.context_hash || !payload.jti) {
+    return null;
+  }
+  return payload;
+}
+
+async function verifyAuthJwt<T extends AccessJwtPayload>(
+  token: string,
+  sessionSecret: string,
+  purpose: string,
+  expectedUse: string,
+): Promise<T | null> {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [header, body, sig] = parts;
+  const key = await authSigningKey(sessionSecret, purpose);
+  const expected = b64url(await hmacSha256Raw(key, `${header}.${body}`));
+  if (!timingSafeEqualStr(expected, sig)) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(body))) as T;
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.token_use !== expectedUse) return null;
+    if (payload.iss !== AUTH_TOKEN_ISS) return null;
+    if (payload.aud !== AUTH_TOKEN_AUD) return null;
+    if (!payload.sid || !payload.sub || payload.uv <= 0 || payload.sv <= 0) return null;
+    if (payload.exp + 5 < now) return null;
+    if (payload.nbf - 5 > now) return null;
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
 export async function md5Hex(message: string): Promise<string> {

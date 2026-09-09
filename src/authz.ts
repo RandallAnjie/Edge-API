@@ -125,12 +125,68 @@ export function permissionCatalog(): {
   };
 }
 
-export function capabilities(role: number): Record<string, Record<string, boolean>> {
+export function capabilities(
+  role: number,
+  overrides?: Record<string, Record<string, boolean>> | null,
+): Record<string, Record<string, boolean>> {
   if (role >= 100) return grantsFor("root", true);
-  if (role >= 10) return grantsFor("admin", false);
-  const empty: Record<string, Record<string, boolean>> = {};
-  for (const resource of RESOURCES) {
-    empty[resource.resource] = Object.fromEntries(resource.actions.map((a) => [a.action, false]));
+  if (role < 10) {
+    const empty: Record<string, Record<string, boolean>> = {};
+    for (const resource of RESOURCES) {
+      empty[resource.resource] = Object.fromEntries(resource.actions.map((a) => [a.action, false]));
+    }
+    return empty;
   }
-  return empty;
+  const base = grantsFor("admin", false);
+  if (!overrides) return base;
+  const merged: Record<string, Record<string, boolean>> = {};
+  for (const resource of RESOURCES) {
+    merged[resource.resource] = { ...base[resource.resource] };
+    const ov = overrides[resource.resource];
+    if (!ov) continue;
+    for (const action of resource.actions) {
+      if (typeof ov[action.action] === "boolean") merged[resource.resource][action.action] = ov[action.action];
+    }
+  }
+  return merged;
+}
+
+export function parsePermissionOverrides(raw: string | undefined | null): Record<string, Record<string, boolean>> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as Record<string, Record<string, boolean>>;
+  } catch {
+    return null;
+  }
+}
+
+export function permissionDeltas(
+  role: number,
+  desired: Record<string, Record<string, boolean>>,
+): Record<string, Record<string, boolean>> {
+  const base = capabilities(role, null);
+  const deltas: Record<string, Record<string, boolean>> = {};
+  for (const resource of RESOURCES) {
+    const want = desired[resource.resource];
+    if (!want) continue;
+    for (const action of resource.actions) {
+      if (typeof want[action.action] !== "boolean") continue;
+      if (base[resource.resource]?.[action.action] === want[action.action]) continue;
+      if (!deltas[resource.resource]) deltas[resource.resource] = {};
+      deltas[resource.resource][action.action] = want[action.action];
+    }
+  }
+  return deltas;
+}
+
+export function can(
+  user: { role: number; admin_permissions?: string },
+  resource: string,
+  action: string,
+): boolean {
+  if (user.role >= 100) return true;
+  const matrix = capabilities(user.role, parsePermissionOverrides(user.admin_permissions));
+  return matrix[resource]?.[action] === true;
 }

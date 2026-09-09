@@ -1,5 +1,5 @@
 import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_CREATED } from "./channel-models.js";
-import { parseJson } from "./constants.js";
+import { csv, parseJson } from "./constants.js";
 import { maskKey, md5Hex } from "./crypto.js";
 import type { Store } from "./store.js";
 import type { ChannelRow, LogRow, TokenRow, UserRow } from "./types.js";
@@ -423,6 +423,73 @@ export function formatLogOtherJSON(value: string, visibility: LogVisibility): st
     delete out.root_info;
   }
   return JSON.stringify(out);
+}
+
+export function publicModelMeta(
+  row: Record<string, unknown>,
+  extra: {
+    bound_channels?: { name: string; type: number }[];
+    enable_groups?: string[];
+    quota_types?: number[];
+    configured_channel_count?: number;
+    square_state?: string;
+  } = {},
+): Record<string, unknown> {
+  const endpointsRaw = String(row.endpoints || "");
+  const supported = parseJson<string[]>(endpointsRaw, []);
+  const created = Number(row.created_time || row.created_at || 0);
+  return {
+    id: row.id,
+    model_name: row.model_name,
+    description: row.description || "",
+    icon: row.icon || "",
+    tags: row.tags || "",
+    vendor_id: Number(row.vendor_id || 0),
+    endpoints: endpointsRaw,
+    supported_endpoints: supported.length ? supported : undefined,
+    status: row.status == null ? 1 : Number(row.status),
+    sync_official: row.sync_official == null ? 1 : Number(row.sync_official),
+    created_time: created,
+    updated_time: Number(row.updated_time || created),
+    name_rule: Number(row.name_rule || 0),
+    has_metadata: true,
+    configured_channel_count: extra.configured_channel_count ?? extra.bound_channels?.length ?? 0,
+    square_state: extra.square_state || (extra.configured_channel_count ? "visible" : "hidden"),
+    bound_channels: extra.bound_channels,
+    enable_groups: extra.enable_groups,
+    quota_types: extra.quota_types,
+  };
+}
+
+export async function enrichModelMeta(store: Store, rows: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+  const channels = await store.enabledChannels();
+  const byModel = new Map<string, { name: string; type: number; groups: Set<string> }[]>();
+  for (const ch of channels) {
+    const groups = String(ch.group || "default")
+      .split(",")
+      .map((g) => g.trim())
+      .filter(Boolean);
+    for (const name of csv(ch.models || "")) {
+      if (!byModel.has(name)) byModel.set(name, []);
+      byModel.get(name)!.push({ name: ch.name, type: ch.type, groups: new Set(groups) });
+    }
+  }
+  return rows.map((row) => {
+    const modelName = String(row.model_name || "");
+    const bound = byModel.get(modelName) || [];
+    const enable_groups = [...new Set(bound.flatMap((b) => [...b.groups]))];
+    const configured = bound.length;
+    let square_state = "hidden";
+    if (configured > 0) square_state = "visible";
+    if (Number(row.status) === 0) square_state = "hidden";
+    return publicModelMeta(row, {
+      bound_channels: bound.map((b) => ({ name: b.name, type: b.type })),
+      enable_groups,
+      quota_types: [0],
+      configured_channel_count: configured,
+      square_state,
+    });
+  });
 }
 
 export function consumeLogOther(opts: {

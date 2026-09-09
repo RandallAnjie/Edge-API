@@ -6,11 +6,11 @@ import {
   TOKEN_ENABLED,
   USER_ENABLED,
   csv,
-  dayStartSec,
+  hourStartSec,
   nowSec,
   parseJson,
 } from "./constants.js";
-import { capabilities } from "./authz.js";
+import { capabilities, parsePermissionOverrides } from "./authz.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
 import type {
   ChannelRow,
@@ -31,6 +31,18 @@ function num(v: unknown, d = 0): number {
 function bool01(v: unknown): number {
   if (v === true || v === 1 || v === "1" || v === "true") return 1;
   return 0;
+}
+
+const CHANNEL_SORT_COLUMNS = new Set(["id", "name", "priority", "balance", "response_time", "test_time"]);
+
+function channelOrderSql(sortBy?: string, sortOrder?: string, idSort?: boolean): string {
+  const col = String(sortBy || "").toLowerCase().trim();
+  if (CHANNEL_SORT_COLUMNS.has(col)) {
+    const dir = String(sortOrder || "").toLowerCase() === "asc" ? "ASC" : "DESC";
+    return `${col} ${dir}`;
+  }
+  if (idSort) return "id DESC";
+  return "priority DESC";
 }
 
 export class Store {
@@ -386,6 +398,10 @@ export class Store {
     group?: string;
     status?: number;
     type?: number;
+    tag_mode?: boolean;
+    sort_by?: string;
+    sort_order?: string;
+    id_sort?: boolean;
   }): Promise<{ items: ChannelRow[]; total: number; type_counts: Record<string, number> }> {
     const where: string[] = ["1=1"];
     const binds: unknown[] = [];
@@ -400,22 +416,50 @@ export class Store {
     }
     if (opts.status === CHANNEL_ENABLED) where.push("status = 1");
     else if (opts.status === 0) where.push("status != 1");
+    const countWhere = where.join(" AND ");
+    const countBinds = [...binds];
     if (opts.type != null && opts.type >= 0) {
       where.push("type = ?");
       binds.push(opts.type);
     }
     const w = where.join(" AND ");
+    const counts = await this.db
+      .prepare(`SELECT type, COUNT(*) as c FROM channels WHERE ${countWhere} GROUP BY type`)
+      .bind(...countBinds)
+      .all<{ type: number; c: number }>();
+    const type_counts: Record<string, number> = {};
+    for (const r of counts.results) type_counts[String(r.type)] = num(r.c);
+    const order = channelOrderSql(opts.sort_by, opts.sort_order, opts.id_sort);
+    if (opts.tag_mode) {
+      const tagWhere = `${w} AND tag != ''`;
+      const totalRow = await this.db
+        .prepare(`SELECT COUNT(DISTINCT tag) as c FROM channels WHERE ${tagWhere}`)
+        .bind(...binds)
+        .first<{ c: number }>();
+      const { results: tagRows } = await this.db
+        .prepare(`SELECT DISTINCT tag FROM channels WHERE ${tagWhere} ORDER BY tag LIMIT ? OFFSET ?`)
+        .bind(...binds, opts.limit, opts.offset)
+        .all<{ tag: string }>();
+      const tags = tagRows.map((r) => r.tag).filter(Boolean);
+      let items: ChannelRow[] = [];
+      if (tags.length) {
+        const ph = tags.map(() => "?").join(",");
+        const { results } = await this.db
+          .prepare(`SELECT * FROM channels WHERE ${w} AND tag IN (${ph}) ORDER BY ${order}`)
+          .bind(...binds, ...tags)
+          .all<ChannelRow>();
+        items = results;
+      }
+      return { items, total: num(totalRow?.c), type_counts };
+    }
     const totalRow = await this.db
       .prepare(`SELECT COUNT(*) as c FROM channels WHERE ${w}`)
       .bind(...binds)
       .first<{ c: number }>();
     const { results } = await this.db
-      .prepare(`SELECT * FROM channels WHERE ${w} ORDER BY priority DESC, id DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM channels WHERE ${w} ORDER BY ${order} LIMIT ? OFFSET ?`)
       .bind(...binds, opts.limit, opts.offset)
       .all<ChannelRow>();
-    const counts = await this.db.prepare("SELECT type, COUNT(*) as c FROM channels GROUP BY type").all<{ type: number; c: number }>();
-    const type_counts: Record<string, number> = {};
-    for (const r of counts.results) type_counts[String(r.type)] = num(r.c);
     return { items: results, total: num(totalRow?.c), type_counts };
   }
 
@@ -595,11 +639,22 @@ export class Store {
     return { quota: num(row?.quota), rpm: num(rpmRow?.c), tpm: num(rpmRow?.t) };
   }
 
-  async bumpQuotaData(user: UserRow, model: string, quota: number, tokens: number): Promise<void> {
-    const day = dayStartSec();
+  async bumpQuotaData(
+    user: UserRow,
+    model: string,
+    quota: number,
+    tokens: number,
+    extra: { useGroup?: string; tokenId?: number; channelId?: number } = {},
+  ): Promise<void> {
+    const hour = hourStartSec();
+    const useGroup = extra.useGroup || user.group || "default";
+    const tokenId = extra.tokenId || 0;
+    const channelId = extra.channelId || 0;
     const existing = await this.db
-      .prepare("SELECT id FROM quota_data WHERE user_id = ? AND model_name = ? AND created_at = ?")
-      .bind(user.id, model, day)
+      .prepare(
+        "SELECT id FROM quota_data WHERE user_id = ? AND model_name = ? AND created_at = ? AND use_group = ? AND token_id = ? AND channel_id = ?",
+      )
+      .bind(user.id, model, hour, useGroup, tokenId, channelId)
       .first<{ id: number }>();
     if (existing) {
       await this.db
@@ -610,29 +665,41 @@ export class Store {
     }
     await this.db
       .prepare(
-        "INSERT INTO quota_data (user_id, username, model_name, created_at, quota, token_used, count, use_group, token_id, channel_id, node_name) VALUES (?, ?, ?, ?, ?, ?, 1, '', 0, 0, 'workerd')",
+        "INSERT INTO quota_data (user_id, username, model_name, created_at, quota, token_used, count, use_group, token_id, channel_id, node_name) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'workerd')",
       )
-      .bind(user.id, user.username, model, day, quota, tokens)
+      .bind(user.id, user.username, model, hour, quota, tokens, useGroup, tokenId, channelId)
       .run();
   }
 
   async quotaDates(userId: number | null, start: number, end: number, username = ""): Promise<unknown[]> {
-    const where = ["created_at >= ?", "created_at <= ?"];
-    const binds: unknown[] = [start, end];
     if (userId) {
-      where.push("user_id = ?");
-      binds.push(userId);
+      const { results } = await this.db
+        .prepare(
+          `SELECT user_id, username, model_name, created_at, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+           FROM quota_data WHERE user_id = ? AND created_at >= ? AND created_at <= ?
+           GROUP BY user_id, username, model_name, created_at ORDER BY created_at`,
+        )
+        .bind(userId, start, end)
+        .all();
+      return results;
     }
     if (username) {
-      where.push("username = ?");
-      binds.push(username);
+      const { results } = await this.db
+        .prepare(
+          `SELECT user_id, username, model_name, created_at, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+           FROM quota_data WHERE username = ? AND created_at >= ? AND created_at <= ?
+           GROUP BY user_id, username, model_name, created_at ORDER BY created_at`,
+        )
+        .bind(username, start, end)
+        .all();
+      return results;
     }
     const { results } = await this.db
       .prepare(
-        `SELECT created_at, model_name, username, use_group, token_id, channel_id, node_name, SUM(quota) as quota, SUM(token_used) as token_used, SUM(count) as count
-         FROM quota_data WHERE ${where.join(" AND ")} GROUP BY created_at, model_name, username, use_group, token_id, channel_id, node_name ORDER BY created_at`,
+        `SELECT model_name, created_at, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+         FROM quota_data WHERE created_at >= ? AND created_at <= ? GROUP BY model_name, created_at ORDER BY created_at`,
       )
-      .bind(...binds)
+      .bind(start, end)
       .all();
     return results;
   }
@@ -640,16 +707,22 @@ export class Store {
   async quotaDatesByUser(start: number, end: number): Promise<unknown[]> {
     const { results } = await this.db
       .prepare(
-        `SELECT user_id, username, SUM(quota) as quota, SUM(token_used) as token_used, SUM(count) as count
-         FROM quota_data WHERE created_at >= ? AND created_at <= ? GROUP BY user_id, username ORDER BY quota DESC`,
+        `SELECT username, created_at, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+         FROM quota_data WHERE created_at >= ? AND created_at <= ? GROUP BY username, created_at ORDER BY created_at`,
       )
       .bind(start, end)
       .all();
     return results;
   }
 
-  async flowQuotaDates(start: number, end: number, userId: number | null, username = ""): Promise<unknown[]> {
-    const where = ["created_at >= ?", "created_at <= ?"];
+  async flowQuotaDates(
+    start: number,
+    end: number,
+    userId: number | null,
+    username = "",
+    role = 0,
+  ): Promise<unknown[]> {
+    const where = ["use_group <> ''", "created_at >= ?", "created_at <= ?"];
     const binds: unknown[] = [start, end];
     if (userId) {
       where.push("user_id = ?");
@@ -659,14 +732,51 @@ export class Store {
       where.push("username = ?");
       binds.push(username);
     }
-    const { results } = await this.db
-      .prepare(
-        `SELECT created_at, model_name, username, quota, prompt_tokens, completion_tokens, token_id, channel_id
-         FROM request_logs WHERE ${where.join(" AND ")} ORDER BY created_at`,
-      )
-      .bind(...binds)
-      .all();
-    return results;
+    const w = where.join(" AND ");
+    let sql: string;
+    if (userId) {
+      sql = `SELECT token_id, use_group, model_name, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+             FROM quota_data WHERE ${w} GROUP BY token_id, use_group, model_name ORDER BY quota DESC`;
+    } else if (role >= 100) {
+      sql = `SELECT user_id, username, node_name, token_id, use_group, model_name, channel_id,
+                    SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+             FROM quota_data WHERE ${w}
+             GROUP BY user_id, username, node_name, token_id, use_group, model_name, channel_id ORDER BY quota DESC`;
+    } else {
+      sql = `SELECT user_id, username, use_group, model_name, channel_id,
+                    SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+             FROM quota_data WHERE ${w}
+             GROUP BY user_id, username, use_group, model_name, channel_id ORDER BY quota DESC`;
+    }
+    const { results } = await this.db.prepare(sql).bind(...binds).all<Record<string, unknown>>();
+    const tokenIds = [...new Set(results.map((r) => Number(r.token_id || 0)).filter(Boolean))];
+    const channelIds = [...new Set(results.map((r) => Number(r.channel_id || 0)).filter(Boolean))];
+    const tokenNames = new Map<number, string>();
+    const channelNames = new Map<number, string>();
+    if (tokenIds.length) {
+      const ph = tokenIds.map(() => "?").join(",");
+      const { results: tokens } = await this.db
+        .prepare(`SELECT id, name FROM api_tokens WHERE id IN (${ph})`)
+        .bind(...tokenIds)
+        .all<{ id: number; name: string }>();
+      for (const t of tokens) tokenNames.set(t.id, t.name);
+    }
+    if (channelIds.length) {
+      const ph = channelIds.map(() => "?").join(",");
+      const { results: channels } = await this.db
+        .prepare(`SELECT id, name FROM channels WHERE id IN (${ph})`)
+        .bind(...channelIds)
+        .all<{ id: number; name: string }>();
+      for (const ch of channels) channelNames.set(ch.id, ch.name);
+    }
+    return results.map((r) => {
+      const tokenId = Number(r.token_id || 0);
+      const channelId = Number(r.channel_id || 0);
+      const out: Record<string, unknown> = { ...r };
+      if (tokenId) out.token_name = tokenNames.get(tokenId) || `token-${tokenId}`;
+      if (channelId) out.channel_name = channelNames.get(channelId) || `channel-${channelId}`;
+      return out;
+    });
   }
 
   async insertRedemption(r: Partial<RedemptionRow>): Promise<number> {
@@ -742,25 +852,137 @@ export class Store {
     return Object.keys(ratios);
   }
 
-  async audit(userId: number, username: string, type: string, content: string, ip: string): Promise<void> {
+  async audit(
+    userId: number,
+    username: string,
+    type: string,
+    content: string,
+    ip: string,
+    extra: {
+      actor_role?: number;
+      category?: string;
+      action?: string;
+      token_ref?: string;
+      auth_method?: string;
+      user_agent?: string;
+      method?: string;
+      route?: string;
+      status?: number;
+      success?: boolean;
+      request_id?: string;
+      other?: string;
+    } = {},
+  ): Promise<void> {
+    const category = extra.category || type;
+    const action = extra.action || type;
     await this.db
-      .prepare("INSERT INTO audit_logs (user_id, username, created_at, type, content, ip) VALUES (?, ?, ?, ?, ?, ?)")
-      .bind(userId, username, nowSec(), type, content, ip)
+      .prepare(
+        `INSERT INTO audit_logs (
+          event_id, user_id, username, actor_role, created_at, type, category, action, token_ref,
+          auth_method, ip, user_agent, method, route, status, success, request_id, content, other
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        extra.request_id || crypto.randomUUID(),
+        userId,
+        username,
+        extra.actor_role ?? 0,
+        nowSec(),
+        type,
+        category,
+        action,
+        extra.token_ref || "",
+        extra.auth_method || "",
+        ip,
+        extra.user_agent || "",
+        extra.method || "",
+        extra.route || "",
+        extra.status ?? 0,
+        extra.success === false ? 0 : 1,
+        extra.request_id || "",
+        content,
+        extra.other || "",
+      )
       .run();
   }
 
-  async listAudit(offset: number, limit: number, userId?: number): Promise<{ items: unknown[]; total: number }> {
-    const where = userId ? "user_id = ?" : "1=1";
-    const binds: unknown[] = userId ? [userId] : [];
+  async listAudit(
+    offset: number,
+    limit: number,
+    opts: {
+      userId?: number;
+      username?: string;
+      category?: string;
+      token_ref?: string;
+      exclude_token_ref?: string;
+      request_id?: string;
+      start_timestamp?: number;
+      end_timestamp?: number;
+      success?: boolean;
+    } = {},
+  ): Promise<{ items: unknown[]; total: number }> {
+    const where: string[] = ["1=1"];
+    const binds: unknown[] = [];
+    if (opts.userId) {
+      where.push("user_id = ?");
+      binds.push(opts.userId);
+    }
+    if (opts.username) {
+      where.push("username = ?");
+      binds.push(opts.username);
+    }
+    if (opts.category) {
+      where.push("category = ?");
+      binds.push(opts.category);
+    }
+    if (opts.token_ref) {
+      where.push("token_ref = ?");
+      binds.push(opts.token_ref);
+    }
+    if (opts.exclude_token_ref) {
+      where.push("token_ref != ?");
+      binds.push(opts.exclude_token_ref);
+    }
+    if (opts.request_id) {
+      where.push("request_id = ?");
+      binds.push(opts.request_id);
+    }
+    if (opts.start_timestamp) {
+      where.push("created_at >= ?");
+      binds.push(opts.start_timestamp);
+    }
+    if (opts.end_timestamp) {
+      where.push("created_at <= ?");
+      binds.push(opts.end_timestamp);
+    }
+    if (opts.success === true) where.push("success = 1");
+    if (opts.success === false) where.push("success = 0");
+    const w = where.join(" AND ");
     const totalRow = await this.db
-      .prepare(`SELECT COUNT(*) as c FROM audit_logs WHERE ${where}`)
+      .prepare(`SELECT COUNT(*) as c FROM audit_logs WHERE ${w}`)
       .bind(...binds)
       .first<{ c: number }>();
     const { results } = await this.db
-      .prepare(`SELECT * FROM audit_logs WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM audit_logs WHERE ${w} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
       .bind(...binds, limit, offset)
-      .all();
-    return { items: results, total: num(totalRow?.c) };
+      .all<Record<string, unknown>>();
+    return { items: results.map(publicAudit), total: num(totalRow?.c) };
+  }
+
+  async accessTokenLastUsed(
+    userId: number,
+    tokenRef: string,
+  ): Promise<{ last_used_at: number | null; last_used_ip: string }> {
+    const last = await this.db
+      .prepare(
+        `SELECT created_at, ip FROM audit_logs
+         WHERE user_id = ? AND token_ref = ? AND category = 'access_token'
+         ORDER BY created_at DESC, id DESC LIMIT 1`,
+      )
+      .bind(userId, tokenRef)
+      .first<{ created_at?: number; ip?: string }>();
+    if (!last) return { last_used_at: null, last_used_ip: "" };
+    return { last_used_at: Number(last.created_at) || null, last_used_ip: last.ip || "" };
   }
 
   async insertMj(task: Record<string, unknown>): Promise<number> {
@@ -888,27 +1110,79 @@ export class Store {
     ua: string;
     expires_at: number;
     login_method?: string;
+    refresh_hash?: string;
+    version?: number;
+    user_auth_version?: number;
   }): Promise<void> {
     await this.db
       .prepare(
-        "INSERT INTO login_sessions (sid, user_id, created_at, last_seen, expires_at, ip, ua, revoked, login_method) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+        "INSERT INTO login_sessions (sid, user_id, created_at, last_seen, expires_at, ip, ua, revoked, login_method, refresh_hash, version, user_auth_version, last_refresh_hash, last_rotated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, '', 0)",
       )
-      .bind(row.sid, row.user_id, nowSec(), nowSec(), row.expires_at, row.ip, row.ua, row.login_method || "password")
+      .bind(
+        row.sid,
+        row.user_id,
+        nowSec(),
+        nowSec(),
+        row.expires_at,
+        row.ip,
+        row.ua,
+        row.login_method || "password",
+        row.refresh_hash || "",
+        row.version || 1,
+        row.user_auth_version || 1,
+      )
       .run();
   }
 
-  async getSession(sid: string): Promise<{
-    sid: string;
-    user_id: number;
-    revoked: number;
-    expires_at: number;
-    ip: string;
-    ua: string;
-    created_at: number;
-    last_seen: number;
-    login_method?: string;
-  } | null> {
+  async getSession(sid: string): Promise<import("./types.js").LoginSessionRow | null> {
     return this.db.prepare("SELECT * FROM login_sessions WHERE sid = ?").bind(sid).first();
+  }
+
+  async countActiveSessions(userId: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) as c FROM login_sessions WHERE user_id = ? AND revoked = 0 AND (expires_at = 0 OR expires_at > ?)")
+      .bind(userId, nowSec())
+      .first<{ c: number }>();
+    return num(row?.c);
+  }
+
+  async countSessionsCreatedSince(userId: number, since: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) as c FROM login_sessions WHERE user_id = ? AND created_at >= ?")
+      .bind(userId, since)
+      .first<{ c: number }>();
+    return num(row?.c);
+  }
+
+  async rotateSessionRefresh(
+    sid: string,
+    currentHash: string,
+    nextHash: string,
+    now: number,
+    ip: string,
+    ua: string,
+  ): Promise<import("./types.js").LoginSessionRow | null> {
+    const r = await this.db
+      .prepare(
+        "UPDATE login_sessions SET refresh_hash = ?, last_refresh_hash = ?, last_rotated_at = ?, version = version + 1, last_seen = ?, ip = ?, ua = ? WHERE sid = ? AND refresh_hash = ? AND revoked = 0",
+      )
+      .bind(nextHash, currentHash, now, now, ip, ua, sid, currentHash)
+      .run();
+    if (!Number(r.meta.changes || 0)) {
+      const fallback = await this.db
+        .prepare(
+          "UPDATE login_sessions SET refresh_hash = ?, last_refresh_hash = ?, last_rotated_at = ?, version = version + 1, last_seen = ?, ip = ?, ua = ? WHERE sid = ? AND (refresh_hash = '' OR refresh_hash IS NULL) AND revoked = 0",
+        )
+        .bind(nextHash, currentHash, now, now, ip, ua, sid)
+        .run();
+      if (!Number(fallback.meta.changes || 0)) return null;
+    }
+    return this.getSession(sid);
+  }
+
+  async bumpAuthVersion(userId: number): Promise<void> {
+    await this.db.prepare("UPDATE users SET auth_version = COALESCE(auth_version, 1) + 1 WHERE id = ?").bind(userId).run();
+    await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE user_id = ?").bind(userId).run();
   }
 
   async touchSession(sid: string): Promise<void> {
@@ -930,11 +1204,12 @@ export class Store {
     await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE sid = ?").bind(sid).run();
   }
 
-  async revokeOtherSessions(userId: number, keepSid: string): Promise<void> {
-    await this.db
-      .prepare("UPDATE login_sessions SET revoked = 1 WHERE user_id = ? AND sid != ?")
+  async revokeOtherSessions(userId: number, keepSid: string): Promise<number> {
+    const r = await this.db
+      .prepare("UPDATE login_sessions SET revoked = 1 WHERE user_id = ? AND sid != ? AND revoked = 0")
       .bind(userId, keepSid)
       .run();
+    return Number(r.meta.changes || 0);
   }
 
   async listSessions(userId: number): Promise<
@@ -967,19 +1242,88 @@ export class Store {
     }[];
   }
 
-  async insertAuthFlow(row: { token: string; type: string; user_id: number; expires_at: number; payload?: string }): Promise<void> {
+  async insertAuthFlow(row: {
+    token: string;
+    type: string;
+    user_id: number;
+    expires_at: number;
+    payload?: string;
+    session_id?: string;
+  }): Promise<void> {
     await this.db
-      .prepare("INSERT INTO auth_flows (token, type, user_id, expires_at, payload) VALUES (?, ?, ?, ?, ?)")
-      .bind(row.token, row.type, row.user_id, row.expires_at, row.payload ?? "")
+      .prepare("INSERT INTO auth_flows (token, type, user_id, expires_at, payload, session_id, consumed_at) VALUES (?, ?, ?, ?, ?, ?, 0)")
+      .bind(row.token, row.type, row.user_id, row.expires_at, row.payload ?? "", row.session_id ?? "")
       .run();
   }
 
-  async getAuthFlow(token: string): Promise<{ token: string; type: string; user_id: number; expires_at: number; payload: string } | null> {
+  async getAuthFlow(token: string): Promise<{
+    token: string;
+    type: string;
+    user_id: number;
+    expires_at: number;
+    payload: string;
+    session_id?: string;
+    consumed_at?: number;
+  } | null> {
     return this.db.prepare("SELECT * FROM auth_flows WHERE token = ?").bind(token).first();
+  }
+
+  async consumeAuthFlow(
+    token: string,
+    match: { type: string; user_id: number; session_id?: string },
+  ): Promise<"ok" | "consumed" | "expired" | "invalid"> {
+    const now = nowSec();
+    const sessionClause = match.session_id ? " AND session_id = ?" : "";
+    const binds: unknown[] = [now, token, match.type, match.user_id];
+    if (match.session_id) binds.push(match.session_id);
+    binds.push(now);
+    const r = await this.db
+      .prepare(
+        `UPDATE auth_flows SET consumed_at = ? WHERE token = ? AND type = ? AND user_id = ?${sessionClause} AND consumed_at = 0 AND expires_at > ?`,
+      )
+      .bind(...binds)
+      .run();
+    if (Number(r.meta.changes || 0) === 1) return "ok";
+    const row = await this.getAuthFlow(token);
+    if (!row) return "invalid";
+    if (Number(row.consumed_at || 0) > 0) return "consumed";
+    if (Number(row.expires_at) <= now) return "expired";
+    return "invalid";
   }
 
   async deleteAuthFlow(token: string): Promise<void> {
     await this.db.prepare("DELETE FROM auth_flows WHERE token = ?").bind(token).run();
+  }
+
+  async userPermissionOverrides(userId: number): Promise<Record<string, Record<string, boolean>> | null> {
+    const { results } = await this.db
+      .prepare("SELECT v1, v2, v3 FROM casbin_rule WHERE ptype = 'p' AND v0 = ?")
+      .bind(`user:${userId}`)
+      .all<{ v1: string; v2: string; v3: string }>();
+    if (!results.length) return null;
+    const out: Record<string, Record<string, boolean>> = {};
+    for (const row of results) {
+      if (!out[row.v1]) out[row.v1] = {};
+      out[row.v1][row.v2] = row.v3 !== "deny";
+    }
+    return out;
+  }
+
+  async setUserCasbinPolicies(userId: number, deltas: Record<string, Record<string, boolean>>): Promise<void> {
+    const subject = `user:${userId}`;
+    await this.db.prepare("DELETE FROM casbin_rule WHERE ptype = 'p' AND v0 = ?").bind(subject).run();
+    for (const [resource, actions] of Object.entries(deltas)) {
+      for (const [action, allowed] of Object.entries(actions)) {
+        await this.db
+          .prepare("INSERT OR IGNORE INTO casbin_rule (ptype, v0, v1, v2, v3, v4, v5) VALUES ('p', ?, ?, ?, ?, '', '')")
+          .bind(subject, resource, action, allowed ? "allow" : "deny")
+          .run();
+      }
+    }
+  }
+
+  async clearUserCasbinPolicies(userId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM casbin_rule WHERE ptype = 'p' AND v0 = ?").bind(`user:${userId}`).run();
   }
 
   async insertEmailCode(email: string, code: string, type: string, ttlSec = 600): Promise<void> {
@@ -1345,11 +1689,12 @@ export class Store {
   async insertOAuthProvider(p: Record<string, unknown>): Promise<number> {
     const r = await this.db
       .prepare(
-        "INSERT INTO oauth_providers (name, slug, client_id, client_secret, auth_url, token_url, user_info_url, scopes, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO oauth_providers (name, slug, icon, client_id, client_secret, auth_url, token_url, user_info_url, scopes, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         p.name ?? "",
         p.slug ?? "",
+        p.icon ?? "",
         p.client_id ?? "",
         p.client_secret ?? "",
         p.auth_url ?? "",
@@ -1378,11 +1723,11 @@ export class Store {
     await this.db.prepare("DELETE FROM oauth_providers WHERE id = ?").bind(id).run();
   }
 
-  async listPasskeys(userId: number): Promise<{ id: number; credential_id: string; public_key: string; name: string; created_at: number }[]> {
+  async listPasskeys(userId: number): Promise<{ id: number; credential_id: string; public_key: string; name: string; created_at: number; last_used_at?: number }[]> {
     const { results } = await this.db
       .prepare("SELECT * FROM passkeys WHERE user_id = ?")
       .bind(userId)
-      .all<{ id: number; credential_id: string; public_key: string; name: string; created_at: number }>();
+      .all<{ id: number; credential_id: string; public_key: string; name: string; created_at: number; last_used_at?: number }>();
     return results;
   }
 
@@ -1391,20 +1736,88 @@ export class Store {
     user_id: number;
     credential_id: string;
     public_key: string;
+    last_used_at?: number;
   } | null> {
     return this.db.prepare("SELECT * FROM passkeys WHERE credential_id = ?").bind(credentialId).first();
   }
 
   async insertPasskey(userId: number, credentialId: string, publicKey: string, name = ""): Promise<number> {
     const r = await this.db
-      .prepare("INSERT INTO passkeys (user_id, credential_id, public_key, name, created_at) VALUES (?, ?, ?, ?, ?)")
+      .prepare("INSERT INTO passkeys (user_id, credential_id, public_key, name, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, 0)")
       .bind(userId, credentialId, publicKey, name, nowSec())
       .run();
     return Number(r.meta.last_row_id || 0);
   }
 
+  async touchPasskey(credentialId: string): Promise<void> {
+    await this.db.prepare("UPDATE passkeys SET last_used_at = ? WHERE credential_id = ?").bind(nowSec(), credentialId).run();
+  }
+
   async deletePasskeys(userId: number): Promise<void> {
     await this.db.prepare("DELETE FROM passkeys WHERE user_id = ?").bind(userId).run();
+  }
+
+  async listUserOAuthBindings(userId: number): Promise<
+    { provider_id: number; provider_name: string; provider_slug: string; provider_icon: string; provider_user_id: string }[]
+  > {
+    const { results } = await this.db
+      .prepare(
+        `SELECT b.provider_id, p.name as provider_name, p.slug as provider_slug, p.icon as provider_icon, b.provider_user_id
+         FROM user_oauth_bindings b JOIN oauth_providers p ON p.id = b.provider_id
+         WHERE b.user_id = ? ORDER BY b.id`,
+      )
+      .bind(userId)
+      .all<{
+        provider_id: number;
+        provider_name: string;
+        provider_slug: string;
+        provider_icon: string;
+        provider_user_id: string;
+      }>();
+    return results;
+  }
+
+  async getUserOAuthBinding(userId: number, providerId: number): Promise<{ provider_user_id: string } | null> {
+    return this.db
+      .prepare("SELECT provider_user_id FROM user_oauth_bindings WHERE user_id = ? AND provider_id = ?")
+      .bind(userId, providerId)
+      .first();
+  }
+
+  async getUserByOAuthBinding(providerId: number, providerUserId: string): Promise<UserRow | null> {
+    const row = await this.db
+      .prepare("SELECT user_id FROM user_oauth_bindings WHERE provider_id = ? AND provider_user_id = ?")
+      .bind(providerId, providerUserId)
+      .first<{ user_id: number }>();
+    if (!row) return null;
+    return this.getUserById(row.user_id);
+  }
+
+  async upsertUserOAuthBinding(userId: number, providerId: number, providerUserId: string): Promise<void> {
+    const existing = await this.getUserOAuthBinding(userId, providerId);
+    if (existing) {
+      await this.db
+        .prepare("UPDATE user_oauth_bindings SET provider_user_id = ? WHERE user_id = ? AND provider_id = ?")
+        .bind(providerUserId, userId, providerId)
+        .run();
+      return;
+    }
+    await this.db
+      .prepare("INSERT INTO user_oauth_bindings (user_id, provider_id, provider_user_id, created_at) VALUES (?, ?, ?, ?)")
+      .bind(userId, providerId, providerUserId, nowSec())
+      .run();
+  }
+
+  async deleteUserOAuthBinding(userId: number, providerId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM user_oauth_bindings WHERE user_id = ? AND provider_id = ?").bind(userId, providerId).run();
+  }
+
+  async oauthBindingTaken(providerId: number, providerUserId: string, exceptUserId = 0): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT user_id FROM user_oauth_bindings WHERE provider_id = ? AND provider_user_id = ?")
+      .bind(providerId, providerUserId)
+      .first<{ user_id: number }>();
+    return Boolean(row && row.user_id !== exceptUserId);
   }
 
   async listModelMeta(): Promise<unknown[]> {
@@ -1413,9 +1826,12 @@ export class Store {
   }
 
   async insertModelMeta(model_name: string, description = "", vendor_id = 0): Promise<number> {
+    const t = nowSec();
     const r = await this.db
-      .prepare("INSERT INTO model_meta (model_name, description, vendor_id, created_at) VALUES (?, ?, ?, ?)")
-      .bind(model_name, description, vendor_id, nowSec())
+      .prepare(
+        "INSERT INTO model_meta (model_name, description, vendor_id, created_at, created_time, updated_time, status, sync_official, name_rule) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0)",
+      )
+      .bind(model_name, description, vendor_id, t, t, t)
       .run();
     return Number(r.meta.last_row_id || 0);
   }
@@ -1574,6 +1990,30 @@ export class Store {
   }
 }
 
+export function publicAudit(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: row.id,
+    event_id: row.event_id || "",
+    user_id: row.user_id,
+    username: row.username,
+    actor_role: Number(row.actor_role) || 0,
+    created_at: Number(row.created_at),
+    category: row.category || row.type || "",
+    action: row.action || row.type || "",
+    token_ref: row.token_ref || "",
+    auth_method: row.auth_method || "",
+    ip: row.ip || "",
+    user_agent: row.user_agent || "",
+    method: row.method || "",
+    route: row.route || "",
+    status: Number(row.status) || 0,
+    success: Number(row.success) !== 0,
+    request_id: row.request_id || "",
+    content: row.content || "",
+    other: parseJson(String(row.other || ""), {}),
+  };
+}
+
 export function publicUser(u: UserRow): Record<string, unknown> {
   const settingRaw = u.settings || "";
   let sidebar_modules = "";
@@ -1611,7 +2051,7 @@ export function publicUser(u: UserRow): Record<string, unknown> {
     setting: settingRaw,
     stripe_customer,
     sidebar_modules,
-    permissions: permissionsFor(u.role),
+    permissions: permissionsFor(u),
     billing_preference: u.billing_preference || "quota",
     totp_enabled: Number(u.totp_enabled) === 1,
     email_verified: Number(u.email_verified) === 1,
@@ -1619,13 +2059,15 @@ export function publicUser(u: UserRow): Record<string, unknown> {
   };
 }
 
-export function permissionsFor(role: number): Record<string, unknown> {
+export function permissionsFor(user: { role: number; admin_permissions?: string } | number): Record<string, unknown> {
+  const role = typeof user === "number" ? user : user.role;
+  const overrides = typeof user === "number" ? null : parsePermissionOverrides(user.admin_permissions);
   const admin = role >= 10;
   const root = role >= 100;
   return {
     sidebar_settings: !root,
     sidebar_modules: root ? {} : admin ? { admin: { setting: false } } : { admin: false },
-    admin_permissions: capabilities(role),
+    admin_permissions: capabilities(role, overrides),
     is_admin: admin,
     is_root: root,
   };

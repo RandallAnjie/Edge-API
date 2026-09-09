@@ -19,6 +19,15 @@ async function json(req: Request, e: Env) {
   return { res, body };
 }
 
+function cookieVal(res: Response, name: string): string {
+  const all = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+  const line = all.find((c) => c.startsWith(name + "=")) || "";
+  if (line) return decodeURIComponent(line.split(";")[0].slice(name.length + 1));
+  const raw = String(res.headers.get("set-cookie") || "");
+  const m = raw.match(new RegExp(`(?:^|,\\s*)${name}=([^;]+)`));
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
 async function boot(e: Env) {
   await json(
     new Request("http://local/api/setup", {
@@ -38,7 +47,21 @@ async function boot(e: Env) {
   );
   const token = login.body.data.access_token as string;
   const auth = { authorization: "Bearer " + token, "content-type": "application/json" };
-  return { token, auth, login };
+  const refresh = cookieVal(login.res, "new_api_refresh");
+  return { token, auth, login, refresh };
+}
+
+async function passwordProof(e: Env, auth: Record<string, string>, scope: string, extra: Record<string, unknown> = {}) {
+  const r = await json(
+    new Request("http://local/api/verify", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ method: "password", scope, password: "password12", ...extra }),
+    }),
+    e,
+  );
+  assert.equal(r.body.success, true, String(r.body.message || r.body.code));
+  return r.body.data as { proof_token: string; expires_at: number; method: string; scope: string };
 }
 
 test("GetStatus matches original SystemStatus fields", async () => {
@@ -111,6 +134,8 @@ test("login AuthBundle has original session + cookies", async () => {
   assert.equal(typeof data.session.expires_at, "number");
   assert.equal(data.user.username, "root");
   assert.equal(typeof data.user.role, "number");
+  assert.equal(data.access_token.split(".").length, 3, "access_token must be a JWT");
+  assert.match(data.session.sid, /^[0-9a-f-]{36}$/i);
   const setCookie = login.res.headers.getSetCookie?.() || [];
   const joined = setCookie.length ? setCookie.join("\n") : String(login.res.headers.get("set-cookie") || "");
   assert.match(joined, /session=/);
@@ -118,6 +143,9 @@ test("login AuthBundle has original session + cookies", async () => {
   assert.match(joined, /new_api_has_session/);
   assert.match(joined, /Path=\/api\/user\/auth/);
   assert.match(joined, /SameSite=Strict/);
+  const refresh = cookieVal(login.res, "new_api_refresh");
+  assert.equal(refresh.startsWith(data.session.sid + "."), true);
+  assert.notEqual(refresh, data.access_token);
 });
 
 test("authz catalog + channel GET update_balance + email bind without mail", async () => {
@@ -130,6 +158,21 @@ test("authz catalog + channel GET update_balance + email bind without mail", asy
   assert.ok(Array.isArray(cat.body.data.resources));
   assert.ok(cat.body.data.resources.some((r: { resource: string }) => r.resource === "channel"));
   assert.ok(cat.body.data.roles.some((r: { key: string; superuser: boolean }) => r.key === "root" && r.superuser));
+
+  const chk = await json(
+    new Request("http://local/api/authz/check", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ resource: "channel", action: "read" }),
+    }),
+    e,
+  );
+  assert.equal(chk.body.success, true);
+  assert.equal(chk.body.data.allowed, true);
+  assert.equal(chk.body.data.resource, "channel");
+  assert.equal(chk.body.data.action, "read");
+  const chkGet = await json(new Request("http://local/api/authz/check?resource=channel&action=sensitive_write", { headers: auth }), e);
+  assert.equal(chkGet.body.data.allowed, true);
 
   const ch = await json(
     new Request("http://local/api/channel/", {
@@ -157,10 +200,21 @@ test("authz catalog + channel GET update_balance + email bind without mail", asy
     globalThis.fetch = originalFetch;
   }
 
-  const bind = await json(
+  const needProof = await json(
     new Request("http://local/api/oauth/email/bind/start", {
       method: "POST",
       headers: auth,
+      body: JSON.stringify({ email: "a@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(needProof.body.success, false);
+  assert.equal(needProof.body.code, "SECURITY_PROOF_REQUIRED");
+  const proof = await passwordProof(e, auth, "account.binding.bind", { context: { provider: "email", email: "a@example.com" } });
+  const bind = await json(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { ...auth, "X-Security-Proof": proof.proof_token },
       body: JSON.stringify({ email: "a@example.com" }),
     }),
     e,
@@ -177,7 +231,10 @@ test("system-info, task plugin upsert, original token usage, sessions view", asy
   const info = await json(new Request("http://local/api/system-info/instances", { headers: auth }), e);
   assert.equal(info.body.success, true);
   assert.ok(Array.isArray(info.body.data));
-  assert.equal(info.body.data[0].runtime, "workerd");
+  assert.equal(info.body.data[0].node_name, "edge-api");
+  assert.equal(info.body.data[0].status, "online");
+  assert.equal(info.body.data[0].stale_after_seconds, 90);
+  assert.equal(info.body.data[0].info.runtime, "workerd");
 
   const plugin = await json(
     new Request("http://local/api/plugin/task", {
@@ -219,7 +276,14 @@ test("2FA login still require_2fa plus original LoginChallenge fields", async ()
   resetSchemaFlag();
   const e = env();
   const { auth } = await boot(e);
-  const setup = await json(new Request("http://local/api/user/2fa/setup", { method: "POST", headers: auth }), e);
+  const setupProof = await passwordProof(e, auth, "2fa.setup");
+  const setup = await json(
+    new Request("http://local/api/user/2fa/setup", {
+      method: "POST",
+      headers: { ...auth, "X-Security-Proof": setupProof.proof_token },
+    }),
+    e,
+  );
   const secret = setup.body.data.secret as string;
   assert.equal(typeof setup.body.data.qr_code_data, "string");
   assert.ok(Array.isArray(setup.body.data.backup_codes));
@@ -617,20 +681,36 @@ test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, Lis
 test("auth refresh keeps LoginSessionView sid and returns AuthBundle user", async () => {
   resetSchemaFlag();
   const e = env();
-  const { login, auth } = await boot(e);
+  const { login, refresh } = await boot(e);
   const sid = login.body.data.session.sid as string;
-  const refresh = await json(
+  const rotated = await json(
     new Request("http://local/api/user/auth/refresh", {
       method: "POST",
-      headers: { ...auth, "X-Auth-Session": sid, cookie: `new_api_refresh=${login.body.data.access_token}` },
+      headers: { "X-Auth-Session": sid, cookie: `new_api_refresh=${refresh}` },
     }),
     e,
   );
-  assert.equal(refresh.body.success, true);
-  assert.equal(refresh.body.data.session.sid, sid);
-  assert.equal(refresh.body.data.token_type, "Bearer");
-  assert.equal(refresh.body.data.user.username, "root");
-  assert.equal(typeof refresh.body.data.user.linux_do_id, "string");
+  assert.equal(rotated.body.success, true, rotated.body.message);
+  assert.equal(rotated.body.data.session.sid, sid);
+  assert.equal(rotated.body.data.token_type, "Bearer");
+  assert.equal(rotated.body.data.access_token.split(".").length, 3);
+  assert.notEqual(rotated.body.data.access_token, login.body.data.access_token);
+  assert.equal(rotated.body.data.user.username, "root");
+  assert.equal(typeof rotated.body.data.user.linux_do_id, "string");
+  const nextRefresh = cookieVal(rotated.res, "new_api_refresh");
+  assert.equal(nextRefresh.startsWith(sid + "."), true);
+  assert.notEqual(nextRefresh, refresh);
+
+  const replay = await json(
+    new Request("http://local/api/user/auth/refresh", {
+      method: "POST",
+      headers: { "X-Auth-Session": sid, cookie: `new_api_refresh=${refresh}` },
+    }),
+    e,
+  );
+  assert.equal(replay.body.success, true, "original AUTH_REFRESH_RACE replay window reissues the rotated token");
+  assert.equal(cookieVal(replay.res, "new_api_refresh"), nextRefresh);
+  assert.equal(replay.body.data.session.sid, sid);
 
   const anon = await json(new Request("http://local/api/user/auth/refresh", { method: "POST" }), e);
   assert.equal(anon.res.status, 401);
@@ -655,5 +735,39 @@ test("oauth callback without state is original 403; state endpoint is flow_token
   );
   assert.equal(typeof st.body.data.flow_token, "string");
   assert.equal(typeof st.body.data.expires_at, "number");
+});
+
+test("security proof is an original JWT and is consumed once", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const proof = await passwordProof(e, auth, "2fa.setup");
+  assert.equal(proof.method, "password");
+  assert.equal(proof.scope, "2fa.setup");
+  assert.equal(proof.proof_token.split(".").length, 3);
+  const payload = JSON.parse(Buffer.from(proof.proof_token.split(".")[1], "base64url").toString());
+  assert.equal(payload.token_use, "security_proof");
+  assert.equal(payload.iss, "new-api");
+  assert.equal(payload.aud, "new-api-dashboard");
+  assert.deepEqual(payload.scopes, ["2fa.setup"]);
+  const setup = await json(
+    new Request("http://local/api/user/2fa/setup", {
+      method: "POST",
+      headers: { ...auth, "X-Security-Proof": proof.proof_token },
+    }),
+    e,
+  );
+  assert.equal(setup.body.success, true, setup.body.message);
+  const reuse = await json(
+    new Request("http://local/api/user/2fa/setup", {
+      method: "POST",
+      headers: { ...auth, "X-Security-Proof": proof.proof_token },
+    }),
+    e,
+  );
+  assert.equal(reuse.res.status, 403);
+  assert.equal(reuse.body.code, "SECURITY_PROOF_CONSUMED");
+  const missing = await json(new Request("http://local/api/user/2fa/setup", { method: "POST", headers: auth }), e);
+  assert.equal(missing.body.code, "SECURITY_PROOF_REQUIRED");
 });
 

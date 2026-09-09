@@ -41,7 +41,7 @@ export function corsHeaders(req: Request): Headers {
   h.set(
     "access-control-allow-headers",
     req.headers.get("access-control-request-headers") ||
-      "authorization,content-type,x-api-key,x-goog-api-key,anthropic-version,openai-organization,mj-api-secret",
+      "authorization,content-type,x-api-key,x-goog-api-key,anthropic-version,openai-organization,mj-api-secret,x-security-proof",
   );
   h.set("access-control-allow-credentials", "true");
   h.set("access-control-max-age", "86400");

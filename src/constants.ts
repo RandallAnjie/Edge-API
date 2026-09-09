@@ -36,7 +36,13 @@ export const ROOT_QUOTA = 100_000_000;
 export const DEFAULT_TOKEN_QUOTA = 500_000;
 export const AZURE_API_VERSION = "2025-04-01-preview";
 export const CLAUDE_VERSION = "2023-06-01";
-export const SESSION_TTL_SEC = 7 * 24 * 3600;
+export const ACCESS_TOKEN_TTL_SEC = 15 * 60;
+export const SECURITY_PROOF_TTL_SEC = 60;
+export const SESSION_TTL_SEC = 30 * 24 * 3600;
+export const REFRESH_REPLAY_WINDOW_SEC = 30;
+export const USER_SESSION_ACTIVE_LIMIT = 50;
+export const USER_SESSION_ISSUANCE_LIMIT = 100;
+export const USER_SESSION_ISSUANCE_WINDOW_SEC = 24 * 60 * 60;
 export const RATE_LIMIT_PER_MIN = 120;
 
 export const DEFAULT_OPTIONS: Record<string, string> = {
@@ -165,6 +171,11 @@ export function dayStartSec(ts = nowSec()): number {
   const d = new Date(ts * 1000);
   d.setUTCHours(0, 0, 0, 0);
   return Math.floor(d.getTime() / 1000);
+}
+
+/** Original quota_data buckets are hour-aligned (`createdAt - createdAt % 3600`). */
+export function hourStartSec(ts = nowSec()): number {
+  return ts - (ts % 3600);
 }
 
 export function parseBool(v: string | undefined | null, fallback = false): boolean {

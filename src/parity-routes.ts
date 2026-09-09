@@ -1,5 +1,5 @@
-import { CHANNEL_ENABLED, VERSION, nowSec, parseJson, randomHex } from "./constants.js";
-import { permissionCatalog } from "./authz.js";
+import { CHANNEL_ENABLED, START_TIME, VERSION, csv, nowSec, parseJson, randomHex } from "./constants.js";
+import { permissionCatalog, can } from "./authz.js";
 import { httpStats, performanceStats, resetMetrics } from "./metrics.js";
 import {
   completePendingTopup,
@@ -19,22 +19,29 @@ import {
   wechatIdFromCode,
 } from "./oauth.js";
 import { hmacSha256Hex } from "./crypto.js";
+import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { apiFail, apiOk, json, pageData, pageQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
   authenticateApiToken,
   currentSid,
+  dashboardIdentity,
   isResponse,
-  issueSession,
+  issueSessionSafe,
   requireAdmin,
+  requireChannel,
+  requirePermission,
+  requireProof,
   requireRoot,
   requireUser,
   sessionResponse,
+  sessionSecret,
 } from "./auth.js";
 import { Store } from "./store.js";
 import { testChannel, fetchUpstreamModels } from "./relay.js";
-import { csv } from "./constants.js";
+import { enrichModelMeta } from "./dto.js";
+import { computeStatusCounts, ionetApiKey, ionetRequest, ionetSettings, IONET_NOT_CONFIGURED, mapIoNetDeployment } from "./ionet.js";
 import type { Env } from "./types.js";
 
 type C = Context<Env>;
@@ -66,9 +73,24 @@ function sessionViews(
       user_agent: x.ua,
       created_at: x.created_at,
       last_active_at: x.last_seen,
-      last_seen: x.last_seen,
       expires_at: x.expires_at,
     }));
+}
+
+async function authzCheck(c: C): Promise<Response> {
+  const s = store(c);
+  const u = await requireUser(c, s);
+  if (isResponse(u)) return u;
+  const body =
+    c.req.method === "GET"
+      ? { resource: c.url.searchParams.get("resource") || "", action: c.url.searchParams.get("action") || "" }
+      : ((await readJson(c.req)) as { resource?: string; action?: string });
+  const resource = (body.resource || "").trim();
+  const action = (body.action || "").trim();
+  if (!resource || !action) return apiFail("resource and action are required");
+  const user = await s.getUserById(u.id);
+  if (!user) return apiFail("用户不存在");
+  return apiOk({ allowed: can(user, resource, action), resource, action });
 }
 
 export function registerParity(r: Router<Env>): void {
@@ -79,13 +101,16 @@ export function registerParity(r: Router<Env>): void {
     return apiOk(permissionCatalog());
   });
 
+  r.get("/api/authz/check", async (c) => authzCheck(c));
+  r.post("/api/authz/check", async (c) => authzCheck(c));
+
   r.post("/api/oauth/email/bind/start", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { email?: string };
-    const email = (body.email || "").trim();
+    const email = (body.email || "").trim().toLowerCase();
     if (!email.includes("@")) return apiFail("无效邮箱");
+    const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider: "email", email } });
+    if (isResponse(proof)) return proof;
     if (!(await mailConfigured(s))) return apiFail("邮件未配置");
     const code = sixDigitCode();
     const flow = randomHex(16);
@@ -93,12 +118,22 @@ export function registerParity(r: Router<Env>): void {
     await s.insertAuthFlow({
       token: flow,
       type: "email_bind",
-      user_id: u.id,
+      user_id: proof.userId,
       expires_at: nowSec() + 600,
       payload: email,
     });
     await sendMail(s, email, "绑定邮箱验证码", `<p>验证码 <b>${code}</b>，10 分钟内有效。</p>`);
-    return apiOk({ flow_token: flow, expires_at: nowSec() + 600 }, "验证码已发送");
+    const user = await s.getUserById(proof.userId);
+    const expires = nowSec() + 600;
+    return apiOk({
+      flow_token: flow,
+      email,
+      current_email: user?.email || "",
+      old_email_required: Boolean(user?.email),
+      expires_at: expires,
+      resend_at: nowSec() + 30,
+      notification_warning: false,
+    });
   });
 
   r.post("/api/oauth/email/bind/resend", async (c) => {
@@ -112,7 +147,7 @@ export function registerParity(r: Router<Env>): void {
     const code = sixDigitCode();
     await s.insertEmailCode(flow.payload, code, "bind");
     await sendMail(s, flow.payload, "绑定邮箱验证码", `<p>验证码 <b>${code}</b>，10 分钟内有效。</p>`);
-    return apiOk({ flow_token: flow.token }, "已重发");
+    return apiOk({ flow_token: flow.token, expires_at: flow.expires_at, resend_at: nowSec() + 30 });
   });
 
   r.post("/api/oauth/email/bind", async (c) => {
@@ -125,7 +160,7 @@ export function registerParity(r: Router<Env>): void {
     if (!(await s.consumeEmailCode(flow.payload, body.new_code || "", "bind"))) return apiFail("验证码无效或已过期");
     await s.updateUser(u.id, { email: flow.payload, email_verified: 1 });
     await s.deleteAuthFlow(flow.token);
-    return apiOk(null, "邮箱已绑定");
+    return apiOk({ notification_warning: false });
   });
 
   r.get("/api/oauth/wechat", async (c) => {
@@ -134,17 +169,14 @@ export function registerParity(r: Router<Env>): void {
     const code = c.url.searchParams.get("code") || "";
     try {
       const wechatId = await wechatIdFromCode(s, code);
-      const existing = await s.getUserByField("wechat_id", wechatId);
-      const sessionUser = await requireUser(c, s);
-      const bind = isResponse(sessionUser) ? null : await s.getUserById(sessionUser.id);
       return loginOrBindOAuth(
         s,
         c.env,
         c.req,
         { id: wechatId, username: `wx_${wechatId}`.slice(0, 20), display_name: `微信用户`, field: "wechat_id" },
-        bind,
+        null,
+        "login",
       );
-      void existing;
     } catch (e) {
       return apiFail(e instanceof Error ? e.message : String(e));
     }
@@ -152,13 +184,13 @@ export function registerParity(r: Router<Env>): void {
 
   r.post("/api/oauth/wechat/bind", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { code?: string };
+    const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider: "wechat", code: String(body.code || "").trim() } });
+    if (isResponse(proof)) return proof;
     try {
       const wechatId = await wechatIdFromCode(s, body.code || "");
-      await s.updateUser(u.id, { wechat_id: wechatId });
-      return apiOk(null, "微信已绑定");
+      await s.updateUser(proof.userId, { wechat_id: wechatId });
+      return apiOk({ action: "bind", notification_warning: false });
     } catch (e) {
       return apiFail(e instanceof Error ? e.message : String(e));
     }
@@ -202,40 +234,60 @@ export function registerParity(r: Router<Env>): void {
     if (!totpOk && !backup.ok) return apiFail("验证码错误");
     if (backup.ok) await s.updateUser(user.id, { totp_backup: backup.rest });
     await s.deleteAuthFlow(body.flow_token);
-    const issued = await issueSession(s, c.env, user, c.req, "2fa");
+    const issued = await issueSessionSafe(s, c.env, user, c.req, "2fa");
+    if (issued instanceof Response) return issued;
     return sessionResponse(issued);
   });
 
   r.post("/api/user/passkey/verify/begin", async (c) => {
     const s = store(c);
+    const identity = await dashboardIdentity(c, s);
+    if (!identity) return json(401, { success: false, message: "当前认证方式不支持安全验证" });
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
+    const body = (await readJson(c.req)) as { scope?: string; context?: unknown };
+    const secret = await sessionSecret(c.env, s);
+    const bound = await bindVerificationOperation(secret, { scope: body.scope || "", context: body.context });
+    if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
     const keys = await s.listPasskeys(u.id);
-    if (!keys.length) return apiFail("未绑定 Passkey");
+    if (!keys.length) return apiFail("该用户尚未绑定 Passkey");
     const { newChallenge } = await import("./passkey.js");
     const ch = newChallenge();
-    await s.insertAuthFlow({ token: ch.id, type: "passkey_verify", user_id: u.id, expires_at: nowSec() + 300, payload: ch.challenge });
-    return apiOk({
-      flow_id: ch.id,
-      flow_token: ch.id,
-      publicKey: {
-        challenge: ch.challenge,
-        allowCredentials: keys.map((k) => ({ type: "public-key", id: k.credential_id })),
-        timeout: 60000,
-        userVerification: "preferred",
-      },
+    const expiresAt = nowSec() + 300;
+    await s.insertAuthFlow({
+      token: ch.id,
+      type: "passkey_verify",
+      user_id: u.id,
+      expires_at: expiresAt,
+      payload: JSON.stringify({ challenge: ch.challenge, scope: bound.binding.scope, context_hash: bound.binding.contextHash }),
+      session_id: identity.sessionId,
     });
+    const options = {
+      challenge: ch.challenge,
+      allowCredentials: keys.map((k) => ({ type: "public-key", id: k.credential_id })),
+      timeout: 60000,
+      userVerification: "preferred",
+    };
+    return apiOk({ options, flow_token: ch.id, expires_at: expiresAt, flow_id: ch.id, publicKey: options });
   });
 
   r.post("/api/user/passkey/verify/finish", async (c) => {
     const s = store(c);
+    const identity = await dashboardIdentity(c, s);
+    if (!identity) return json(401, { success: false, message: "当前认证方式不支持安全验证" });
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { flow_id?: string; flow_token?: string; credential_id?: string };
     const flow = await s.getAuthFlow(body.flow_id || body.flow_token || "");
     if (!flow || flow.type !== "passkey_verify" || flow.user_id !== u.id) return apiFail("流程无效");
+    const payload = parseJson<{ scope?: string; context_hash?: string }>(flow.payload, {});
     await s.deleteAuthFlow(flow.token);
-    return apiOk({ ok: true, method: "passkey" });
+    const secret = await sessionSecret(c.env, s);
+    const proof = await issueSecurityProof(s, secret, identity, "passkey", {
+      scope: payload.scope || "",
+      contextHash: payload.context_hash || "",
+    });
+    return apiOk(proof);
   });
 
   r.get("/api/user/:id/oauth/bindings", async (c) => {
@@ -244,21 +296,14 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const user = await s.getUserById(Number(c.params.id));
     if (!user) return apiFail("用户不存在");
-    return apiOk({
-      github: Boolean(user.github_id),
-      discord: Boolean(user.discord_id),
-      linuxdo: Boolean(user.linuxdo_id),
-      oidc: Boolean(user.oidc_id),
-      wechat: Boolean(user.wechat_id),
-      telegram: Boolean(user.telegram_id),
-    });
+    return apiOk(await s.listUserOAuthBindings(user.id));
   });
 
   r.delete("/api/user/:id/oauth/bindings/:provider_id", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.deleteOAuthProvider(Number(c.params.provider_id));
+    await s.deleteUserOAuthBinding(Number(c.params.id), Number(c.params.provider_id));
     return apiOk(null);
   });
 
@@ -283,7 +328,7 @@ export function registerParity(r: Router<Env>): void {
 
   r.get("/api/channel/update_balance", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const channels = await s.enabledChannels();
     const results = [];
@@ -297,7 +342,7 @@ export function registerParity(r: Router<Env>): void {
 
   r.get("/api/channel/update_balance/:id", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
@@ -308,7 +353,7 @@ export function registerParity(r: Router<Env>): void {
 
   r.post("/api/channel/tag/disabled", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { tag?: string };
     if (!body.tag) return apiFail("缺少 tag");
@@ -317,7 +362,7 @@ export function registerParity(r: Router<Env>): void {
 
   r.put("/api/channel/tag", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { tag?: string; new_tag?: string; models?: string; group?: string; priority?: number; weight?: number };
     if (!body.tag) return apiFail("缺少 tag");
@@ -336,7 +381,7 @@ export function registerParity(r: Router<Env>): void {
 
   r.post("/api/channel/fix", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const channels = await s.enabledChannels();
     return apiOk({ count: channels.length, message: "abilities derived from channel.models" });
@@ -344,7 +389,7 @@ export function registerParity(r: Router<Env>): void {
 
   r.post("/api/channel/:id/codex/refresh", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
@@ -366,7 +411,7 @@ export function registerParity(r: Router<Env>): void {
 
   r.get("/api/channel/:id/codex/usage", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
@@ -375,14 +420,14 @@ export function registerParity(r: Router<Env>): void {
 
   r.get("/api/channel/:id/codex/usage/reset-credits", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     return apiOk({ credits: 0, reset_at: 0 });
   });
 
   r.post("/api/channel/:id/codex/usage/reset", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     await s.updateChannel(Number(c.params.id), { used_quota: 0 });
     return apiOk(null, "已重置");
@@ -393,7 +438,7 @@ export function registerParity(r: Router<Env>): void {
   r.delete("/api/channel/ollama/delete", async (c) => ollamaOp(c, "delete"));
   r.get("/api/channel/ollama/version/:id", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const ch = await s.getChannel(Number(c.params.id));
     if (!ch) return apiFail("渠道不存在");
@@ -404,7 +449,7 @@ export function registerParity(r: Router<Env>): void {
 
   r.post("/api/channel/batch/tag", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[]; tag?: string };
     for (const id of body.ids || []) await s.updateChannel(id, { tag: body.tag || "" });
@@ -413,7 +458,7 @@ export function registerParity(r: Router<Env>): void {
 
   r.get("/api/channel/tag/models", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     const tag = c.url.searchParams.get("tag") || "";
     const channels = await s.channelsByTag(tag);
@@ -424,7 +469,7 @@ export function registerParity(r: Router<Env>): void {
 
   r.post("/api/channel/multi_key/manage", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { id?: number; action?: string; keys?: string[]; index?: number };
     const ch = await s.getChannel(Number(body.id));
@@ -763,7 +808,7 @@ export function registerParity(r: Router<Env>): void {
   });
   r.get("/api/task_plugin_options", async (c) => {
     const s = store(c);
-    const u = await requireAdmin(c, s);
+    const u = await requirePermission(c, s, "task_plugin", "bind");
     if (isResponse(u)) return u;
     const plugins = ((await s.listTaskPlugins()) as { key: string; name: string; status: string }[]).filter((p) => p.status === "active");
     return apiOk(plugins.map((p) => ({ key: p.key, name: p.name })));
@@ -827,10 +872,11 @@ export function registerParity(r: Router<Env>): void {
     return apiOk([
       {
         node_name: "edge-api",
-        version: VERSION,
-        runtime: "workerd",
-        start_time: Math.floor(Date.now() / 1000),
-        http_stats: httpStats(),
+        status: "online",
+        stale_after_seconds: 90,
+        started_at: Math.floor(START_TIME / 1000),
+        last_seen_at: Math.floor(Date.now() / 1000),
+        info: { version: VERSION, runtime: "workerd", http_stats: httpStats() },
       },
     ]);
   });
@@ -838,13 +884,13 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk({ count: 0 });
+    return apiOk({ deleted_count: 0 });
   });
   r.delete("/api/system-info/instances/:node_name", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk({ node_name: c.params.node_name, deleted: false, reason: "single isolate" });
+    return apiOk({ deleted_count: 0 });
   });
 
   r.get("/api/data/users", async (c) => {
@@ -861,8 +907,10 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const start = Number(c.url.searchParams.get("start_timestamp") || 0);
     const end = Number(c.url.searchParams.get("end_timestamp") || 0);
-    if (!start || !end || end < start) return apiFail("invalid time range");
-    return apiOk(await s.flowQuotaDates(start, end, null, c.url.searchParams.get("username") || ""));
+    if (!start) return apiFail("invalid start_timestamp");
+    if (!end) return apiFail("invalid end_timestamp");
+    if (end < start) return apiFail("invalid time range");
+    return apiOk(await s.flowQuotaDates(start, end, null, c.url.searchParams.get("username") || "", u.role));
   });
   r.get("/api/data/flow/self", async (c) => {
     const s = store(c);
@@ -870,9 +918,11 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const start = Number(c.url.searchParams.get("start_timestamp") || 0);
     const end = Number(c.url.searchParams.get("end_timestamp") || 0);
-    if (!start || !end || end < start) return apiFail("invalid time range");
+    if (!start) return apiFail("invalid start_timestamp");
+    if (!end) return apiFail("invalid end_timestamp");
+    if (end < start) return apiFail("invalid time range");
     if (end - start > 2592000) return apiFail("时间跨度不能超过 1 个月");
-    return apiOk(await s.flowQuotaDates(start, end, u.id));
+    return apiOk(await s.flowQuotaDates(start, end, u.id, "", u.role));
   });
 
   r.get("/api/task/:task_id/artifacts", async (c) => {
@@ -911,20 +961,29 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const items = (await s.listModelMeta()) as { vendor_id?: number }[];
-    const fallback = items.length ? items : (await s.enabledModels("default")).map((model_name) => ({ model_name }));
+    const keyword = c.url.searchParams.get("keyword") || "";
+    const items = (keyword ? await s.searchModelMeta(keyword) : await s.listModelMeta()) as Record<string, unknown>[];
     const vendor_counts: Record<string, number> = {};
     for (const m of items) {
       const vid = String(m.vendor_id || 0);
       vendor_counts[vid] = (vendor_counts[vid] || 0) + 1;
     }
-    return apiOk(pageData(fallback.slice(q.offset, q.offset + q.page_size), fallback.length, q, { vendor_counts }));
+    const enriched = await enrichModelMeta(s, items);
+    return apiOk(pageData(enriched.slice(q.offset, q.offset + q.page_size), items.length, q, { vendor_counts }));
   });
   r.get("/api/models/search", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.searchModelMeta(c.url.searchParams.get("keyword") || ""));
+    const q = pageQuery(c.url);
+    const items = (await s.searchModelMeta(c.url.searchParams.get("keyword") || "")) as Record<string, unknown>[];
+    const vendor_counts: Record<string, number> = {};
+    for (const m of items) {
+      const vid = String(m.vendor_id || 0);
+      vendor_counts[vid] = (vendor_counts[vid] || 0) + 1;
+    }
+    const enriched = await enrichModelMeta(s, items);
+    return apiOk(pageData(enriched.slice(q.offset, q.offset + q.page_size), items.length, q, { vendor_counts }));
   });
   r.get("/api/models/missing", async (c) => {
     const s = store(c);
@@ -974,130 +1033,184 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    if (c.params.id === "meta") return apiOk(await s.listModelMeta());
+    if (c.params.id === "meta") return apiOk(await enrichModelMeta(s, (await s.listModelMeta()) as Record<string, unknown>[]));
     const item = await s.getModelMeta(Number(c.params.id));
     if (!item) return apiFail("不存在");
-    return apiOk(item);
+    const [enriched] = await enrichModelMeta(s, [item]);
+    return apiOk(enriched);
   });
 
   r.get("/api/deployments/settings", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk({ ionet_configured: Boolean(await s.option("IoNetApiKey")), runtime: "workerd" });
+    return apiOk(await ionetSettings(s));
   });
   r.post("/api/deployments/settings/test-connection", (c) => testIoNet(c));
   r.post("/api/deployments/test-connection", (c) => testIoNet(c));
   r.get("/api/deployments/", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    return apiOk(await s.listDeployments());
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const q = pageQuery(c.url);
+    const status = (c.url.searchParams.get("status") || "").toLowerCase();
+    const params = new URLSearchParams({
+      page: String(q.page),
+      page_size: String(q.page_size),
+      sort_by: "created_at",
+      sort_order: "desc",
+    });
+    if (status) params.set("status", status);
+    const fetched = await ionetRequest(key, "GET", `/deployments?${params.toString()}`);
+    if (!fetched.ok) return apiFail(fetched.message);
+    const raw = (fetched.json || {}) as { deployments?: Record<string, unknown>[]; total?: number };
+    const deployments = raw.deployments || (Array.isArray(fetched.json) ? (fetched.json as Record<string, unknown>[]) : []);
+    const items = deployments.map(mapIoNetDeployment);
+    const total = Number(raw.total || items.length);
+    return apiOk({
+      page: q.page,
+      page_size: q.page_size,
+      total,
+      items,
+      status_counts: computeStatusCounts(total, deployments),
+    });
   });
   r.get("/api/deployments/search", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    const kw = (c.url.searchParams.get("keyword") || "").toLowerCase();
-    const items = ((await s.listDeployments()) as { name: string; model_name: string }[]).filter(
-      (d) => !kw || d.name.toLowerCase().includes(kw) || d.model_name.toLowerCase().includes(kw),
-    );
-    return apiOk(items);
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const q = pageQuery(c.url);
+    const keyword = (c.url.searchParams.get("keyword") || "").toLowerCase();
+    const fetched = await ionetRequest(key, "GET", `/deployments?page=${q.page}&page_size=${q.page_size}&sort_by=created_at&sort_order=desc`);
+    if (!fetched.ok) return apiFail(fetched.message);
+    const raw = (fetched.json || {}) as { deployments?: Record<string, unknown>[]; total?: number };
+    let deployments = raw.deployments || [];
+    if (keyword) deployments = deployments.filter((d) => String(d.name || "").toLowerCase().includes(keyword));
+    const items = deployments.map(mapIoNetDeployment);
+    return apiOk({
+      page: q.page,
+      page_size: q.page_size,
+      total: items.length,
+      items,
+      status_counts: computeStatusCounts(items.length, deployments),
+    });
   });
   r.get("/api/deployments/hardware-types", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    return apiOk(["cpu", "a100", "h100", "4090"]);
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const fetched = await ionetRequest(key, "GET", "/hardware/max-gpus-per-container");
+    if (!fetched.ok) return apiFail(fetched.message);
+    const payload = (fetched.json || {}) as { hardware?: unknown[]; total?: number };
+    const hardware_types = payload.hardware || [];
+    return apiOk({
+      hardware_types,
+      total: hardware_types.length,
+      total_available: Number(payload.total || 0),
+    });
   });
   r.get("/api/deployments/locations", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    return apiOk(["us-east", "us-west", "eu-central", "ap-east"]);
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const fetched = await ionetRequest(key, "GET", "/locations", undefined, false);
+    if (!fetched.ok) return apiFail(fetched.message);
+    const payload = (fetched.json || {}) as { locations?: unknown[]; total?: number };
+    const locations = payload.locations || (Array.isArray(fetched.json) ? fetched.json : []);
+    return apiOk({ locations, total: Number(payload.total || (locations as unknown[]).length) });
   });
   r.get("/api/deployments/available-replicas", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    return apiOk({ min: 1, max: 8 });
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const hardwareId = c.url.searchParams.get("hardware_id") || "";
+    if (!hardwareId) return apiFail("hardware_id parameter is required");
+    const gpuCount = c.url.searchParams.get("gpu_count") || "1";
+    const fetched = await ionetRequest(key, "GET", `/available-replicas?hardware_id=${hardwareId}&hardware_qty=${gpuCount}`);
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(fetched.json);
   });
   r.post("/api/deployments/price-estimation", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { replicas?: number };
-    return apiOk({ hourly: Number(body.replicas || 1) * 1.2, currency: "USD" });
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const body = await readJson(c.req);
+    const fetched = await ionetRequest(key, "POST", "/price-estimation", body);
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(fetched.json);
   });
   r.get("/api/deployments/check-name", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
     const name = c.url.searchParams.get("name") || "";
-    const items = (await s.listDeployments()) as { name: string }[];
+    const fetched = await ionetRequest(key, "GET", `/deployments?page=1&page_size=100&sort_by=created_at&sort_order=desc`);
+    if (!fetched.ok) return apiFail(fetched.message);
+    const raw = (fetched.json || {}) as { deployments?: { name?: string }[] };
+    const items = raw.deployments || [];
     return apiOk({ available: !items.some((d) => d.name === name) });
   });
   r.post("/api/deployments/", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown>;
-    if (!body.name) return apiFail("名称不能为空");
-    return apiOk({ id: await s.insertDeployment(body) }, "创建成功");
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const body = await readJson(c.req);
+    const fetched = await ionetRequest(key, "POST", "/deploy", body);
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(fetched.json, "Deployment created successfully");
   });
   r.get("/api/deployments/:id", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    const d = await s.getDeployment(Number(c.params.id));
-    if (!d) return apiFail("不存在");
-    return apiOk(d);
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const fetched = await ionetRequest(key, "GET", `/deployment/${encodeURIComponent(c.params.id)}`);
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(mapIoNetDeployment((fetched.json || {}) as Record<string, unknown>));
   });
   r.get("/api/deployments/:id/logs", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    return apiOk([]);
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const fetched = await ionetRequest(key, "GET", `/deployment/${encodeURIComponent(c.params.id)}/logs`);
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(fetched.json);
   });
   r.get("/api/deployments/:id/containers", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    return apiOk([]);
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const fetched = await ionetRequest(key, "GET", `/deployment/${encodeURIComponent(c.params.id)}/containers`);
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(fetched.json);
   });
   r.get("/api/deployments/:id/containers/:container_id", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    return apiOk({ id: c.params.container_id, status: "unknown" });
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const fetched = await ionetRequest(
+      key,
+      "GET",
+      `/deployment/${encodeURIComponent(c.params.id)}/containers/${encodeURIComponent(c.params.container_id)}`,
+    );
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(fetched.json);
   });
   r.put("/api/deployments/:id", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    await s.updateDeployment(Number(c.params.id), (await readJson(c.req)) as Record<string, unknown>);
-    return apiOk(null);
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const fetched = await ionetRequest(key, "PUT", `/deployment/${encodeURIComponent(c.params.id)}`, await readJson(c.req));
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(fetched.json);
   });
   r.put("/api/deployments/:id/name", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
     const body = (await readJson(c.req)) as { name?: string };
-    await s.updateDeployment(Number(c.params.id), { name: body.name || "" });
-    return apiOk(null);
+    const fetched = await ionetRequest(key, "PUT", `/deployment/${encodeURIComponent(c.params.id)}`, { name: body.name || "" });
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(fetched.json);
   });
   r.post("/api/deployments/:id/extend", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    return apiOk({ extended: true });
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const fetched = await ionetRequest(key, "POST", `/deployment/${encodeURIComponent(c.params.id)}/extend`, await readJson(c.req));
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(fetched.json);
   });
   r.delete("/api/deployments/:id", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    await s.deleteDeployment(Number(c.params.id));
-    return apiOk(null);
+    const key = await requireIoNetKey(c);
+    if (key instanceof Response) return key;
+    const fetched = await ionetRequest(key, "DELETE", `/deployment/${encodeURIComponent(c.params.id)}`);
+    if (!fetched.ok) return apiFail(fetched.message);
+    return apiOk(fetched.json);
   });
 
   r.get("/api/user/topup/info", async (c) => {
@@ -1193,7 +1306,7 @@ export function registerParity(r: Router<Env>): void {
 
 async function ollamaOp(c: C, action: "pull" | "delete"): Promise<Response> {
   const s = store(c);
-  const u = await requireAdmin(c, s);
+  const u = await requireChannel(c, s, "sensitive_write");
   if (isResponse(u)) return u;
   const body = (await readJson(c.req)) as { id?: number; name?: string; model?: string };
   const ch = await s.getChannel(Number(body.id));
@@ -1208,9 +1321,9 @@ async function ollamaOp(c: C, action: "pull" | "delete"): Promise<Response> {
   return res.ok ? apiOk(parseJson(text, { ok: true })) : apiFail(text.slice(0, 300));
 }
 
-async function detectUpdates(c: C, all: boolean): Promise<Response> {
+async function detectUpdates(c: C, all: boolean, action: "operate" | "write" = "operate"): Promise<Response> {
   const s = store(c);
-  const u = await requireAdmin(c, s);
+  const u = await requireChannel(c, s, action);
   if (isResponse(u)) return u;
   const body = (await readJson(c.req).catch(() => ({}))) as { ids?: number[] };
   const channels = all ? await s.enabledChannels() : await Promise.all((body.ids || []).map((id) => s.getChannel(id)));
@@ -1230,7 +1343,7 @@ async function detectUpdates(c: C, all: boolean): Promise<Response> {
 }
 
 async function applyUpdates(c: C, all: boolean): Promise<Response> {
-  const detected = await detectUpdates(c, all);
+  const detected = await detectUpdates(c, all, "write");
   const parsed = (await detected.clone().json()) as { success?: boolean; data?: { id: number; added: string[] }[] };
   if (!parsed.success) return detected;
   const s = store(c);
@@ -1266,14 +1379,27 @@ async function waffoSave(c: C, kind: string): Promise<Response> {
   return apiOk(body);
 }
 
+async function requireIoNetKey(c: C): Promise<string | Response> {
+  const s = store(c);
+  const u = await requireAdmin(c, s);
+  if (isResponse(u)) return u;
+  const key = await ionetApiKey(s);
+  if (!key) return apiFail(IONET_NOT_CONFIGURED);
+  return key;
+}
+
 async function testIoNet(c: C): Promise<Response> {
   const s = store(c);
   const u = await requireAdmin(c, s);
   if (isResponse(u)) return u;
-  const key = await s.option("IoNetApiKey");
-  if (!key) return apiFail("io.net API key 未配置");
-  const res = await fetch("https://api.io.net/v1/health", { headers: { authorization: "Bearer " + key } });
-  return res.ok ? apiOk({ ok: true }) : apiFail("连接失败");
+  const body = (await readJson(c.req).catch(() => ({}))) as { api_key?: string };
+  const key = (body.api_key || (await s.option("model_deployment.ionet.api_key")) || (await s.option("IoNetApiKey"))).trim();
+  if (!key) return apiFail("api_key is required");
+  const fetched = await ionetRequest(key, "GET", "/hardware/max-gpus-per-container");
+  if (!fetched.ok) return apiFail(fetched.message);
+  const payload = (fetched.json || {}) as { hardware?: unknown[]; total?: number };
+  const hardware = payload.hardware || [];
+  return apiOk({ hardware_count: hardware.length, total_available: Number(payload.total || 0) });
 }
 
 async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo"): Promise<Response> {

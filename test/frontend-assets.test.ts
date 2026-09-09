@@ -37,4 +37,8 @@ test("vendored web source is the original TanStack router tree", () => {
   }
   const pkg = JSON.parse(readFileSync(join(root, "web/package.json"), "utf8")) as { name: string };
   assert.equal(pkg.name, "newapi-web");
+  const legacy = readFileSync(join(root, "web/src/lib/legacy-route.ts"), "utf8");
+  assert.match(legacy, /#\//);
+  assert.match(legacy, /legacyConsoleRoutes/);
+  assert.match(legacy, /\/console\/channel/);
 });

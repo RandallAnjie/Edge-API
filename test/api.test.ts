@@ -184,11 +184,31 @@ async function boot(e: Env) {
   return { token, auth, login };
 }
 
+async function passwordProof(e: Env, auth: Record<string, string>, scope: string, extra: Record<string, unknown> = {}) {
+  const r = await json(
+    new Request("http://local/api/verify", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ method: "password", scope, password: "password12", ...extra }),
+    }),
+    e,
+  );
+  assert.equal(r.body.success, true, String(r.body.message || r.body.code));
+  return r.body.data.proof_token as string;
+}
+
 test("2FA setup then login challenge", async () => {
   resetSchemaFlag();
   const e = env();
   const { auth } = await boot(e);
-  const setup = await json(new Request("http://local/api/user/2fa/setup", { method: "POST", headers: auth }), e);
+  const setupProof = await passwordProof(e, auth, "2fa.setup");
+  const setup = await json(
+    new Request("http://local/api/user/2fa/setup", {
+      method: "POST",
+      headers: { ...auth, "X-Security-Proof": setupProof },
+    }),
+    e,
+  );
   assert.equal(setup.body.success, true, setup.body.message);
   const secret = setup.body.data.secret as string;
   assert.equal(typeof setup.body.data.qr_code_data, "string");

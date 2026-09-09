@@ -139,7 +139,11 @@ async function settle(
   const quota = await computeQuota(store, model, auth.usingGroup, prompt, completion);
   if (ok && quota > 0) {
     await store.consumeQuota(auth.user.id, auth.token.id, channel.id, quota);
-    await store.bumpQuotaData(auth.user, model, quota, prompt + completion);
+    await store.bumpQuotaData(auth.user, model, quota, prompt + completion, {
+      useGroup: auth.usingGroup,
+      tokenId: auth.token.id,
+      channelId: channel.id,
+    });
   }
   const ratios = await quotaRatios(store, model, auth.usingGroup);
   await store.insertLog({

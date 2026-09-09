@@ -1,8 +1,8 @@
 import { generateAffCode, generateTokenKey } from "./crypto.js";
 import { hmacSha256Hex, sha256Bytes, timingSafeEqualStr } from "./crypto.js";
 import { nowSec, randomHex } from "./constants.js";
-import { apiFail, apiOk } from "./http.js";
-import { issueSession, sessionResponse } from "./auth.js";
+import { apiFail, apiOk, json } from "./http.js";
+import { issueSessionSafe, sessionResponse } from "./auth.js";
 import type { Store } from "./store.js";
 import type { Env, UserRow } from "./types.js";
 import type { Context } from "./router.js";
@@ -13,6 +13,29 @@ export interface OAuthProfile {
   display_name: string;
   email?: string;
   field: "github_id" | "discord_id" | "linuxdo_id" | "oidc_id" | "wechat_id" | "telegram_id";
+  slug?: string;
+  provider_id?: number;
+}
+
+export const BUILTIN_OAUTH = new Set(["github", "discord", "linuxdo", "oidc", "telegram"]);
+
+export async function oauthProviderKnown(store: Store, name: string): Promise<boolean> {
+  if (BUILTIN_OAUTH.has(name)) return true;
+  const custom = await store.getOAuthProvider(name);
+  return Boolean(custom);
+}
+
+export async function getBoundOAuthUserId(store: Store, user: UserRow, provider: string): Promise<string> {
+  if (provider === "github") return user.github_id || "";
+  if (provider === "discord") return user.discord_id || "";
+  if (provider === "linuxdo") return user.linuxdo_id || "";
+  if (provider === "oidc") return user.oidc_id || "";
+  if (provider === "telegram") return user.telegram_id || "";
+  if (provider === "wechat") return user.wechat_id || "";
+  const custom = await store.getOAuthProvider(provider);
+  if (!custom) return "";
+  const binding = await store.getUserOAuthBinding(user.id, Number(custom.id));
+  return binding?.provider_user_id || "";
 }
 
 export async function exchangeGithub(clientId: string, secret: string, code: string): Promise<OAuthProfile> {
@@ -155,6 +178,8 @@ export async function exchangeCustom(
     display_name: String(u.name || u.display_name || u.username || id),
     email: typeof u.email === "string" ? u.email : undefined,
     field: "oidc_id",
+    slug: String(provider.slug || ""),
+    provider_id: Number(provider.id) || 0,
   };
 }
 
@@ -164,14 +189,30 @@ export async function loginOrBindOAuth(
   req: Request,
   profile: OAuthProfile,
   existingUser: UserRow | null,
+  intent = existingUser ? "bind" : "login",
 ): Promise<Response> {
-  if (existingUser) {
-    await store.updateUser(existingUser.id, { [profile.field]: profile.id });
-    const issued = await issueSession(store, env, existingUser, req, "oauth:" + profile.field.replace(/_id$/, ""));
-    return sessionResponse(issued);
+  if (intent === "bind") {
+    if (!existingUser) return json(401, { success: false, message: "绑定操作需要登录" });
+    if (profile.provider_id) {
+      if (await store.oauthBindingTaken(profile.provider_id, profile.id, existingUser.id)) {
+        return apiFail("该 OAuth 账号已被绑定");
+      }
+      await store.upsertUserOAuthBinding(existingUser.id, profile.provider_id, profile.id);
+    } else {
+      const taken = await store.getUserByField(profile.field, profile.id);
+      if (taken && taken.id !== existingUser.id) return apiFail("该 OAuth 账号已被绑定");
+      await store.updateUser(existingUser.id, { [profile.field]: profile.id });
+    }
+    return apiOk({ action: "bind", notification_warning: false });
   }
-  let user = await store.getUserByField(profile.field, profile.id);
+  let user: UserRow | null = null;
+  if (profile.provider_id) {
+    user = await store.getUserByOAuthBinding(profile.provider_id, profile.id);
+  } else {
+    user = await store.getUserByField(profile.field, profile.id);
+  }
   if (!user) {
+    if (profile.field === "telegram_id") return apiFail("该 Telegram 账号尚未绑定");
     const exists = await store.getUserByUsername(profile.username);
     const finalName = exists ? `${profile.field.slice(0, 2)}_${profile.id}`.slice(0, 20) : profile.username;
     const id = await store.insertUser({
@@ -180,14 +221,16 @@ export async function loginOrBindOAuth(
       email: profile.email || "",
       quota: await store.optionNum("QuotaForNewUser", 0),
       aff_code: generateAffCode(),
-      [profile.field]: profile.id,
+      [profile.field]: profile.provider_id ? "" : profile.id,
     } as Partial<UserRow>);
-    if (profile.field !== "github_id") {
+    if (!profile.provider_id && profile.field !== "github_id") {
       await store.updateUser(id, { [profile.field]: profile.id });
     }
+    if (profile.provider_id) await store.upsertUserOAuthBinding(id, profile.provider_id, profile.id);
     user = await store.getUserById(id);
   }
-  const issued = await issueSession(store, env, user!, req, "oauth:" + profile.field.replace(/_id$/, ""));
+  const issued = await issueSessionSafe(store, env, user!, req, "oauth:" + (profile.slug || profile.field.replace(/_id$/, "")));
+  if (issued instanceof Response) return issued;
   return sessionResponse(issued);
 }
 

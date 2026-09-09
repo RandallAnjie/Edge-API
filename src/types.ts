@@ -88,6 +88,25 @@ export interface UserRow {
   aff_history_quota?: number;
   billing_preference?: string;
   email_verified?: number;
+  auth_version?: number;
+  admin_permissions?: string;
+}
+
+export interface LoginSessionRow {
+  sid: string;
+  user_id: number;
+  created_at: number;
+  last_seen: number;
+  expires_at: number;
+  ip: string;
+  ua: string;
+  revoked: number;
+  login_method?: string;
+  refresh_hash?: string;
+  version?: number;
+  user_auth_version?: number;
+  last_refresh_hash?: string;
+  last_rotated_at?: number;
 }
 
 export interface TokenRow {
@@ -190,6 +209,8 @@ export interface SessionUser {
   request_count: number;
   email: string;
   sid?: string;
+  userAuthVersion?: number;
+  sessionVersion?: number;
 }
 
 export interface AuthToken {
