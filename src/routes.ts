@@ -185,10 +185,13 @@ export function adminRouter(): Router<Env> {
   r.get("/api/user/login/encryption-key", async (c) => {
     const s = store(c);
     if (!(await s.optionBool("PasswordLoginEncryptionEnabled", false))) return apiOk({ enabled: false });
+    const kid = await s.option("PasswordEncryptionKid");
+    const publicKey = await s.option("PasswordEncryptionPublicKey");
+    if (!kid || !publicKey) return apiFail("数据库出错，请联系管理员");
     return apiOk({
       enabled: true,
-      kid: await s.option("PasswordEncryptionKid"),
-      public_key: await s.option("PasswordEncryptionPublicKey"),
+      kid,
+      public_key: publicKey,
     });
   });
 
@@ -523,7 +526,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const t = await s.getTokenById(Number(c.params.id), u.id);
     if (!t) return apiFail("令牌不存在");
-    return apiOk({ key: displayTokenKey(t.key) });
+    return apiOk({ key: t.key });
   });
 
   r.slash("POST", "/api/token/", async (c) => {

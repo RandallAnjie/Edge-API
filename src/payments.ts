@@ -1,15 +1,29 @@
 import { nowSec, parseJson, randomHex } from "./constants.js";
 import { hmacSha256Hex, timingSafeEqualStr } from "./crypto.js";
 import { apiFail, apiOk, json, payErr, payOk, readJson } from "./http.js";
+import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
 import type { Store } from "./store.js";
 import type { UserRow } from "./types.js";
 
-export async function paymentEnabled(store: Store, kind: "stripe" | "epay" | "creem" | "waffo" | "waffo_pancake"): Promise<boolean> {
+export { PAYMENT_COMPLIANCE_REQUIRED };
+
+export async function paymentComplianceConfirmed(store: Store): Promise<boolean> {
+  return store.optionBool("PaymentComplianceConfirmed", false);
+}
+
+export async function requirePaymentCompliance(store: Store): Promise<Response | null> {
+  if (await paymentComplianceConfirmed(store)) return null;
+  return apiFail(PAYMENT_COMPLIANCE_REQUIRED);
+}
+
+export async function paymentConfigured(store: Store, kind: "stripe" | "epay" | "creem" | "waffo" | "waffo_pancake"): Promise<boolean> {
   if (kind === "stripe") {
-    return (await store.optionBool("StripeEnabled", false)) && Boolean(await stripeSecret(store));
+    return Boolean(await stripeSecret(store)) && Boolean(await store.option("StripeWebhookSecret")) && Boolean(await store.option("StripePriceId"));
   }
   if (kind === "epay") {
-    return (await store.optionBool("EpayEnabled", false)) && Boolean(await store.option("EpayPid")) && Boolean(await store.option("EpayKey"));
+    const address = (await store.option("PayAddress")) || (await store.option("EpayUrl"));
+    const methods = parseJson<unknown[]>(await store.option("PayMethods"), []);
+    return Boolean(address) && Boolean(await store.option("EpayPid")) && Boolean(await store.option("EpayKey")) && methods.length > 0;
   }
   if (kind === "creem") {
     const products = ((await store.option("CreemProducts")) || "").trim();
@@ -22,7 +36,24 @@ export async function paymentEnabled(store: Store, kind: "stripe" | "epay" | "cr
       Boolean(await store.option("WaffoPancakeProductID"))
     );
   }
-  return (await store.optionBool("WaffoEnabled", false)) && Boolean(await store.option("WaffoApiKey"));
+  if (!(await store.optionBool("WaffoEnabled", false))) return false;
+  if (await store.optionBool("WaffoSandbox", false)) {
+    return (
+      Boolean(await store.option("WaffoSandboxApiKey")) &&
+      Boolean(await store.option("WaffoSandboxPrivateKey")) &&
+      Boolean(await store.option("WaffoSandboxPublicCert"))
+    );
+  }
+  return (
+    Boolean(await store.option("WaffoApiKey")) &&
+    Boolean(await store.option("WaffoPrivateKey")) &&
+    Boolean(await store.option("WaffoPublicCert"))
+  );
+}
+
+export async function paymentEnabled(store: Store, kind: "stripe" | "epay" | "creem" | "waffo" | "waffo_pancake"): Promise<boolean> {
+  if (!(await paymentComplianceConfirmed(store))) return false;
+  return paymentConfigured(store, kind);
 }
 
 async function stripeSecret(store: Store): Promise<string> {
@@ -127,11 +158,13 @@ export async function requestStripePay(
   req: Request,
   body: { amount?: number; payment_method?: string; success_url?: string; cancel_url?: string },
 ): Promise<Response> {
-  if (!(await paymentEnabled(store, "stripe"))) return apiFail("Stripe 未配置");
+  if ((body.payment_method || "") !== "stripe") return payErr("不支持的支付渠道");
   const amount = Number(body.amount || 0);
-  const min = await store.optionNum("MinTopup", 1);
-  if (amount < min) return apiFail(`充值数量不能小于 ${min}`);
+  const min = await store.optionNum("StripeMinTopUp", await store.optionNum("MinTopup", 1));
+  if (amount < min) return json(200, { message: `充值数量不能小于 ${min}`, data: 10, success: false });
+  if (amount > 10000) return json(200, { message: "充值数量不能大于 10000", data: 10, success: false });
   const secret = await stripeSecret(store);
+  if (!secret.startsWith("sk_") && !secret.startsWith("rk_")) return payErr("拉起支付失败");
   const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
   const unitPrice = await store.optionNum("StripeUnitPrice", 8);
   const money = payMoney(amount, unitPrice);
@@ -201,13 +234,16 @@ export async function requestEpay(
   req: Request,
   body: { amount?: number; payment_method?: string },
 ): Promise<Response> {
-  if (!(await paymentEnabled(store, "epay"))) return apiFail("Epay 未配置");
   const amount = Number(body.amount || 0);
   const min = await store.optionNum("MinTopup", 1);
-  if (amount < min) return apiFail(`充值数量不能小于 ${min}`);
+  if (amount < min) return payErr(`充值数量不能小于 ${min}`);
+  const methods = parseJson<{ type?: string }[]>(await store.option("PayMethods"), []);
+  const method = body.payment_method || "alipay";
+  if (methods.length && !methods.some((m) => m.type === method)) return payErr("支付方式不存在");
   const pid = await store.option("EpayPid");
   const key = await store.option("EpayKey");
-  const gateway = (await store.option("EpayUrl")) || "https://pay.example.com/submit.php";
+  const gateway = (await store.option("PayAddress")) || (await store.option("EpayUrl")) || "";
+  if (!gateway || !pid || !key) return payErr("当前管理员未配置支付信息");
   const origin = new URL(req.url).origin;
   const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
   const money = payMoney(amount, await store.optionNum("Price", 7.3));
@@ -313,7 +349,8 @@ export async function requestWaffoPay(
   req: Request,
   body: { amount?: number; pay_method_index?: number; pay_method_type?: string; pay_method_name?: string },
 ): Promise<Response> {
-  if (!(await paymentEnabled(store, "waffo"))) return payErr("Waffo 支付未启用");
+  if (!(await store.optionBool("WaffoEnabled", false))) return payErr("Waffo 支付未启用");
+  if (!(await paymentConfigured(store, "waffo"))) return payErr("支付配置错误");
   const amount = Number(body.amount || 0);
   const min = await store.optionNum("WaffoMinTopUp", await store.optionNum("MinTopup", 1));
   if (amount < min) return payErr(`充值数量不能小于 ${min}`);
@@ -365,13 +402,13 @@ export async function requestWaffoPancakePay(
   req: Request,
   body: { amount?: number },
 ): Promise<Response> {
-  if (!(await paymentEnabled(store, "waffo_pancake"))) return payErr("Waffo Pancake 支付未启用");
+  if (!(await paymentEnabled(store, "waffo_pancake"))) return payErr("Waffo Pancake 配置不完整");
   const amount = Number(body.amount || 0);
   const min = await store.optionNum("WaffoPancakeMinTopUp", await store.optionNum("MinTopup", 1));
   if (amount < min) return payErr(`充值数量不能小于 ${min}`);
   const money = payMoney(amount, await store.optionNum("Price", 7.3));
   const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
-  const trade = `WAFFO-PANCAKE-${user.id}-${Date.now()}-${randomHex(3)}`;
+  const trade = `WAFFO_PANCAKE-${user.id}-${Date.now()}-${randomHex(3)}`;
   await store.insertTopup({
     user_id: user.id,
     amount: Math.round(amount * quotaPerUnit),

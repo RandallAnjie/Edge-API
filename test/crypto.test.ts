@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hashPassword, parseApiKey, signAccessJwt, splitRefreshToken, verifyAccessJwt, verifyPassword, signSession, verifySession, signSecurityProofJwt, verifySecurityProofJwt } from "../src/crypto.js";
+import { hashPassword, maskKey, parseApiKey, signAccessJwt, splitRefreshToken, verifyAccessJwt, verifyPassword, signSession, verifySession, signSecurityProofJwt, verifySecurityProofJwt } from "../src/crypto.js";
 
 test("parseApiKey strips sk- and extra segments", () => {
   assert.equal(parseApiKey("Bearer sk-abc123-extra"), "abc123");
   assert.equal(parseApiKey("sk-deadbeef"), "deadbeef");
   assert.equal(parseApiKey("x-api-key-not"), "x");
+});
+
+test("MaskTokenKey matches original new-api masking", () => {
+  assert.equal(maskKey(""), "");
+  assert.equal(maskKey("ab"), "**");
+  assert.equal(maskKey("abcd"), "****");
+  assert.equal(maskKey("abcdefgh"), "ab****gh");
+  assert.equal(maskKey("abcdefghijkl"), "abcd**********ijkl");
 });
 
 test("pbkdf2 hash verifies", async () => {

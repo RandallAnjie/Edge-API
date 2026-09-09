@@ -137,7 +137,7 @@ export function publicToken(t: TokenRow): Record<string, unknown> {
   return {
     id: t.id,
     user_id: t.user_id,
-    key: "sk-" + maskKey(t.key),
+    key: maskKey(t.key),
     status: t.status,
     name: t.name,
     created_time: t.created_time,

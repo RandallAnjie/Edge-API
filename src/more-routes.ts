@@ -26,8 +26,19 @@ import {
   oauthProviderKnown,
   verifyTelegramLogin,
 } from "./oauth.js";
-import { generateTokenKey, displayTokenKey, accessTokenFingerprint } from "./crypto.js";
+import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
 import { publicToken, verificationRequirements, publicLog, rankingsResponse, exposedRatioConfig, enrichModelMeta } from "./dto.js";
+import { requirePaymentCompliance } from "./payments.js";
+import {
+  calcNextResetTime,
+  calcPlanEndTime,
+  isActiveSubscription,
+  normalizeBillingPreference,
+  planFieldsFromBody,
+  publicPlan,
+  wrapPlan,
+  wrapUserSubscription,
+} from "./subscription.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { apiFail, apiFailCode, apiOk, clientIp, json, pageData, pageQuery, readJson, serveRevalidatedJSON } from "./http.js";
@@ -825,8 +836,9 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[] };
-    const n = await s.deleteTokensBatch(u.id, body.ids || []);
-    return apiOk({ count: n });
+    if (!body.ids?.length) return apiFail("无效的参数");
+    const n = await s.deleteTokensBatch(u.id, body.ids);
+    return apiOk(n);
   });
 
   r.post("/api/token/batch/keys", async (c) => {
@@ -834,12 +846,14 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[] };
-    const keys: { id: number; key: string }[] = [];
-    for (const id of body.ids || []) {
+    if (!body.ids?.length) return apiFail("无效的参数");
+    if (body.ids.length > 100) return apiFail("批量数量过多");
+    const keys: Record<string, string> = {};
+    for (const id of body.ids) {
       const t = await s.getTokenById(id, u.id);
-      if (t) keys.push({ id, key: displayTokenKey(t.key) });
+      if (t) keys[String(id)] = t.key;
     }
-    return apiOk(keys);
+    return apiOk({ keys });
   });
 
   r.get("/api/channel/test", async (c) => {
@@ -925,14 +939,26 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.listPlans(true));
+    if (!(await s.optionBool("PaymentComplianceConfirmed", false))) return apiOk([]);
+    return apiOk((await s.listPlans(true)).map(wrapPlan));
   });
 
   r.get("/api/subscription/self", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.listUserSubs(u.id));
+    const user = await s.getUserById(u.id);
+    const now = nowSec();
+    const all = (await s.listUserSubs(u.id)).map((row) => wrapUserSubscription(row, now));
+    const subscriptions = (await s.listUserSubs(u.id))
+      .filter((row) => isActiveSubscription(row, now))
+      .map((row) => wrapUserSubscription(row, now));
+    const setting = parseJson<Record<string, unknown>>(user?.settings || "", {});
+    return apiOk({
+      billing_preference: normalizeBillingPreference(user?.billing_preference || setting.billing_preference),
+      subscriptions,
+      all_subscriptions: all,
+    });
   });
 
   r.put("/api/subscription/self/preference", async (c) => {
@@ -940,63 +966,89 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { billing_preference?: string };
-    await s.updateUser(u.id, { billing_preference: body.billing_preference || "quota" });
-    return apiOk(null);
+    const pref = normalizeBillingPreference(body.billing_preference);
+    const user = await s.getUserById(u.id);
+    const settings = parseJson<Record<string, unknown>>(user?.settings || "", {});
+    settings.billing_preference = pref;
+    await s.updateUser(u.id, { billing_preference: pref, settings: JSON.stringify(settings) });
+    return apiOk({ billing_preference: pref });
   });
 
   r.post("/api/subscription/balance/pay", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
+    const denied = await requirePaymentCompliance(s);
+    if (denied) return denied;
     const body = (await readJson(c.req)) as { plan_id?: number };
+    if (!body.plan_id) return apiFail("参数错误");
     const plan = await s.getPlan(Number(body.plan_id));
-    if (!plan || Number(plan.enabled) !== 1) return apiFail("套餐不可用");
+    if (!plan || !publicPlan(plan).enabled) return apiFail("套餐未启用");
+    const published = publicPlan(plan);
+    if (published.allow_balance_pay === false) return apiFail("该套餐不允许使用余额兑换");
     const user = await s.getUserById(u.id);
     if (!user) return apiFail("用户不存在");
-    const price = Number(plan.price_quota || 0);
+    const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
+    const price = Math.ceil(Number(published.price_amount || 0) * quotaPerUnit);
     if (user.quota < price) return apiFail("余额不足");
-    await s.addQuota(u.id, -price);
-    const grant = Number(plan.grant_quota || 0);
-    if (grant) await s.addQuota(u.id, grant);
+    if (price) await s.addQuota(u.id, -price);
     const start = nowSec();
-    const expire = start + Number(plan.duration_days || 30) * 86400;
-    const id = await s.insertUserSub({
+    const expire = calcPlanEndTime(start, published);
+    const nextReset = calcNextResetTime(start, published, expire);
+    await s.insertUserSub({
       user_id: u.id,
       plan_id: Number(plan.id),
-      start_at: start,
-      expire_at: expire,
-      remaining_quota: grant,
+      start_time: start,
+      end_time: expire,
+      amount_total: Number(published.total_amount || 0),
+      source: "order",
+      next_reset_time: nextReset,
+      last_reset_time: nextReset > 0 ? start : 0,
+      upgrade_group: String(published.upgrade_group || ""),
+      downgrade_group: String(published.downgrade_group || ""),
+      allow_wallet_overflow: published.allow_wallet_overflow ? 1 : 0,
     });
-    await s.insertTopup({ user_id: u.id, amount: grant, payment_method: "subscription", trade_no: String(id) });
-    return apiOk({ id, expire_at: expire }, "订阅成功");
+    return apiOk(null);
   });
 
   r.get("/api/subscription/admin/plans", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.listPlans(false));
+    return apiOk((await s.listPlans(false)).map(wrapPlan));
   });
 
   r.post("/api/subscription/admin/plans", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
+    const denied = await requirePaymentCompliance(s);
+    if (denied) return denied;
     const body = (await readJson(c.req)) as Record<string, unknown>;
-    const id = await s.insertPlan(body);
-    return apiOk({ id }, "创建成功");
+    const fields = planFieldsFromBody(body);
+    if (!String(fields.title || "").trim()) return apiFail("套餐标题不能为空");
+    if (Number(fields.price_amount) < 0) return apiFail("价格不能为负数");
+    if (Number(fields.price_amount) > 9999) return apiFail("价格不能超过9999");
+    if (Number(fields.max_purchase_per_user) < 0) return apiFail("购买上限不能为负数");
+    if (Number(fields.total_amount) < 0) return apiFail("总额度不能为负数");
+    const id = await s.insertPlan(fields);
+    const created = await s.getPlan(id);
+    return apiOk(created ? publicPlan(created) : { id });
   });
 
   r.put("/api/subscription/admin/plans/:id", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
+    const denied = await requirePaymentCompliance(s);
+    if (denied) return denied;
+    const id = Number(c.params.id);
+    if (id <= 0) return apiFail("无效的ID");
     const body = (await readJson(c.req)) as Record<string, unknown>;
-    const patch: Record<string, unknown> = {};
-    for (const k of ["title", "description", "price_quota", "duration_days", "grant_quota", "group", "models", "enabled"]) {
-      if (body[k] != null) patch[k] = body[k];
-    }
-    await s.updatePlan(Number(c.params.id), patch);
+    const fields = planFieldsFromBody(body);
+    if (!String(fields.title || "").trim()) return apiFail("套餐标题不能为空");
+    fields.updated_at = nowSec();
+    await s.updatePlan(id, fields);
     return apiOk(null);
   });
 
@@ -1004,8 +1056,13 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { enabled?: number };
-    await s.updatePlan(Number(c.params.id), { enabled: Number(body.enabled) });
+    const denied = await requirePaymentCompliance(s);
+    if (denied) return denied;
+    const id = Number(c.params.id);
+    if (id <= 0) return apiFail("无效的ID");
+    const body = (await readJson(c.req)) as { enabled?: boolean | number };
+    if (body.enabled == null) return apiFail("参数错误");
+    await s.updatePlan(id, { enabled: body.enabled === false || body.enabled === 0 ? 0 : 1, updated_at: nowSec() });
     return apiOk(null);
   });
 
@@ -1013,32 +1070,50 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
+    const denied = await requirePaymentCompliance(s);
+    if (denied) return denied;
     const body = (await readJson(c.req)) as { user_id?: number; plan_id?: number };
+    if (!body.user_id || !body.plan_id) return apiFail("参数错误");
     const plan = await s.getPlan(Number(body.plan_id));
     if (!plan) return apiFail("套餐不存在");
+    const published = publicPlan(plan);
     const start = nowSec();
-    const id = await s.insertUserSub({
+    const expire = calcPlanEndTime(start, published);
+    const nextReset = calcNextResetTime(start, published, expire);
+    await s.insertUserSub({
       user_id: Number(body.user_id),
       plan_id: Number(plan.id),
-      start_at: start,
-      expire_at: start + Number(plan.duration_days || 30) * 86400,
-      remaining_quota: Number(plan.grant_quota || 0),
+      start_time: start,
+      end_time: expire,
+      amount_total: Number(published.total_amount || 0),
+      source: "admin",
+      next_reset_time: nextReset,
+      last_reset_time: nextReset > 0 ? start : 0,
+      upgrade_group: String(published.upgrade_group || ""),
+      downgrade_group: String(published.downgrade_group || ""),
+      allow_wallet_overflow: published.allow_wallet_overflow ? 1 : 0,
     });
-    return apiOk({ id });
+    return apiOk(null);
   });
 
   r.get("/api/subscription/admin/users/:id/subscriptions", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.listUserSubs(Number(c.params.id)));
+    const userId = Number(c.params.id);
+    if (userId <= 0) return apiFail("无效的用户ID");
+    const now = nowSec();
+    return apiOk((await s.listUserSubs(userId)).map((row) => wrapUserSubscription(row, now)));
   });
 
   r.post("/api/subscription/admin/user_subscriptions/:id/invalidate", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.updateUserSub(Number(c.params.id), { status: 2 });
+    const id = Number(c.params.id);
+    if (id <= 0) return apiFail("无效的订阅ID");
+    const now = nowSec();
+    await s.updateUserSub(id, { status: "cancelled", end_time: now, expire_at: now, updated_at: now });
     return apiOk(null);
   });
 
@@ -1400,12 +1475,19 @@ async function generateUserAccessToken(c: C): Promise<Response> {
 
 async function tokenUsage(c: C): Promise<Response> {
   const s = store(c);
-  const auth = await authenticateApiToken(c, s);
-  if (auth instanceof Response) return auth;
-  const remain = Number(auth.token.remain_quota || 0);
-  const used = Number(auth.token.used_quota || 0);
-  const expiredAt = auth.token.expired_time === -1 ? 0 : auth.token.expired_time;
-  const limits = String(auth.token.model_limits || "")
+  const authHeader = c.req.headers.get("authorization") || "";
+  if (!authHeader) return json(401, { success: false, message: "No Authorization header" });
+  const parts = authHeader.split(" ");
+  if (parts.length !== 2 || parts[0].toLowerCase() !== "bearer") {
+    return json(401, { success: false, message: "Invalid Bearer token" });
+  }
+  const tokenKey = parts[1].startsWith("sk-") ? parts[1].slice(3) : parts[1];
+  const token = await s.getTokenByKey(tokenKey);
+  if (!token) return apiFail("获取令牌信息失败，请稍后重试");
+  const remain = Number(token.remain_quota || 0);
+  const used = Number(token.used_quota || 0);
+  const expiredAt = token.expired_time === -1 ? 0 : token.expired_time;
+  const limits = String(token.model_limits || "")
     .split(",")
     .map((x) => x.trim())
     .filter(Boolean);
@@ -1417,13 +1499,13 @@ async function tokenUsage(c: C): Promise<Response> {
     message: "ok",
     data: {
       object: "token_usage",
-      name: auth.token.name,
+      name: token.name,
       total_granted: remain + used,
       total_used: used,
       total_available: remain,
-      unlimited_quota: Boolean(auth.token.unlimited_quota),
+      unlimited_quota: Boolean(token.unlimited_quota),
       model_limits: modelLimits,
-      model_limits_enabled: Boolean(auth.token.model_limits_enabled),
+      model_limits_enabled: Boolean(token.model_limits_enabled),
       expires_at: expiredAt,
     },
   });

@@ -268,11 +268,15 @@ test("rankings + subscription buy + token batch", async () => {
   assert.ok(rank.body.data.models_history);
   assert.ok(rank.body.data.vendor_share_history);
 
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+
   const plan = await json(
     new Request("http://local/api/subscription/admin/plans", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ title: "pro", price_quota: 100, grant_quota: 1000, duration_days: 30 }),
+      body: JSON.stringify({
+        plan: { title: "pro", price_amount: 0, total_amount: 1000, duration_unit: "day", duration_value: 30 },
+      }),
     }),
     e,
   );
@@ -313,7 +317,7 @@ test("rankings + subscription buy + token batch", async () => {
     e,
   );
   assert.equal(batch.body.success, true);
-  assert.equal(batch.body.data.count, 2);
+  assert.equal(batch.body.data, 2);
 });
 
 test("session revoke + 501 files + multipart audio relay", async () => {

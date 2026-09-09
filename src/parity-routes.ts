@@ -13,6 +13,7 @@ import {
   requestStripePay,
   requestWaffoPancakePay,
   requestWaffoPay,
+  requirePaymentCompliance,
   topupInfo,
 } from "./payments.js";
 import { mailConfigured, sendMail, sixDigitCode } from "./mail.js";
@@ -21,7 +22,7 @@ import {
   verifyTelegramLogin,
   wechatIdFromCode,
 } from "./oauth.js";
-import { hmacSha256Hex } from "./crypto.js";
+import { bytesToHex, hmacSha256Hex, sha256Bytes } from "./crypto.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { apiFail, apiOk, json, pageData, pageQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
@@ -45,6 +46,13 @@ import { Store } from "./store.js";
 import { testChannel, fetchUpstreamModels } from "./relay.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
 import { enrichModelMeta } from "./dto.js";
+import {
+  calcNextResetTime,
+  calcPlanEndTime,
+  decodePluginIcon,
+  parseCodexOAuthKey,
+  publicPlan,
+} from "./subscription.js";
 import { computeStatusCounts, ionetApiKey, ionetRequest, ionetSettings, IONET_NOT_CONFIGURED, mapIoNetDeployment } from "./ionet.js";
 import type { Env } from "./types.js";
 
@@ -362,19 +370,42 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { tag?: string; new_tag?: string; models?: string; group?: string; priority?: number; weight?: number };
-    if (!body.tag) return apiFail("缺少 tag");
+    const body = (await readJson(c.req)) as {
+      tag?: string;
+      new_tag?: string;
+      models?: string;
+      group?: string;
+      groups?: string;
+      priority?: number;
+      weight?: number;
+      param_override?: string;
+      header_override?: string;
+    };
+    if (!body.tag) return apiFail("tag不能为空");
+    if ((body.param_override != null || body.header_override != null) && u.role < 100) {
+      const user = await s.getUserById(u.id);
+      const roleKey = user ? roleKeyForSystemRole(user.role) : "";
+      const userPolicies = user ? await s.casbinPolicies(userSubject(user.id)) : [];
+      const rolePolicies = roleKey ? await s.casbinPolicies(roleSubject(roleKey)) : [];
+      const allowed = user
+        ? canWithPolicies(user, "channel", "sensitive_write", userPolicies, rolePolicies)
+        : false;
+      if (!allowed) return apiFail("无权进行此操作，权限不足", null, 403);
+    }
     const channels = await s.channelsByTag(body.tag);
     for (const ch of channels) {
       const patch: Record<string, unknown> = {};
       if (body.new_tag != null) patch.tag = body.new_tag;
       if (body.models != null) patch.models = body.models;
       if (body.group != null) patch.group = body.group;
+      if (body.groups != null) patch.group = body.groups;
       if (body.priority != null) patch.priority = body.priority;
       if (body.weight != null) patch.weight = body.weight;
+      if (body.param_override != null) patch.param_override = body.param_override;
+      if (body.header_override != null) patch.header_override = body.header_override;
       if (Object.keys(patch).length) await s.updateChannel(ch.id, patch);
     }
-    return apiOk({ count: channels.length });
+    return apiOk(null);
   });
 
   r.post("/api/channel/fix", async (c) => {
@@ -407,29 +438,9 @@ export function registerParity(r: Router<Env>): void {
     return apiOk({ refreshed: true });
   });
 
-  r.get("/api/channel/:id/codex/usage", async (c) => {
-    const s = store(c);
-    const u = await requireChannel(c, s, "read");
-    if (isResponse(u)) return u;
-    const ch = await s.getChannel(Number(c.params.id));
-    if (!ch) return apiFail("渠道不存在");
-    return apiOk({ used_quota: ch.used_quota, balance: ch.balance || "", test_time: ch.test_time });
-  });
-
-  r.get("/api/channel/:id/codex/usage/reset-credits", async (c) => {
-    const s = store(c);
-    const u = await requireChannel(c, s, "read");
-    if (isResponse(u)) return u;
-    return apiOk({ credits: 0, reset_at: 0 });
-  });
-
-  r.post("/api/channel/:id/codex/usage/reset", async (c) => {
-    const s = store(c);
-    const u = await requireChannel(c, s, "operate");
-    if (isResponse(u)) return u;
-    await s.updateChannel(Number(c.params.id), { used_quota: 0 });
-    return apiOk(null, "已重置");
-  });
+  r.get("/api/channel/:id/codex/usage", async (c) => fetchCodexWham(c, "usage"));
+  r.get("/api/channel/:id/codex/usage/reset-credits", async (c) => fetchCodexWham(c, "reset-credits"));
+  r.post("/api/channel/:id/codex/usage/reset", async (c) => fetchCodexWham(c, "reset"));
 
   r.post("/api/channel/ollama/pull", async (c) => ollamaOp(c, "pull"));
   r.post("/api/channel/ollama/pull/stream", async (c) => ollamaOp(c, "pull"));
@@ -450,8 +461,9 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[]; tag?: string };
-    for (const id of body.ids || []) await s.updateChannel(id, { tag: body.tag || "" });
-    return apiOk({ count: (body.ids || []).length });
+    if (!body.ids?.length) return apiFail("参数错误");
+    for (const id of body.ids) await s.updateChannel(id, { tag: body.tag || "" });
+    return apiOk(body.ids.length);
   });
 
   r.get("/api/channel/tag/models", async (c) => {
@@ -459,10 +471,18 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     const tag = c.url.searchParams.get("tag") || "";
+    if (!tag) return json(400, { success: false, message: "tag不能为空" });
     const channels = await s.channelsByTag(tag);
-    const models = new Set<string>();
-    for (const ch of channels) for (const m of csv(ch.models)) models.add(m);
-    return apiOk([...models]);
+    let longest = "";
+    let maxLen = 0;
+    for (const ch of channels) {
+      const parts = csv(ch.models);
+      if (parts.length > maxLen) {
+        maxLen = parts.length;
+        longest = ch.models;
+      }
+    }
+    return apiOk(longest);
   });
 
   r.post("/api/channel/multi_key/manage", async (c) => {
@@ -498,18 +518,31 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
+    const denied = await requirePaymentCompliance(s);
+    if (denied) return denied;
+    const userId = Number(c.params.id);
     const body = (await readJson(c.req)) as { plan_id?: number };
+    if (userId <= 0 || !body.plan_id) return apiFail("参数错误");
     const plan = await s.getPlan(Number(body.plan_id));
     if (!plan) return apiFail("套餐不存在");
+    const published = publicPlan(plan);
     const start = nowSec();
-    const id = await s.insertUserSub({
-      user_id: Number(c.params.id),
+    const expire = calcPlanEndTime(start, published);
+    const nextReset = calcNextResetTime(start, published, expire);
+    await s.insertUserSub({
+      user_id: userId,
       plan_id: Number(plan.id),
-      start_at: start,
-      expire_at: start + Number(plan.duration_days || 30) * 86400,
-      remaining_quota: Number(plan.grant_quota || 0),
+      start_time: start,
+      end_time: expire,
+      amount_total: Number(published.total_amount || 0),
+      source: "admin",
+      next_reset_time: nextReset,
+      last_reset_time: nextReset > 0 ? start : 0,
+      upgrade_group: String(published.upgrade_group || ""),
+      downgrade_group: String(published.downgrade_group || ""),
+      allow_wallet_overflow: published.allow_wallet_overflow ? 1 : 0,
     });
-    return apiOk({ id });
+    return apiOk(null);
   });
 
   r.post("/api/subscription/admin/users/:id/subscriptions/reset", async (c) => {
@@ -633,7 +666,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const channels = await s.enabledChannels();
+    const channels = await s.allChannels();
     const data = channels
       .filter((ch) => ch.base_url)
       .map((ch) => ({ id: ch.id, name: ch.name, base_url: ch.base_url, status: ch.status, type: ch.type }));
@@ -659,7 +692,7 @@ export function registerParity(r: Router<Env>): void {
             id: Number(ustr.id || 0),
             name: ustr.name || ustr.base_url || "",
             base_url: ustr.base_url.replace(/\/$/, ""),
-            endpoint: ustr.endpoint || "/api/ratio_config",
+            endpoint: ustr.endpoint || "/api/pricing",
           });
         }
       }
@@ -668,7 +701,7 @@ export function registerParity(r: Router<Env>): void {
       for (const id of ids) {
         const ch = await s.getChannel(Number(id));
         if (ch?.base_url?.startsWith("http")) {
-          upstreams.push({ id: ch.id, name: ch.name, base_url: ch.base_url.replace(/\/$/, ""), endpoint: "/api/ratio_config" });
+          upstreams.push({ id: ch.id, name: ch.name, base_url: ch.base_url.replace(/\/$/, ""), endpoint: "/api/pricing" });
         }
       }
     }
@@ -711,7 +744,11 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(((await s.listTaskPlugins()) as Record<string, unknown>[]).map(publicTaskPlugin));
+    const items = [];
+    for (const row of (await s.listTaskPlugins()) as Record<string, unknown>[]) {
+      items.push(await publicTaskPlugin(s, row));
+    }
+    return apiOk(items);
   });
   r.post("/api/plugin/task", (c) => upsertPlugin(c));
   r.put("/api/plugin/task", (c) => upsertPlugin(c));
@@ -754,15 +791,40 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const p = await s.getTaskPlugin(c.params.key);
-    if (!p) return apiFail("插件不存在");
-    return apiOk(p);
+    if (!p) return apiFail("task plugin not found");
+    const manifest = parseJson<Record<string, unknown>>(String(p.manifest || "{}"), {});
+    const icon = String(p.icon || "");
+    const plugin = { ...p };
+    delete plugin.icon;
+    return apiOk({
+      plugin,
+      meta: {
+        key: String(p.key || c.params.key),
+        version: String(manifest.version || p.version || "1.0.0"),
+        api_version: String(manifest.api_version || "v1"),
+        name: String(manifest.name || p.name || p.key),
+      },
+      source: String(p.source || ""),
+      layer: "override",
+      has_icon: Boolean(icon),
+    });
   });
   r.get("/api/plugin/task/:key/icon", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const p = await s.getTaskPlugin(c.params.key);
-    return apiOk({ icon: p?.icon || "" });
+    const decoded = decodePluginIcon(String(p?.icon || ""));
+    if (!decoded) return new Response(null, { status: 404 });
+    return new Response(decoded.body as unknown as BodyInit, {
+      status: 200,
+      headers: {
+        "content-type": decoded.mediaType,
+        "cache-control": "private, max-age=3600",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      },
+    });
   });
   r.get("/api/plugin/task/:key/versions", async (c) => {
     const s = store(c);
@@ -961,14 +1023,23 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
     const keyword = c.url.searchParams.get("keyword") || "";
-    const items = (keyword ? await s.searchModelMeta(keyword) : await s.listModelMeta()) as Record<string, unknown>[];
-    const vendor_counts: Record<string, number> = {};
-    for (const m of items) {
-      const vid = String(m.vendor_id || 0);
-      vendor_counts[vid] = (vendor_counts[vid] || 0) + 1;
+    const squareState = c.url.searchParams.get("square_state") || "";
+    if (squareState && !["visible", "unavailable", "hidden", "partial"].includes(squareState)) {
+      return json(400, { success: false, message: "Invalid model square state" });
     }
-    const enriched = await enrichModelMeta(s, items);
-    return apiOk(pageData(enriched.slice(q.offset, q.offset + q.page_size), items.length, q, { vendor_counts }));
+    if (squareState && (q.page < 1 || q.page_size < 1)) {
+      return json(400, { success: false, message: "Invalid pagination" });
+    }
+    const items = (keyword ? await s.searchModelMeta(keyword) : await s.listModelMeta()) as Record<string, unknown>[];
+    let enriched = await enrichModelMeta(s, items);
+    if (squareState) {
+      enriched = enriched.filter((m) => m.square_state === squareState);
+    }
+    const vendor_counts = await s.vendorModelCounts();
+    const pageItems = squareState
+      ? enriched.slice((q.page - 1) * q.page_size, (q.page - 1) * q.page_size + q.page_size)
+      : enriched.slice(q.offset, q.offset + q.page_size);
+    return apiOk(pageData(pageItems, squareState ? enriched.length : items.length, q, { vendor_counts }));
   });
   r.get("/api/models/search", async (c) => {
     const s = store(c);
@@ -976,11 +1047,7 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
     const items = (await s.searchModelMeta(c.url.searchParams.get("keyword") || "")) as Record<string, unknown>[];
-    const vendor_counts: Record<string, number> = {};
-    for (const m of items) {
-      const vid = String(m.vendor_id || 0);
-      vendor_counts[vid] = (vendor_counts[vid] || 0) + 1;
-    }
+    const vendor_counts = await s.vendorModelCounts();
     const enriched = await enrichModelMeta(s, items);
     return apiOk(pageData(enriched.slice(q.offset, q.offset + q.page_size), items.length, q, { vendor_counts }));
   });
@@ -1308,17 +1375,31 @@ async function ollamaOp(c: C, action: "pull" | "delete"): Promise<Response> {
   const s = store(c);
   const u = await requireChannel(c, s, "sensitive_write");
   if (isResponse(u)) return u;
-  const body = (await readJson(c.req)) as { id?: number; name?: string; model?: string };
-  const ch = await s.getChannel(Number(body.id));
-  if (!ch) return apiFail("渠道不存在");
+  const body = (await readJson(c.req)) as { channel_id?: number; id?: number; model_name?: string; name?: string; model?: string };
+  const channelId = Number(body.channel_id || body.id);
+  const modelName = String(body.model_name || body.name || body.model || "");
+  if (!channelId || !modelName) return json(400, { success: false, message: "Channel ID and model name are required" });
+  const ch = await s.getChannel(channelId);
+  if (!ch) return json(404, { success: false, message: "Channel not found" });
+  if (ch.type !== 4) return json(400, { success: false, message: "This operation is only supported for Ollama channels" });
   const base = (ch.base_url || "http://localhost:11434").replace(/\/$/, "");
-  const res = await fetch(base + (action === "pull" ? "/api/pull" : "/api/delete"), {
+  const key = ch.key.split(/[\n,]/)[0] || "";
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (key) headers.authorization = "Bearer " + key;
+  const path = action === "pull" ? "/api/pull" : "/api/delete";
+  const res = await fetch(base + path, {
     method: action === "delete" ? "DELETE" : "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name: body.name || body.model }),
+    headers,
+    body: JSON.stringify({ name: modelName, model: modelName }),
   });
-  const text = await res.text();
-  return res.ok ? apiOk(parseJson(text, { ok: true })) : apiFail(text.slice(0, 300));
+  if (c.url.pathname.endsWith("/stream") && res.body) {
+    return new Response(res.body, {
+      status: res.status,
+      headers: { "content-type": res.headers.get("content-type") || "application/x-ndjson" },
+    });
+  }
+  if (!res.ok) return json(res.status >= 400 ? res.status : 500, { success: false, message: `Failed to ${action} model: ${(await res.text()).slice(0, 300)}` });
+  return apiOk(null, action === "pull" ? `Model ${modelName} pulled successfully` : `Model ${modelName} deleted successfully`);
 }
 
 async function detectUpdates(c: C, all: boolean, action: "operate" | "write" = "operate"): Promise<Response> {
@@ -1356,13 +1437,14 @@ async function applyUpdates(c: C, all: boolean): Promise<Response> {
   return apiOk({ count: (parsed.data || []).length });
 }
 
-function publicTaskPlugin(row: Record<string, unknown>): Record<string, unknown> {
+async function publicTaskPlugin(store: Store, row: Record<string, unknown>): Promise<Record<string, unknown>> {
   const key = String(row.key || "");
   const version = String(row.version || "1.0.0");
   const status = String(row.status || "inactive");
   const active = status === "active" || status === "enabled";
   const manifest = parseJson<Record<string, unknown>>(String(row.manifest || "{}"), {});
   const icon = String(row.icon || "");
+  const usage = await store.taskPluginUsage(key);
   return {
     meta: {
       key,
@@ -1377,9 +1459,8 @@ function publicTaskPlugin(row: Record<string, unknown>): Record<string, unknown>
     has_icon: Boolean(icon),
     remark: String(row.remark || ""),
     runtime_status: active ? "registered" : "disabled",
-    runtime_error: "workerd cannot execute Goja JS task-plugin runtime; plugins are a D1 registry plus HTTP passthrough",
-    channel_count: 0,
-    in_flight_count: 0,
+    channel_count: usage.channel_count,
+    in_flight_count: usage.in_flight_count,
   };
 }
 
@@ -1390,7 +1471,9 @@ async function upsertPlugin(c: C): Promise<Response> {
   const body = (await readJson(c.req)) as Record<string, unknown>;
   const key = String(body.key || body.name || "");
   if (!key) return apiFail("缺少 key");
-  await s.upsertTaskPlugin({ ...body, key });
+  const source = String(body.source || "");
+  const sourceHash = source ? bytesToHex(await sha256Bytes(source)) : String(body.source_hash || "");
+  await s.upsertTaskPlugin({ ...body, key, source, source_hash: sourceHash });
   return apiOk({ key });
 }
 
@@ -1438,26 +1521,85 @@ async function resetPlanSubscriptions(
 ): Promise<Response> {
   const plan = await s.getPlan(planId);
   if (!plan) return apiFail("无效的ID");
-  const grant = Number(plan.grant_quota || 0);
-  let sql = "SELECT id, user_id FROM user_subscriptions WHERE plan_id = ? AND status = 1";
-  const binds: unknown[] = [planId];
-  if (userId) {
-    sql += " AND user_id = ?";
-    binds.push(userId);
-  }
-  const { results } = await c.env.DB.prepare(sql).bind(...binds).all<{ id: number; user_id: number }>();
+  const published = publicPlan(plan);
+  const now = nowSec();
+  const rows = await s.listActiveUserSubs(userId, planId);
+  if (userId && !rows.length) return apiFail("该用户没有有效的此套餐订阅");
   const users = new Set<number>();
-  for (const row of results) {
-    await s.updateUserSub(row.id, { remaining_quota: grant });
-    users.add(row.user_id);
+  for (const row of rows) {
+    const nextReset = advanceResetTime ? calcNextResetTime(now, published, Number(row.end_time || row.expire_at || 0)) : Number(row.next_reset_time || 0);
+    await s.updateUserSub(Number(row.id), {
+      amount_used: 0,
+      remaining_quota: Number(published.total_amount || 0),
+      next_reset_time: nextReset,
+      last_reset_time: advanceResetTime ? (nextReset > 0 ? now : 0) : row.last_reset_time,
+      updated_at: now,
+    });
+    users.add(Number(row.user_id));
   }
   return apiOk({
     plan_id: planId,
-    matched_count: results.length,
-    reset_count: results.length,
+    matched_count: rows.length,
+    reset_count: rows.length,
     user_count: users.size,
     advance_reset_time: advanceResetTime,
   });
+}
+
+async function fetchCodexWham(c: C, kind: "usage" | "reset-credits" | "reset"): Promise<Response> {
+  const s = store(c);
+  const permission = kind === "reset" ? "operate" : "read";
+  const u = await requireChannel(c, s, permission);
+  if (isResponse(u)) return u;
+  const channelId = Number(c.params.id);
+  if (!Number.isInteger(channelId) || channelId <= 0) return apiFail("invalid channel id");
+  const ch = await s.getChannel(channelId);
+  if (!ch) return apiFail("channel not found");
+  if (ch.type !== 57) return apiFail("channel type is not Codex");
+  const info = parseJson<Record<string, unknown>>(String(ch.channel_info || ""), {});
+  if (info.is_multi_key || info.IsMultiKey) return apiFail("multi-key channel is not supported");
+  const oauth = parseCodexOAuthKey(ch.key);
+  if (!oauth) return apiFail("解析凭证失败，请检查渠道配置");
+  if (!oauth.access_token) return apiFail("codex channel: access_token is required");
+  if (!oauth.account_id) return apiFail("codex channel: account_id is required");
+  const base = (ch.base_url || "").replace(/\/$/, "");
+  if (!base) return apiFail(kind === "usage" ? "获取用量信息失败，请稍后重试" : kind === "reset-credits" ? "获取重置次数详情失败，请稍后重试" : "重置用量失败，请稍后重试");
+  const path =
+    kind === "usage"
+      ? "/backend-api/wham/usage"
+      : kind === "reset-credits"
+        ? "/backend-api/wham/rate-limit-reset-credits"
+        : "/backend-api/wham/rate-limit-reset-credits/consume";
+  const failMsg = kind === "usage" ? "获取用量信息失败，请稍后重试" : kind === "reset-credits" ? "获取重置次数详情失败，请稍后重试" : "重置用量失败，请稍后重试";
+  try {
+    const res = await fetch(base + path, {
+      method: kind === "reset" ? "POST" : "GET",
+      headers: {
+        authorization: "Bearer " + oauth.access_token,
+        "chatgpt-account-id": oauth.account_id,
+        accept: "application/json",
+        originator: "codex_cli_rs",
+        ...(kind === "reset" ? { "content-type": "application/json" } : {}),
+      },
+      body: kind === "reset" ? JSON.stringify({ redeem_request_id: randomHex(16) }) : undefined,
+    });
+    const text = await res.text();
+    let payload: unknown = text;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = text;
+    }
+    const ok = res.status >= 200 && res.status < 300;
+    return json(200, {
+      success: ok,
+      message: ok ? "" : `upstream status: ${res.status}`,
+      upstream_status: res.status,
+      data: payload,
+    });
+  } catch {
+    return apiFail(failMsg);
+  }
 }
 
 async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waffo_pancake"): Promise<Response> {

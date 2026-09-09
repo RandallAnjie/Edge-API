@@ -12,6 +12,7 @@ import {
 } from "./constants.js";
 import { capabilities, parsePermissionOverrides } from "./authz.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
+import { normalizeBillingPreference } from "./subscription.js";
 import type {
   ChannelRow,
   D1Database,
@@ -466,6 +467,28 @@ export class Store {
   async enabledChannels(): Promise<ChannelRow[]> {
     const { results } = await this.db.prepare("SELECT * FROM channels WHERE status = 1").all<ChannelRow>();
     return results;
+  }
+
+  async allChannels(): Promise<ChannelRow[]> {
+    const { results } = await this.db.prepare("SELECT * FROM channels").all<ChannelRow>();
+    return results;
+  }
+
+  async taskPluginUsage(key: string): Promise<{ channel_count: number; in_flight_count: number }> {
+    const { results } = await this.db
+      .prepare("SELECT setting FROM channels WHERE type = 61 AND status = ?")
+      .bind(CHANNEL_ENABLED)
+      .all<{ setting: string }>();
+    let channel_count = 0;
+    for (const ch of results) {
+      const setting = parseJson<Record<string, unknown>>(ch.setting || "", {});
+      if (String(setting.task_plugin_key || setting.TaskPluginKey || "") === key) channel_count += 1;
+    }
+    const inflight = await this.db
+      .prepare("SELECT COUNT(*) as c FROM tasks WHERE platform = ? AND status NOT IN ('SUCCESS', 'FAILURE')")
+      .bind(key)
+      .first<{ c: number }>();
+    return { channel_count, in_flight_count: num(inflight?.c) };
   }
 
   async autoDisableChannel(id: number): Promise<void> {
@@ -1414,11 +1437,11 @@ export class Store {
     return results;
   }
 
-  async listPlans(enabledOnly = false): Promise<unknown[]> {
+  async listPlans(enabledOnly = false): Promise<Record<string, unknown>[]> {
     const sql = enabledOnly
-      ? "SELECT * FROM subscription_plans WHERE enabled = 1 ORDER BY id"
-      : "SELECT * FROM subscription_plans ORDER BY id";
-    const { results } = await this.db.prepare(sql).all();
+      ? "SELECT * FROM subscription_plans WHERE enabled = 1 ORDER BY sort_order DESC, id DESC"
+      : "SELECT * FROM subscription_plans ORDER BY sort_order DESC, id DESC";
+    const { results } = await this.db.prepare(sql).all<Record<string, unknown>>();
     return results;
   }
 
@@ -1429,18 +1452,42 @@ export class Store {
   async insertPlan(p: Record<string, unknown>): Promise<number> {
     const r = await this.db
       .prepare(
-        `INSERT INTO subscription_plans (title, description, price_quota, duration_days, grant_quota, "group", models, enabled, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO subscription_plans (
+           title, subtitle, description, price_amount, currency, duration_unit, duration_value, custom_seconds,
+           enabled, sort_order, allow_balance_pay, allow_wallet_overflow, stripe_price_id, creem_product_id,
+           waffo_pancake_product_id, max_purchase_per_user, upgrade_group, downgrade_group, total_amount,
+           quota_reset_period, quota_reset_custom_seconds, price_quota, duration_days, grant_quota, "group", models,
+           created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         p.title ?? "",
+        p.subtitle ?? "",
         p.description ?? "",
+        Number(p.price_amount || 0),
+        p.currency || "USD",
+        p.duration_unit ?? "month",
+        Number(p.duration_value || 1),
+        Number(p.custom_seconds || 0),
+        p.enabled == null ? 1 : Number(p.enabled),
+        Number(p.sort_order || 0),
+        p.allow_balance_pay == null ? 1 : Number(p.allow_balance_pay),
+        p.allow_wallet_overflow == null ? 1 : Number(p.allow_wallet_overflow),
+        p.stripe_price_id ?? "",
+        p.creem_product_id ?? "",
+        p.waffo_pancake_product_id ?? "",
+        Number(p.max_purchase_per_user || 0),
+        p.upgrade_group ?? "",
+        p.downgrade_group ?? "",
+        Number(p.total_amount || p.grant_quota || 0),
+        p.quota_reset_period ?? "never",
+        Number(p.quota_reset_custom_seconds || 0),
         Number(p.price_quota || 0),
         Number(p.duration_days || 30),
-        Number(p.grant_quota || 0),
+        Number(p.grant_quota || p.total_amount || 0),
         p.group ?? "",
         p.models ?? "",
-        p.enabled == null ? 1 : Number(p.enabled),
+        nowSec(),
         nowSec(),
       )
       .run();
@@ -1460,30 +1507,96 @@ export class Store {
     await this.db.prepare(`UPDATE subscription_plans SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
   }
 
-  async listUserSubs(userId: number): Promise<unknown[]> {
+  async listUserSubs(userId: number): Promise<Record<string, unknown>[]> {
     const { results } = await this.db
       .prepare(
         `SELECT s.*, p.title as plan_title FROM user_subscriptions s
          LEFT JOIN subscription_plans p ON p.id = s.plan_id
-         WHERE s.user_id = ? ORDER BY s.id DESC`,
+         WHERE s.user_id = ? ORDER BY COALESCE(s.end_time, s.expire_at) DESC, s.id DESC`,
       )
       .bind(userId)
-      .all();
+      .all<Record<string, unknown>>();
+    return results;
+  }
+
+  async listActiveUserSubs(userId: number | undefined, planId: number): Promise<Record<string, unknown>[]> {
+    const now = nowSec();
+    if (userId) {
+      const { results } = await this.db
+        .prepare(
+          `SELECT * FROM user_subscriptions
+           WHERE user_id = ? AND plan_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+             AND (COALESCE(end_time, expire_at, 0) > ?)
+           ORDER BY COALESCE(end_time, expire_at) ASC, id ASC`,
+        )
+        .bind(userId, planId, now)
+        .all<Record<string, unknown>>();
+      return results;
+    }
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM user_subscriptions
+         WHERE plan_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+           AND (COALESCE(end_time, expire_at, 0) > ?)
+         ORDER BY user_id ASC, COALESCE(end_time, expire_at) ASC, id ASC`,
+      )
+      .bind(planId, now)
+      .all<Record<string, unknown>>();
     return results;
   }
 
   async insertUserSub(row: {
     user_id: number;
     plan_id: number;
-    start_at: number;
-    expire_at: number;
-    remaining_quota: number;
+    start_at?: number;
+    expire_at?: number;
+    remaining_quota?: number;
+    amount_total?: number;
+    amount_used?: number;
+    start_time?: number;
+    end_time?: number;
+    status?: string;
+    source?: string;
+    last_reset_time?: number;
+    next_reset_time?: number;
+    upgrade_group?: string;
+    prev_user_group?: string;
+    downgrade_group?: string;
+    allow_wallet_overflow?: number | boolean;
   }): Promise<number> {
+    const start = Number(row.start_time || row.start_at || nowSec());
+    const end = Number(row.end_time || row.expire_at || 0);
+    const total = Number(row.amount_total ?? row.remaining_quota ?? 0);
+    const overflow = row.allow_wallet_overflow == null ? 1 : Number(row.allow_wallet_overflow);
     const r = await this.db
       .prepare(
-        "INSERT INTO user_subscriptions (user_id, plan_id, start_at, expire_at, status, remaining_quota, created_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
+        `INSERT INTO user_subscriptions (
+           user_id, plan_id, amount_total, amount_used, start_time, end_time, status, source,
+           last_reset_time, next_reset_time, upgrade_group, prev_user_group, downgrade_group, allow_wallet_overflow,
+           start_at, expire_at, remaining_quota, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(row.user_id, row.plan_id, row.start_at, row.expire_at, row.remaining_quota, nowSec())
+      .bind(
+        row.user_id,
+        row.plan_id,
+        total,
+        Number(row.amount_used || 0),
+        start,
+        end,
+        row.status || "active",
+        row.source || "order",
+        Number(row.last_reset_time || 0),
+        Number(row.next_reset_time || 0),
+        row.upgrade_group || "",
+        row.prev_user_group || "",
+        row.downgrade_group || "",
+        overflow,
+        start,
+        end,
+        total,
+        nowSec(),
+        nowSec(),
+      )
       .run();
     return Number(r.meta.last_row_id || 0);
   }
@@ -1504,10 +1617,24 @@ export class Store {
   }
 
   async expireSubscriptions(): Promise<void> {
+    const now = nowSec();
     await this.db
-      .prepare("UPDATE user_subscriptions SET status = 2 WHERE status = 1 AND expire_at > 0 AND expire_at < ?")
-      .bind(nowSec())
+      .prepare(
+        `UPDATE user_subscriptions SET status = 'expired', updated_at = ?
+         WHERE (status = 'active' OR status = 1 OR status = '1')
+           AND COALESCE(end_time, expire_at, 0) > 0 AND COALESCE(end_time, expire_at, 0) < ?`,
+      )
+      .bind(now, now)
       .run();
+  }
+
+  async vendorModelCounts(): Promise<Record<string, number>> {
+    const { results } = await this.db
+      .prepare("SELECT vendor_id as vendor_id, COUNT(*) as count FROM model_meta GROUP BY vendor_id")
+      .all<{ vendor_id: number; count: number }>();
+    const out: Record<string, number> = {};
+    for (const row of results) out[String(row.vendor_id || 0)] = Number(row.count || 0);
+    return out;
   }
 
   async insertTask(row: Record<string, unknown>): Promise<number> {
@@ -1887,10 +2014,11 @@ export class Store {
   async upsertTaskPlugin(p: Record<string, unknown>): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO task_plugins (key, name, version, status, active_version, icon, manifest, routes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO task_plugins (key, name, version, status, active_version, icon, manifest, routes, source, source_hash, remark, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET name=excluded.name, version=excluded.version, status=excluded.status,
-           active_version=excluded.active_version, icon=excluded.icon, manifest=excluded.manifest, routes=excluded.routes, updated_at=excluded.updated_at`,
+           active_version=excluded.active_version, icon=excluded.icon, manifest=excluded.manifest, routes=excluded.routes,
+           source=excluded.source, source_hash=excluded.source_hash, remark=excluded.remark, updated_at=excluded.updated_at`,
       )
       .bind(
         String(p.key),
@@ -1901,6 +2029,9 @@ export class Store {
         String(p.icon || ""),
         typeof p.manifest === "string" ? p.manifest : JSON.stringify(p.manifest || {}),
         typeof p.routes === "string" ? p.routes : JSON.stringify(p.routes || []),
+        String(p.source || ""),
+        String(p.source_hash || ""),
+        String(p.remark || ""),
         nowSec(),
         nowSec(),
       )
@@ -2057,7 +2188,7 @@ export function publicUser(u: UserRow): Record<string, unknown> {
     stripe_customer,
     sidebar_modules,
     permissions: permissionsFor(u),
-    billing_preference: u.billing_preference || "quota",
+    billing_preference: normalizeBillingPreference(u.billing_preference),
     totp_enabled: Number(u.totp_enabled) === 1,
     email_verified: Number(u.email_verified) === 1,
     has_access_token: Boolean(u.access_token),

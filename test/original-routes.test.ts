@@ -287,6 +287,12 @@ test("original JSON fields for status, models, deployments, performance, data, u
   assert.equal(typeof ud.total_used, "number");
   assert.equal(typeof ud.total_available, "number");
   assert.equal(typeof ud.unlimited_quota, "boolean");
+  const usageNoAuth = await json(new Request("http://local/api/usage/token"), e);
+  assert.equal(usageNoAuth.res.status, 401);
+  assert.equal(usageNoAuth.body.message, "No Authorization header");
+  const usageBad = await json(new Request("http://local/api/usage/token", { headers: { authorization: "Token x" } }), e);
+  assert.equal(usageBad.res.status, 401);
+  assert.equal(usageBad.body.message, "Invalid Bearer token");
   assert.equal(typeof ud.model_limits_enabled, "boolean");
   assert.equal(typeof ud.expires_at, "number");
 
@@ -520,6 +526,29 @@ test("original JSON fields for status, models, deployments, performance, data, u
   assert.equal(suno?.runtime_status, "registered");
   assert.equal(typeof suno?.has_icon, "boolean");
   assert.equal(typeof suno?.channel_count, "number");
+  assert.equal(suno?.channel_count, 0);
+
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "suno-plugin-ch",
+        type: 61,
+        key: "plugin-key",
+        models: "suno",
+        group: "default",
+        setting: { task_plugin_key: "suno" },
+      }),
+    }),
+    e,
+  );
+  const pluginListBound = await json(new Request("http://local/api/plugin/task", { headers: auth }), e);
+  const sunoBound = (pluginListBound.body.data as { meta: { key: string }; channel_count: number; in_flight_count: number }[]).find(
+    (p) => p.meta.key === "suno",
+  );
+  assert.equal(sunoBound?.channel_count, 1);
+  assert.equal(typeof sunoBound?.in_flight_count, "number");
 
   const stripePay = await json(
     new Request("http://local/api/user/stripe/pay", {
@@ -530,7 +559,8 @@ test("original JSON fields for status, models, deployments, performance, data, u
     e,
   );
   assert.equal(stripePay.body.success, false);
-  assert.equal(stripePay.body.message, "Stripe 未配置");
+  assert.equal(stripePay.body.message, "error");
+  assert.equal(stripePay.body.data, "拉起支付失败");
 
   const statusType = await json(new Request("http://local/api/status"), e);
   assert.equal((statusType.body.data as { quota_display_type: string }).quota_display_type, "USD");
@@ -652,6 +682,22 @@ test("original JSON fields for status, models, deployments, performance, data, u
       }),
       e,
     );
+    await json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ key: "WaffoPrivateKey", value: "wk_private" }),
+      }),
+      e,
+    );
+    await json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ key: "WaffoPublicCert", value: "wk_cert" }),
+      }),
+      e,
+    );
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(typeof input === "string" || input instanceof URL ? input : input.url);
       if (url.includes("waffo")) {
@@ -702,16 +748,23 @@ test("original JSON fields for status, models, deployments, performance, data, u
     globalThis.fetch = originalFetch;
   }
 
+  const compliance = await json(
+    new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }),
+    e,
+  );
+  assert.equal(compliance.body.success, true, String(compliance.body.message));
   const plan = await json(
     new Request("http://local/api/subscription/admin/plans", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ title: "reset-plan", grant_quota: 1000, duration_days: 30, price_quota: 0 }),
+      body: JSON.stringify({
+        plan: { title: "reset-plan", total_amount: 1000, duration_unit: "day", duration_value: 30, price_amount: 0 },
+      }),
     }),
     e,
   );
   const planId = Number((plan.body.data as { id?: number })?.id || 0);
-  assert.ok(planId);
+  assert.ok(planId, String(plan.body.message));
   await json(
     new Request(`http://local/api/subscription/admin/users/1/subscriptions`, {
       method: "POST",
@@ -735,5 +788,193 @@ test("original JSON fields for status, models, deployments, performance, data, u
   assert.equal(typeof rd.reset_count, "number");
   assert.equal(typeof rd.user_count, "number");
   assert.equal(rd.advance_reset_time, false);
+});
+
+test("original subscription self/plans wrapping, token mask, plugin get, tag models, encryption-key", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const enc = await json(new Request("http://local/api/user/login/encryption-key"), e);
+  assert.equal(enc.body.success, true);
+  assert.equal((enc.body.data as { enabled: boolean }).enabled, false);
+
+  const plansLocked = await json(new Request("http://local/api/subscription/plans", { headers: auth }), e);
+  assert.equal(plansLocked.body.success, true);
+  assert.deepEqual(plansLocked.body.data, []);
+
+  const selfBefore = await json(new Request("http://local/api/subscription/self", { headers: auth }), e);
+  const selfData = selfBefore.body.data as {
+    billing_preference: string;
+    subscriptions: unknown[];
+    all_subscriptions: unknown[];
+  };
+  assert.equal(selfData.billing_preference, "subscription_first");
+  assert.ok(Array.isArray(selfData.subscriptions));
+  const pref = await json(
+    new Request("http://local/api/subscription/self/preference", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ billing_preference: "wallet_first" }),
+    }),
+    e,
+  );
+  assert.equal(pref.body.success, true);
+  assert.equal((pref.body.data as { billing_preference: string }).billing_preference, "wallet_first");
+  const selfAfterPref = await json(new Request("http://local/api/subscription/self", { headers: auth }), e);
+  assert.equal((selfAfterPref.body.data as { billing_preference: string }).billing_preference, "wallet_first");
+  assert.ok(Array.isArray(selfData.all_subscriptions));
+
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  const created = await json(
+    new Request("http://local/api/subscription/admin/plans", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        plan: {
+          title: "pro",
+          subtitle: "monthly",
+          price_amount: 9.9,
+          duration_unit: "month",
+          duration_value: 1,
+          total_amount: 500000,
+          quota_reset_period: "monthly",
+        },
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const planObj = created.body.data as Record<string, unknown>;
+  assert.equal(planObj.title, "pro");
+  assert.equal(planObj.price_amount, 9.9);
+  assert.equal(planObj.duration_unit, "month");
+  assert.equal(planObj.enabled, true);
+  assert.equal(typeof planObj.allow_balance_pay, "boolean");
+  assert.equal(typeof planObj.total_amount, "number");
+
+  const listed = await json(new Request("http://local/api/subscription/admin/plans", { headers: auth }), e);
+  const listedPlans = listed.body.data as { plan: Record<string, unknown> }[];
+  assert.equal(listedPlans[0].plan.title, "pro");
+  assert.equal(listedPlans[0].plan.currency, "USD");
+
+  const publicPlans = await json(new Request("http://local/api/subscription/plans", { headers: auth }), e);
+  assert.equal((publicPlans.body.data as { plan: { title: string } }[])[0].plan.title, "pro");
+
+  const bind = await json(
+    new Request("http://local/api/subscription/admin/users/1/subscriptions", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ plan_id: planObj.id }),
+    }),
+    e,
+  );
+  assert.equal(bind.body.success, true, String(bind.body.message));
+  const selfAfter = await json(new Request("http://local/api/subscription/self", { headers: auth }), e);
+  const after = selfAfter.body.data as {
+    subscriptions: { subscription: Record<string, unknown> }[];
+    all_subscriptions: { subscription: Record<string, unknown> }[];
+  };
+  assert.ok(after.all_subscriptions.length);
+  const sub = after.all_subscriptions[0].subscription;
+  assert.equal(typeof sub.id, "number");
+  assert.equal(sub.status, "active");
+  assert.equal(typeof sub.start_time, "number");
+  assert.equal(typeof sub.end_time, "number");
+  assert.equal(typeof sub.amount_total, "number");
+  assert.equal(typeof sub.amount_used, "number");
+  assert.ok(after.subscriptions.length);
+
+  const createdTok = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "batch-key", remain_quota: 1 }),
+    }),
+    e,
+  );
+  const tokId = Number((createdTok.body.data as { id?: number })?.id || 0);
+  assert.ok(tokId);
+  const tokens = await json(new Request("http://local/api/token/", { headers: auth }), e);
+  const tokenItems = (tokens.body.data as { items: { key: string }[] }).items;
+  assert.ok(tokenItems.length);
+  assert.equal(tokenItems[0].key.startsWith("sk-"), false);
+  assert.match(tokenItems[0].key, /^\w{2,4}\*+\w{2,4}$/);
+
+  const revealed = await json(new Request("http://local/api/token/" + tokId + "/key", { method: "POST", headers: auth }), e);
+  const rawKey = (revealed.body.data as { key: string }).key;
+  assert.equal(rawKey.startsWith("sk-"), false);
+  const batchKeys = await json(
+    new Request("http://local/api/token/batch/keys", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ ids: [tokId] }),
+    }),
+    e,
+  );
+  assert.equal((batchKeys.body.data as { keys: Record<string, string> }).keys[String(tokId)], rawKey);
+
+  const pluginUp = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        key: "demo",
+        name: "Demo",
+        version: "1.0.0",
+        status: "active",
+        icon: "data:image/png;base64,aaaa",
+      }),
+    }),
+    e,
+  );
+  assert.equal(pluginUp.body.success, true, String(pluginUp.body.message));
+  const plugin = await json(new Request("http://local/api/plugin/task/demo", { headers: auth }), e);
+  const detail = plugin.body.data as { meta: { key: string }; source: string; layer: string; has_icon: boolean };
+  assert.equal(plugin.body.success, true, String(plugin.body.message));
+  assert.equal(detail.meta.key, "demo");
+  assert.equal(detail.layer, "override");
+  assert.equal(typeof detail.source, "string");
+  assert.equal(typeof detail.has_icon, "boolean");
+  const missingIcon = await json(new Request("http://local/api/plugin/task/missing/icon", { headers: auth }), e);
+  assert.equal(missingIcon.res.status, 404);
+
+  const noTag = await json(new Request("http://local/api/channel/tag/models", { headers: auth }), e);
+  assert.equal(noTag.res.status, 400);
+  assert.equal(noTag.body.message, "tag不能为空");
+
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "tagged", type: 1, key: "sk-t", models: "gpt-4o,gpt-4o-mini", group: "default", tag: "prod" }),
+    }),
+    e,
+  );
+  const tagModels = await json(new Request("http://local/api/channel/tag/models?tag=prod", { headers: auth }), e);
+  assert.equal(tagModels.body.success, true);
+  assert.equal(typeof tagModels.body.data, "string");
+  assert.match(String(tagModels.body.data), /gpt-4o/);
+
+  const batchTag = await json(
+    new Request("http://local/api/channel/batch/tag", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ ids: [1], tag: "prod" }),
+    }),
+    e,
+  );
+  assert.equal(typeof batchTag.body.data, "number");
+
+  const missingUserReset = await json(
+    new Request("http://local/api/subscription/admin/users/999/subscriptions/reset", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ plan_id: planObj.id, advance_reset_time: true }),
+    }),
+    e,
+  );
+  assert.equal(missingUserReset.body.success, false);
+  assert.equal(missingUserReset.body.message, "该用户没有有效的此套餐订阅");
 });
 
