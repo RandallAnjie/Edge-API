@@ -10,7 +10,17 @@ import {
   randomHex,
 } from "./constants.js";
 import { extractRequestApiKey, signSession, verifySession } from "./crypto.js";
-import { apiFail, apiOk, cookieGet, isSecureRequest, sessionCookie, sessionHintCookie, openaiError } from "./http.js";
+import {
+  apiFail,
+  apiOk,
+  cookieGet,
+  isSecureRequest,
+  json,
+  refreshCookie,
+  sessionCookie,
+  sessionHintCookie,
+  openaiError,
+} from "./http.js";
 import { ipAllowed } from "./select.js";
 import { Store, permissionsFor, publicUser } from "./store.js";
 import type { AuthToken, Env, SessionUser, TokenRow, UserRow } from "./types.js";
@@ -34,6 +44,7 @@ export async function issueSession(
   user: UserRow,
   req: Request,
   loginMethod = "password",
+  existingSid?: string,
 ): Promise<{
   token: string;
   cookie: string;
@@ -42,7 +53,8 @@ export async function issueSession(
   sid: string;
 }> {
   const secret = await sessionSecret(env, store);
-  const sid = randomHex(16);
+  const existing = existingSid ? await store.getSession(existingSid) : null;
+  const sid = existing?.sid || randomHex(16);
   const exp = nowSec() + SESSION_TTL_SEC;
   const token = await signSession(
     { uid: user.id, role: user.role, username: user.username, exp, sid },
@@ -50,31 +62,36 @@ export async function issueSession(
   );
   const ip = req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || "";
   const ua = (req.headers.get("user-agent") || "").slice(0, 200);
-  const created = nowSec();
-  await store.insertSession({
-    sid,
-    user_id: user.id,
-    ip,
-    ua,
-    expires_at: exp,
-    login_method: loginMethod,
-  });
-  await store.updateUser(user.id, { last_login_at: created });
+  const created = existing ? Number(existing.created_at) : nowSec();
+  const method = existing?.login_method || loginMethod;
+  if (existing) {
+    await store.extendSession(sid, exp, ip, ua);
+  } else {
+    await store.insertSession({
+      sid,
+      user_id: user.id,
+      ip,
+      ua,
+      expires_at: exp,
+      login_method: loginMethod,
+    });
+    await store.updateUser(user.id, { last_login_at: created });
+  }
   const secure = isSecureRequest(req);
   const cookie = sessionCookie(token, SESSION_TTL_SEC, secure);
   const cookies = [
     cookie,
-    sessionCookie(token, SESSION_TTL_SEC, secure, "new_api_refresh"),
+    refreshCookie(token, SESSION_TTL_SEC, secure),
     sessionHintCookie(SESSION_TTL_SEC, secure),
   ];
   const session = {
     sid,
     current: true,
-    login_method: loginMethod,
-    ip,
-    user_agent: ua,
+    login_method: method,
+    ip: existing?.ip ?? ip,
+    user_agent: existing?.ua ?? ua,
     created_at: created,
-    last_active_at: created,
+    last_active_at: nowSec(),
     expires_at: exp,
   };
   const data = {
@@ -85,6 +102,14 @@ export async function issueSession(
     user: { ...publicUser(user), permissions: permissionsFor(user.role) },
   };
   return { token, cookie, cookies, data, sid };
+}
+
+export function authUnauthorized(): Response {
+  return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized", data: null });
+}
+
+export function authSessionMismatch(): Response {
+  return json(409, { success: false, code: "AUTH_SESSION_MISMATCH", message: "Conflict", data: null });
 }
 
 export function sessionResponse(issued: { data: Record<string, unknown>; cookies: string[] }, status = 200, message = ""): Response {

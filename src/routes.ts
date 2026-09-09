@@ -157,10 +157,12 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/user/auth/logout", async (c) => {
     const s = store(c);
-    const { currentSid } = await import("./auth.js");
+    const { authSessionMismatch, currentSid } = await import("./auth.js");
+    const expected = (c.req.headers.get("X-Auth-Session") || "").trim();
     const sid = await currentSid(c, s);
+    if (expected && sid && expected !== sid) return authSessionMismatch();
     if (sid) await s.revokeSession(sid);
-    const res = apiOk(null, "已退出");
+    const res = apiOk({ revoked_sid: sid || "", cookie_cleared: true });
     const headers = new Headers(res.headers);
     for (const cookie of clearAuthCookies(isSecureRequest(c.req))) headers.append("set-cookie", cookie);
     return new Response(res.body, { status: 200, headers });
@@ -168,11 +170,14 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/user/auth/refresh", async (c) => {
     const s = store(c);
+    const { authUnauthorized, authSessionMismatch } = await import("./auth.js");
     const u = await readSession(c, s);
-    if (!u) return apiFail("未登录", null, 401);
+    if (!u) return authUnauthorized();
+    const expected = (c.req.headers.get("X-Auth-Session") || "").trim();
+    if (expected && u.sid && expected !== u.sid) return authSessionMismatch();
     const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在", null, 401);
-    const issued = await issueSession(s, c.env, user, c.req, "refresh");
+    if (!user) return authUnauthorized();
+    const issued = await issueSession(s, c.env, user, c.req, "password", u.sid || undefined);
     return sessionResponse(issued);
   });
 
@@ -234,6 +239,7 @@ export function adminRouter(): Router<Env> {
         await s.updateUser(inviter, {
           aff_count: (inv.aff_count || 0) + 1,
           aff_quota: (inv.aff_quota || 0) + bonus,
+          aff_history_quota: (inv.aff_history_quota || 0) + bonus,
         });
       }
     }

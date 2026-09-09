@@ -22,7 +22,6 @@ import {
   exchangeOidc,
   loginOrBindOAuth,
   newAccessToken,
-  oauthAuthorizeUrl,
   verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, displayTokenKey } from "./crypto.js";
@@ -36,6 +35,7 @@ import {
   currentSid,
   issueSession,
   isResponse,
+  readSession,
   requireAdmin,
   requireRoot,
   requireUser,
@@ -574,50 +574,23 @@ export function registerMore(r: Router<Env>): void {
     const provider = (body.provider || "").trim();
     const intent = (body.intent || "login").trim();
     if (!provider) return apiFail("无效的参数");
+    const session = await readSession(c, s);
     const flow = randomHex(16);
     const expires = nowSec() + 600;
     await s.insertAuthFlow({
       token: flow,
       type: "oauth",
-      user_id: 0,
+      user_id: session?.id || 0,
       expires_at: expires,
-      payload: JSON.stringify({ provider, intent, aff: body.aff || "" }),
+      payload: JSON.stringify({ provider, intent, aff: body.aff || "", affiliate_code: body.aff || "" }),
     });
     const origin = new URL(c.req.url).origin;
+    const spaRedirect = `${origin}/oauth/${provider}`;
     const data: Record<string, unknown> = { flow_token: flow, state: flow, expires_at: expires };
     if (provider === "telegram") {
       const token = await s.option("TelegramBotToken");
       const botId = token.split(":")[0] || "";
-      const returnTo = `${origin}/api/oauth/telegram`;
-      data.authorization_url = `https://oauth.telegram.org/auth?bot_id=${encodeURIComponent(botId)}&origin=${encodeURIComponent(origin)}&request_access=write&return_to=${encodeURIComponent(returnTo)}`;
-    } else if (provider === "github") {
-      data.authorization_url = oauthAuthorizeUrl("github", await s.option("GitHubClientId"), `${origin}/api/oauth/github`) + `&state=${flow}`;
-    } else if (provider === "discord") {
-      data.authorization_url = oauthAuthorizeUrl("discord", await s.option("DiscordClientId"), `${origin}/api/oauth/discord`) + `&state=${flow}`;
-    } else if (provider === "linuxdo") {
-      data.authorization_url = oauthAuthorizeUrl("linuxdo", await s.option("LinuxDOClientId"), `${origin}/api/oauth/linuxdo`) + `&state=${flow}`;
-    } else if (provider === "oidc") {
-      const authUrl = await s.option("OIDCAuthorizationEndpoint");
-      const q = new URLSearchParams({
-        client_id: await s.option("OIDCClientId"),
-        redirect_uri: `${origin}/api/oauth/oidc`,
-        response_type: "code",
-        scope: "openid profile email",
-        state: flow,
-      });
-      data.authorization_url = `${authUrl}?${q}`;
-    } else {
-      const custom = await s.getOAuthProvider(provider);
-      if (custom) {
-        const q = new URLSearchParams({
-          client_id: String(custom.client_id),
-          redirect_uri: `${origin}/api/oauth/${provider}`,
-          response_type: "code",
-          scope: String(custom.scopes || "openid profile email"),
-          state: flow,
-        });
-        data.authorization_url = `${custom.auth_url}?${q}`;
-      }
+      data.authorization_url = `https://oauth.telegram.org/auth?bot_id=${encodeURIComponent(botId)}&origin=${encodeURIComponent(origin)}&request_access=write&return_to=${encodeURIComponent(spaRedirect)}`;
     }
     return apiOk(data);
   });
@@ -626,84 +599,74 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const provider = c.params.provider;
     const origin = new URL(c.req.url).origin;
-    const redirect = `${origin}/api/oauth/${provider}`;
-    const code = c.url.searchParams.get("code");
-    const u = await requireUser(c, s);
-    const existing = isResponse(u) ? null : await s.getUserById(u.id);
+    const redirect = `${origin}/oauth/${provider}`;
+    const code = c.url.searchParams.get("code") || "";
+    const state = c.url.searchParams.get("state") || "";
+    const errorCode = c.url.searchParams.get("error");
+    const session = await readSession(c, s);
+    const existing = session ? await s.getUserById(session.id) : null;
+
+    const flow = state ? await s.getAuthFlow(state) : null;
+    if (!flow || flow.type !== "oauth" || flow.expires_at < nowSec()) {
+      return json(403, { success: false, message: "OAuth state is invalid", data: null });
+    }
+    const payload = parseJson<{ provider?: string; intent?: string }>(flow.payload, {});
+    if (payload.provider && payload.provider !== provider) {
+      return json(403, { success: false, message: "OAuth state is invalid", data: null });
+    }
+    await s.deleteAuthFlow(state);
+    const intent = payload.intent || "login";
+    const bindUser = intent === "bind" || intent === "verify" ? existing : null;
+
+    if (errorCode) {
+      return apiFail(c.url.searchParams.get("error_description") || errorCode);
+    }
 
     try {
       if (provider === "github") {
         if (!(await s.optionBool("GitHubOAuthEnabled", false))) return apiFail("GitHub OAuth 未启用");
-        const clientId = await s.option("GitHubClientId");
-        if (!code) return Response.redirect(oauthAuthorizeUrl("github", clientId, redirect), 302);
-        const profile = await exchangeGithub(clientId, await s.option("GitHubClientSecret"), code);
-        return loginOrBindOAuth(s, c.env, c.req, profile, existing);
+        if (!code) return apiFail("无效的授权码");
+        const profile = await exchangeGithub(await s.option("GitHubClientId"), await s.option("GitHubClientSecret"), code);
+        return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
       }
       if (provider === "discord") {
         if (!(await s.optionBool("DiscordOAuthEnabled", false))) return apiFail("Discord OAuth 未启用");
-        const clientId = await s.option("DiscordClientId");
-        if (!code) return Response.redirect(oauthAuthorizeUrl("discord", clientId, redirect), 302);
-        const profile = await exchangeDiscord(clientId, await s.option("DiscordClientSecret"), code, redirect);
-        return loginOrBindOAuth(s, c.env, c.req, profile, existing);
+        if (!code) return apiFail("无效的授权码");
+        const profile = await exchangeDiscord(await s.option("DiscordClientId"), await s.option("DiscordClientSecret"), code, redirect);
+        return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
       }
       if (provider === "linuxdo") {
         if (!(await s.optionBool("LinuxDOOAuthEnabled", false))) return apiFail("LinuxDO OAuth 未启用");
-        const clientId = await s.option("LinuxDOClientId");
-        if (!code) return Response.redirect(oauthAuthorizeUrl("linuxdo", clientId, redirect), 302);
-        const profile = await exchangeLinuxDO(clientId, await s.option("LinuxDOClientSecret"), code, redirect);
-        return loginOrBindOAuth(s, c.env, c.req, profile, existing);
+        if (!code) return apiFail("无效的授权码");
+        const profile = await exchangeLinuxDO(await s.option("LinuxDOClientId"), await s.option("LinuxDOClientSecret"), code, redirect);
+        return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
       }
       if (provider === "oidc") {
         if (!(await s.optionBool("OIDCAuthEnabled", false))) return apiFail("OIDC 未启用");
-        const clientId = await s.option("OIDCClientId");
-        const authUrl = await s.option("OIDCAuthorizationEndpoint");
-        if (!code) {
-          const q = new URLSearchParams({
-            client_id: clientId,
-            redirect_uri: redirect,
-            response_type: "code",
-            scope: "openid profile email",
-          });
-          return Response.redirect(`${authUrl}?${q}`, 302);
-        }
+        if (!code) return apiFail("无效的授权码");
         const profile = await exchangeOidc({
           tokenUrl: await s.option("OIDCTokenEndpoint"),
           userInfoUrl: await s.option("OIDCUserinfoEndpoint"),
-          clientId,
+          clientId: await s.option("OIDCClientId"),
           secret: await s.option("OIDCClientSecret"),
           code,
           redirect,
         });
-        return loginOrBindOAuth(s, c.env, c.req, profile, existing);
+        return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
       }
       if (provider === "telegram") {
         if (!(await s.optionBool("TelegramOAuthEnabled", false))) return apiFail("Telegram 未启用");
-        if (!c.url.searchParams.get("hash") && !c.url.searchParams.get("id")) {
-          const token = await s.option("TelegramBotToken");
-          if (!token) return apiFail("Telegram 未配置");
-          const botId = token.split(":")[0] || "";
-          const url = `https://oauth.telegram.org/auth?bot_id=${encodeURIComponent(botId)}&origin=${encodeURIComponent(origin)}&request_access=write&return_to=${encodeURIComponent(redirect)}`;
-          return Response.redirect(url, 302);
-        }
         const profile = await verifyTelegramLogin(s, c.url.searchParams);
-        return loginOrBindOAuth(s, c.env, c.req, profile, existing);
+        return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
       }
       if (provider === "wechat") {
         return apiFail("请使用 /api/oauth/wechat");
       }
       const custom = await s.getOAuthProvider(provider);
       if (!custom || !Number(custom.enabled)) return apiFail("未知的 OAuth 提供商");
-      if (!code) {
-        const q = new URLSearchParams({
-          client_id: String(custom.client_id),
-          redirect_uri: redirect,
-          response_type: "code",
-          scope: String(custom.scopes || "openid"),
-        });
-        return Response.redirect(`${custom.auth_url}?${q}`, 302);
-      }
+      if (!code) return apiFail("无效的授权码");
       const profile = await exchangeCustom(custom, code, redirect);
-      return loginOrBindOAuth(s, c.env, c.req, profile, existing);
+      return loginOrBindOAuth(s, c.env, c.req, profile, bindUser);
     } catch (e) {
       return apiFail(e instanceof Error ? e.message : String(e));
     }

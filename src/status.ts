@@ -105,7 +105,7 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
     oidc_display_name: (await store.option("OIDCDisplayName")) || "OIDC",
     passkey_login: await store.optionBool("PasskeyEnabled", true),
     passkey: await store.optionBool("PasskeyEnabled", true),
-    passkey_display_name: (await store.option("PasskeyDisplayName")) || "Edge API",
+    passkey_display_name: (await store.option("PasskeyDisplayName")) || (env.SYSTEM_NAME || (await store.option("SystemName")) || "New API"),
     passkey_rp_id: await store.option("PasskeyRPID"),
     passkey_origins: parseJson(await store.option("PasskeyOrigins"), [] as string[]),
     passkey_allow_insecure: await store.optionBool("PasskeyAllowInsecure", false),

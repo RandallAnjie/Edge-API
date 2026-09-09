@@ -59,7 +59,15 @@ export function pageQuery(url: URL): PageQuery {
   const page = Math.max(1, Number(url.searchParams.get("p") || url.searchParams.get("page") || "1") || 1);
   const page_size = Math.min(
     100,
-    Math.max(1, Number(url.searchParams.get("page_size") || url.searchParams.get("size") || "10") || 10),
+    Math.max(
+      1,
+      Number(
+        url.searchParams.get("page_size") ||
+          url.searchParams.get("ps") ||
+          url.searchParams.get("size") ||
+          "10",
+      ) || 10,
+    ),
   );
   return { page, page_size, offset: (page - 1) * page_size };
 }
@@ -92,12 +100,19 @@ export function cookieGet(req: Request, name: string): string | null {
   return null;
 }
 
-export function sessionCookie(token: string, maxAge: number, secure: boolean, name = "session"): string {
+export function sessionCookie(
+  token: string,
+  maxAge: number,
+  secure: boolean,
+  name = "session",
+  path = "/",
+  sameSite: "Lax" | "Strict" = "Strict",
+): string {
   const parts = [
     `${name}=${encodeURIComponent(token)}`,
-    "Path=/",
+    `Path=${path}`,
     "HttpOnly",
-    "SameSite=Lax",
+    `SameSite=${sameSite}`,
     `Max-Age=${maxAge}`,
   ];
   if (secure) parts.push("Secure");
@@ -105,9 +120,13 @@ export function sessionCookie(token: string, maxAge: number, secure: boolean, na
 }
 
 export function sessionHintCookie(maxAge: number, secure: boolean): string {
-  const parts = ["new_api_has_session=1", "Path=/", "SameSite=Lax", `Max-Age=${maxAge}`];
+  const parts = ["new_api_has_session=1", "Path=/", "SameSite=Strict", `Max-Age=${maxAge}`];
   if (secure) parts.push("Secure");
   return parts.join("; ");
+}
+
+export function refreshCookie(token: string, maxAge: number, secure: boolean): string {
+  return sessionCookie(token, maxAge, secure, "new_api_refresh", "/api/user/auth", "Strict");
 }
 
 export function clearSessionCookie(secure: boolean): string {
@@ -116,9 +135,10 @@ export function clearSessionCookie(secure: boolean): string {
 
 export function clearAuthCookies(secure: boolean): string[] {
   return [
-    sessionCookie("", 0, secure, "session"),
-    sessionCookie("", 0, secure, "new_api_refresh"),
-    "new_api_has_session=; Path=/; Max-Age=0; SameSite=Lax",
+    sessionCookie("", 0, secure, "session", "/"),
+    sessionCookie("", 0, secure, "new_api_refresh", "/api/user/auth"),
+    sessionCookie("", 0, secure, "new_api_refresh", "/"),
+    "new_api_has_session=; Path=/; Max-Age=0; SameSite=Strict",
   ];
 }
 

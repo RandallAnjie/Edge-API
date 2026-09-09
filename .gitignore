@@ -9,3 +9,5 @@ dist-test/
 .DS_Store
 *.log
 env.d.ts
+web/.tanstack/
+

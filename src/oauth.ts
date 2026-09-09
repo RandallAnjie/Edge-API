@@ -168,10 +168,7 @@ export async function loginOrBindOAuth(
   if (existingUser) {
     await store.updateUser(existingUser.id, { [profile.field]: profile.id });
     const issued = await issueSession(store, env, existingUser, req, "oauth:" + profile.field.replace(/_id$/, ""));
-    const origin = new URL(req.url).origin;
-    const headers = new Headers({ location: origin + "/#/dashboard" });
-    for (const cookie of issued.cookies) headers.append("set-cookie", cookie);
-    return new Response(null, { status: 302, headers });
+    return sessionResponse(issued);
   }
   let user = await store.getUserByField(profile.field, profile.id);
   if (!user) {
@@ -191,10 +188,7 @@ export async function loginOrBindOAuth(
     user = await store.getUserById(id);
   }
   const issued = await issueSession(store, env, user!, req, "oauth:" + profile.field.replace(/_id$/, ""));
-  const origin = new URL(req.url).origin;
-  const headers = new Headers({ location: origin + "/#/dashboard" });
-  for (const cookie of issued.cookies) headers.append("set-cookie", cookie);
-  return new Response(null, { status: 302, headers });
+  return sessionResponse(issued);
 }
 
 export function oauthAuthorizeUrl(provider: string, clientId: string, redirect: string, extra: Record<string, string> = {}): string {

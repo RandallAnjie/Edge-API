@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS users (
   settings TEXT NOT NULL DEFAULT '',
   aff_quota INTEGER NOT NULL DEFAULT 0,
   aff_count INTEGER NOT NULL DEFAULT 0,
+  aff_history_quota INTEGER NOT NULL DEFAULT 0,
   billing_preference TEXT NOT NULL DEFAULT 'quota',
   email_verified INTEGER NOT NULL DEFAULT 0
 );
@@ -364,6 +365,7 @@ const USER_ALTERS = [
   "ALTER TABLE users ADD COLUMN settings TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE users ADD COLUMN aff_quota INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN aff_count INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN aff_history_quota INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN billing_preference TEXT NOT NULL DEFAULT 'quota'",
   "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE channels ADD COLUMN balance TEXT NOT NULL DEFAULT ''",

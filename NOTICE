@@ -36,7 +36,9 @@ Material changes from upstream:
 - Storage: MySQL/PostgreSQL/SQLite-via-GORM replaced by D1 (SQLite) + KV.
 - Password hashing: Argon2id/bcrypt replaced by Web Crypto PBKDF2-SHA256
   (existing upstream password hashes are not portable).
-- Admin UI is a new compact SPA. It is not a copy of the upstream React app.
+- The original QuantumNous/new-api TanStack + Rsbuild frontend is vendored
+  under web/ and served as ASSETS (public/ is the production build). It is
+  not a compact replacement SPA.
 - Channel types that require vendor SDKs or local plugins (AWS SigV4 service
   accounts, Vertex service-account JWT minting, in-process JS task plugins)
   are exposed in the catalog and will relay when the channel is

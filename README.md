@@ -54,7 +54,14 @@ QuantumNous [new-api](https://github.com/QuantumNous/new-api) 的 **RandallFlare
 
 **后台 UI**
 
-单页控制台覆盖：首页、定价、排行榜、关于、协议/隐私、初始化、登录（2FA/OAuth/微信/Telegram/自定义提供商）、注册、仪表盘、对话、Playground、令牌、日志筛选、钱包/邀请、订阅、个人设置、安全、渠道、模型、用户、兑换码、审计、用量数据、厂商、部署、任务插件、系统信息、性能、MJ、异步任务、系统设置。Hash 别名对齐原项目路径（`/sign-in`、`/keys`、`/usage-logs`、`/system-settings`、`/task-plugins` 等）。页脚保留上游署名与仓库链接。
+原项目 `web/` TanStack Router + Rsbuild 控制台原样嵌入：`web/` 为上游源码，`public/` 为其生产构建，经 `ASSETS` 提供。路径与原站一致（`/sign-in`、`/keys`、`/usage-logs`、`/system-settings`、`/task-plugins` 等），`legacy-route` 继续把 `/console/*` 映射到新路径。关于页与页脚保留「Frontend design and development by New API contributors.」及 https://github.com/QuantumNous/new-api 。
+
+构建前端需要 [Bun](https://bun.sh)（与上游 `web/bun.lock` 一致）：
+
+```bash
+npm run build:web    # web/ → public/
+npm run build        # Worker
+```
 
 ## 部署到 RandallFlare
 
@@ -107,7 +114,7 @@ npm run dev          # rrangler dev --port 8787，需本机 workerd
 | Go + Gin + GORM | TypeScript Worker（esbuild 单文件） |
 | MySQL / PG / SQLite | D1 |
 | Redis / 内存限流 | KV 令牌 RPM |
-| 嵌入 React 前端 | `public/` SPA（ASSETS，base64 打进 Worker） |
+| 嵌入 React 前端 | 上游 `web/` TanStack 应用构建到 `public/`（ASSETS） |
 | Argon2id / bcrypt | Web Crypto PBKDF2-SHA256（旧库密码不可直接迁移） |
 
 ## 渠道类型说明

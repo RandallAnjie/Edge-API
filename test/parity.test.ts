@@ -116,6 +116,8 @@ test("login AuthBundle has original session + cookies", async () => {
   assert.match(joined, /session=/);
   assert.match(joined, /new-api_refresh|new_api_refresh/);
   assert.match(joined, /new_api_has_session/);
+  assert.match(joined, /Path=\/api\/user\/auth/);
+  assert.match(joined, /SameSite=Strict/);
 });
 
 test("authz catalog + channel GET update_balance + email bind without mail", async () => {
@@ -610,5 +612,48 @@ test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, Lis
   assert.equal(typeof usage.body.data.total_available, "number");
   assert.equal(typeof usage.body.data.unlimited_quota, "boolean");
   assert.equal(typeof usage.body.data.model_limits_enabled, "boolean");
+});
+
+test("auth refresh keeps LoginSessionView sid and returns AuthBundle user", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { login, auth } = await boot(e);
+  const sid = login.body.data.session.sid as string;
+  const refresh = await json(
+    new Request("http://local/api/user/auth/refresh", {
+      method: "POST",
+      headers: { ...auth, "X-Auth-Session": sid, cookie: `new_api_refresh=${login.body.data.access_token}` },
+    }),
+    e,
+  );
+  assert.equal(refresh.body.success, true);
+  assert.equal(refresh.body.data.session.sid, sid);
+  assert.equal(refresh.body.data.token_type, "Bearer");
+  assert.equal(refresh.body.data.user.username, "root");
+  assert.equal(typeof refresh.body.data.user.linux_do_id, "string");
+
+  const anon = await json(new Request("http://local/api/user/auth/refresh", { method: "POST" }), e);
+  assert.equal(anon.res.status, 401);
+  assert.equal(anon.body.code, "AUTH_UNAUTHORIZED");
+});
+
+test("oauth callback without state is original 403; state endpoint is flow_token only for github", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const missing = await json(new Request("http://local/api/oauth/github?code=abc"), e);
+  assert.equal(missing.res.status, 403);
+  assert.equal(missing.body.success, false);
+
+  const st = await json(
+    new Request("http://local/api/oauth/state", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ provider: "github", intent: "login" }),
+    }),
+    e,
+  );
+  assert.equal(typeof st.body.data.flow_token, "string");
+  assert.equal(typeof st.body.data.expires_at, "number");
 });
 

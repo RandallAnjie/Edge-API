@@ -85,6 +85,7 @@ export interface UserRow {
   settings?: string;
   aff_quota?: number;
   aff_count?: number;
+  aff_history_quota?: number;
   billing_preference?: string;
   email_verified?: number;
 }

@@ -915,6 +915,13 @@ export class Store {
     await this.db.prepare("UPDATE login_sessions SET last_seen = ? WHERE sid = ?").bind(nowSec(), sid).run();
   }
 
+  async extendSession(sid: string, expiresAt: number, ip: string, ua: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE login_sessions SET last_seen = ?, expires_at = ?, ip = ?, ua = ? WHERE sid = ?")
+      .bind(nowSec(), expiresAt, ip, ua, sid)
+      .run();
+  }
+
   async revokeSession(sid: string, userId?: number): Promise<void> {
     if (userId != null) {
       await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE sid = ? AND user_id = ?").bind(sid, userId).run();
@@ -1598,19 +1605,17 @@ export function publicUser(u: UserRow): Record<string, unknown> {
     aff_code: u.aff_code,
     aff_count: u.aff_count || 0,
     aff_quota: u.aff_quota || 0,
-    aff_history_quota: u.aff_quota || 0,
+    aff_history_quota: u.aff_history_quota ?? u.aff_quota ?? 0,
     inviter_id: u.inviter_id,
     linux_do_id: u.linuxdo_id || "",
-    linuxdo_id: u.linuxdo_id || "",
     setting: settingRaw,
-    settings: settingRaw,
     stripe_customer,
     sidebar_modules,
+    permissions: permissionsFor(u.role),
     billing_preference: u.billing_preference || "quota",
     totp_enabled: Number(u.totp_enabled) === 1,
     email_verified: Number(u.email_verified) === 1,
     has_access_token: Boolean(u.access_token),
-    permissions: permissionsFor(u.role),
   };
 }
 

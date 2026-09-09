@@ -7,9 +7,10 @@
   "description": "QuantumNous new-api, ported to RandallFlare (Cloudflare Workers / workerd + D1).",
   "scripts": {
     "build": "esbuild src/worker.ts --bundle --format=esm --outfile=dist/worker.js --platform=neutral --target=es2022 --legal-comments=none",
+    "build:web": "bash scripts/build-web.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "npm run build && rrangler dev --port 8787",
-    "deploy": "npm run build && rrangler deploy",
+    "deploy": "npm run build:web && npm run build && rrangler deploy",
     "test": "npm run build && tsc -p tsconfig.test.json && node --experimental-sqlite --test dist-test/test/*.test.js",
     "test:build": "tsc -p tsconfig.test.json"
   },

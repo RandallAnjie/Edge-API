@@ -384,7 +384,7 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
     path.startsWith("/v1") ||
     path.startsWith("/pg/") ||
     path.startsWith("/mj/") ||
-    path.startsWith("/dashboard") ||
+    path.startsWith("/dashboard/billing") ||
     /^\/[^/]+\/mj\//.test(path);
 
   if (needsDb) {
@@ -437,7 +437,18 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
     const res = await env.ASSETS.fetch(req);
     if (res.status !== 404) return res;
     if (req.method === "GET") {
-      return env.ASSETS.fetch(new Request(new URL("/index.html", req.url), req));
+      const skipSpa =
+        path.startsWith("/api") ||
+        path.startsWith("/v1") ||
+        path.startsWith("/v1beta") ||
+        path.startsWith("/mj") ||
+        path.startsWith("/pg") ||
+        path.startsWith("/static") ||
+        path.startsWith("/assets") ||
+        path.startsWith("/dashboard/billing");
+      if (!skipSpa) {
+        return env.ASSETS.fetch(new Request(new URL("/index.html", req.url), req));
+      }
     }
   }
   return new Response("Not Found", { status: 404 });
