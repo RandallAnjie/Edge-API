@@ -1,0 +1,151 @@
+-- Edge API schema (D1 / SQLite). Applied on first request and via rrangler d1 migrations.
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE,
+  password TEXT NOT NULL DEFAULT '',
+  display_name TEXT NOT NULL DEFAULT '',
+  role INTEGER NOT NULL DEFAULT 1,
+  status INTEGER NOT NULL DEFAULT 1,
+  email TEXT NOT NULL DEFAULT '',
+  github_id TEXT NOT NULL DEFAULT '',
+  quota INTEGER NOT NULL DEFAULT 0,
+  used_quota INTEGER NOT NULL DEFAULT 0,
+  request_count INTEGER NOT NULL DEFAULT 0,
+  "group" TEXT NOT NULL DEFAULT 'default',
+  aff_code TEXT NOT NULL DEFAULT '',
+  inviter_id INTEGER NOT NULL DEFAULT 0,
+  checkin_at INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  last_login_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  key TEXT NOT NULL UNIQUE,
+  status INTEGER NOT NULL DEFAULT 1,
+  name TEXT NOT NULL DEFAULT '',
+  created_time INTEGER NOT NULL DEFAULT 0,
+  accessed_time INTEGER NOT NULL DEFAULT 0,
+  expired_time INTEGER NOT NULL DEFAULT -1,
+  remain_quota INTEGER NOT NULL DEFAULT 0,
+  unlimited_quota INTEGER NOT NULL DEFAULT 0,
+  model_limits_enabled INTEGER NOT NULL DEFAULT 0,
+  model_limits TEXT NOT NULL DEFAULT '',
+  allow_ips TEXT NOT NULL DEFAULT '',
+  used_quota INTEGER NOT NULL DEFAULT 0,
+  "group" TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS channels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type INTEGER NOT NULL DEFAULT 1,
+  key TEXT NOT NULL DEFAULT '',
+  status INTEGER NOT NULL DEFAULT 1,
+  name TEXT NOT NULL,
+  weight INTEGER NOT NULL DEFAULT 1,
+  created_time INTEGER NOT NULL DEFAULT 0,
+  test_time INTEGER NOT NULL DEFAULT 0,
+  response_time INTEGER NOT NULL DEFAULT 0,
+  base_url TEXT NOT NULL DEFAULT '',
+  other TEXT NOT NULL DEFAULT '',
+  models TEXT NOT NULL DEFAULT '',
+  "group" TEXT NOT NULL DEFAULT 'default',
+  used_quota INTEGER NOT NULL DEFAULT 0,
+  model_mapping TEXT NOT NULL DEFAULT '',
+  status_code_mapping TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 0,
+  auto_ban INTEGER NOT NULL DEFAULT 1,
+  tag TEXT NOT NULL DEFAULT '',
+  header_override TEXT NOT NULL DEFAULT '',
+  param_override TEXT NOT NULL DEFAULT '',
+  remark TEXT NOT NULL DEFAULT '',
+  settings TEXT NOT NULL DEFAULT '',
+  openai_organization TEXT NOT NULL DEFAULT '',
+  test_model TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS request_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  type INTEGER NOT NULL DEFAULT 2,
+  content TEXT NOT NULL DEFAULT '',
+  username TEXT NOT NULL DEFAULT '',
+  token_name TEXT NOT NULL DEFAULT '',
+  model_name TEXT NOT NULL DEFAULT '',
+  quota INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  use_time INTEGER NOT NULL DEFAULT 0,
+  is_stream INTEGER NOT NULL DEFAULT 0,
+  channel_id INTEGER NOT NULL DEFAULT 0,
+  token_id INTEGER NOT NULL DEFAULT 0,
+  "group" TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  request_id TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS options (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS redemptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL DEFAULT '',
+  key TEXT NOT NULL UNIQUE,
+  status INTEGER NOT NULL DEFAULT 1,
+  quota INTEGER NOT NULL DEFAULT 0,
+  created_time INTEGER NOT NULL DEFAULT 0,
+  redeemed_time INTEGER NOT NULL DEFAULT 0,
+  used_user_id INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 0,
+  username TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  type TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS quota_data (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 0,
+  username TEXT NOT NULL DEFAULT '',
+  model_name TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  quota INTEGER NOT NULL DEFAULT 0,
+  token_used INTEGER NOT NULL DEFAULT 0,
+  count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS mj_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  action TEXT NOT NULL DEFAULT '',
+  user_id INTEGER NOT NULL DEFAULT 0,
+  mj_id TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  prompt_en TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  image_url TEXT NOT NULL DEFAULT '',
+  progress TEXT NOT NULL DEFAULT '',
+  fail_reason TEXT NOT NULL DEFAULT '',
+  channel_id INTEGER NOT NULL DEFAULT 0,
+  submit_time INTEGER NOT NULL DEFAULT 0,
+  start_time INTEGER NOT NULL DEFAULT 0,
+  finish_time INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_tokens_key ON api_tokens(key);
+CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
+CREATE INDEX IF NOT EXISTS idx_logs_created ON request_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_logs_user ON request_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_logs_type ON request_logs(type);
+CREATE INDEX IF NOT EXISTS idx_quota_user_day ON quota_data(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mj_user ON mj_tasks(user_id);

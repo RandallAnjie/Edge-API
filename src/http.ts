@@ -1,0 +1,105 @@
+import type { PageQuery } from "./types.js";
+
+export function json(status: number, body: unknown, extra?: HeadersInit): Response {
+  const headers = new Headers(extra);
+  headers.set("content-type", "application/json; charset=utf-8");
+  return new Response(JSON.stringify(body), { status, headers });
+}
+
+export function apiOk(data: unknown = null, message = ""): Response {
+  return json(200, { success: true, message, data });
+}
+
+export function apiFail(message: string, data: unknown = null, status = 200): Response {
+  return json(status, { success: false, message, data });
+}
+
+export function openaiError(
+  status: number,
+  message: string,
+  code = "new_api_error",
+  type = "new_api_error",
+): Response {
+  return json(status, {
+    error: { message, type, param: null, code },
+  });
+}
+
+export function corsHeaders(req: Request): Headers {
+  const h = new Headers();
+  h.set("access-control-allow-origin", req.headers.get("origin") || "*");
+  h.set("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  h.set(
+    "access-control-allow-headers",
+    req.headers.get("access-control-request-headers") ||
+      "authorization,content-type,x-api-key,x-goog-api-key,anthropic-version,openai-organization,mj-api-secret",
+  );
+  h.set("access-control-allow-credentials", "true");
+  h.set("access-control-max-age", "86400");
+  return h;
+}
+
+export function withCors(req: Request, res: Response): Response {
+  const headers = new Headers(res.headers);
+  const c = corsHeaders(req);
+  c.forEach((v, k) => headers.set(k, v));
+  return new Response(res.body, { status: res.status, headers });
+}
+
+export function pageQuery(url: URL): PageQuery {
+  const page = Math.max(1, Number(url.searchParams.get("p") || url.searchParams.get("page") || "1") || 1);
+  const page_size = Math.min(
+    100,
+    Math.max(1, Number(url.searchParams.get("page_size") || url.searchParams.get("size") || "10") || 10),
+  );
+  return { page, page_size, offset: (page - 1) * page_size };
+}
+
+export function pageData(items: unknown, total: number, q: PageQuery, extra: Record<string, unknown> = {}) {
+  return { items, total, page: q.page, page_size: q.page_size, ...extra };
+}
+
+export async function readJson(req: Request): Promise<unknown> {
+  const text = await req.text();
+  if (!text) return {};
+  return JSON.parse(text);
+}
+
+export function clientIp(req: Request): string {
+  return (
+    req.headers.get("cf-connecting-ip") ||
+    req.headers.get("x-real-ip") ||
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    ""
+  );
+}
+
+export function cookieGet(req: Request, name: string): string | null {
+  const raw = req.headers.get("cookie") || "";
+  for (const part of raw.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === name) return decodeURIComponent(rest.join("="));
+  }
+  return null;
+}
+
+export function sessionCookie(token: string, maxAge: number, secure: boolean): string {
+  const parts = [
+    `session=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${maxAge}`,
+  ];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+export function clearSessionCookie(secure: boolean): string {
+  return sessionCookie("", 0, secure);
+}
+
+export function isSecureRequest(req: Request): boolean {
+  const url = new URL(req.url);
+  return url.protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
+}

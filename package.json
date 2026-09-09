@@ -1,0 +1,23 @@
+{
+  "name": "edge-api",
+  "version": "1.0.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "description": "QuantumNous new-api, ported to RandallFlare (Cloudflare Workers / workerd + D1).",
+  "scripts": {
+    "build": "esbuild src/worker.ts --bundle --format=esm --outfile=dist/worker.js --platform=neutral --target=es2022 --legal-comments=none",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "npm run build && rrangler dev --port 8787",
+    "deploy": "npm run build && rrangler deploy",
+    "test": "npm run build && tsc -p tsconfig.test.json && node --experimental-sqlite --test dist-test/test/*.test.js",
+    "test:build": "tsc -p tsconfig.test.json"
+  },
+  "devDependencies": {
+    "@bigrandall/rrangler": "0.4.8",
+    "@types/node": "^22.13.10",
+    "esbuild": "^0.25.2",
+    "typescript": "^5.8.2",
+    "workerd": "^1.20260908.1"
+  }
+}

@@ -1,0 +1,47 @@
+new-api Notices
+
+new-api
+Copyright (c) QuantumNous and contributors.
+
+This project is licensed under the GNU Affero General Public License v3.0.
+See LICENSE for the full project license terms.
+
+==== Additional Terms under AGPLv3 Section 7 ====
+
+Pursuant to Section 7(b) of the GNU Affero General Public License version 3,
+the following reasonable legal notice and author attribution must be preserved
+by modified versions in the Appropriate Legal Notices and in any prominent
+about, legal, footer, or attribution location presented by the user interface:
+
+"Frontend design and development by New API contributors."
+
+Modified versions that present a user interface must also preserve a visible
+link to the original project in a prominent about, legal, footer, or
+attribution location:
+
+https://github.com/QuantumNous/new-api
+
+Modified versions must not misrepresent the origin of the software and must
+mark their changes in accordance with AGPLv3 Section 7(c).
+
+==== Modifications (Edge API / RandallFlare) ====
+
+This tree is a modified version of QuantumNous/new-api, rewritten to run as a
+Cloudflare Workers-compatible Worker on RandallFlare (workerd + D1 + KV +
+static assets via @bigrandall/rrangler).
+
+Material changes from upstream:
+
+- Runtime: Go/Gin + embedded React replaced by a TypeScript Worker on workerd.
+- Storage: MySQL/PostgreSQL/SQLite-via-GORM replaced by D1 (SQLite) + KV.
+- Password hashing: Argon2id/bcrypt replaced by Web Crypto PBKDF2-SHA256
+  (existing upstream password hashes are not portable).
+- Admin UI is a new compact SPA. It is not a copy of the upstream React app.
+- Channel types that require vendor SDKs or local plugins (AWS SigV4 service
+  accounts, Vertex service-account JWT minting, in-process task plugins, email
+  SMTP, Stripe/Epay/Creem checkout) are exposed in the catalog and will relay
+  when the channel is OpenAI/Anthropic/Gemini compatible or uses HTTP
+  pass-through; otherwise they return a structured error.
+- Password storage and session cookies are HMAC-signed on the Worker.
+
+==== End of Notices ====
