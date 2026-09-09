@@ -60,6 +60,10 @@ async function passwordProof(e: Env, auth: Record<string, string>, scope: string
   return r.body.data as { proof_token: string; expires_at: number; method: string; scope: string };
 }
 
+function pluginSource(key: string, name = key) {
+  return `const meta = { apiVersion: 1, key: "${key}", name: "${name}", version: "1.0.0", author: { name: "test" }, models: ["${key}"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" } };`;
+}
+
 const ORIGINAL_API: { method: string; path: string }[] = [
   { method: "GET", path: "/api/setup" },
   { method: "GET", path: "/api/status" },
@@ -184,6 +188,10 @@ test("original JSON fields for status, models, deployments, performance, data, u
   assert.equal(typeof st.passkey_login, "boolean");
   assert.equal(typeof st.oidc_enabled, "boolean");
   assert.equal(typeof st.checkin_enabled, "boolean");
+  assert.equal(st.checkin_enabled, false);
+  assert.equal(st.passkey_login, false);
+  assert.equal(st.uptime_kuma_enabled, true);
+  assert.equal(st.docs_link, "https://docs.newapi.pro");
 
   await json(
     new Request("http://local/api/models/", {
@@ -408,6 +416,14 @@ test("original JSON fields for status, models, deployments, performance, data, u
   const bindings = await json(new Request("http://local/api/user/oauth/bindings", { headers: auth }), e);
   assert.equal(Array.isArray(bindings.body.data), true);
 
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "passkey.enabled", value: "true" }),
+    }),
+    e,
+  );
   const passkeyBegin = await json(
     new Request("http://local/api/user/passkey/login/begin", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }),
     e,
@@ -513,7 +529,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ key: "suno", name: "Suno", version: "1.0.0", status: "active", routes: [{ method: "POST", path: "/suno/submit" }] }),
+      body: JSON.stringify({ source: pluginSource("suno", "Suno"), remark: "suno" }),
     }),
     e,
   );
@@ -920,10 +936,7 @@ test("original subscription self/plans wrapping, token mask, plugin get, tag mod
       method: "POST",
       headers: auth,
       body: JSON.stringify({
-        key: "demo",
-        name: "Demo",
-        version: "1.0.0",
-        status: "active",
+        source: pluginSource("demo", "Demo"),
         icon: "data:image/png;base64,aaaa",
       }),
     }),
@@ -1163,7 +1176,7 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
   const lf = logs.body.data as Record<string, unknown>;
   assert.equal(lf.enabled, false);
   assert.equal(typeof lf.file_count, "number");
-  assert.ok(Array.isArray(lf.files));
+  assert.equal(lf.files, null);
 
   const ch = await json(
     new Request("http://local/api/channel/", {
@@ -1217,6 +1230,389 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
     e,
   );
   assert.equal(higher.body.message, "无法创建权限大于等于自己的用户");
+});
+
+test("original JSON fields: RelayNotImplemented, 2FA stats, groups, manage, plugins, vendors, system-task", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth: bootAuth } = await boot(e);
+  let auth = bootAuth;
+
+  const tok = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "relay", remain_quota: 1000, unlimited_quota: true }),
+    }),
+    e,
+  );
+  const sk = String((tok.body.data as { key?: string })?.key || "");
+  const unimplemented = await json(
+    new Request("http://local/v1/files", { headers: { authorization: "Bearer " + sk } }),
+    e,
+  );
+  assert.equal(unimplemented.res.status, 501);
+  const err = unimplemented.body.error as Record<string, unknown>;
+  assert.equal(err.message, "API not implemented");
+  assert.equal(err.type, "new_api_error");
+  assert.equal(err.param, "");
+  assert.equal(err.code, "api_not_implemented");
+  const variations = await json(
+    new Request("http://local/v1/images/variations", {
+      method: "POST",
+      headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+      body: "{}",
+    }),
+    e,
+  );
+  assert.equal(variations.res.status, 501);
+  assert.equal((variations.body.error as { code: string }).code, "api_not_implemented");
+
+  const stats = await json(new Request("http://local/api/user/2fa/stats", { headers: auth }), e);
+  const st = stats.body.data as Record<string, unknown>;
+  assert.equal(typeof st.total_users, "number");
+  assert.equal(typeof st.enabled_users, "number");
+  assert.equal(typeof st.enabled_rate, "string");
+  assert.match(String(st.enabled_rate), /^\d+\.\d%$/);
+
+  const groups = await json(new Request("http://local/api/group/", { headers: auth }), e);
+  const names = groups.body.data as string[];
+  assert.ok(names.includes("default"));
+  assert.ok(names.includes("vip"));
+  assert.ok(names.includes("svip"));
+
+  await json(
+    new Request("http://local/api/user/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ username: "member1", password: "password12", role: 1 }),
+    }),
+    e,
+  );
+  const users = await json(new Request("http://local/api/user/", { headers: auth }), e);
+  const member = (users.body.data as { items: { id: number; username: string }[] }).items.find((u) => u.username === "member1");
+  assert.ok(member);
+  const promoted = await json(
+    new Request("http://local/api/user/manage", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ id: member!.id, action: "promote" }),
+    }),
+    e,
+  );
+  assert.equal(promoted.body.success, true, String(promoted.body.message));
+  assert.equal(promoted.body.message, "");
+  const md = promoted.body.data as { role: number; status: number };
+  assert.equal(md.role, 10);
+  assert.equal(typeof md.status, "number");
+  const already = await json(
+    new Request("http://local/api/user/manage", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ id: member!.id, action: "promote" }),
+    }),
+    e,
+  );
+  assert.equal(already.body.message, "该用户已经是管理员");
+
+  const pwProof = await passwordProof(e, auth, "account.password.change");
+  const pw = await json(
+    new Request("http://local/api/user/self", {
+      method: "PUT",
+      headers: { ...auth, "x-security-proof": pwProof.proof_token },
+      body: JSON.stringify({ password: "password12", original_password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(pw.body.success, true, String(pw.body.message));
+  assert.equal((pw.body.data as { has_password: boolean }).has_password, true);
+  assert.equal(typeof (pw.body.data as { notification_warning: boolean }).notification_warning, "boolean");
+  const nextToken = String((pw.body.data as { access_token?: string }).access_token || "");
+  assert.ok(nextToken);
+  auth = { authorization: "Bearer " + nextToken, "content-type": "application/json" };
+
+  const vendor = await json(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "OpenAI", icon: "OpenAI" }),
+    }),
+    e,
+  );
+  assert.equal(vendor.body.success, true, String(vendor.body.message));
+  const vd = vendor.body.data as Record<string, unknown>;
+  assert.equal(vd.name, "OpenAI");
+  assert.equal(typeof vd.created_time, "number");
+  assert.equal(typeof vd.status, "number");
+  const vendorList = await json(new Request("http://local/api/vendors/", { headers: auth }), e);
+  const page = vendorList.body.data as { items: unknown[]; total: number; page: number; page_size: number };
+  assert.ok(Array.isArray(page.items));
+  assert.equal(typeof page.total, "number");
+  assert.equal(typeof page.page, "number");
+  assert.equal(typeof page.page_size, "number");
+
+  const preview = await json(
+    new Request("http://local/api/vendors/operations/preview", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ action: "delete", vendor_ids: [vd.id] }),
+    }),
+    e,
+  );
+  assert.equal(preview.body.success, true, String(preview.body.message));
+  const pv = preview.body.data as { action: string; sources: unknown[]; models: unknown[]; version: string; target: unknown };
+  assert.equal(pv.action, "delete");
+  assert.ok(Array.isArray(pv.sources));
+  assert.ok(Array.isArray(pv.models));
+  assert.equal(typeof pv.version, "string");
+  const applied = await json(
+    new Request("http://local/api/vendors/operations", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ action: "delete", vendor_ids: [vd.id], expected_version: pv.version }),
+    }),
+    e,
+  );
+  assert.equal(applied.body.success, true, String(applied.body.message));
+  assert.ok(Array.isArray((applied.body.data as { updated_models: number[] }).updated_models));
+  assert.ok(Array.isArray((applied.body.data as { deleted_vendors: number[] }).deleted_vendors));
+
+  const pluginUp = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ source: pluginSource("kling", "Kling") }),
+    }),
+    e,
+  );
+  assert.equal(pluginUp.body.success, true, String(pluginUp.body.message));
+  const uploaded = pluginUp.body.data as { plugin: Record<string, unknown>; meta: { key: string; apiVersion: number }; layer: string; has_icon: boolean };
+  assert.equal(uploaded.layer, "override");
+  assert.equal(uploaded.meta.key, "kling");
+  assert.equal(typeof uploaded.meta.apiVersion, "number");
+  assert.equal(typeof uploaded.has_icon, "boolean");
+  const versions = await json(new Request("http://local/api/plugin/task/kling/versions", { headers: auth }), e);
+  const ver = (versions.body.data as Record<string, unknown>[])[0];
+  for (const k of ["id", "key", "api_version", "version", "source", "source_hash", "enabled", "active", "created_at", "remark"]) {
+    assert.ok(k in ver, "missing TaskPluginRecord " + k);
+  }
+  assert.equal("icon" in ver, false);
+  const activate = await json(
+    new Request("http://local/api/plugin/task/kling/activate", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ version: "1.0.0" }),
+    }),
+    e,
+  );
+  assert.equal(activate.body.success, true, String(activate.body.message));
+  const statusOff = await json(
+    new Request("http://local/api/plugin/task/kling/status", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ enabled: false }),
+    }),
+    e,
+  );
+  assert.equal(statusOff.body.success, true, String(statusOff.body.message));
+  const sd = statusOff.body.data as { plugin_enabled: boolean; disabled_channels: number };
+  assert.equal(sd.plugin_enabled, false);
+  assert.equal(typeof sd.disabled_channels, "number");
+  const dryMissing = await json(
+    new Request("http://local/api/plugin/task/kling/dryrun", { method: "POST", headers: auth, body: "{}" }),
+    e,
+  );
+  assert.equal(dryMissing.body.success, false);
+  assert.match(String(dryMissing.body.message), /Hook/);
+
+  const cleanupMissing = await json(new Request("http://local/api/system-task/log-cleanup", { method: "POST", headers: auth }), e);
+  assert.equal(cleanupMissing.body.message, "target timestamp is required");
+  const cleanup = await json(
+    new Request("http://local/api/system-task/log-cleanup?target_timestamp=1", { method: "POST", headers: auth }),
+    e,
+  );
+  assert.equal(cleanup.body.success, true, String(cleanup.body.message));
+  const task = cleanup.body.data as Record<string, unknown>;
+  assert.equal(typeof task.id, "number");
+  assert.equal(typeof task.task_id, "string");
+  assert.equal(task.type, "log_cleanup");
+  assert.equal(task.status, "succeeded");
+  assert.equal(typeof task.payload, "object");
+  assert.equal(typeof (task.payload as { target_timestamp: number }).target_timestamp, "number");
+  const currentMissing = await json(new Request("http://local/api/system-task/current", { headers: auth }), e);
+  assert.equal(currentMissing.body.message, "type is required");
+  const current = await json(new Request("http://local/api/system-task/current?type=log_cleanup", { headers: auth }), e);
+  assert.equal(current.body.success, true);
+});
+
+test("original JSON fields: perf-metrics, rankings, quota data, model sync", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const missingModel = await json(new Request("http://local/api/perf-metrics"), e);
+  assert.equal(missingModel.res.status, 400);
+  assert.equal(missingModel.body.message, "model is required");
+
+  await e.DB.prepare(
+    `INSERT INTO perf_metrics (model_name, "group", bucket_ts, request_count, success_count, total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind("gpt-4o-mini", "default", Math.floor(Date.now() / 1000) - 60, 4, 3, 800, 120, 3, 40, 1000)
+    .run();
+
+  const metrics = await json(new Request("http://local/api/perf-metrics?model=gpt-4o-mini"), e);
+  assert.equal(metrics.body.success, true, String(metrics.body.message));
+  const md = metrics.body.data as { model_name: string; series_schema: string; groups: Record<string, unknown>[] };
+  assert.equal(md.model_name, "gpt-4o-mini");
+  assert.equal(md.series_schema, "dbcd0a3c01b55203");
+  assert.ok(Array.isArray(md.groups));
+  if (md.groups.length) {
+    const g0 = md.groups[0];
+    for (const k of ["group", "avg_ttft_ms", "avg_latency_ms", "success_rate", "avg_tps", "series"]) {
+      assert.ok(k in g0, "missing GroupResult " + k);
+    }
+    const series = g0.series as Record<string, unknown>[];
+    if (series.length) {
+      for (const k of ["ts", "avg_ttft_ms", "avg_latency_ms", "success_rate", "avg_tps"]) {
+        assert.ok(k in series[0], "missing BucketPoint " + k);
+      }
+    }
+  }
+
+  const summary = await json(new Request("http://local/api/perf-metrics/summary"), e);
+  assert.equal(summary.body.success, true);
+  const sm = summary.body.data as { models: Record<string, unknown>[] };
+  assert.ok(Array.isArray(sm.models));
+  if (sm.models.length) {
+    for (const k of ["model_name", "avg_latency_ms", "success_rate", "avg_tps"]) {
+      assert.ok(k in sm.models[0], "missing ModelSummary " + k);
+    }
+  }
+
+  const ranks = await json(new Request("http://local/api/rankings"), e);
+  const rd = ranks.body.data as Record<string, unknown>;
+  for (const k of ["models", "vendors", "top_movers", "top_droppers", "models_history", "vendor_share_history"]) {
+    assert.ok(k in rd, "missing RankingsResponse " + k);
+  }
+  const hist = rd.models_history as { points: unknown[]; models: unknown[]; buckets: number };
+  assert.ok(Array.isArray(hist.points));
+  assert.ok(Array.isArray(hist.models));
+  assert.equal(typeof hist.buckets, "number");
+  const vhist = rd.vendor_share_history as { points: unknown[]; vendors: unknown[]; buckets: number };
+  assert.equal(typeof vhist.buckets, "number");
+  const badPeriod = await json(new Request("http://local/api/rankings?period=decade"), e);
+  assert.equal(badPeriod.res.status, 400);
+  assert.match(String(badPeriod.body.message), /invalid ranking period/);
+
+  const data = await json(new Request("http://local/api/data/?start_timestamp=1&end_timestamp=10", { headers: auth }), e);
+  assert.ok(Array.isArray(data.body.data));
+  if ((data.body.data as unknown[]).length) {
+    const row = (data.body.data as Record<string, unknown>[])[0];
+    for (const k of ["id", "user_id", "username", "model_name", "created_at", "use_group", "token_id", "channel_id", "node_name", "token_used", "count", "quota"]) {
+      assert.ok(k in row, "missing QuotaData " + k);
+    }
+  } else {
+    await e.DB.prepare(
+      "INSERT INTO quota_data (user_id, username, model_name, created_at, quota, token_used, count, use_group, token_id, channel_id, node_name) VALUES (1, 'root', 'gpt-4o-mini', 100, 10, 20, 1, 'default', 1, 1, 'workerd')",
+    ).run();
+    const data2 = await json(new Request("http://local/api/data/?start_timestamp=1&end_timestamp=200", { headers: auth }), e);
+    const row = (data2.body.data as Record<string, unknown>[])[0];
+    for (const k of ["id", "user_id", "username", "model_name", "created_at", "use_group", "token_id", "channel_id", "node_name", "token_used", "count", "quota"]) {
+      assert.ok(k in row, "missing QuotaData " + k);
+    }
+  }
+
+  const applyEmpty = await json(
+    new Request("http://local/api/models/sync_upstream", { method: "POST", headers: auth, body: "{}" }),
+    e,
+  );
+  assert.equal(applyEmpty.res.status, 400);
+  assert.equal(applyEmpty.body.message, "Preview and select metadata changes before applying");
+
+  const preview = await json(new Request("http://local/api/models/sync_upstream/preview?locale=zh", { headers: auth }), e);
+  if (preview.body.success) {
+    const pv = preview.body.data as { source: Record<string, unknown>; candidates: unknown[] };
+    for (const k of ["locale", "models_url", "vendors_url", "version"]) {
+      assert.ok(k in pv.source, "missing metadataSyncSource " + k);
+    }
+    assert.ok(Array.isArray(pv.candidates));
+  } else {
+    assert.equal(typeof preview.body.message, "string");
+  }
+
+  const runtime = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
+  const rtd = runtime.body.data as { last_rebuild: Record<string, unknown>; plugin_errors: unknown };
+  assert.equal(rtd.last_rebuild.status, "never");
+  assert.equal(typeof rtd.last_rebuild.attempted_at, "string");
+  assert.equal(typeof rtd.last_rebuild.generation, "number");
+  assert.equal(typeof rtd.last_rebuild.plugin_error_count, "number");
+  assert.equal("error" in rtd.last_rebuild, false);
+  assert.equal(typeof rtd.plugin_errors, "object");
+
+  const uptime = await json(new Request("http://local/api/uptime/status"), e);
+  assert.equal(uptime.body.success, true);
+  assert.ok(Array.isArray(uptime.body.data));
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({
+        key: "console_setting.uptime_kuma_groups",
+        value: JSON.stringify([{ categoryName: "Core", url: "", slug: "" }]),
+      }),
+    }),
+    e,
+  );
+  const uptimeGroup = await json(new Request("http://local/api/uptime/status"), e);
+  assert.equal(uptimeGroup.body.success, true);
+  const ug = (uptimeGroup.body.data as { categoryName: string; monitors: unknown[] }[])[0];
+  assert.equal(ug.categoryName, "Core");
+  assert.deepEqual(ug.monitors, []);
+
+  const now = Math.floor(Date.now() / 1000);
+  await e.DB.prepare(
+    "INSERT INTO quota_data (user_id, username, model_name, created_at, quota, token_used, count, use_group, token_id, channel_id, node_name) VALUES (1, 'root', 'openai/gpt-4o', ?, 10, 100, 1, 'default', 1, 1, 'workerd')",
+  ).bind(now - 3600).run();
+  await e.DB.prepare(
+    "INSERT INTO quota_data (user_id, username, model_name, created_at, quota, token_used, count, use_group, token_id, channel_id, node_name) VALUES (1, 'root', 'openai/gpt-4o', ?, 5, 40, 1, 'default', 1, 1, 'workerd')",
+  ).bind(now - 8 * 86400).run();
+  await e.DB.prepare(
+    "INSERT INTO quota_data (user_id, username, model_name, created_at, quota, token_used, count, use_group, token_id, channel_id, node_name) VALUES (1, 'root', 'anthropic/claude', ?, 8, 80, 1, 'default', 1, 1, 'workerd')",
+  ).bind(now - 9 * 86400).run();
+  const ranked = await json(new Request("http://local/api/rankings?period=week"), e);
+  const models = (ranked.body.data as { models: Record<string, unknown>[]; models_history: { points: unknown[]; buckets: number } }).models;
+  assert.ok(models.length);
+  assert.equal(typeof models[0].rank, "number");
+  assert.equal(typeof models[0].share, "number");
+  assert.equal(typeof models[0].growth_pct, "number");
+  assert.ok("previous_rank" in models[0] || models[0].growth_pct === 100);
+  const hist2 = (ranked.body.data as { models_history: { points: unknown[]; buckets: number } }).models_history;
+  assert.ok(hist2.buckets >= 1);
+  assert.ok(Array.isArray(hist2.points));
+  if (hist2.points.length) {
+    const p0 = hist2.points[0] as Record<string, unknown>;
+    for (const k of ["ts", "label", "model", "vendor", "tokens"]) assert.ok(k in p0, "missing history point " + k);
+  }
+
+  const opts = await json(new Request("http://local/api/option/", { headers: auth }), e);
+  const optionKeys = (opts.body.data as { key: string }[]).map((o) => o.key);
+  for (const key of [
+    "console_setting.uptime_kuma_groups",
+    "passkey.enabled",
+    "checkin_setting.enabled",
+    "legal.user_agreement",
+    "oidc.enabled",
+    "channel_affinity_setting.enabled",
+    "TaskPluginMarketplaceSources",
+  ]) {
+    assert.ok(optionKeys.includes(key), "missing option " + key);
+  }
+
+  const market = await json(new Request("http://local/api/plugin/task/marketplace/sources", { headers: auth }), e);
+  const sources = market.body.data as { name: string; index_url: string }[];
+  assert.ok(sources.some((s) => s.name === "Official"));
+  assert.ok(sources.some((s) => s.name === "GitHub"));
 });
 
 

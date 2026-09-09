@@ -71,7 +71,14 @@ export function openaiError(
   type = "new_api_error",
 ): Response {
   return json(status, {
-    error: { message, type, param: null, code },
+    error: { message, type, param: "", code },
+  });
+}
+
+/** Original `controller.RelayNotImplemented`. */
+export function relayNotImplemented(): Response {
+  return json(501, {
+    error: { message: "API not implemented", type: "new_api_error", param: "", code: "api_not_implemented" },
   });
 }
 

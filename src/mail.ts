@@ -23,3 +23,27 @@ export function sixDigitCode(): string {
   const n = crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000;
   return n.toString().padStart(6, "0");
 }
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * Original `service.NotifyAccountSecurityChange`.
+ * Returns true when delivery failed (`notification_warning`). Empty email is not a failure.
+ */
+export async function notifyAccountSecurityChange(store: Store, email: string, event: string): Promise<boolean> {
+  if (!email) return false;
+  const name = (await store.option("SystemName")) || "new-api";
+  try {
+    await sendMail(
+      store,
+      email,
+      `${name} — Account security notification`,
+      `<p>Your account security settings have changed: ${escapeHtml(event)}.</p><p>If you did not make this change, open your account security settings, revoke other login sessions, and contact your administrator.</p>`,
+    );
+    return false;
+  } catch {
+    return true;
+  }
+}

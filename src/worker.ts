@@ -1,6 +1,6 @@
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
-import { apiFail, openaiError, readJson, withCors } from "./http.js";
+import { apiFail, openaiError, readJson, relayNotImplemented, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -115,7 +115,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   hit("relay");
 
   if (notImplemented(req.method, path)) {
-    return openaiError(501, "尚未实现该接口", "not_implemented");
+    return relayNotImplemented();
   }
 
   if (req.method === "GET" && (path === "/v1/models" || path === "/v1beta/models" || path === "/v1beta/openai/models")) {

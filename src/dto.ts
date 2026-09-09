@@ -1,5 +1,5 @@
 import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_CREATED } from "./channel-models.js";
-import { csv, parseJson } from "./constants.js";
+import { DEFAULT_GROUP_RATIO, csv, parseJson } from "./constants.js";
 import { maskKey, md5Hex } from "./crypto.js";
 import type { Store } from "./store.js";
 import type { ChannelRow, LogRow, TokenRow, UserRow } from "./types.js";
@@ -100,7 +100,7 @@ export async function userUsableGroups(store: Store, userGroup = ""): Promise<Re
 }
 
 export async function groupRatioMap(store: Store, userGroup = ""): Promise<Record<string, number>> {
-  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { default: 1 });
+  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
   const usable = await userUsableGroups(store, userGroup);
   const out: Record<string, number> = {};
   for (const [g, ratio] of Object.entries(ratios)) {
@@ -112,7 +112,7 @@ export async function groupRatioMap(store: Store, userGroup = ""): Promise<Recor
 export async function userAutoGroups(store: Store, userGroup = ""): Promise<string[]> {
   const auto = parseJson<string[]>(await store.option("AutoGroups"), ["default"]);
   const usable = await userUsableGroups(store, userGroup);
-  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { default: 1 });
+  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
   return auto.filter((g) => g && g !== "auto" && usable[g] != null && ratios[g] != null);
 }
 
@@ -120,13 +120,13 @@ export async function userGroupRatio(store: Store, userGroup = "", group: string
   const overlay = parseJson<Record<string, Record<string, number>>>(await store.option("GroupGroupRatio"), {});
   const nested = userGroup ? overlay[userGroup] : undefined;
   if (nested && nested[group] != null) return Number(nested[group]);
-  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { default: 1 });
+  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
   return ratios[group] ?? 1;
 }
 
 export async function userGroupsView(store: Store, userGroup = ""): Promise<Record<string, { ratio: number | string; desc: string }>> {
   const usable = await userUsableGroups(store, userGroup);
-  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { default: 1 });
+  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
   const out: Record<string, { ratio: number | string; desc: string }> = {};
   for (const name of Object.keys(ratios)) {
     if (usable[name] == null) continue;
@@ -732,11 +732,209 @@ export function rankingsResponse(
       top_model: v.top,
     }));
   return {
-    models,
+    models: models.slice(0, 20),
     vendors,
     top_movers: [],
     top_droppers: [],
-    models_history: { points: [], models: models.slice(0, 10).map((m) => ({ name: m.model_name, vendor: m.vendor, total: m.total_tokens })) },
-    vendor_share_history: { points: [], vendors: vendors.slice(0, 5).map((v) => ({ name: v.vendor, total: v.total_tokens })) },
+    models_history: {
+      points: [],
+      models: models.slice(0, 10).map((m) => ({ name: m.model_name, vendor: m.vendor, total: m.total_tokens })),
+      buckets: 0,
+    },
+    vendor_share_history: {
+      points: [],
+      vendors: vendors.slice(0, 5).map((v) => ({ name: v.vendor, total: v.total_tokens, share: v.share })),
+      buckets: 0,
+    },
+  };
+}
+
+/** Original `model.QuotaData` JSON (GORM still emits zero fields for unselected columns). */
+export function publicQuotaData(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: Number(row.id || 0),
+    user_id: Number(row.user_id || 0),
+    username: String(row.username || ""),
+    model_name: String(row.model_name || ""),
+    created_at: Number(row.created_at || 0),
+    use_group: String(row.use_group || ""),
+    token_id: Number(row.token_id || 0),
+    channel_id: Number(row.channel_id || 0),
+    node_name: String(row.node_name || ""),
+    token_used: Number(row.token_used || 0),
+    count: Number(row.count || 0),
+    quota: Number(row.quota || 0),
+  };
+}
+
+/** Original `controller.ManageUser` encodes a zero `model.User` with only role/status set. */
+export function manageUserView(role: number, status: number): Record<string, unknown> {
+  return {
+    id: 0,
+    username: "",
+    password: "",
+    original_password: "",
+    display_name: "",
+    role,
+    status,
+    email: "",
+    github_id: "",
+    discord_id: "",
+    oidc_id: "",
+    wechat_id: "",
+    telegram_id: "",
+    verification_code: "",
+    quota: 0,
+    used_quota: 0,
+    request_count: 0,
+    group: "",
+    aff_code: "",
+    aff_count: 0,
+    aff_quota: 0,
+    aff_history_quota: 0,
+    inviter_id: 0,
+    linux_do_id: "",
+    setting: "",
+    stripe_customer: "",
+    created_at: 0,
+    last_login_at: 0,
+  };
+}
+
+export function publicVendor(row: Record<string, unknown>, modelCount = 0): Record<string, unknown> {
+  const created = Number(row.created_time || row.created_at || 0);
+  const updated = Number(row.updated_time || created);
+  const id = Number(row.id || 0);
+  const name = String(row.name || "");
+  const description = String(row.description || "");
+  const icon = String(row.icon || "");
+  const status = Number(row.status ?? 1);
+  const payload = JSON.stringify([id, name, description, icon, status, created, updated]);
+  let h = 2166136261;
+  for (let i = 0; i < payload.length; i++) {
+    h ^= payload.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return {
+    id,
+    name,
+    description,
+    icon,
+    status,
+    created_time: created,
+    updated_time: updated,
+    model_count: modelCount,
+    version: (h >>> 0).toString(16).padStart(8, "0"),
+  };
+}
+
+export function publicPrefill(row: Record<string, unknown>): Record<string, unknown> {
+  const raw = row.items;
+  let items: unknown = raw;
+  if (typeof raw === "string") {
+    const parsed = parseJson<unknown>(raw, raw);
+    items = parsed;
+  }
+  const created = Number(row.created_time || row.created_at || 0);
+  return {
+    id: Number(row.id || 0),
+    name: String(row.name || ""),
+    type: String(row.type || ""),
+    items,
+    description: String(row.description || ""),
+    created_time: created,
+    updated_time: Number(row.updated_time || created),
+  };
+}
+
+export function extractPluginMeta(source: string): Record<string, unknown> {
+  const idx = source.search(/\bmeta\s*=\s*\{/);
+  if (idx < 0) return {};
+  const start = source.indexOf("{", idx);
+  if (start < 0) return {};
+  let depth = 0;
+  for (let i = start; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        const raw = source.slice(start, i + 1);
+        const jsonish = raw
+          .replace(/'([^'\\]*)'/g, '"$1"')
+          .replace(/([,{]\s*)([A-Za-z_][\w]*)\s*:/g, '$1"$2":')
+          .replace(/,(\s*[}\]])/g, "$1");
+        return parseJson<Record<string, unknown>>(jsonish, {});
+      }
+    }
+  }
+  return {};
+}
+
+export function taskPluginMetaView(meta: Record<string, unknown>, fallback: { key: string; version?: string; name?: string } = { key: "" }): Record<string, unknown> {
+  const key = String(meta.key || fallback.key || "");
+  const version = String(meta.version || fallback.version || "1.0.0");
+  const name = String(meta.name || fallback.name || key);
+  const authorRaw = meta.author && typeof meta.author === "object" ? (meta.author as Record<string, unknown>) : {};
+  return {
+    sortPriority: Number(meta.sortPriority || 0) || undefined,
+    website: meta.website ? String(meta.website) : undefined,
+    apiVersion: Number(meta.apiVersion ?? meta.api_version ?? 1) || 1,
+    key,
+    name,
+    icon: meta.icon ? String(meta.icon) : undefined,
+    description: meta.description,
+    version,
+    author: { name: String(authorRaw.name || ""), url: authorRaw.url ? String(authorRaw.url) : undefined },
+    baseUrl: meta.baseUrl ? String(meta.baseUrl) : undefined,
+    channelTypes: Array.isArray(meta.channelTypes) ? meta.channelTypes : undefined,
+    models: Array.isArray(meta.models) ? meta.models : [],
+    fetchMode: String(meta.fetchMode || "per_task"),
+    allowedHosts: Array.isArray(meta.allowedHosts) ? meta.allowedHosts : [],
+    routes: Array.isArray(meta.routes) ? meta.routes : [],
+    protocols: Array.isArray(meta.protocols) ? meta.protocols : [],
+    usageSchema: meta.usageSchema,
+    auth: meta.auth && typeof meta.auth === "object" ? meta.auth : { type: "" },
+  };
+}
+
+export function publicTaskPluginRecord(row: Record<string, unknown>): Record<string, unknown> {
+  const enabled = row.enabled != null ? Boolean(Number(row.enabled) || row.enabled === true || row.enabled === "true") : String(row.status || "") === "active" || String(row.status || "") === "enabled";
+  const active = row.active != null ? Boolean(Number(row.active) || row.active === true) : enabled;
+  return {
+    id: Number(row.id || 0),
+    key: String(row.key || ""),
+    api_version: Number(row.api_version ?? row.apiVersion ?? 1),
+    version: String(row.version || "1.0.0"),
+    source: String(row.source || ""),
+    source_hash: String(row.source_hash || ""),
+    enabled,
+    active,
+    created_at: Number(row.created_at || 0),
+    remark: String(row.remark || ""),
+  };
+}
+
+export function publicSystemTask(row: Record<string, unknown>, numericId = 0): Record<string, unknown> {
+  const statusRaw = String(row.status || "pending");
+  const status = statusRaw === "success" ? "succeeded" : statusRaw;
+  const taskId = String(row.task_id || row.id || "");
+  const decode = (raw: unknown) => {
+    if (raw == null || raw === "") return null;
+    if (typeof raw !== "string") return raw;
+    return parseJson(raw, raw);
+  };
+  return {
+    id: Number(row.rowid || row.numeric_id || numericId || 0),
+    task_id: taskId,
+    type: String(row.type || ""),
+    status,
+    payload: decode(row.payload),
+    state: decode(row.state),
+    result: decode(row.result),
+    error: String(row.error || ""),
+    locked_by: String(row.locked_by || ""),
+    created_at: Number(row.created_at || 0),
+    updated_at: Number(row.updated_at || 0),
   };
 }

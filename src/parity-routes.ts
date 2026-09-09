@@ -1,4 +1,4 @@
-import { CHANNEL_ENABLED, START_TIME, VERSION, csv, nowSec, parseJson, randomHex } from "./constants.js";
+import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, GO_ZERO_TIME, START_TIME, VERSION, csv, nowSec, parseJson, randomHex } from "./constants.js";
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { httpStats, performanceStats, resetMetrics } from "./metrics.js";
 import {
@@ -16,13 +16,13 @@ import {
   requirePaymentCompliance,
   topupInfo,
 } from "./payments.js";
-import { mailConfigured, sendMail, sixDigitCode } from "./mail.js";
+import { mailConfigured, notifyAccountSecurityChange, sendMail, sixDigitCode } from "./mail.js";
 import {
   loginOrBindOAuth,
   verifyTelegramLogin,
   wechatIdFromCode,
 } from "./oauth.js";
-import { bytesToHex, hmacSha256Hex, sha256Bytes } from "./crypto.js";
+import { bytesToHex, sha256Bytes, md5Hex } from "./crypto.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { apiFail, apiOk, json, pageData, pageQuery, parseUnixQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
@@ -45,7 +45,10 @@ import {
 import { Store } from "./store.js";
 import { testChannel, fetchUpstreamModels } from "./relay.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
-import { enrichModelMeta } from "./dto.js";
+import { enrichModelMeta, extractPluginMeta, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskPluginMetaView } from "./dto.js";
+import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
+import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
+import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
 import {
   calcNextResetTime,
   calcPlanEndTime,
@@ -57,6 +60,84 @@ import { computeStatusCounts, ionetApiKey, ionetRequest, ionetSettings, IONET_NO
 import type { Env } from "./types.js";
 
 type C = Context<Env>;
+type VendorOp = { action?: string; vendor_ids?: number[]; model_ids?: number[]; target_vendor_id?: number; expected_version?: string };
+
+function vendorOpError(e: unknown): Response {
+  const message = e instanceof Error ? e.message : String(e);
+  if (message.includes("vendor data changed")) {
+    return json(409, { success: false, message, code: "VENDOR_CONFLICT" });
+  }
+  if (e && typeof e === "object" && "reference_counts" in (e as object)) {
+    const counts = (e as { reference_counts: Record<string, number> }).reference_counts;
+    return json(409, { success: false, message: "vendors are still referenced by models; transfer or clear their assignments first", code: "VENDOR_REFERENCED", reference_counts: counts });
+  }
+  return json(400, { success: false, message });
+}
+
+async function vendorOperationPreview(s: Store, operation: VendorOp): Promise<Record<string, unknown>> {
+  const action = String(operation.action || "");
+  if (action !== "assign" && action !== "merge" && action !== "delete") throw new Error("unsupported vendor operation");
+  const ids = action === "assign" ? [...(operation.model_ids || [])] : [...(operation.vendor_ids || [])];
+  if (ids.length < 1 || ids.length > 1000) throw new Error("select between 1 and 1000 records");
+  const sorted = [...ids].sort((a, b) => a - b);
+  for (let i = 0; i < sorted.length; i++) {
+    if (sorted[i] <= 0 || (i > 0 && sorted[i] === sorted[i - 1])) throw new Error("invalid or duplicate selection");
+  }
+  const vendors = ((await s.listVendors()) as Record<string, unknown>[]).map((v) => publicVendor(v));
+  const byId = new Map(vendors.map((v) => [Number(v.id), v]));
+  let target: Record<string, unknown> | null = null;
+  if (action !== "delete") {
+    if ((operation.target_vendor_id ?? -1) < 0 || (action === "merge" && !operation.target_vendor_id)) {
+      throw new Error("select a saved target vendor");
+    }
+    if (operation.target_vendor_id) {
+      target = byId.get(Number(operation.target_vendor_id)) || null;
+      if (!target) throw new Error("vendor data changed; preview again before applying: target vendor does not exist");
+    }
+  }
+  const sources: Record<string, unknown>[] = [];
+  const modelsOut: Record<string, unknown>[] = [];
+  const meta = (await s.listModelMeta()) as Record<string, unknown>[];
+  if (action === "assign") {
+    const selected = new Set(ids);
+    for (const m of meta) {
+      if (!selected.has(Number(m.id))) continue;
+      const vendor = byId.get(Number(m.vendor_id || 0));
+      modelsOut.push({
+        id: Number(m.id),
+        model_name: String(m.model_name || ""),
+        name_rule: Number(m.name_rule || 0),
+        vendor_id: Number(m.vendor_id || 0),
+        vendor_name: String(vendor?.name || ""),
+        updated_time: Number(m.updated_time || 0),
+      });
+      if (vendor && !sources.some((x) => x.id === vendor.id)) sources.push(vendor);
+    }
+    if (modelsOut.length !== ids.length) throw new Error("vendor data changed; preview again before applying: a selected model no longer exists");
+  } else {
+    for (const id of ids) {
+      const vendor = byId.get(id);
+      if (!vendor) throw new Error("vendor data changed; preview again before applying: source vendor does not exist");
+      if (action === "merge" && id === Number(operation.target_vendor_id)) throw new Error("target vendor cannot also be a source");
+      sources.push(vendor);
+    }
+    const sourceSet = new Set(ids);
+    for (const m of meta) {
+      if (!sourceSet.has(Number(m.vendor_id || 0))) continue;
+      const vendor = byId.get(Number(m.vendor_id || 0));
+      modelsOut.push({
+        id: Number(m.id),
+        model_name: String(m.model_name || ""),
+        name_rule: Number(m.name_rule || 0),
+        vendor_id: Number(m.vendor_id || 0),
+        vendor_name: String(vendor?.name || ""),
+        updated_time: Number(m.updated_time || 0),
+      });
+    }
+  }
+  const version = await md5Hex(JSON.stringify({ action, sources: sources.map((v) => v.id), models: modelsOut.map((m) => m.id), target: target?.id ?? 0 }));
+  return { action, sources, target, models: modelsOut, version };
+}
 
 function store(c: C): Store {
   return new Store(c.env.DB);
@@ -173,9 +254,12 @@ export function registerParity(r: Router<Env>): void {
     const flow = await s.getAuthFlow(body.flow_token || "");
     if (!flow || flow.type !== "email_bind" || flow.user_id !== u.id) return apiFail("流程无效");
     if (!(await s.consumeEmailCode(flow.payload, body.new_code || "", "bind"))) return apiFail("验证码无效或已过期");
+    const previous = (await s.getUserById(u.id))?.email || "";
     await s.updateUser(u.id, { email: flow.payload, email_verified: 1 });
     await s.deleteAuthFlow(flow.token);
-    return apiOk({ notification_warning: false });
+    let notification_warning = await notifyAccountSecurityChange(s, previous, "Email address changed");
+    if (await notifyAccountSecurityChange(s, flow.payload, "Email address confirmed")) notification_warning = true;
+    return apiOk({ notification_warning });
   });
 
   r.get("/api/oauth/wechat", async (c) => {
@@ -207,7 +291,9 @@ export function registerParity(r: Router<Env>): void {
     try {
       const wechatId = await wechatIdFromCode(s, body.code || "");
       await s.updateUser(proof.userId, { wechat_id: wechatId });
-      return apiOk({ action: "bind", notification_warning: false });
+      const user = await s.getUserById(proof.userId);
+      const notification_warning = await notifyAccountSecurityChange(s, user?.email || "", "WeChat account linked");
+      return apiOk({ notification_warning });
     } catch (e) {
       return apiFail(e instanceof Error ? e.message : String(e));
     }
@@ -659,7 +745,7 @@ export function registerParity(r: Router<Env>): void {
       enabled: false,
       file_count: 0,
       total_size: 0,
-      files: [],
+      files: null,
     });
   });
   r.delete("/api/performance/logs", async (c) => {
@@ -768,27 +854,26 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const plugins = (await s.listTaskPlugins()) as { status: string; key: string }[];
-    const now = new Date().toISOString();
     return apiOk({
-      current_generation: 1,
-      generation_published_at: now,
+      current_generation: 0,
+      generation_published_at: GO_ZERO_TIME,
       database_revision: String(plugins.length),
       last_rebuild: {
-        status: "success",
-        attempted_at: now,
-        generation: 1,
+        status: "never",
+        attempted_at: GO_ZERO_TIME,
+        generation: 0,
         plugin_error_count: 0,
-        error: "workerd cannot execute Goja JS task-plugin runtime; plugins are a D1 registry plus HTTP passthrough",
       },
       plugin_errors: {},
-      runtime: "workerd",
     });
   });
   r.get("/api/plugin/task/marketplace/sources", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(parseJson(await s.option("TaskPluginMarketplaceSources"), []));
+    const raw = await s.option("TaskPluginMarketplaceSources");
+    const parsed = parseJson<{ name?: string; index_url?: string }[] | null>(raw, null);
+    return apiOk(parsed && parsed.length ? parsed : DEFAULT_MARKETPLACE_SOURCES);
   });
   r.put("/api/plugin/task/marketplace/sources", async (c) => {
     const s = store(c);
@@ -801,30 +886,25 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const p = await s.getTaskPlugin(c.params.key);
+    const version = c.url.searchParams.get("version") || "";
+    const p = await s.getTaskPluginVersion(c.params.key, version);
     if (!p) return apiFail("task plugin not found");
+    const extracted = extractPluginMeta(String(p.source || ""));
     const manifest = parseJson<Record<string, unknown>>(String(p.manifest || "{}"), {});
-    const icon = String(p.icon || "");
-    const plugin = { ...p };
-    delete plugin.icon;
+    const meta = taskPluginMetaView({ ...manifest, ...extracted }, { key: String(p.key), version: String(p.version || ""), name: String(p.name || "") });
     return apiOk({
-      plugin,
-      meta: {
-        key: String(p.key || c.params.key),
-        version: String(manifest.version || p.version || "1.0.0"),
-        api_version: String(manifest.api_version || "v1"),
-        name: String(manifest.name || p.name || p.key),
-      },
+      plugin: publicTaskPluginRecord(p),
+      meta,
       source: String(p.source || ""),
       layer: "override",
-      has_icon: Boolean(icon),
+      has_icon: Boolean(p.icon),
     });
   });
   r.get("/api/plugin/task/:key/icon", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const p = await s.getTaskPlugin(c.params.key);
+    const p = await s.getTaskPluginVersion(c.params.key, c.url.searchParams.get("version") || "");
     const decoded = decodePluginIcon(String(p?.icon || ""));
     if (!decoded) return new Response(null, { status: 404 });
     return new Response(decoded.body as unknown as BodyInit, {
@@ -841,41 +921,80 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const p = await s.getTaskPlugin(c.params.key);
-    return apiOk(p ? [{ version: p.version, status: p.status }] : []);
+    const versions = await s.listTaskPluginVersions(c.params.key);
+    return apiOk(versions.map(publicTaskPluginRecord));
   });
   r.post("/api/plugin/task/:key/activate", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const p = await s.getTaskPlugin(c.params.key);
-    if (!p) return apiFail("插件不存在");
-    await s.upsertTaskPlugin({ ...p, status: "active", active_version: p.version });
-    return apiOk(null, "已激活");
+    const body = (await readJson(c.req)) as { version?: string };
+    if (!body.version) return apiFail("Key: 'taskPluginActivateRequest.Version' Error:Field validation for 'Version' failed on the 'required' tag");
+    const ok = await s.activateTaskPluginVersion(c.params.key, body.version);
+    if (!ok) return apiFail("plugin version not found");
+    return apiOk(null);
   });
   r.post("/api/plugin/task/:key/status", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
+    const body = (await readJson(c.req)) as { enabled?: boolean };
+    if (typeof body.enabled !== "boolean") return apiFail("enabled is required");
     const p = await s.getTaskPlugin(c.params.key);
-    if (!p) return apiFail("插件不存在");
-    const body = (await readJson(c.req)) as { status?: string };
-    await s.upsertTaskPlugin({ ...p, status: body.status || "inactive" });
-    return apiOk(null);
+    if (!p) return apiFail("task plugin not found");
+    let disabledChannels = 0;
+    if (!body.enabled) {
+      const usage = await s.taskPluginUsage(c.params.key);
+      const cascade = c.url.searchParams.get("cascade") === "true";
+      const force = c.url.searchParams.get("force") === "true";
+      if ((usage.channels.length > 0 && !cascade) || (usage.in_flight_count > 0 && !force)) {
+        return json(200, {
+          success: false,
+          message: "task plugin is still in use",
+          data: { channels: usage.channels, in_flight_count: usage.in_flight_count },
+        });
+      }
+      if (cascade) {
+        for (const ch of usage.channels) {
+          await s.updateChannel(ch.id, { status: CHANNEL_MANUAL_DISABLED });
+          disabledChannels += 1;
+        }
+      }
+    }
+    await s.setTaskPluginEnabled(c.params.key, body.enabled);
+    return apiOk({ plugin_enabled: body.enabled, disabled_channels: disabledChannels });
   });
   r.post("/api/plugin/task/:key/dryrun", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const p = await s.getTaskPlugin(c.params.key);
-    if (!p) return apiFail("插件不存在");
-    return apiOk({ ok: true, key: p.key, routes: parseJson(String(p.routes || "[]"), []) });
+    const body = (await readJson(c.req)) as { hook?: string; member?: string; args?: unknown[] };
+    if (!body.hook) {
+      return apiFail("Key: 'taskPluginDryRunRequest.Hook' Error:Field validation for 'Hook' failed on the 'required' tag");
+    }
+    const p = await s.getTaskPluginVersion(c.params.key, "");
+    if (!p) return apiFail("task plugin not found");
+    return apiFail("jsplugin: goja runtime is not available on workerd");
   });
   r.delete("/api/plugin/task/:key/versions/:version", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    await s.deleteTaskPlugin(c.params.key);
+    const key = c.params.key;
+    const version = c.params.version;
+    const target = await s.getTaskPluginVersion(key, version);
+    if (!target) return apiFail("override plugin version not found; factory plugins cannot be deleted");
+    if (Number(target.active) && c.url.searchParams.get("force") !== "true") {
+      const usage = await s.taskPluginUsage(key);
+      if (usage.channels.length > 0 || usage.in_flight_count > 0) {
+        return json(200, {
+          success: false,
+          message: "task plugin is still in use",
+          data: { channels: usage.channels, in_flight_count: usage.in_flight_count },
+        });
+      }
+    }
+    await s.deleteTaskPluginVersion(key, version);
     return apiOk(null);
   });
   r.get("/api/task_plugin_options", async (c) => {
@@ -909,32 +1028,50 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const id = randomHex(8);
-    await s.insertSystemTask({ id, type: "log-cleanup", status: "running" });
-    const cutoff = nowSec() - 90 * 86400;
-    await c.env.DB.prepare("DELETE FROM request_logs WHERE created_at < ?").bind(cutoff).run();
-    await s.updateSystemTask(id, { status: "success", progress: "100", result: "cleaned" });
-    return apiOk({ task_id: id });
+    const targetTimestamp = Number(c.url.searchParams.get("target_timestamp") || 0);
+    if (!targetTimestamp) return apiFail("target timestamp is required");
+    const existing = await s.currentSystemTask("log_cleanup");
+    if (existing) return apiOk(publicSystemTask(existing, Number(existing.rowid || 0)));
+    const id = "systask_" + randomHex(16);
+    const payload = { target_timestamp: targetTimestamp, batch_size: 1000 };
+    await s.insertSystemTask({ id, type: "log_cleanup", status: "running", payload, state: { total: 0, processed: 0, progress: 0, remaining: 0 } });
+    const cutoff = targetTimestamp;
+    const del = await c.env.DB.prepare("DELETE FROM request_logs WHERE created_at < ?").bind(cutoff).run();
+    const deleted = Number(del.meta.changes || 0);
+    await s.updateSystemTask(id, {
+      status: "succeeded",
+      progress: "100",
+      result: JSON.stringify({ deleted_count: deleted }),
+      state: JSON.stringify({ total: deleted, processed: deleted, progress: 100, remaining: 0 }),
+    });
+    const task = await s.getSystemTask(id);
+    return apiOk(publicSystemTask(task || { id, type: "log_cleanup", status: "succeeded" }, Number(task?.rowid || 0)));
   });
   r.get("/api/system-task/list", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.listSystemTasks());
+    const limit = Number(c.url.searchParams.get("limit") || 20);
+    const items = await s.listSystemTasks(limit);
+    return apiOk(items.map((t, i) => publicSystemTask(t, Number(t.rowid || items.length - i))));
   });
   r.get("/api/system-task/current", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.currentSystemTask());
+    const taskType = c.url.searchParams.get("type") || "";
+    if (!taskType) return apiFail("type is required");
+    const t = await s.currentSystemTask(taskType);
+    return apiOk(t ? publicSystemTask(t, Number(t.rowid || 0)) : null);
   });
   r.get("/api/system-task/:task_id", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
+    if (!c.params.task_id) return apiFail("task id is required");
     const t = await s.getSystemTask(c.params.task_id);
-    if (!t) return apiFail("任务不存在");
-    return apiOk(t);
+    if (!t) return json(404, { success: false, message: "task not found" });
+    return apiOk(publicSystemTask(t, Number(t.rowid || 0)));
   });
 
   r.get("/api/system-info/instances", async (c) => {
@@ -971,7 +1108,7 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const start = parseUnixQuery(c.url, "start_timestamp");
     const end = parseUnixQuery(c.url, "end_timestamp");
-    return apiOk(await s.quotaDatesByUser(start, end));
+    return apiOk((await s.quotaDatesByUser(start, end)).map((row) => publicQuotaData(row as Record<string, unknown>)));
   });
   r.get("/api/data/flow", async (c) => {
     const s = store(c);
@@ -1011,21 +1148,44 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { ids?: number[]; action?: string };
-    return apiOk({ action: body.action || "update", count: (body.ids || []).length, preview: true });
+    try {
+      return apiOk(await vendorOperationPreview(s, (await readJson(c.req)) as VendorOp));
+    } catch (e) {
+      return vendorOpError(e);
+    }
   });
   r.post("/api/vendors/operations", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { ids?: number[]; action?: string; patch?: Record<string, unknown> };
-    let n = 0;
-    for (const id of body.ids || []) {
-      if (body.action === "delete") await s.deleteVendor(id);
-      else if (body.patch) await s.updateVendor(id, body.patch);
-      n += 1;
+    const body = (await readJson(c.req)) as VendorOp;
+    try {
+      if (!body.expected_version) {
+        return json(409, { success: false, message: "vendor data changed; preview again before applying", code: "VENDOR_CONFLICT" });
+      }
+      const preview = await vendorOperationPreview(s, body);
+      if (preview.version !== body.expected_version) {
+        return json(409, { success: false, message: "vendor data changed; preview again before applying", code: "VENDOR_CONFLICT" });
+      }
+      const updated_models: number[] = [];
+      const deleted_vendors: number[] = [];
+      const targetId = Number(body.target_vendor_id || 0);
+      for (const m of preview.models as { id: number; vendor_id: number }[]) {
+        if (body.action !== "delete" && m.vendor_id !== targetId) {
+          await s.updateModelMeta(m.id, { vendor_id: targetId, updated_time: nowSec() });
+          updated_models.push(m.id);
+        }
+      }
+      if (body.action === "merge" || body.action === "delete") {
+        for (const v of preview.sources as { id: number }[]) {
+          await s.deleteVendor(v.id);
+          deleted_vendors.push(v.id);
+        }
+      }
+      return apiOk({ updated_models, deleted_vendors });
+    } catch (e) {
+      return vendorOpError(e);
     }
-    return apiOk({ count: n });
   });
 
   r.get("/api/models/", async (c) => {
@@ -1066,7 +1226,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const enabled = await s.enabledModels("default");
+    const enabled = await s.enabledModelsAll();
     const meta = (await s.listModelMeta()) as { model_name: string }[];
     const have = new Set(meta.map((m) => m.model_name));
     return apiOk(enabled.filter((m) => !have.has(m)));
@@ -1075,29 +1235,24 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const missing = await (async () => {
-      const enabled = await s.enabledModels("default");
-      const meta = (await s.listModelMeta()) as { model_name: string }[];
-      const have = new Set(meta.map((m) => m.model_name));
-      return enabled.filter((m) => !have.has(m));
-    })();
-    return apiOk({ to_create: missing, to_update: [] });
+    try {
+      return apiOk(await previewMetadataSync(s, c.url.searchParams.get("locale") || ""));
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
   r.post("/api/models/sync_upstream", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const enabled = await s.enabledModels("default");
-    const meta = (await s.listModelMeta()) as { model_name: string }[];
-    const have = new Set(meta.map((m) => m.model_name));
-    let n = 0;
-    for (const name of enabled) {
-      if (!have.has(name)) {
-        await s.insertModelMeta(name);
-        n += 1;
-      }
+    const body = (await readJson(c.req)) as { locale?: string; source_version?: string; selections?: { model_name: string; record_version: string; create?: boolean; fields?: string[] }[] };
+    try {
+      return apiOk(await applyMetadataSync(s, body));
+    } catch (e) {
+      const status = Number((e as { status?: number }).status || 200);
+      const message = e instanceof Error ? e.message : String(e);
+      return json(status >= 400 ? status : 200, { success: false, message });
     }
-    return apiOk({ created: n });
   });
   r.post("/api/models/delete", async (c) => {
     const s = store(c);
@@ -1341,45 +1496,80 @@ export function registerParity(r: Router<Env>): void {
 
   r.get("/api/perf-metrics", async (c) => {
     const model = c.url.searchParams.get("model");
-    if (!model) return apiFail("model is required", null, 400);
+    if (!model) return json(400, { success: false, message: "model is required" });
     const s = store(c);
-    const start = nowSec() - Number(c.url.searchParams.get("hours") || 24) * 3600;
-    const rows = await s.quotaDates(null, start, nowSec());
-    return apiOk({ model, group: c.url.searchParams.get("group") || "", points: rows });
+    const hours = Number(c.url.searchParams.get("hours") || 24);
+    return apiOk(await queryPerfMetrics(s, model, c.url.searchParams.get("group") || "", hours));
   });
   r.get("/api/perf-metrics/summary", async (c) => {
     const s = store(c);
-    const start = nowSec() - Number(c.url.searchParams.get("hours") || 24) * 3600;
-    return apiOk(await s.quotaDatesByUser(start, nowSec()));
+    const hours = Number(c.url.searchParams.get("hours") || 24);
+    return apiOk(await queryPerfMetricsSummary(s, hours));
   });
 
   r.get("/api/uptime/status", async (c) => {
     const s = store(c);
-    const raw = await s.option("UptimeKumaGroups");
+    const raw = (await s.option("console_setting.uptime_kuma_groups")) || (await s.option("UptimeKumaGroups"));
     const groups = parseJson<{ url?: string; slug?: string; categoryName?: string }[]>(raw, []);
     if (!groups.length) return apiOk([]);
-    const out = [];
-    for (const g of groups) {
-      if (!g.url || !g.slug) {
-        out.push({ categoryName: g.categoryName || "", monitors: [] });
-        continue;
-      }
-      try {
-        const res = await fetch(`${g.url.replace(/\/$/, "")}/api/status-page/${g.slug}`);
-        out.push({ categoryName: g.categoryName || "", ...(await res.json()) });
-      } catch {
-        out.push({ categoryName: g.categoryName || "", monitors: [] });
-      }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
+    try {
+      const out = await Promise.all(groups.map((g) => fetchUptimeGroup(g, controller.signal)));
+      return apiOk(out);
+    } finally {
+      clearTimeout(timer);
     }
-    return apiOk(out);
   });
 
-  void hmacSha256Hex;
   void CHANNEL_ENABLED;
   void authenticateApiToken;
   void currentSid;
   void sessionViews;
   void verifyTelegramLogin;
+}
+
+async function fetchUptimeGroup(
+  group: { url?: string; slug?: string; categoryName?: string },
+  signal: AbortSignal,
+): Promise<{ categoryName: string; monitors: { name: string; uptime: number; status: number; group?: string }[] }> {
+  const result = { categoryName: group.categoryName || "", monitors: [] as { name: string; uptime: number; status: number; group?: string }[] };
+  if (!group.url || !group.slug) return result;
+  const base = group.url.replace(/\/$/, "");
+  const timeout = AbortSignal.any ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : signal;
+  try {
+    const [statusRes, heartbeatRes] = await Promise.all([
+      fetch(`${base}/api/status-page/${group.slug}`, { signal: timeout }),
+      fetch(`${base}/api/status-page/heartbeat/${group.slug}`, { signal: timeout }),
+    ]);
+    if (!statusRes.ok || !heartbeatRes.ok) return result;
+    const statusData = (await statusRes.json()) as {
+      publicGroupList?: { id?: number; name?: string; monitorList?: { id?: number; name?: string }[] }[];
+    };
+    const heartbeatData = (await heartbeatRes.json()) as {
+      heartbeatList?: Record<string, { status?: number }[]>;
+      uptimeList?: Record<string, number>;
+    };
+    for (const pg of statusData.publicGroupList || []) {
+      for (const m of pg.monitorList || []) {
+        const monitor: { name: string; uptime: number; status: number; group?: string } = {
+          name: String(m.name || ""),
+          uptime: 0,
+          status: 0,
+        };
+        if (pg.name) monitor.group = pg.name;
+        const id = String(m.id ?? "");
+        const uptime = heartbeatData.uptimeList?.[id + "_24"];
+        if (uptime != null) monitor.uptime = Number(uptime);
+        const beats = heartbeatData.heartbeatList?.[id];
+        if (beats?.length) monitor.status = Number(beats[0].status || 0);
+        result.monitors.push(monitor);
+      }
+    }
+  } catch {
+    return result;
+  }
+  return result;
 }
 
 async function ollamaOp(c: C, action: "pull" | "delete"): Promise<Response> {
@@ -1450,26 +1640,20 @@ async function applyUpdates(c: C, all: boolean): Promise<Response> {
 
 async function publicTaskPlugin(store: Store, row: Record<string, unknown>): Promise<Record<string, unknown>> {
   const key = String(row.key || "");
-  const version = String(row.version || "1.0.0");
-  const status = String(row.status || "inactive");
-  const active = status === "active" || status === "enabled";
+  const extracted = extractPluginMeta(String(row.source || ""));
   const manifest = parseJson<Record<string, unknown>>(String(row.manifest || "{}"), {});
-  const icon = String(row.icon || "");
+  const enabled = row.enabled != null ? Boolean(Number(row.enabled) || row.enabled === true) : String(row.status || "") === "active";
+  const active = row.active != null ? Boolean(Number(row.active) || row.active === true) : enabled;
   const usage = await store.taskPluginUsage(key);
   return {
-    meta: {
-      key,
-      version: String(manifest.version || version),
-      api_version: String(manifest.api_version || "v1"),
-      name: String(manifest.name || row.name || key),
-    },
+    meta: taskPluginMetaView({ ...manifest, ...extracted }, { key, version: String(row.version || ""), name: String(row.name || "") }),
     source: "override",
-    enabled: active,
+    enabled,
     active,
     source_hash: String(row.source_hash || ""),
-    has_icon: Boolean(icon),
+    has_icon: Boolean(row.icon),
     remark: String(row.remark || ""),
-    runtime_status: active ? "registered" : "disabled",
+    runtime_status: enabled ? "registered" : "disabled",
     channel_count: usage.channel_count,
     in_flight_count: usage.in_flight_count,
   };
@@ -1479,13 +1663,58 @@ async function upsertPlugin(c: C): Promise<Response> {
   const s = store(c);
   const u = await requireRoot(c, s);
   if (isResponse(u)) return u;
-  const body = (await readJson(c.req)) as Record<string, unknown>;
-  const key = String(body.key || body.name || "");
-  if (!key) return apiFail("缺少 key");
+  const body = (await readJson(c.req)) as Record<string, unknown> & { source?: string; sourceSha256?: string; enabled?: boolean; remark?: string; icon?: string };
   const source = String(body.source || "");
-  const sourceHash = source ? bytesToHex(await sha256Bytes(source)) : String(body.source_hash || "");
-  await s.upsertTaskPlugin({ ...body, key, source, source_hash: sourceHash });
-  return apiOk({ key });
+  if (!source) return apiFail("Key: 'taskPluginUploadRequest.Source' Error:Field validation for 'Source' failed on the 'required' tag");
+  if (new TextEncoder().encode(source).length > 1024 * 1024) return apiFail("plugin source exceeds 1 MiB");
+  const sourceHash = bytesToHex(await sha256Bytes(source));
+  const expected = String(body.sourceSha256 || "").trim();
+  if (expected && expected.toLowerCase() !== sourceHash.toLowerCase()) return apiFail("plugin source sha256 mismatch");
+  const extracted = extractPluginMeta(source);
+  const meta = taskPluginMetaView(extracted, { key: String(body.key || extracted.key || ""), version: String(extracted.version || body.version || "1.0.0"), name: String(extracted.name || "") });
+  const key = String(meta.key || "");
+  if (!key) return apiFail("plugin meta key must match ^[a-z][a-z0-9_-]{0,29}$");
+  const enabled = body.enabled == null ? true : Boolean(body.enabled);
+  try {
+    const saved = await s.saveTaskPluginVersion({
+      key,
+      version: String(meta.version),
+      api_version: Number(meta.apiVersion || 1),
+      source,
+      source_hash: sourceHash,
+      icon: String(body.icon || ""),
+      enabled: enabled ? 1 : 0,
+      remark: String(body.remark || ""),
+      name: String(meta.name),
+      manifest: meta,
+    });
+    const existing = await s.getTaskPlugin(key);
+    await s.upsertTaskPlugin({
+      key,
+      name: meta.name,
+      version: meta.version,
+      status: enabled ? "active" : "inactive",
+      active_version: saved.active ? meta.version : String(existing?.active_version || existing?.version || meta.version),
+      icon: body.icon || "",
+      manifest: meta,
+      routes: meta.routes,
+      source,
+      source_hash: sourceHash,
+      remark: body.remark || "",
+      enabled: enabled ? 1 : 0,
+      active: saved.active ? 1 : 0,
+      api_version: meta.apiVersion,
+    });
+    return apiOk({
+      plugin: publicTaskPluginRecord({ ...saved, icon: undefined }),
+      meta,
+      source,
+      layer: "override",
+      has_icon: Boolean(body.icon),
+    });
+  } catch (e) {
+    return apiFail(e instanceof Error ? e.message : String(e));
+  }
 }
 
 async function waffoSave(c: C, kind: string): Promise<Response> {

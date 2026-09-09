@@ -1,6 +1,7 @@
 import {
   CHANNEL_AUTO_DISABLED,
   CHANNEL_ENABLED,
+  DEFAULT_GROUP_RATIO,
   DEFAULT_OPTIONS,
   LOG_CONSUME,
   TOKEN_ENABLED,
@@ -10,6 +11,7 @@ import {
   nowSec,
   parseJson,
 } from "./constants.js";
+import { OPTION_ALIASES } from "./option-defaults.js";
 import { capabilities, parsePermissionOverrides } from "./authz.js";
 import { pickAbilityChannelId } from "./select.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
@@ -18,6 +20,7 @@ import type {
   ChannelRow,
   D1Database,
   LogRow,
+  LoginSessionRow,
   RedemptionRow,
   TokenRow,
   UserRow,
@@ -51,9 +54,15 @@ export class Store {
   constructor(private db: D1Database) {}
 
   async option(key: string): Promise<string> {
-    const row = await this.db.prepare("SELECT value FROM options WHERE key = ?").bind(key).first<{ value: string }>();
-    if (row?.value != null) return row.value;
-    return DEFAULT_OPTIONS[key] ?? "";
+    const keys = [key, ...(OPTION_ALIASES[key] || [])];
+    for (const k of keys) {
+      const row = await this.db.prepare("SELECT value FROM options WHERE key = ?").bind(k).first<{ value: string }>();
+      if (row?.value != null) return row.value;
+    }
+    for (const k of keys) {
+      if (Object.prototype.hasOwnProperty.call(DEFAULT_OPTIONS, k)) return DEFAULT_OPTIONS[k];
+    }
+    return "";
   }
 
   async optionBool(key: string, fallback = false): Promise<boolean> {
@@ -584,21 +593,23 @@ export class Store {
     return results;
   }
 
-  async taskPluginUsage(key: string): Promise<{ channel_count: number; in_flight_count: number }> {
+  async taskPluginUsage(key: string): Promise<{ channel_count: number; in_flight_count: number; channels: { id: number; name: string }[] }> {
     const { results } = await this.db
-      .prepare("SELECT setting FROM channels WHERE type = 61 AND status = ?")
+      .prepare("SELECT id, name, setting FROM channels WHERE type = 61 AND status = ?")
       .bind(CHANNEL_ENABLED)
-      .all<{ setting: string }>();
-    let channel_count = 0;
+      .all<{ id: number; name: string; setting: string }>();
+    const channels: { id: number; name: string }[] = [];
     for (const ch of results) {
       const setting = parseJson<Record<string, unknown>>(ch.setting || "", {});
-      if (String(setting.task_plugin_key || setting.TaskPluginKey || "") === key) channel_count += 1;
+      if (String(setting.task_plugin_key || setting.TaskPluginKey || "") === key) {
+        channels.push({ id: Number(ch.id), name: String(ch.name || "") });
+      }
     }
     const inflight = await this.db
       .prepare("SELECT COUNT(*) as c FROM tasks WHERE platform = ? AND status NOT IN ('SUCCESS', 'FAILURE')")
       .bind(key)
       .first<{ c: number }>();
-    return { channel_count, in_flight_count: num(inflight?.c) };
+    return { channel_count: channels.length, in_flight_count: num(inflight?.c), channels };
   }
 
   async autoDisableChannel(id: number): Promise<void> {
@@ -988,7 +999,7 @@ export class Store {
   }
 
   async uniqueGroups(): Promise<string[]> {
-    const ratios = parseJson<Record<string, number>>(await this.option("GroupRatio"), { default: 1 });
+    const ratios = parseJson<Record<string, number>>(await this.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
     return Object.keys(ratios);
   }
 
@@ -1287,7 +1298,7 @@ export class Store {
   }
 
   async getSession(sid: string): Promise<import("./types.js").LoginSessionRow | null> {
-    return this.db.prepare("SELECT * FROM login_sessions WHERE sid = ?").bind(sid).first();
+    return this.db.prepare("SELECT * FROM login_sessions WHERE sid = ?").bind(sid).first<LoginSessionRow>();
   }
 
   async countActiveSessions(userId: number): Promise<number> {
@@ -1417,7 +1428,15 @@ export class Store {
     session_id?: string;
     consumed_at?: number;
   } | null> {
-    return this.db.prepare("SELECT * FROM auth_flows WHERE token = ?").bind(token).first();
+    return this.db.prepare("SELECT * FROM auth_flows WHERE token = ?").bind(token).first<{
+      token: string;
+      type: string;
+      user_id: number;
+      expires_at: number;
+      payload: string;
+      session_id?: string;
+      consumed_at?: number;
+    }>();
   }
 
   async consumeAuthFlow(
@@ -1559,7 +1578,7 @@ export class Store {
   }
 
   async getTopupByTrade(tradeNo: string): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM topups WHERE trade_no = ?").bind(tradeNo).first();
+    return this.db.prepare("SELECT * FROM topups WHERE trade_no = ?").bind(tradeNo).first<Record<string, unknown>>();
   }
 
   async updateTopup(id: number, patch: Record<string, unknown>): Promise<void> {
@@ -1571,6 +1590,72 @@ export class Store {
     }
     vals.push(id);
     await this.db.prepare(`UPDATE topups SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async upsertPerfMetric(row: {
+    model_name: string;
+    group: string;
+    bucket_ts: number;
+    request_count: number;
+    success_count: number;
+    total_latency_ms: number;
+    ttft_sum_ms: number;
+    ttft_count: number;
+    output_tokens: number;
+    generation_ms: number;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO perf_metrics (model_name, "group", bucket_ts, request_count, success_count, total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(model_name, "group", bucket_ts) DO UPDATE SET
+           request_count = request_count + excluded.request_count,
+           success_count = success_count + excluded.success_count,
+           total_latency_ms = total_latency_ms + excluded.total_latency_ms,
+           ttft_sum_ms = ttft_sum_ms + excluded.ttft_sum_ms,
+           ttft_count = ttft_count + excluded.ttft_count,
+           output_tokens = output_tokens + excluded.output_tokens,
+           generation_ms = generation_ms + excluded.generation_ms`,
+      )
+      .bind(
+        row.model_name,
+        row.group,
+        row.bucket_ts,
+        row.request_count,
+        row.success_count,
+        row.total_latency_ms,
+        row.ttft_sum_ms,
+        row.ttft_count,
+        row.output_tokens,
+        row.generation_ms,
+      )
+      .run();
+  }
+
+  async listPerfMetrics(modelName: string, group: string, start: number, end: number): Promise<Record<string, unknown>[]> {
+    const sql = group
+      ? `SELECT model_name, "group", bucket_ts, request_count, success_count, total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms
+         FROM perf_metrics WHERE model_name = ? AND "group" = ? AND bucket_ts >= ? AND bucket_ts <= ? ORDER BY bucket_ts ASC`
+      : `SELECT model_name, "group", bucket_ts, request_count, success_count, total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms
+         FROM perf_metrics WHERE model_name = ? AND bucket_ts >= ? AND bucket_ts <= ? ORDER BY bucket_ts ASC`;
+    const stmt = this.db.prepare(sql);
+    const { results } = group
+      ? await stmt.bind(modelName, group, start, end).all<Record<string, unknown>>()
+      : await stmt.bind(modelName, start, end).all<Record<string, unknown>>();
+    return results;
+  }
+
+  async listPerfMetricBuckets(start: number, end: number, groups: string[]): Promise<Record<string, unknown>[]> {
+    if (!groups.length) return [];
+    const ph = groups.map(() => "?").join(",");
+    const { results } = await this.db
+      .prepare(
+        `SELECT model_name, "group", bucket_ts, request_count, success_count, total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms
+         FROM perf_metrics WHERE bucket_ts >= ? AND bucket_ts <= ? AND "group" IN (${ph}) ORDER BY bucket_ts ASC`,
+      )
+      .bind(start, end, ...groups)
+      .all<Record<string, unknown>>();
+    return results;
   }
 
   async rankings(start: number, end: number, limit = 50): Promise<{ model_name: string; token_used: number; quota: number }[]> {
@@ -1585,6 +1670,46 @@ export class Store {
     return results;
   }
 
+  async rankingTotals(start: number, end: number): Promise<{ model_name: string; total_tokens: number }[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT model_name, SUM(token_used) as total_tokens
+         FROM quota_data WHERE model_name <> '' AND created_at >= ? AND created_at <= ?
+         GROUP BY model_name HAVING SUM(token_used) > 0 ORDER BY total_tokens DESC`,
+      )
+      .bind(start, end)
+      .all<{ model_name: string; total_tokens: number }>();
+    return results;
+  }
+
+  async rankingBuckets(start: number, end: number, bucketSize: number): Promise<{ model_name: string; bucket: number; tokens: number }[]> {
+    const size = bucketSize > 0 ? bucketSize : 3600;
+    const { results } = await this.db
+      .prepare(
+        `SELECT model_name, (created_at / ?) * ? as bucket, SUM(token_used) as tokens
+         FROM quota_data WHERE model_name <> '' AND created_at >= ? AND created_at <= ?
+         GROUP BY model_name, (created_at / ?) * ?
+         HAVING SUM(token_used) > 0 ORDER BY bucket ASC`,
+      )
+      .bind(size, size, start, end, size, size)
+      .all<{ model_name: string; bucket: number; tokens: number }>();
+    return results;
+  }
+
+  async rankingModelMeta(): Promise<Record<string, { vendor: string; vendor_icon: string }>> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT m.model_name as model_name, COALESCE(v.name, '') as vendor, COALESCE(v.icon, '') as vendor_icon
+         FROM model_meta m LEFT JOIN vendors v ON v.id = m.vendor_id`,
+      )
+      .all<{ model_name: string; vendor: string; vendor_icon: string }>();
+    const out: Record<string, { vendor: string; vendor_icon: string }> = {};
+    for (const row of results) {
+      out[String(row.model_name)] = { vendor: String(row.vendor || "Unknown"), vendor_icon: String(row.vendor_icon || "") };
+    }
+    return out;
+  }
+
   async listPlans(enabledOnly = false): Promise<Record<string, unknown>[]> {
     const sql = enabledOnly
       ? "SELECT * FROM subscription_plans WHERE enabled = 1 ORDER BY sort_order DESC, id DESC"
@@ -1594,7 +1719,7 @@ export class Store {
   }
 
   async getPlan(id: number): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM subscription_plans WHERE id = ?").bind(id).first();
+    return this.db.prepare("SELECT * FROM subscription_plans WHERE id = ?").bind(id).first<Record<string, unknown>>();
   }
 
   async insertPlan(p: Record<string, unknown>): Promise<number> {
@@ -1812,7 +1937,7 @@ export class Store {
   }
 
   async getTaskByTid(taskId: string): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM tasks WHERE task_id = ?").bind(taskId).first();
+    return this.db.prepare("SELECT * FROM tasks WHERE task_id = ?").bind(taskId).first<Record<string, unknown>>();
   }
 
   async updateTaskByTid(taskId: string, patch: Record<string, unknown>): Promise<void> {
@@ -1850,7 +1975,7 @@ export class Store {
   }
 
   async getConversation(id: number, userId: number): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM conversations WHERE id = ? AND user_id = ?").bind(id, userId).first();
+    return this.db.prepare("SELECT * FROM conversations WHERE id = ? AND user_id = ?").bind(id, userId).first<Record<string, unknown>>();
   }
 
   async insertConversation(userId: number, title: string, model: string): Promise<number> {
@@ -1900,13 +2025,14 @@ export class Store {
   }
 
   async getVendor(id: number): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM vendors WHERE id = ?").bind(id).first();
+    return this.db.prepare("SELECT * FROM vendors WHERE id = ?").bind(id).first<Record<string, unknown>>();
   }
 
   async insertVendor(name: string, description = "", icon = ""): Promise<number> {
+    const t = nowSec();
     const r = await this.db
-      .prepare("INSERT INTO vendors (name, description, icon, created_at) VALUES (?, ?, ?, ?)")
-      .bind(name, description, icon, nowSec())
+      .prepare("INSERT INTO vendors (name, description, icon, status, created_at, created_time, updated_time) VALUES (?, ?, ?, 1, ?, ?, ?)")
+      .bind(name, description, icon, t, t, t)
       .run();
     return Number(r.meta.last_row_id || 0);
   }
@@ -1926,15 +2052,20 @@ export class Store {
     await this.db.prepare("DELETE FROM vendors WHERE id = ?").bind(id).run();
   }
 
-  async listPrefill(): Promise<unknown[]> {
+  async listPrefill(type = ""): Promise<unknown[]> {
+    if (type) {
+      const { results } = await this.db.prepare("SELECT * FROM prefill_groups WHERE type = ? ORDER BY id").bind(type).all();
+      return results;
+    }
     const { results } = await this.db.prepare("SELECT * FROM prefill_groups ORDER BY id").all();
     return results;
   }
 
-  async insertPrefill(name: string, type: string, items: string): Promise<number> {
+  async insertPrefill(name: string, type: string, items: string, description = ""): Promise<number> {
+    const t = nowSec();
     const r = await this.db
-      .prepare("INSERT INTO prefill_groups (name, type, items, created_at) VALUES (?, ?, ?, ?)")
-      .bind(name, type, items, nowSec())
+      .prepare("INSERT INTO prefill_groups (name, type, items, description, created_at, created_time, updated_time) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .bind(name, type, items, description, t, t, t)
       .run();
     return Number(r.meta.last_row_id || 0);
   }
@@ -1961,9 +2092,9 @@ export class Store {
 
   async getOAuthProvider(idOrSlug: string | number): Promise<Record<string, unknown> | null> {
     if (typeof idOrSlug === "number" || /^\d+$/.test(String(idOrSlug))) {
-      return this.db.prepare("SELECT * FROM oauth_providers WHERE id = ?").bind(Number(idOrSlug)).first();
+      return this.db.prepare("SELECT * FROM oauth_providers WHERE id = ?").bind(Number(idOrSlug)).first<Record<string, unknown>>();
     }
-    return this.db.prepare("SELECT * FROM oauth_providers WHERE slug = ?").bind(String(idOrSlug)).first();
+    return this.db.prepare("SELECT * FROM oauth_providers WHERE slug = ?").bind(String(idOrSlug)).first<Record<string, unknown>>();
   }
 
   async insertOAuthProvider(p: Record<string, unknown>): Promise<number> {
@@ -2018,7 +2149,7 @@ export class Store {
     public_key: string;
     last_used_at?: number;
   } | null> {
-    return this.db.prepare("SELECT * FROM passkeys WHERE credential_id = ?").bind(credentialId).first();
+    return this.db.prepare("SELECT * FROM passkeys WHERE credential_id = ?").bind(credentialId).first<{ id: number; user_id: number; credential_id: string; public_key: string; last_used_at?: number }>();
   }
 
   async insertPasskey(userId: number, credentialId: string, publicKey: string, name = ""): Promise<number> {
@@ -2061,7 +2192,7 @@ export class Store {
     return this.db
       .prepare("SELECT provider_user_id FROM user_oauth_bindings WHERE user_id = ? AND provider_id = ?")
       .bind(userId, providerId)
-      .first();
+      .first<{ provider_user_id: string }>();
   }
 
   async getUserByOAuthBinding(providerId: number, providerUserId: string): Promise<UserRow | null> {
@@ -2132,7 +2263,7 @@ export class Store {
   }
 
   async getModelMeta(id: number): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM model_meta WHERE id = ?").bind(id).first();
+    return this.db.prepare("SELECT * FROM model_meta WHERE id = ?").bind(id).first<Record<string, unknown>>();
   }
 
   async searchModelMeta(keyword: string): Promise<unknown[]> {
@@ -2156,46 +2287,200 @@ export class Store {
   }
 
   async getTaskPlugin(key: string): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM task_plugins WHERE key = ?").bind(key).first();
+    return this.db.prepare("SELECT * FROM task_plugins WHERE key = ?").bind(key).first<Record<string, unknown>>();
   }
 
   async upsertTaskPlugin(p: Record<string, unknown>): Promise<void> {
+    const enabled = p.enabled == null ? 1 : Number(p.enabled) ? 1 : 0;
+    const active = p.active == null ? (String(p.status || "") === "active" ? 1 : 0) : Number(p.active) ? 1 : 0;
     await this.db
       .prepare(
-        `INSERT INTO task_plugins (key, name, version, status, active_version, icon, manifest, routes, source, source_hash, remark, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO task_plugins (key, name, version, status, active_version, icon, manifest, routes, source, source_hash, remark, enabled, active, api_version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET name=excluded.name, version=excluded.version, status=excluded.status,
            active_version=excluded.active_version, icon=excluded.icon, manifest=excluded.manifest, routes=excluded.routes,
-           source=excluded.source, source_hash=excluded.source_hash, remark=excluded.remark, updated_at=excluded.updated_at`,
+           source=excluded.source, source_hash=excluded.source_hash, remark=excluded.remark, enabled=excluded.enabled,
+           active=excluded.active, api_version=excluded.api_version, updated_at=excluded.updated_at`,
       )
       .bind(
         String(p.key),
         String(p.name || p.key),
         String(p.version || "1.0.0"),
-        String(p.status || "inactive"),
-        String(p.active_version || p.version || "1.0.0"),
+        String(p.status || (enabled ? "active" : "inactive")),
+        String(p.active_version != null && String(p.active_version) !== "" ? p.active_version : p.version || "1.0.0"),
         String(p.icon || ""),
         typeof p.manifest === "string" ? p.manifest : JSON.stringify(p.manifest || {}),
         typeof p.routes === "string" ? p.routes : JSON.stringify(p.routes || []),
         String(p.source || ""),
         String(p.source_hash || ""),
         String(p.remark || ""),
+        enabled,
+        active,
+        Number(p.api_version || 1),
         nowSec(),
         nowSec(),
       )
       .run();
   }
 
+  async listTaskPluginVersions(key: string): Promise<Record<string, unknown>[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM task_plugin_versions WHERE key = ? ORDER BY created_at DESC, id DESC")
+      .bind(key)
+      .all();
+    if (results.length) return results as Record<string, unknown>[];
+    const current = await this.getTaskPlugin(key);
+    return current ? [current] : [];
+  }
+
+  async getTaskPluginVersion(key: string, version = ""): Promise<Record<string, unknown> | null> {
+    if (version) {
+      const row = await this.db
+        .prepare("SELECT * FROM task_plugin_versions WHERE key = ? AND version = ?")
+        .bind(key, version)
+        .first<Record<string, unknown>>();
+      if (row) return row;
+      const current = await this.getTaskPlugin(key);
+      if (current && String(current.version) === version) return current;
+      return null;
+    }
+    const active = await this.db
+      .prepare("SELECT * FROM task_plugin_versions WHERE key = ? AND active = 1 ORDER BY id DESC LIMIT 1")
+      .bind(key)
+      .first<Record<string, unknown>>();
+    if (active) return active;
+    return this.getTaskPlugin(key);
+  }
+
+  async saveTaskPluginVersion(p: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const key = String(p.key);
+    const version = String(p.version || "1.0.0");
+    const existing = await this.db
+      .prepare("SELECT * FROM task_plugin_versions WHERE key = ? AND version = ?")
+      .bind(key, version)
+      .first<Record<string, unknown>>();
+    const sourceHash = String(p.source_hash || "");
+    if (existing && String(existing.source_hash || "") && String(existing.source_hash) !== sourceHash) {
+      throw new Error("plugin key and version already exist with different source");
+    }
+    const others = await this.db
+      .prepare("SELECT COUNT(*) as c FROM task_plugin_versions WHERE key = ? AND active = 1")
+      .bind(key)
+      .first<{ c: number }>();
+    const active = existing ? Number(existing.active || 0) : Number(others?.c || 0) === 0 ? 1 : 0;
+    const enabled = p.enabled == null ? 1 : Number(p.enabled) ? 1 : 0;
+    if (existing) {
+      await this.db
+        .prepare("UPDATE task_plugin_versions SET enabled = ?, remark = ?, icon = CASE WHEN ? = '' THEN icon ELSE ? END WHERE key = ? AND version = ?")
+        .bind(enabled, String(p.remark || ""), String(p.icon || ""), String(p.icon || ""), key, version)
+        .run();
+      return (await this.getTaskPluginVersion(key, version)) || existing;
+    }
+    const r = await this.db
+      .prepare(
+        `INSERT INTO task_plugin_versions (key, api_version, version, source, source_hash, icon, enabled, active, created_at, remark)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        key,
+        Number(p.api_version || 1),
+        version,
+        String(p.source || ""),
+        sourceHash,
+        String(p.icon || ""),
+        enabled,
+        active,
+        nowSec(),
+        String(p.remark || ""),
+      )
+      .run();
+    return {
+      id: Number(r.meta.last_row_id || 0),
+      key,
+      api_version: Number(p.api_version || 1),
+      version,
+      source: String(p.source || ""),
+      source_hash: sourceHash,
+      enabled: Boolean(enabled),
+      active: Boolean(active),
+      created_at: nowSec(),
+      remark: String(p.remark || ""),
+    };
+  }
+
+  async activateTaskPluginVersion(key: string, version: string): Promise<boolean> {
+    const target = await this.getTaskPluginVersion(key, version);
+    if (!target) return false;
+    await this.db.prepare("UPDATE task_plugin_versions SET active = 0 WHERE key = ?").bind(key).run();
+    await this.db.prepare("UPDATE task_plugin_versions SET active = 1 WHERE key = ? AND version = ?").bind(key, version).run();
+    await this.upsertTaskPlugin({
+      ...target,
+      key,
+      version,
+      active_version: version,
+      status: Number(target.enabled) ? "active" : "inactive",
+      active: 1,
+      enabled: Number(target.enabled ?? 1),
+    });
+    return true;
+  }
+
+  async setTaskPluginEnabled(key: string, enabled: boolean): Promise<void> {
+    await this.db.prepare("UPDATE task_plugin_versions SET enabled = ? WHERE key = ? AND active = 1").bind(enabled ? 1 : 0, key).run();
+    const p = await this.getTaskPlugin(key);
+    if (p) {
+      await this.upsertTaskPlugin({
+        ...p,
+        enabled: enabled ? 1 : 0,
+        status: enabled ? "active" : "inactive",
+        active: enabled ? 1 : 0,
+      });
+    }
+  }
+
+  async deleteTaskPluginVersion(key: string, version: string): Promise<boolean> {
+    const r = await this.db.prepare("DELETE FROM task_plugin_versions WHERE key = ? AND version = ?").bind(key, version).run();
+    const left = await this.db.prepare("SELECT COUNT(*) as c FROM task_plugin_versions WHERE key = ?").bind(key).first<{ c: number }>();
+    if (!Number(left?.c || 0)) await this.deleteTaskPlugin(key);
+    return Number(r.meta.changes || 0) > 0;
+  }
+
   async deleteTaskPlugin(key: string): Promise<void> {
+    await this.db.prepare("DELETE FROM task_plugin_versions WHERE key = ?").bind(key).run();
     await this.db.prepare("DELETE FROM task_plugins WHERE key = ?").bind(key).run();
   }
 
-  async insertSystemTask(row: { id: string; type: string; status?: string; progress?: string; result?: string }): Promise<void> {
+  async insertSystemTask(row: {
+    id: string;
+    type: string;
+    status?: string;
+    progress?: string;
+    result?: string;
+    payload?: unknown;
+    state?: unknown;
+    error?: string;
+    locked_by?: string;
+  }): Promise<void> {
+    const payload = typeof row.payload === "string" ? row.payload : JSON.stringify(row.payload ?? null);
+    const state = typeof row.state === "string" ? row.state : JSON.stringify(row.state ?? null);
+    const result = typeof row.result === "string" ? row.result : JSON.stringify(row.result ?? null);
     await this.db
       .prepare(
-        "INSERT INTO system_tasks (id, type, status, progress, result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO system_tasks (id, type, status, progress, result, payload, state, error, locked_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .bind(row.id, row.type, row.status || "running", row.progress ?? "", row.result ?? "", nowSec(), nowSec())
+      .bind(
+        row.id,
+        row.type,
+        row.status || "pending",
+        row.progress ?? "",
+        result,
+        payload,
+        state,
+        row.error ?? "",
+        row.locked_by ?? "",
+        nowSec(),
+        nowSec(),
+      )
       .run();
   }
 
@@ -2210,17 +2495,36 @@ export class Store {
     await this.db.prepare(`UPDATE system_tasks SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
   }
 
-  async listSystemTasks(): Promise<unknown[]> {
-    const { results } = await this.db.prepare("SELECT * FROM system_tasks ORDER BY created_at DESC").all();
-    return results;
+  async listSystemTasks(limit = 20): Promise<Record<string, unknown>[]> {
+    const n = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 20;
+    const { results } = await this.db
+      .prepare("SELECT rowid, * FROM system_tasks ORDER BY created_at DESC LIMIT ?")
+      .bind(n)
+      .all();
+    return results as Record<string, unknown>[];
   }
 
   async getSystemTask(id: string): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM system_tasks WHERE id = ?").bind(id).first();
+    return this.db.prepare("SELECT rowid, * FROM system_tasks WHERE id = ?").bind(id).first<Record<string, unknown>>();
   }
 
-  async currentSystemTask(): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM system_tasks WHERE status = 'running' ORDER BY created_at DESC LIMIT 1").first();
+  async currentSystemTask(type = ""): Promise<Record<string, unknown> | null> {
+    if (type) {
+      return this.db
+        .prepare("SELECT rowid, * FROM system_tasks WHERE type = ? AND status IN ('pending', 'running') ORDER BY created_at DESC LIMIT 1")
+        .bind(type)
+        .first<Record<string, unknown>>();
+    }
+    return this.db.prepare("SELECT rowid, * FROM system_tasks WHERE status IN ('pending', 'running') ORDER BY created_at DESC LIMIT 1").first<Record<string, unknown>>();
+  }
+
+  async prefillNameTaken(name: string, exceptId = 0): Promise<boolean> {
+    const row = await this.db.prepare("SELECT id FROM prefill_groups WHERE name = ? AND id <> ?").bind(name, exceptId).first();
+    return Boolean(row);
+  }
+
+  async getPrefill(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM prefill_groups WHERE id = ?").bind(id).first<Record<string, unknown>>();
   }
 
   async listDeployments(): Promise<unknown[]> {
@@ -2229,7 +2533,7 @@ export class Store {
   }
 
   async getDeployment(id: number): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM deployments WHERE id = ?").bind(id).first();
+    return this.db.prepare("SELECT * FROM deployments WHERE id = ?").bind(id).first<Record<string, unknown>>();
   }
 
   async insertDeployment(p: Record<string, unknown>): Promise<number> {

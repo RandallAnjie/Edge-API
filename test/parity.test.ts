@@ -240,7 +240,10 @@ test("system-info, task plugin upsert, original token usage, sessions view", asy
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ key: "demo", name: "Demo", version: "1.0.0", status: "active", routes: [] }),
+      body: JSON.stringify({
+        source:
+          'const meta = { apiVersion: 1, key: "demo", name: "Demo", version: "1.0.0", author: { name: "test" }, models: ["demo"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" } };',
+      }),
     }),
     e,
   );
@@ -530,6 +533,14 @@ test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, Lis
   assert.equal(typeof aff.body.data, "string");
   assert.ok(aff.body.data.length > 0);
 
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "checkin_setting.enabled", value: "true" }),
+    }),
+    e,
+  );
   const ck = await json(new Request("http://local/api/user/checkin", { headers: auth }), e);
   assert.equal(ck.body.data.enabled, true);
   assert.equal(typeof ck.body.data.min_quota, "number");
@@ -548,6 +559,10 @@ test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, Lis
   assert.ok(keys.includes("CompletionRatioMeta"));
   assert.ok(keys.includes("billing_setting.billing_mode"));
   assert.ok(keys.includes("billing_setting.billing_expr"));
+  assert.ok(keys.includes("console_setting.uptime_kuma_enabled"));
+  assert.ok(keys.includes("passkey.enabled"));
+  assert.ok(keys.includes("checkin_setting.enabled"));
+  assert.ok(keys.includes("channel_affinity_setting.rules"));
   assert.ok(!keys.some((k) => k.endsWith("Secret") || k.endsWith("Token")));
 
   const logSlash = await json(new Request("http://local/api/log/", { headers: auth }), e);
@@ -604,7 +619,7 @@ test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, Lis
   const rt = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
   assert.equal(typeof rt.body.data.current_generation, "number");
   assert.ok(rt.body.data.last_rebuild);
-  assert.equal(typeof rt.body.data.last_rebuild.error, "string");
+  assert.equal(rt.body.data.last_rebuild.status, "never");
   assert.ok("plugin_errors" in rt.body.data);
 
   await json(

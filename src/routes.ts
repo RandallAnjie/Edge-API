@@ -41,11 +41,12 @@ import {
   sessionResponse,
 } from "./auth.js";
 import { Store, publicUser, stripChannelKey } from "./store.js";
-import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, dashboardListModels, channelListModels, publicOptions } from "./dto.js";
+import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, dashboardListModels, channelListModels, publicOptions, publicQuotaData, manageUserView } from "./dto.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
 import { requirePaymentCompliance } from "./payments.js";
+import { notifyAccountSecurityChange } from "./mail.js";
 import type { Env, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -285,6 +286,7 @@ export function adminRouter(): Router<Env> {
       const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "password_changed", u.sid);
       if (issued instanceof Response) return issued;
       issued.data.has_password = true;
+      issued.data.notification_warning = await notifyAccountSecurityChange(s, user.email || "", "Password updated");
       return sessionResponse(issued);
     }
     await s.updateUser(u.id, patch);
@@ -335,14 +337,14 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const enabled = await s.optionBool("CheckinEnabled", true);
+    const enabled = await s.optionBool("checkin_setting.enabled", false);
     if (!enabled) return apiFail("签到功能未启用");
     const month = c.url.searchParams.get("month") || new Date().toISOString().slice(0, 7);
     const stats = await s.checkinStats(u.id, month);
     return apiOk({
       enabled: true,
-      min_quota: await s.optionNum("CheckinMinQuota", 1000),
-      max_quota: await s.optionNum("CheckinMaxQuota", await s.optionNum("CheckinQuota", 5000)),
+      min_quota: await s.optionNum("checkin_setting.min_quota", 1000),
+      max_quota: await s.optionNum("checkin_setting.max_quota", 10000),
       stats,
     });
   });
@@ -351,13 +353,13 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    if (!(await s.optionBool("CheckinEnabled", true))) return apiFail("签到功能未启用");
+    if (!(await s.optionBool("checkin_setting.enabled", false))) return apiFail("签到功能未启用");
     const user = await s.getUserById(u.id);
     if (!user) return apiFail("用户不存在");
     const today = new Date().toISOString().slice(0, 10);
     if (await s.hasCheckedIn(u.id, today)) return apiFail("今日已签到");
-    const minQ = await s.optionNum("CheckinMinQuota", 1000);
-    const maxQ = await s.optionNum("CheckinMaxQuota", await s.optionNum("CheckinQuota", 5000));
+    const minQ = await s.optionNum("checkin_setting.min_quota", 1000);
+    const maxQ = await s.optionNum("checkin_setting.max_quota", 10000);
     const quota = minQ + (maxQ > minQ ? Math.floor(Math.random() * (maxQ - minQ + 1)) : 0);
     await s.insertCheckin(u.id, today, quota);
     await s.addQuota(u.id, quota);
@@ -470,40 +472,51 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { id?: number; action?: string; quota?: number };
+    const body = (await readJson(c.req)) as { id?: number; action?: string; quota?: number; value?: number; mode?: string };
     if (!body.id || !body.action) return apiFail("无效的参数");
     const target = await s.getUserById(body.id);
     if (!target) return apiFail("用户不存在");
     if (target.role >= u.role && target.id !== u.id) return apiFail("无权操作更高等级用户");
+    if (body.action === "add_quota") {
+      const mode = body.mode || "add";
+      const value = Number(body.value ?? body.quota ?? 0);
+      if (mode !== "add" && mode !== "subtract" && mode !== "override") return apiFail("无效的参数");
+      if (mode !== "override" && value <= 0) return apiFail("额度变更量不能为0");
+      if (u.role !== ROLE_ROOT && u.role <= target.role) return apiFail("无权操作更高等级用户");
+      if (mode === "override") await s.updateUser(target.id, { quota: value });
+      else await s.addQuota(target.id, mode === "subtract" ? -value : value);
+      await s.audit(u.id, u.username, "user.manage", `${body.action} user ${target.username}`, clientIp(c.req));
+      return apiOk(null);
+    }
     switch (body.action) {
       case "disable":
-        if (target.role === ROLE_ROOT) return apiFail("无法禁用超级管理员");
+        if (target.role === ROLE_ROOT) return apiFail("无法禁用超级管理员用户");
         await s.updateUser(target.id, { status: USER_DISABLED });
         break;
       case "enable":
         await s.updateUser(target.id, { status: USER_ENABLED });
         break;
       case "delete":
-        if (target.role === ROLE_ROOT) return apiFail("无法删除超级管理员");
+        if (target.role === ROLE_ROOT) return apiFail("不能删除超级管理员账户");
         await s.deleteUser(target.id);
-        break;
+        await s.audit(u.id, u.username, "user.manage", `${body.action} user ${target.username}`, clientIp(c.req));
+        return apiOk(null);
       case "promote":
-        if (u.role < ROLE_ROOT) return apiFail("只有超级管理员可以提升管理员");
-        if (target.role >= ROLE_ADMIN) return apiFail("已经是管理员");
+        if (u.role < ROLE_ROOT) return apiFail("普通管理员用户无法提升其他用户为管理员");
+        if (target.role >= ROLE_ADMIN) return apiFail("该用户已经是管理员");
         await s.updateUser(target.id, { role: ROLE_ADMIN });
         break;
       case "demote":
-        if (target.role === ROLE_ROOT) return apiFail("无法降级超级管理员");
+        if (target.role === ROLE_ROOT) return apiFail("无法降级超级管理员用户");
+        if (target.role === ROLE_USER) return apiFail("该用户已经是普通用户");
         await s.updateUser(target.id, { role: ROLE_USER });
         break;
-      case "add_quota":
-        await s.addQuota(target.id, Number(body.quota || 0));
-        break;
       default:
-        return apiFail("未知操作");
+        return apiFail("无效的参数");
     }
     await s.audit(u.id, u.username, "user.manage", `${body.action} user ${target.username}`, clientIp(c.req));
-    return apiOk(null);
+    const fresh = await s.getUserById(target.id);
+    return apiOk(manageUserView(fresh?.role ?? target.role, fresh?.status ?? target.status));
   });
 
   r.delete("/api/user/:id", async (c) => {
@@ -512,7 +525,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const target = await s.getUserById(Number(c.params.id));
     if (!target) return apiFail("用户不存在");
-    if (target.role === ROLE_ROOT) return apiFail("无法删除超级管理员");
+    if (target.role === ROLE_ROOT) return apiFail("不能删除超级管理员账户");
     await s.deleteUser(target.id);
     return apiOk(null);
   });
@@ -971,7 +984,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const start = parseUnixQuery(c.url, "start_timestamp");
     const end = parseUnixQuery(c.url, "end_timestamp");
-    return apiOk(await s.quotaDates(null, start, end, c.url.searchParams.get("username") || ""));
+    return apiOk((await s.quotaDates(null, start, end, c.url.searchParams.get("username") || "")).map((row) => publicQuotaData(row as Record<string, unknown>)));
   });
 
   r.get("/api/data/self", async (c) => {
@@ -981,7 +994,7 @@ export function adminRouter(): Router<Env> {
     const start = parseUnixQuery(c.url, "start_timestamp");
     const end = parseUnixQuery(c.url, "end_timestamp");
     if (end - start > 2592000) return apiFail("时间跨度不能超过 1 个月");
-    return apiOk(await s.quotaDates(u.id, start, end));
+    return apiOk((await s.quotaDates(u.id, start, end)).map((row) => publicQuotaData(row as Record<string, unknown>)));
   });
 
   r.slash("GET", "/api/group/", async (c) => {
@@ -1193,12 +1206,20 @@ export function adminRouter(): Router<Env> {
   return r;
 }
 
+async function quotaDisplayAmount(s: Store, quota: number): Promise<number> {
+  const display = (await s.option("general_setting.quota_display_type")) || "USD";
+  if (display === "TOKENS") return quota;
+  const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
+  const usd = quota / quotaPerUnit;
+  if (display === "CNY") return usd * (await s.optionNum("USDExchangeRate", 1));
+  return usd;
+}
+
 async function billingSub(c: C): Promise<Response> {
   const s = store(c);
   const { authenticateApiToken } = await import("./auth.js");
   const auth = await authenticateApiToken(c, s);
   if (auth instanceof Response) return auth;
-  const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
   const tokenStat = await s.optionBool("DisplayTokenStatEnabled", true);
   let remain = auth.user.quota;
   let used = auth.user.used_quota;
@@ -1207,9 +1228,8 @@ async function billingSub(c: C): Promise<Response> {
     remain = auth.token.remain_quota;
     used = auth.token.used_quota;
   }
-  let amount: number = remain + used;
+  let amount = await quotaDisplayAmount(s, remain + used);
   if (auth.token.unlimited_quota) amount = 100000000;
-  else amount = amount / quotaPerUnit;
   return new Response(
     JSON.stringify({
       object: "billing_subscription",
@@ -1228,13 +1248,13 @@ async function billingUsage(c: C): Promise<Response> {
   const { authenticateApiToken } = await import("./auth.js");
   const auth = await authenticateApiToken(c, s);
   if (auth instanceof Response) return auth;
-  const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
   const tokenStat = await s.optionBool("DisplayTokenStatEnabled", true);
   const quota = tokenStat ? auth.token.used_quota : auth.user.used_quota;
+  const amount = await quotaDisplayAmount(s, quota);
   return new Response(
     JSON.stringify({
       object: "list",
-      total_usage: (quota / quotaPerUnit) * 100,
+      total_usage: amount * 100,
     }),
     { headers: { "content-type": "application/json" } },
   );

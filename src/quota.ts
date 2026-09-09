@@ -1,4 +1,4 @@
-import { parseJson } from "./constants.js";
+import { DEFAULT_GROUP_RATIO, parseJson } from "./constants.js";
 import type { Store } from "./store.js";
 
 export async function quotaRatios(
@@ -8,7 +8,7 @@ export async function quotaRatios(
 ): Promise<{ modelRatio: number; completionRatio: number; groupRatio: number }> {
   const modelRatio = parseJson<Record<string, number>>(await store.option("ModelRatio"), {});
   const completionRatio = parseJson<Record<string, number>>(await store.option("CompletionRatio"), {});
-  const groupRatio = parseJson<Record<string, number>>(await store.option("GroupRatio"), { default: 1 });
+  const groupRatio = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
   return {
     modelRatio: modelRatio[model] ?? 1,
     completionRatio: completionRatio[model] ?? 1,

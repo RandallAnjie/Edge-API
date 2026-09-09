@@ -2,6 +2,7 @@ import { generateAffCode, generateTokenKey } from "./crypto.js";
 import { hmacSha256Hex, sha256Bytes, timingSafeEqualStr } from "./crypto.js";
 import { nowSec, randomHex } from "./constants.js";
 import { apiFail, apiOk, json } from "./http.js";
+import { notifyAccountSecurityChange } from "./mail.js";
 import { issueSessionSafe, sessionResponse } from "./auth.js";
 import type { Store } from "./store.js";
 import type { Env, UserRow } from "./types.js";
@@ -203,7 +204,8 @@ export async function loginOrBindOAuth(
       if (taken && taken.id !== existingUser.id) return apiFail("该 OAuth 账号已被绑定");
       await store.updateUser(existingUser.id, { [profile.field]: profile.id });
     }
-    return apiOk({ action: "bind", notification_warning: false });
+    const notification_warning = await notifyAccountSecurityChange(store, existingUser.email || "", "OAuth account linked");
+    return apiOk({ action: "bind", notification_warning });
   }
   let user: UserRow | null = null;
   if (profile.provider_id) {

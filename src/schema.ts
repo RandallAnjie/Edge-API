@@ -355,14 +355,20 @@ CREATE TABLE IF NOT EXISTS vendors (
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   icon TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL DEFAULT 0
+  status INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  created_time INTEGER NOT NULL DEFAULT 0,
+  updated_time INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS prefill_groups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL DEFAULT '',
   type TEXT NOT NULL DEFAULT '',
   items TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL DEFAULT 0
+  description TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  created_time INTEGER NOT NULL DEFAULT 0,
+  updated_time INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS oauth_providers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -423,8 +429,25 @@ CREATE TABLE IF NOT EXISTS task_plugins (
   source TEXT NOT NULL DEFAULT '',
   source_hash TEXT NOT NULL DEFAULT '',
   remark TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  active INTEGER NOT NULL DEFAULT 0,
+  api_version INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS task_plugin_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key TEXT NOT NULL,
+  api_version INTEGER NOT NULL DEFAULT 1,
+  version TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT '',
+  source_hash TEXT NOT NULL DEFAULT '',
+  icon TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  active INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  remark TEXT NOT NULL DEFAULT '',
+  UNIQUE(key, version)
 );
 CREATE TABLE IF NOT EXISTS system_tasks (
   id TEXT PRIMARY KEY,
@@ -432,6 +455,10 @@ CREATE TABLE IF NOT EXISTS system_tasks (
   status TEXT NOT NULL DEFAULT 'pending',
   progress TEXT NOT NULL DEFAULT '',
   result TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  locked_by TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
 );
@@ -445,6 +472,20 @@ CREATE TABLE IF NOT EXISTS deployments (
   replicas INTEGER NOT NULL DEFAULT 1,
   extra TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS perf_metrics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  model_name TEXT NOT NULL,
+  "group" TEXT NOT NULL DEFAULT '',
+  bucket_ts INTEGER NOT NULL,
+  request_count INTEGER NOT NULL DEFAULT 0,
+  success_count INTEGER NOT NULL DEFAULT 0,
+  total_latency_ms INTEGER NOT NULL DEFAULT 0,
+  ttft_sum_ms INTEGER NOT NULL DEFAULT 0,
+  ttft_count INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  generation_ms INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(model_name, "group", bucket_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_key ON api_tokens(key);
@@ -463,6 +504,7 @@ CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id);
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_topups_user ON topups(user_id);
 CREATE INDEX IF NOT EXISTS idx_email_codes ON email_codes(email, type);
+CREATE INDEX IF NOT EXISTS idx_perf_bucket_ts ON perf_metrics(bucket_ts);
 `;
 
 const USER_ALTERS = [
@@ -565,6 +607,19 @@ const USER_ALTERS = [
   "ALTER TABLE redemptions ADD COLUMN expired_time INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE topups ADD COLUMN payment_provider TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE topups ADD COLUMN complete_time INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE vendors ADD COLUMN status INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE vendors ADD COLUMN created_time INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE vendors ADD COLUMN updated_time INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE prefill_groups ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE prefill_groups ADD COLUMN created_time INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE prefill_groups ADD COLUMN updated_time INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE task_plugins ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE task_plugins ADD COLUMN active INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE task_plugins ADD COLUMN api_version INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE system_tasks ADD COLUMN payload TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE system_tasks ADD COLUMN state TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE system_tasks ADD COLUMN error TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE system_tasks ADD COLUMN locked_by TEXT NOT NULL DEFAULT ''",
 ];
 
 import type { D1Database } from "./types.js";

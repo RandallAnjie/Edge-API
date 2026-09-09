@@ -1,4 +1,5 @@
 import { csv, LOG_CONSUME, LOG_ERROR, parseBool } from "./constants.js";
+import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
   estimatePromptTokens,
@@ -176,6 +177,14 @@ async function settle(
       ok,
       requestPath: extra.requestPath,
     }),
+  });
+  await recordRelayPerf(store, {
+    model,
+    group: auth.usingGroup,
+    latencyMs: useTime * 1000,
+    success: ok,
+    outputTokens: completion,
+    stream,
   });
 }
 

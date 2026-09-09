@@ -1,3 +1,5 @@
+import { DEFAULT_MARKETPLACE_SOURCES, NESTED_OPTION_DEFAULTS } from "./option-defaults.js";
+
 export const VERSION = "edge-api/1.2.0 (new-api RandallFlare port)";
 export const START_TIME = Date.now();
 
@@ -45,7 +47,11 @@ export const USER_SESSION_ISSUANCE_LIMIT = 100;
 export const USER_SESSION_ISSUANCE_WINDOW_SEC = 24 * 60 * 60;
 export const RATE_LIMIT_PER_MIN = 120;
 
+/** Original `setting/ratio_setting.defaultGroupRatio`. */
+export const DEFAULT_GROUP_RATIO: Record<string, number> = { default: 1, vip: 1, svip: 1 };
+
 export const DEFAULT_OPTIONS: Record<string, string> = {
+  ...NESTED_OPTION_DEFAULTS,
   SystemName: "Edge API",
   Logo: "",
   Footer: "",
@@ -64,7 +70,7 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   QuotaForNewUser: "0",
   QuotaForInviter: "0",
   QuotaForInvitee: "0",
-  CheckinEnabled: "true",
+  CheckinEnabled: "false",
   CheckinQuota: "5000",
   CheckinMinQuota: "1000",
   CheckinMaxQuota: "10000",
@@ -75,10 +81,10 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   AutomaticEnableChannelEnabled: "false",
   SelfUseModeEnabled: "true",
   DemoSiteEnabled: "false",
-  GroupRatio: JSON.stringify({ default: 1 }),
+  GroupRatio: JSON.stringify(DEFAULT_GROUP_RATIO),
   ModelRatio: JSON.stringify({}),
   CompletionRatio: JSON.stringify({}),
-  DocsLink: "https://github.com/QuantumNous/new-api",
+  DocsLink: "https://docs.newapi.pro",
   ServerAddress: "",
   SessionSecret: "",
   DiscordOAuthEnabled: "false",
@@ -95,7 +101,7 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   OIDCUserinfoEndpoint: "",
   WeChatAuthEnabled: "false",
   TelegramOAuthEnabled: "false",
-  PasskeyEnabled: "true",
+  PasskeyEnabled: "false",
   RankingsEnabled: "true",
   ExposeRatioEnabled: "false",
   UserAgreement: "",
@@ -145,14 +151,16 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   PasswordLoginEncryptionEnabled: "false",
   USDExchangeRate: "1",
   Price: "7.3",
-  CustomCurrencySymbol: "$",
+  CustomCurrencySymbol: "¤",
   CustomCurrencyExchangeRate: "1",
   Theme: "default",
   Chats: "[]",
-  ApiInfoEnabled: "false",
-  UptimeKumaEnabled: "false",
-  AnnouncementsEnabled: "false",
-  FAQEnabled: "false",
+  ApiInfoEnabled: "true",
+  UptimeKumaEnabled: "true",
+  AnnouncementsEnabled: "true",
+  FAQEnabled: "true",
+  TaskPluginMarketplaceSources: JSON.stringify(DEFAULT_MARKETPLACE_SOURCES),
+  TaskPluginDisabledFactoryKeys: "[]",
   MinTopup: "1",
   PaymentComplianceConfirmed: "false",
   PaymentComplianceTermsVersion: "v1",
@@ -185,6 +193,12 @@ export function dayStartSec(ts = nowSec()): number {
   d.setUTCHours(0, 0, 0, 0);
   return Math.floor(d.getTime() / 1000);
 }
+
+/** Original `pkg/perfmetrics.seriesSchema`. Do not change; the console caches on this marker. */
+export const PERF_SERIES_SCHEMA = "dbcd0a3c01b55203";
+
+/** Go `time.Time{}` JSON (`encoding/json`). */
+export const GO_ZERO_TIME = "0001-01-01T00:00:00Z";
 
 /** Original quota_data buckets are hour-aligned (`createdAt - createdAt % 3600`). */
 export function hourStartSec(ts = nowSec()): number {

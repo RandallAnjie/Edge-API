@@ -12,7 +12,7 @@ import {
   verifyBackupCode,
   verifyTotp,
 } from "./totp.js";
-import { mailConfigured, sendMail, sixDigitCode } from "./mail.js";
+import { mailConfigured, notifyAccountSecurityChange, sendMail, sixDigitCode } from "./mail.js";
 import { newChallenge, rpFromRequest, verifyAssertion } from "./passkey.js";
 import {
   exchangeCustom,
@@ -27,7 +27,8 @@ import {
   verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
-import { publicToken, verificationRequirements, publicLog, rankingsResponse, exposedRatioConfig, enrichModelMeta, publicTopup } from "./dto.js";
+import { publicToken, verificationRequirements, publicLog, exposedRatioConfig, enrichModelMeta, publicTopup, publicVendor, publicPrefill } from "./dto.js";
+import { buildRankingsSnapshot } from "./rankings.js";
 import { requirePaymentCompliance } from "./payments.js";
 import {
   calcNextResetTime,
@@ -94,13 +95,15 @@ export function registerMore(r: Router<Env>): void {
   });
 
   r.get("/api/rankings", async (c) => {
-    const s = store(c);
-    if (!(await s.optionBool("RankingsEnabled", true))) return apiFail("排行榜未启用", null, 400);
     const period = c.url.searchParams.get("period") || "week";
-    const days = period === "today" ? 1 : period === "month" ? 30 : period === "year" ? 365 : 7;
-    const start = Number(c.url.searchParams.get("start_timestamp") || nowSec() - 86400 * days);
-    const end = Number(c.url.searchParams.get("end_timestamp") || nowSec());
-    return apiOk(rankingsResponse(await s.rankings(start, end)));
+    try {
+      const s = store(c);
+      return apiOk(await buildRankingsSnapshot(s, period));
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      const status = Number((e as { status?: number }).status || 400);
+      return json(status >= 400 ? status : 400, { success: false, message });
+    }
   });
 
   r.get("/api/ratio_config", async (c) => {
@@ -277,8 +280,12 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
+    const totals = await s.counts();
     const { results } = await c.env.DB.prepare("SELECT COUNT(*) as c FROM users WHERE totp_enabled = 1").all<{ c: number }>();
-    return apiOk({ enabled_users: Number(results[0]?.c || 0) });
+    const enabled_users = Number(results[0]?.c || 0);
+    const total_users = totals.users;
+    const enabled_rate = `${((total_users > 0 ? (enabled_users / total_users) * 100 : 0).toFixed(1))}%`;
+    return apiOk({ total_users, enabled_users, enabled_rate });
   });
 
   r.delete("/api/user/:id/2fa", async (c) => {
@@ -327,9 +334,9 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    if (u.role >= ROLE_ROOT) return apiFail("无法删除超级管理员");
+    if (u.role >= ROLE_ROOT) return apiFail("不能删除超级管理员账户");
     await s.deleteUser(u.id);
-    return apiOk(null, "账号已删除");
+    return apiOk({});
   });
 
   r.get("/api/user/token", async (c) => generateUserAccessToken(c));
@@ -725,7 +732,9 @@ export function registerMore(r: Router<Env>): void {
     const proof = await requireProof(c, s, { scope: "account.binding.unbind", context: { provider_id: providerId } });
     if (isResponse(proof)) return proof;
     await s.deleteUserOAuthBinding(proof.userId, providerId);
-    return apiOk({ notification_warning: false }, "解绑成功");
+    const user = await s.getUserById(proof.userId);
+    const notification_warning = await notifyAccountSecurityChange(s, user?.email || "", "OAuth account unlinked");
+    return apiOk({ notification_warning }, "解绑成功");
   });
 
   r.post("/api/oauth/state", async (c) => {
@@ -1212,28 +1221,37 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.listPrefill());
+    const type = c.url.searchParams.get("type") || "";
+    const items = ((await s.listPrefill(type)) as Record<string, unknown>[]).map(publicPrefill);
+    return apiOk(items);
   });
 
   r.post("/api/prefill_group/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { name?: string; type?: string; items?: string };
-    const id = await s.insertPrefill(body.name || "", body.type || "", body.items || "");
-    return apiOk({ id });
+    const body = (await readJson(c.req)) as { name?: string; type?: string; items?: unknown; description?: string };
+    if (!body.name || !body.type) return apiFail("组名称和类型不能为空");
+    if (await s.prefillNameTaken(body.name)) return apiFail("组名称已存在");
+    const items = typeof body.items === "string" ? body.items : JSON.stringify(body.items ?? []);
+    const id = await s.insertPrefill(body.name, body.type, items, body.description || "");
+    const row = await s.getPrefill(id);
+    return apiOk(publicPrefill(row || { id, name: body.name, type: body.type, items }));
   });
 
   r.put("/api/prefill_group/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number };
-    if (!body.id) return apiFail("无效的参数");
-    const patch: Record<string, unknown> = {};
-    for (const k of ["name", "type", "items"]) if (body[k] != null) patch[k] = body[k];
+    const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number; name?: string };
+    if (!body.id) return apiFail("缺少组 ID");
+    if (body.name && (await s.prefillNameTaken(body.name, body.id))) return apiFail("组名称已存在");
+    const patch: Record<string, unknown> = { updated_time: nowSec() };
+    for (const k of ["name", "type", "description"]) if (body[k] != null) patch[k] = body[k];
+    if (body.items != null) patch.items = typeof body.items === "string" ? body.items : JSON.stringify(body.items);
     await s.updatePrefill(body.id, patch);
-    return apiOk(null);
+    const row = await s.getPrefill(body.id);
+    return apiOk(row ? publicPrefill(row) : null);
   });
 
   r.delete("/api/prefill_group/:id", async (c) => {
@@ -1248,16 +1266,26 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.listVendors());
+    const q = pageQuery(c.url);
+    const keyword = (c.url.searchParams.get("keyword") || "").toLowerCase();
+    const all = ((await s.listVendors()) as Record<string, unknown>[]).filter(
+      (v) => !keyword || String(v.name || "").toLowerCase().includes(keyword),
+    );
+    const counts = await s.vendorModelCounts();
+    const items = all.slice(q.offset, q.offset + q.page_size).map((v) => publicVendor(v, counts[String(v.id || 0)] || 0));
+    return apiOk(pageData(items, all.length, q));
   });
 
   r.get("/api/vendors/search", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
+    const q = pageQuery(c.url);
     const kw = (c.url.searchParams.get("keyword") || "").toLowerCase();
-    const items = ((await s.listVendors()) as { name: string }[]).filter((v) => !kw || v.name.toLowerCase().includes(kw));
-    return apiOk(items);
+    const all = ((await s.listVendors()) as Record<string, unknown>[]).filter((v) => !kw || String(v.name || "").toLowerCase().includes(kw));
+    const counts = await s.vendorModelCounts();
+    const items = all.slice(q.offset, q.offset + q.page_size).map((v) => publicVendor(v, counts[String(v.id || 0)] || 0));
+    return apiOk(pageData(items, all.length, q));
   });
 
   r.get("/api/vendors/:id", async (c) => {
@@ -1266,7 +1294,8 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const v = await s.getVendor(Number(c.params.id));
     if (!v) return apiFail("不存在");
-    return apiOk(v);
+    const counts = await s.vendorModelCounts();
+    return apiOk(publicVendor(v, counts[String(v.id)] || 0));
   });
 
   r.post("/api/vendors/", async (c) => {
@@ -1274,8 +1303,13 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { name?: string; description?: string; icon?: string };
-    if (!body.name) return apiFail("名称不能为空");
-    return apiOk({ id: await s.insertVendor(body.name, body.description, body.icon) });
+    if (!body.name?.trim()) return json(400, { success: false, message: "vendor name is required" });
+    const name = body.name.trim();
+    const existing = ((await s.listVendors()) as { name: string }[]).some((v) => v.name.toLowerCase() === name.toLowerCase());
+    if (existing) return json(400, { success: false, message: "vendor name already exists" });
+    const id = await s.insertVendor(name, body.description, body.icon);
+    const v = await s.getVendor(id);
+    return apiOk(publicVendor(v || { id, name, description: body.description, icon: body.icon }));
   });
 
   r.put("/api/vendors/", async (c) => {
@@ -1283,11 +1317,12 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number };
-    if (!body.id) return apiFail("无效的参数");
-    const patch: Record<string, unknown> = {};
-    for (const k of ["name", "description", "icon"]) if (body[k] != null) patch[k] = body[k];
+    if (!body.id) return apiFail("缺少供应商 ID");
+    const patch: Record<string, unknown> = { updated_time: nowSec() };
+    for (const k of ["name", "description", "icon", "status"]) if (body[k] != null) patch[k] = body[k];
     await s.updateVendor(body.id, patch);
-    return apiOk(null);
+    const v = await s.getVendor(body.id);
+    return apiOk(v ? publicVendor(v) : null);
   });
 
   r.delete("/api/vendors/:id", async (c) => {
