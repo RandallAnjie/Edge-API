@@ -1,7 +1,8 @@
+import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_CREATED } from "./channel-models.js";
 import { parseJson } from "./constants.js";
 import { maskKey, md5Hex } from "./crypto.js";
 import type { Store } from "./store.js";
-import type { ChannelRow, TokenRow, UserRow } from "./types.js";
+import type { ChannelRow, LogRow, TokenRow, UserRow } from "./types.js";
 
 export const DEFAULT_USABLE_GROUPS: Record<string, string> = {
   default: "默认分组",
@@ -396,5 +397,251 @@ export async function verificationRequirements(
       oauth_providers,
       password_encryption_enabled: encryption,
     },
+  };
+}
+
+const LOG_OTHER_USER_STRIP = ["admin_info", "root_info", "audit_info", "channel_id", "channel_name", "channel_type", "reject_reason"];
+
+export type LogVisibility = "user" | "admin" | "root";
+
+export function logVisibilityForRole(role: number): LogVisibility {
+  if (role >= 100) return "root";
+  if (role >= 10) return "admin";
+  return "user";
+}
+
+export function formatLogOtherJSON(value: string, visibility: LogVisibility): string {
+  if (!value) return "";
+  const parsed = parseJson<Record<string, unknown> | null>(value, null);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return visibility === "root" ? value : "{}";
+  }
+  const out = { ...parsed };
+  if (visibility === "user") {
+    for (const key of LOG_OTHER_USER_STRIP) delete out[key];
+  } else if (visibility === "admin") {
+    delete out.root_info;
+  }
+  return JSON.stringify(out);
+}
+
+export function consumeLogOther(opts: {
+  model: string;
+  group: string;
+  groupRatio: number;
+  modelRatio: number;
+  completionRatio: number;
+  channelId: number;
+  channelName: string;
+  channelType: number;
+  ok: boolean;
+  requestPath?: string;
+}): string {
+  const other: Record<string, unknown> = {
+    group_ratio: opts.groupRatio,
+    model_ratio: opts.modelRatio,
+    completion_ratio: opts.completionRatio,
+    group: opts.group,
+  };
+  if (opts.requestPath) other.request_path = opts.requestPath;
+  other.admin_info = {
+    use_channel: [opts.channelId],
+    channel_id: opts.channelId,
+    channel_name: opts.channelName,
+    channel_type: opts.channelType,
+  };
+  if (!opts.ok) other.admin_info = { ...(other.admin_info as object), reject_reason: "upstream_error" };
+  return JSON.stringify(other);
+}
+
+export function publicLog(row: LogRow, role = 1): Record<string, unknown> {
+  const vis = logVisibilityForRole(role);
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    created_at: row.created_at,
+    type: row.type,
+    content: row.content,
+    username: row.username || "",
+    token_name: row.token_name || "",
+    model_name: row.model_name || "",
+    quota: row.quota || 0,
+    prompt_tokens: row.prompt_tokens || 0,
+    completion_tokens: row.completion_tokens || 0,
+    use_time: row.use_time || 0,
+    is_stream: Boolean(Number(row.is_stream)),
+    channel: Number(row.channel_id || 0),
+    channel_name: row.channel_name || "",
+    token_id: row.token_id || 0,
+    group: row.group || "",
+    ip: row.ip || "",
+    other: formatLogOtherJSON(row.other || "", vis),
+    request_id: row.request_id || "",
+    upstream_request_id: row.upstream_request_id || "",
+  };
+}
+
+export function dashboardListModels(): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [id, models] of Object.entries(CHANNEL_TYPE_MODELS)) out[id] = [...models];
+  return out;
+}
+
+function channelTypeForOwner(ownedBy: string): number {
+  for (const [id, name] of Object.entries(CHANNEL_TYPE_OWNERS)) {
+    if (name === ownedBy) return Number(id);
+  }
+  return 1;
+}
+
+export function openaiCreatedAtRfc3339(): string {
+  return new Date(OPENAI_MODEL_CREATED * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+export function openAIModel(id: string, ownedBy = "custom"): Record<string, unknown> {
+  return {
+    id,
+    object: "model",
+    created: OPENAI_MODEL_CREATED,
+    owned_by: ownedBy,
+    supported_endpoint_types: endpointTypesForChannel(channelTypeForOwner(ownedBy), id),
+  };
+}
+
+export function anthropicModel(id: string): Record<string, unknown> {
+  return {
+    id,
+    created_at: openaiCreatedAtRfc3339(),
+    display_name: id,
+    type: "model",
+  };
+}
+
+export function geminiModel(id: string): Record<string, unknown> {
+  return { name: id, displayName: id };
+}
+
+export function openaiModelList(models: Record<string, unknown>[]): Record<string, unknown> {
+  return { success: true, data: models, object: "list" };
+}
+
+export function modelNotFoundError(modelId: string): Record<string, unknown> {
+  return {
+    error: {
+      message: `The model '${modelId}' does not exist`,
+      type: "invalid_request_error",
+      param: "model",
+      code: "model_not_found",
+    },
+  };
+}
+
+export function channelListModels(): Record<string, unknown>[] {
+  return ADAPTOR_MODELS.map((m) => openAIModel(m.id, m.owned_by));
+}
+
+export function ownerForChannelType(type: number): string {
+  return CHANNEL_TYPE_OWNERS[type] || CHANNEL_TYPE_OWNERS[1] || "custom";
+}
+
+export function isSensitiveOptionKey(key: string): boolean {
+  if (/ClientId$/i.test(key)) return false;
+  return /Token$|Secret$|Key$|secret$|api_key$/i.test(key);
+}
+
+export function publicOptions(options: { key: string; value: string }[]): { key: string; value: string }[] {
+  const optionValues: Record<string, string> = {};
+  const out: { key: string; value: string }[] = [];
+  for (const row of options) {
+    if (row.key === "theme.frontend" || row.key === "billing_setting.billing_mode" || row.key === "billing_setting.billing_expr") continue;
+    if (isSensitiveOptionKey(row.key)) continue;
+    out.push({ key: row.key, value: row.value });
+    if (["ModelPrice", "ModelRatio", "CompletionRatio", "CacheRatio", "CreateCacheRatio", "ImageRatio", "AudioRatio", "AudioCompletionRatio"].includes(row.key)) {
+      optionValues[row.key] = row.value;
+    }
+  }
+  const names = new Set<string>();
+  for (const raw of Object.values(optionValues)) {
+    const parsed = parseJson<Record<string, unknown>>(raw, {});
+    for (const name of Object.keys(parsed)) names.add(name);
+  }
+  const completion = parseJson<Record<string, number>>(optionValues.CompletionRatio || "{}", {});
+  const meta: Record<string, { ratio: number; locked: boolean }> = {};
+  for (const name of names) meta[name] = { ratio: completion[name] ?? 1, locked: false };
+  out.push({ key: "billing_setting.billing_mode", value: "{}" });
+  out.push({ key: "billing_setting.billing_expr", value: "{}" });
+  out.push({ key: "CompletionRatioMeta", value: JSON.stringify(meta) });
+  return out;
+}
+
+export function exposedRatioConfig(opts: {
+  model_ratio: Record<string, number>;
+  completion_ratio: Record<string, number>;
+  cache_ratio: Record<string, number>;
+  create_cache_ratio: Record<string, number>;
+  model_price: Record<string, number>;
+  billing_mode?: Record<string, string>;
+  billing_expr?: Record<string, string>;
+}): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    model_ratio: opts.model_ratio,
+    completion_ratio: opts.completion_ratio,
+    cache_ratio: opts.cache_ratio,
+    create_cache_ratio: opts.create_cache_ratio,
+    model_price: opts.model_price,
+  };
+  if (opts.billing_mode && Object.keys(opts.billing_mode).length) out.billing_mode = opts.billing_mode;
+  if (opts.billing_expr && Object.keys(opts.billing_expr).length) out.billing_expr = opts.billing_expr;
+  return out;
+}
+
+export function rankingsResponse(
+  rows: { model_name: string; token_used: number; quota: number }[],
+): Record<string, unknown> {
+  const total = rows.reduce((s, r) => s + Number(r.token_used || 0), 0) || 1;
+  const models = rows.map((r, i) => {
+    const name = String(r.model_name || "");
+    const slash = name.indexOf("/");
+    const vendor = slash > 0 ? name.slice(0, slash) : "Unknown";
+    return {
+      rank: i + 1,
+      model_name: name,
+      vendor,
+      category: "all",
+      total_tokens: Number(r.token_used || 0),
+      share: Number(r.token_used || 0) / total,
+      growth_pct: 0,
+    };
+  });
+  const vendorMap = new Map<string, { tokens: number; models: Set<string>; top: string; topTokens: number }>();
+  for (const m of models) {
+    const v = vendorMap.get(m.vendor) || { tokens: 0, models: new Set<string>(), top: m.model_name, topTokens: 0 };
+    v.tokens += m.total_tokens;
+    v.models.add(m.model_name);
+    if (m.total_tokens > v.topTokens) {
+      v.top = m.model_name;
+      v.topTokens = m.total_tokens;
+    }
+    vendorMap.set(m.vendor, v);
+  }
+  const vendorTotal = [...vendorMap.values()].reduce((s, v) => s + v.tokens, 0) || 1;
+  const vendors = [...vendorMap.entries()]
+    .sort((a, b) => b[1].tokens - a[1].tokens)
+    .map(([vendor, v], i) => ({
+      rank: i + 1,
+      vendor,
+      total_tokens: v.tokens,
+      share: v.tokens / vendorTotal,
+      growth_pct: 0,
+      models_count: v.models.size,
+      top_model: v.top,
+    }));
+  return {
+    models,
+    vendors,
+    top_movers: [],
+    top_droppers: [],
+    models_history: { points: [], models: models.slice(0, 10).map((m) => ({ name: m.model_name, vendor: m.vendor, total: m.total_tokens })) },
+    vendor_share_history: { points: [], vendors: vendors.slice(0, 5).map((v) => ({ name: v.vendor, total: v.total_tokens })) },
   };
 }

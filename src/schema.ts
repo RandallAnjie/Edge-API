@@ -101,7 +101,9 @@ CREATE TABLE IF NOT EXISTS request_logs (
   token_id INTEGER NOT NULL DEFAULT 0,
   "group" TEXT NOT NULL DEFAULT '',
   ip TEXT NOT NULL DEFAULT '',
-  request_id TEXT NOT NULL DEFAULT ''
+  request_id TEXT NOT NULL DEFAULT '',
+  upstream_request_id TEXT NOT NULL DEFAULT '',
+  other TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS options (
   key TEXT PRIMARY KEY,
@@ -134,7 +136,19 @@ CREATE TABLE IF NOT EXISTS quota_data (
   created_at INTEGER NOT NULL,
   quota INTEGER NOT NULL DEFAULT 0,
   token_used INTEGER NOT NULL DEFAULT 0,
-  count INTEGER NOT NULL DEFAULT 0
+  count INTEGER NOT NULL DEFAULT 0,
+  use_group TEXT NOT NULL DEFAULT '',
+  token_id INTEGER NOT NULL DEFAULT 0,
+  channel_id INTEGER NOT NULL DEFAULT 0,
+  node_name TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS checkins (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  checkin_date TEXT NOT NULL,
+  quota_awarded INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(user_id, checkin_date)
 );
 CREATE TABLE IF NOT EXISTS mj_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,6 +374,12 @@ const USER_ALTERS = [
   "ALTER TABLE channels ADD COLUMN other_info TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE channels ADD COLUMN channel_info TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE channels ADD COLUMN setting TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE request_logs ADD COLUMN upstream_request_id TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE request_logs ADD COLUMN other TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE quota_data ADD COLUMN use_group TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE quota_data ADD COLUMN token_id INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE quota_data ADD COLUMN channel_id INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE quota_data ADD COLUMN node_name TEXT NOT NULL DEFAULT ''",
 ];
 
 import type { D1Database } from "./types.js";

@@ -219,13 +219,16 @@ test("2FA login still require_2fa plus original LoginChallenge fields", async ()
   const { auth } = await boot(e);
   const setup = await json(new Request("http://local/api/user/2fa/setup", { method: "POST", headers: auth }), e);
   const secret = setup.body.data.secret as string;
+  assert.equal(typeof setup.body.data.qr_code_data, "string");
+  assert.ok(Array.isArray(setup.body.data.backup_codes));
+  assert.equal(typeof setup.body.data.flow_token, "string");
   const { totpCode } = await import("../src/totp.js");
   const code = await totpCode(secret);
   const en = await json(
     new Request("http://local/api/user/2fa/enable", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, flow_token: setup.body.data.flow_token }),
     }),
     e,
   );
@@ -430,3 +433,182 @@ test("GetPricing / topup info / verify methods / token booleans / channel DTO ma
   );
   assert.notEqual(nested.body?.error?.code, "not_implemented");
 });
+
+test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, ListModels JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const dash = await json(new Request("http://local/api/models", { headers: auth }), e);
+  assert.equal(dash.body.success, true);
+  assert.ok(Array.isArray(dash.body.data["1"]));
+  assert.ok(dash.body.data["1"].includes("gpt-4o-mini"));
+
+  const adminMeta = await json(new Request("http://local/api/models/", { headers: auth }), e);
+  assert.equal(adminMeta.body.success, true);
+  assert.ok("vendor_counts" in adminMeta.body.data);
+  assert.ok("items" in adminMeta.body.data);
+  assert.equal(typeof adminMeta.body.data.page, "number");
+  assert.equal(typeof adminMeta.body.data.page_size, "number");
+
+  const chModels = await json(new Request("http://local/api/channel/models", { headers: auth }), e);
+  assert.equal(chModels.body.data[0].object, "model");
+  assert.equal(chModels.body.data[0].created, 1626777600);
+  assert.ok(Array.isArray(chModels.body.data[0].supported_endpoint_types));
+
+  const unknownGroup = await json(new Request("http://local/api/user/models?group=does-not-exist", { headers: auth }), e);
+  assert.deepEqual(unknownGroup.body.data, []);
+
+  const aff = await json(new Request("http://local/api/user/aff", { headers: auth }), e);
+  assert.equal(typeof aff.body.data, "string");
+  assert.ok(aff.body.data.length > 0);
+
+  const ck = await json(new Request("http://local/api/user/checkin", { headers: auth }), e);
+  assert.equal(ck.body.data.enabled, true);
+  assert.equal(typeof ck.body.data.min_quota, "number");
+  assert.equal(typeof ck.body.data.max_quota, "number");
+  assert.equal(typeof ck.body.data.stats.checked_in_today, "boolean");
+  assert.equal(typeof ck.body.data.stats.total_checkins, "number");
+  assert.ok(Array.isArray(ck.body.data.stats.records));
+
+  const doCk = await json(new Request("http://local/api/user/checkin", { method: "POST", headers: auth }), e);
+  assert.equal(doCk.body.success, true, doCk.body.message);
+  assert.equal(typeof doCk.body.data.quota_awarded, "number");
+  assert.equal(typeof doCk.body.data.checkin_date, "string");
+
+  const opts = await json(new Request("http://local/api/option/", { headers: auth }), e);
+  const keys = (opts.body.data as { key: string; value: string }[]).map((o) => o.key);
+  assert.ok(keys.includes("CompletionRatioMeta"));
+  assert.ok(keys.includes("billing_setting.billing_mode"));
+  assert.ok(keys.includes("billing_setting.billing_expr"));
+  assert.ok(!keys.some((k) => k.endsWith("Secret") || k.endsWith("Token")));
+
+  const logSlash = await json(new Request("http://local/api/log/", { headers: auth }), e);
+  const logNoSlash = await json(new Request("http://local/api/log", { headers: auth }), e);
+  assert.equal(logSlash.body.success, true);
+  assert.equal(logNoSlash.body.success, true);
+  assert.ok("items" in logSlash.body.data);
+  if (logSlash.body.data.items[0]) {
+    const row = logSlash.body.data.items[0];
+    assert.ok("channel" in row);
+    assert.ok("is_stream" in row);
+    assert.equal(typeof row.is_stream, "boolean");
+    assert.ok("other" in row);
+    assert.ok("request_id" in row);
+    assert.ok("upstream_request_id" in row);
+  }
+
+  const tok = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "status-only", remain_quota: 0, unlimited_quota: false }),
+    }),
+    e,
+  );
+  const tid = tok.body.data.id as number;
+  await json(
+    new Request("http://local/api/token/?status_only=true", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: tid, status: 4 }),
+    }),
+    e,
+  );
+  const cannotEnable = await json(
+    new Request("http://local/api/token/?status_only=true", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: tid, status: 1 }),
+    }),
+    e,
+  );
+  assert.equal(cannotEnable.body.success, false);
+
+  const ratioOff = await json(new Request("http://local/api/ratio_config"), e);
+  assert.equal(ratioOff.res.status, 403);
+  assert.equal(ratioOff.body.message, "倍率配置接口未启用");
+
+  const syncCh = await json(new Request("http://local/api/ratio_sync/channels", { headers: auth }), e);
+  assert.ok(syncCh.body.data.some((c: { id: number }) => c.id === -100));
+  assert.ok(syncCh.body.data.some((c: { id: number }) => c.id === -101));
+  assert.ok("status" in syncCh.body.data[0]);
+
+  const rt = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
+  assert.equal(typeof rt.body.data.current_generation, "number");
+  assert.ok(rt.body.data.last_rebuild);
+  assert.equal(typeof rt.body.data.last_rebuild.error, "string");
+  assert.ok("plugin_errors" in rt.body.data);
+
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "list-models",
+        type: 1,
+        key: "sk-x",
+        models: "gpt-4o-mini",
+        group: "default",
+        base_url: "https://example.invalid",
+      }),
+    }),
+    e,
+  );
+  const sk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "relay", unlimited_quota: true }),
+    }),
+    e,
+  );
+  const skAuth = { authorization: "Bearer " + sk.body.data.key };
+
+  const v1 = await json(new Request("http://local/v1/models", { headers: skAuth }), e);
+  assert.equal(v1.body.success, true);
+  assert.equal(v1.body.object, "list");
+  assert.ok(Array.isArray(v1.body.data));
+  const m = v1.body.data.find((x: { id: string }) => x.id === "gpt-4o-mini") || v1.body.data[0];
+  assert.equal(m.object, "model");
+  assert.equal(m.created, 1626777600);
+  assert.ok(Array.isArray(m.supported_endpoint_types));
+
+  const gem = await json(
+    new Request("http://local/v1/models", { headers: { ...skAuth, "x-goog-api-key": "g" } }),
+    e,
+  );
+  assert.ok(Array.isArray(gem.body.models));
+  assert.equal(gem.body.nextPageToken, null);
+  if (gem.body.models[0]) assert.equal(typeof gem.body.models[0].name, "string");
+  if (gem.body.models[0]) assert.equal(gem.body.models[0].name.startsWith("models/"), false);
+
+  const anth = await json(
+    new Request("http://local/v1/models", { headers: { ...skAuth, "x-api-key": "a", "anthropic-version": "2023-06-01" } }),
+    e,
+  );
+  assert.ok(Array.isArray(anth.body.data));
+  assert.equal(typeof anth.body.first_id, "string");
+  assert.equal(anth.body.has_more, false);
+  assert.equal(typeof anth.body.last_id, "string");
+  if (anth.body.data[0]) {
+    assert.equal(anth.body.data[0].type, "model");
+    assert.equal(typeof anth.body.data[0].display_name, "string");
+    assert.match(anth.body.data[0].created_at, /T/);
+  }
+
+  const missing = await json(new Request("http://local/v1/models/not-a-real-model", { headers: skAuth }), e);
+  assert.equal(missing.res.status, 200);
+  assert.equal(missing.body.error.code, "model_not_found");
+  assert.equal(missing.body.error.type, "invalid_request_error");
+
+  const usage = await json(new Request("http://local/api/usage/token", { headers: skAuth }), e);
+  assert.equal(usage.body.code, true);
+  assert.equal(usage.body.data.object, "token_usage");
+  assert.equal(typeof usage.body.data.total_granted, "number");
+  assert.equal(typeof usage.body.data.total_used, "number");
+  assert.equal(typeof usage.body.data.total_available, "number");
+  assert.equal(typeof usage.body.data.unlimited_quota, "boolean");
+  assert.equal(typeof usage.body.data.model_limits_enabled, "boolean");
+});
+

@@ -1,4 +1,4 @@
-import { LOG_CONSUME, LOG_ERROR, parseBool } from "./constants.js";
+import { csv, LOG_CONSUME, LOG_ERROR, parseBool } from "./constants.js";
 import {
   anthropicToOpenAI,
   estimatePromptTokens,
@@ -13,12 +13,22 @@ import {
   type ChatMessage,
 } from "./convert.js";
 import { clientIp, openaiError } from "./http.js";
-import { computeQuota, remainingOk } from "./quota.js";
+import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
 import { orderChannels, pickChannelKey } from "./select.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
 import { applyModelMapping, buildUpstream, joinUrl, modelsUrl, type RelayMode } from "./upstream.js";
 import { channelKind, resolveBaseUrl } from "./catalog.js";
+import {
+  anthropicModel,
+  consumeLogOther,
+  geminiModel,
+  modelNotFoundError,
+  openAIModel,
+  openaiModelList,
+  ownerForChannelType,
+} from "./dto.js";
+import { ADAPTOR_MODELS } from "./channel-models.js";
 
 export type ClientFormat = "openai" | "anthropic" | "gemini";
 
@@ -124,12 +134,14 @@ async function settle(
   requestId: string,
   ok: boolean,
   content: string,
+  extra: { upstreamRequestId?: string; requestPath?: string } = {},
 ): Promise<void> {
   const quota = await computeQuota(store, model, auth.usingGroup, prompt, completion);
   if (ok && quota > 0) {
     await store.consumeQuota(auth.user.id, auth.token.id, channel.id, quota);
     await store.bumpQuotaData(auth.user, model, quota, prompt + completion);
   }
+  const ratios = await quotaRatios(store, model, auth.usingGroup);
   await store.insertLog({
     user_id: auth.user.id,
     type: ok ? LOG_CONSUME : LOG_ERROR,
@@ -147,6 +159,19 @@ async function settle(
     group: auth.usingGroup,
     ip,
     request_id: requestId,
+    upstream_request_id: extra.upstreamRequestId || "",
+    other: consumeLogOther({
+      model,
+      group: auth.usingGroup,
+      groupRatio: ratios.groupRatio,
+      modelRatio: ratios.modelRatio,
+      completionRatio: ratios.completionRatio,
+      channelId: channel.id,
+      channelName: channel.name,
+      channelType: channel.type,
+      ok,
+      requestPath: extra.requestPath,
+    }),
   });
 }
 
@@ -210,6 +235,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       continue;
     }
     const useTime = Math.max(0, Math.round((Date.now() - started) / 1000));
+    const extra = {
+      upstreamRequestId: res.headers.get("x-oneapi-request-id") || res.headers.get("x-request-id") || "",
+      requestPath: path,
+    };
 
     if (!res.ok && retryable(res.status) && channel !== tried[tried.length - 1]) {
       lastErr = await res.text().catch(() => res.statusText);
@@ -221,7 +250,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       const text = await res.text();
       lastErr = text || res.statusText;
       lastStatus = res.status;
-      await settle(store, auth, channel, model, promptEst, 0, useTime, opts.stream, ip, rid, false, lastErr.slice(0, 2000));
+      await settle(store, auth, channel, model, promptEst, 0, useTime, opts.stream, ip, rid, false, lastErr.slice(0, 2000), extra);
       if (res.status >= 500 && autoDisable) await store.autoDisableChannel(channel.id);
       if (channel !== tried[tried.length - 1] && retryable(res.status)) continue;
       try {
@@ -253,7 +282,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           ((converted.choices as { message?: { content?: string } }[] | undefined)?.[0]?.message?.content) || "",
         );
         ctx?.waitUntil(
-          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream"),
+          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
         );
         return new Response(sseOpenAIFromText(model, content), {
           status: 200,
@@ -266,7 +295,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       const [clientBody, logBody] = res.body.tee();
       ctx?.waitUntil(
-        parseStreamAndSettle(store, auth, channel, model, promptEst, useTime, ip, rid, logBody),
+        parseStreamAndSettle(store, auth, channel, model, promptEst, useTime, ip, rid, logBody, extra),
       );
       const headers = new Headers();
       headers.set("content-type", "text/event-stream; charset=utf-8");
@@ -280,7 +309,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
     } catch {
-      await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, true, "binary/text");
+      await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, true, "binary/text", extra);
       return new Response(text, {
         status: 200,
         headers: { "content-type": ct || "application/json", "x-oneapi-request-id": rid },
@@ -301,6 +330,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       rid,
       true,
       "",
+      extra,
     );
     return new Response(JSON.stringify(converted), {
       status: 200,
@@ -331,6 +361,7 @@ async function parseStreamAndSettle(
   ip: string,
   rid: string,
   body: ReadableStream<Uint8Array>,
+  extra: { upstreamRequestId?: string; requestPath?: string } = {},
 ): Promise<void> {
   const reader = body.getReader();
   const dec = new TextDecoder();
@@ -364,57 +395,64 @@ async function parseStreamAndSettle(
   } catch {
     /* ignore parse errors */
   }
-  await settle(store, auth, channel, model, prompt, completion, useTime, true, ip, rid, true, "stream");
+  await settle(store, auth, channel, model, prompt, completion, useTime, true, ip, rid, true, "stream", extra);
 }
 
 export async function listModelsForAuth(store: Store, auth: AuthToken, format: ClientFormat): Promise<Response> {
-  const models = await store.enabledModels(auth.usingGroup);
-  const created = Math.floor(Date.now() / 1000);
+  const names = (await store.enabledModels(auth.usingGroup)).filter((id) => tokenAllows(auth, id));
+  const channels = await store.enabledChannels();
+  const ownerByModel = new Map<string, string>();
+  for (const ch of channels) {
+    const owner = ownerForChannelType(ch.type);
+    for (const m of csv(ch.models)) {
+      if (!ownerByModel.has(m)) ownerByModel.set(m, owner);
+    }
+  }
+  const openaiModels = names.map((id) => openAIModel(id, ownerByModel.get(id) || "custom"));
   if (format === "gemini") {
     return new Response(
       JSON.stringify({
-        models: models.map((id) => ({ name: `models/${id}`, displayName: id, supportedGenerationMethods: ["generateContent"] })),
+        models: names.map((id) => geminiModel(id)),
+        nextPageToken: null,
       }),
       { headers: { "content-type": "application/json; charset=utf-8" } },
     );
   }
   if (format === "anthropic") {
+    const data = names.map((id) => anthropicModel(id));
     return new Response(
       JSON.stringify({
-        data: models.map((id) => ({ id, type: "model", created_at: created })),
+        data,
+        first_id: data[0]?.id || "",
+        has_more: false,
+        last_id: data[data.length - 1]?.id || "",
       }),
       { headers: { "content-type": "application/json; charset=utf-8" } },
     );
   }
-  return new Response(
-    JSON.stringify({
-      object: "list",
-      data: models.map((id) => ({
-        id,
-        object: "model",
-        created,
-        owned_by: "edge-api",
-        permission: [{ id: "modelperm-" + id, object: "model_permission", created, allow_sampling: true, allow_view: true }],
-        root: id,
-        parent: null,
-      })),
-    }),
-    { headers: { "content-type": "application/json; charset=utf-8" } },
-  );
+  return new Response(JSON.stringify(openaiModelList(openaiModels)), {
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
 }
 
-export async function retrieveModel(store: Store, auth: AuthToken, model: string): Promise<Response> {
-  const models = await store.enabledModels(auth.usingGroup);
-  if (!models.includes(model)) return openaiError(404, "模型不存在", "model_not_found");
-  return new Response(
-    JSON.stringify({
-      id: model,
-      object: "model",
-      created: Math.floor(Date.now() / 1000),
-      owned_by: "edge-api",
-    }),
-    { headers: { "content-type": "application/json; charset=utf-8" } },
-  );
+export async function retrieveModel(store: Store, auth: AuthToken, model: string, format: ClientFormat = "openai"): Promise<Response> {
+  const staticHit = ADAPTOR_MODELS.find((m) => m.id === model);
+  const enabled = (await store.enabledModels(auth.usingGroup)).includes(model);
+  if (!staticHit && !enabled) {
+    return new Response(JSON.stringify(modelNotFoundError(model)), {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+  const ownedBy = staticHit?.owned_by || "custom";
+  if (format === "anthropic") {
+    return new Response(JSON.stringify(anthropicModel(model)), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+  return new Response(JSON.stringify(openAIModel(model, ownedBy)), {
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
 }
 
 export async function testChannel(store: Store, channel: ChannelRow): Promise<{ success: boolean; message: string; time: number }> {

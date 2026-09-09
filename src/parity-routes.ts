@@ -590,18 +590,77 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const channels = await s.enabledChannels();
-    return apiOk(channels.map((ch) => ({ id: ch.id, name: ch.name, base_url: ch.base_url, type: ch.type })));
+    const data = channels
+      .filter((ch) => ch.base_url)
+      .map((ch) => ({ id: ch.id, name: ch.name, base_url: ch.base_url, status: ch.status, type: ch.type }));
+    data.push({ id: -100, name: "官方倍率预设", base_url: "https://basellm.github.io", status: 1, type: 0 });
+    data.push({ id: -101, name: "models.dev 价格预设", base_url: "https://models.dev", status: 1, type: 0 });
+    return apiOk(data);
   });
   r.post("/api/ratio_sync/fetch", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { channel_id?: number };
-    const ch = await s.getChannel(Number(body.channel_id));
-    if (!ch?.base_url) return apiFail("渠道无 base_url");
-    const res = await fetch(ch.base_url.replace(/\/$/, "") + "/api/ratio_config");
-    const data = await res.json().catch(() => ({}));
-    return apiOk(data);
+    const body = (await readJson(c.req)) as {
+      channel_id?: number;
+      channel_ids?: number[];
+      upstreams?: { id?: number; name?: string; base_url?: string; endpoint?: string }[];
+      timeout?: number;
+    };
+    const upstreams: { id: number; name: string; base_url: string; endpoint: string }[] = [];
+    if (body.upstreams?.length) {
+      for (const ustr of body.upstreams) {
+        if (ustr.base_url?.startsWith("http")) {
+          upstreams.push({
+            id: Number(ustr.id || 0),
+            name: ustr.name || ustr.base_url || "",
+            base_url: ustr.base_url.replace(/\/$/, ""),
+            endpoint: ustr.endpoint || "/api/ratio_config",
+          });
+        }
+      }
+    } else {
+      const ids = body.channel_ids?.length ? body.channel_ids : body.channel_id ? [body.channel_id] : [];
+      for (const id of ids) {
+        const ch = await s.getChannel(Number(id));
+        if (ch?.base_url?.startsWith("http")) {
+          upstreams.push({ id: ch.id, name: ch.name, base_url: ch.base_url.replace(/\/$/, ""), endpoint: "/api/ratio_config" });
+        }
+      }
+    }
+    if (!upstreams.length) return apiFail("无有效上游渠道");
+    const localData = {
+      model_ratio: parseJson<Record<string, number>>(await s.option("ModelRatio"), {}),
+      completion_ratio: parseJson<Record<string, number>>(await s.option("CompletionRatio"), {}),
+      model_price: parseJson<Record<string, number>>(await s.option("ModelPrice"), {}),
+    };
+    const test_results: { name: string; status: string; error?: string }[] = [];
+    const differences: Record<string, Record<string, { current: unknown; upstreams: Record<string, unknown> }>> = {};
+    const prices: Record<string, { current: Record<string, unknown>; upstreams: Record<string, Record<string, unknown>> }> = {};
+    for (const ustr of upstreams) {
+      const uniqueName = ustr.id ? `${ustr.name}(${ustr.id})` : ustr.name;
+      try {
+        const res = await fetch(ustr.base_url + (ustr.endpoint.startsWith("/") ? ustr.endpoint : "/" + ustr.endpoint));
+        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!res.ok) {
+          test_results.push({ name: uniqueName, status: "error", error: `HTTP ${res.status}` });
+          continue;
+        }
+        test_results.push({ name: uniqueName, status: "success" });
+        const payload = (data.data && typeof data.data === "object" ? data.data : data) as Record<string, unknown>;
+        const ratios = (payload.model_ratio || payload.ModelRatio || {}) as Record<string, unknown>;
+        for (const [model, ratio] of Object.entries(ratios)) {
+          if (!differences[model]) differences[model] = {};
+          if (!differences[model].model_ratio) differences[model].model_ratio = { current: localData.model_ratio[model] ?? null, upstreams: {} };
+          differences[model].model_ratio.upstreams[uniqueName] = ratio;
+          if (!prices[model]) prices[model] = { current: { model_ratio: localData.model_ratio[model] ?? null, model_price: localData.model_price[model] ?? null }, upstreams: {} };
+          prices[model].upstreams[uniqueName] = { model_ratio: ratio };
+        }
+      } catch (e) {
+        test_results.push({ name: uniqueName, status: "error", error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return apiOk({ differences, prices, test_results });
   });
 
   r.get("/api/plugin/task", async (c) => {
@@ -616,8 +675,22 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const plugins = (await s.listTaskPlugins()) as { status: string }[];
-    return apiOk({ generation: 1, plugins: plugins.length, active: plugins.filter((p) => p.status === "active").length, runtime: "workerd" });
+    const plugins = (await s.listTaskPlugins()) as { status: string; key: string }[];
+    const now = new Date().toISOString();
+    return apiOk({
+      current_generation: 1,
+      generation_published_at: now,
+      database_revision: String(plugins.length),
+      last_rebuild: {
+        status: "success",
+        attempted_at: now,
+        generation: 1,
+        plugin_error_count: 0,
+        error: "workerd cannot execute Goja JS task-plugin runtime; plugins are a D1 registry plus HTTP passthrough",
+      },
+      plugin_errors: {},
+      runtime: "workerd",
+    });
   });
   r.get("/api/plugin/task/marketplace/sources", async (c) => {
     const s = store(c);
@@ -838,9 +911,14 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const items = (await s.listModelMeta()) as unknown[];
+    const items = (await s.listModelMeta()) as { vendor_id?: number }[];
     const fallback = items.length ? items : (await s.enabledModels("default")).map((model_name) => ({ model_name }));
-    return apiOk(pageData(fallback.slice(q.offset, q.offset + q.page_size), fallback.length, q));
+    const vendor_counts: Record<string, number> = {};
+    for (const m of items) {
+      const vid = String(m.vendor_id || 0);
+      vendor_counts[vid] = (vendor_counts[vid] || 0) + 1;
+    }
+    return apiOk(pageData(fallback.slice(q.offset, q.offset + q.page_size), fallback.length, q, { vendor_counts }));
   });
   r.get("/api/models/search", async (c) => {
     const s = store(c);

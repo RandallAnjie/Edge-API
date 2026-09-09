@@ -120,18 +120,23 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   }
 
   if (req.method === "GET" && (path === "/v1/models" || path === "/v1beta/models" || path === "/v1beta/openai/models")) {
+    const googKey = req.headers.get("x-goog-api-key") || url.searchParams.get("key");
     const fmt: ClientFormat =
-      path.startsWith("/v1beta/models") && !path.includes("openai")
-        ? "gemini"
-        : req.headers.get("x-api-key") && req.headers.get("anthropic-version")
-          ? "anthropic"
-          : "openai";
+      path === "/v1beta/openai/models"
+        ? "openai"
+        : path === "/v1beta/models" || Boolean(googKey && path === "/v1/models")
+          ? "gemini"
+          : req.headers.get("x-api-key") && req.headers.get("anthropic-version")
+            ? "anthropic"
+            : "openai";
     return listModelsForAuth(store, auth, fmt);
   }
 
   if (req.method === "GET" && path.startsWith("/v1/models/") && !path.includes(":")) {
     const model = decodeURIComponent(path.slice("/v1/models/".length));
-    return retrieveModel(store, auth, model);
+    const fmt: ClientFormat =
+      req.headers.get("x-api-key") && req.headers.get("anthropic-version") ? "anthropic" : "openai";
+    return retrieveModel(store, auth, model, fmt);
   }
 
   if (path.startsWith("/mj/") || path.match(/^\/[^/]+\/mj\//)) {

@@ -1,6 +1,21 @@
 import { parseJson } from "./constants.js";
 import type { Store } from "./store.js";
 
+export async function quotaRatios(
+  store: Store,
+  model: string,
+  group: string,
+): Promise<{ modelRatio: number; completionRatio: number; groupRatio: number }> {
+  const modelRatio = parseJson<Record<string, number>>(await store.option("ModelRatio"), {});
+  const completionRatio = parseJson<Record<string, number>>(await store.option("CompletionRatio"), {});
+  const groupRatio = parseJson<Record<string, number>>(await store.option("GroupRatio"), { default: 1 });
+  return {
+    modelRatio: modelRatio[model] ?? 1,
+    completionRatio: completionRatio[model] ?? 1,
+    groupRatio: groupRatio[group] ?? groupRatio.default ?? 1,
+  };
+}
+
 export async function computeQuota(
   store: Store,
   model: string,
@@ -8,13 +23,8 @@ export async function computeQuota(
   promptTokens: number,
   completionTokens: number,
 ): Promise<number> {
-  const modelRatio = parseJson<Record<string, number>>(await store.option("ModelRatio"), {});
-  const completionRatio = parseJson<Record<string, number>>(await store.option("CompletionRatio"), {});
-  const groupRatio = parseJson<Record<string, number>>(await store.option("GroupRatio"), { default: 1 });
-  const mr = modelRatio[model] ?? 1;
-  const cr = completionRatio[model] ?? 1;
-  const gr = groupRatio[group] ?? groupRatio.default ?? 1;
-  const q = (promptTokens * mr + completionTokens * mr * cr) * gr;
+  const { modelRatio, completionRatio, groupRatio } = await quotaRatios(store, model, group);
+  const q = (promptTokens * modelRatio + completionTokens * modelRatio * completionRatio) * groupRatio;
   const n = Math.ceil(q);
   return n < 1 && promptTokens + completionTokens > 0 ? 1 : n;
 }

@@ -191,18 +191,25 @@ test("2FA setup then login challenge", async () => {
   const setup = await json(new Request("http://local/api/user/2fa/setup", { method: "POST", headers: auth }), e);
   assert.equal(setup.body.success, true, setup.body.message);
   const secret = setup.body.data.secret as string;
+  assert.equal(typeof setup.body.data.qr_code_data, "string");
+  assert.ok(Array.isArray(setup.body.data.backup_codes));
+  assert.equal(typeof setup.body.data.flow_token, "string");
+  assert.equal(typeof setup.body.data.expires_at, "number");
   const { totpCode } = await import("../src/totp.js");
   const code = await totpCode(secret);
   const en = await json(
     new Request("http://local/api/user/2fa/enable", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, flow_token: setup.body.data.flow_token }),
     }),
     e,
   );
   assert.equal(en.body.success, true, en.body.message);
   assert.ok(Array.isArray(en.body.data.backup_codes));
+  assert.equal(typeof en.body.data.access_token, "string");
+  assert.equal(en.body.data.token_type, "Bearer");
+  assert.equal(typeof en.body.data.session.sid, "string");
 
   const challenge = await json(
     new Request("http://local/api/user/login", {
@@ -234,7 +241,12 @@ test("rankings + subscription buy + token batch", async () => {
 
   const rank = await json(new Request("http://local/api/rankings"), e);
   assert.equal(rank.body.success, true);
-  assert.ok(Array.isArray(rank.body.data));
+  assert.ok(Array.isArray(rank.body.data.models));
+  assert.ok(Array.isArray(rank.body.data.vendors));
+  assert.ok(Array.isArray(rank.body.data.top_movers));
+  assert.ok(Array.isArray(rank.body.data.top_droppers));
+  assert.ok(rank.body.data.models_history);
+  assert.ok(rank.body.data.vendor_share_history);
 
   const plan = await json(
     new Request("http://local/api/subscription/admin/plans", {

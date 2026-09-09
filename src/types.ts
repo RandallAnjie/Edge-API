@@ -161,6 +161,9 @@ export interface LogRow {
   group: string;
   ip: string;
   request_id: string;
+  upstream_request_id?: string;
+  other?: string;
+  channel_name?: string;
 }
 
 export interface RedemptionRow {

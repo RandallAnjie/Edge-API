@@ -62,6 +62,13 @@ export class Router<E = unknown> {
     return this;
   }
 
+  /** Original Gin groups are `/api/log/` but the React client often omits the trailing slash. */
+  slash(method: string, path: string, handler: Handler<E>): this {
+    this.on(method, path, handler);
+    if (path.endsWith("/") && path.length > 1) this.on(method, path.slice(0, -1), handler);
+    return this;
+  }
+
   get(path: string, handler: Handler<E>): this {
     return this.on("GET", path, handler);
   }

@@ -8,6 +8,7 @@ import {
   csv,
   dayStartSec,
   nowSec,
+  parseJson,
 } from "./constants.js";
 import { capabilities } from "./authz.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
@@ -430,8 +431,8 @@ export class Store {
   async insertLog(l: Partial<LogRow>): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO request_logs (user_id, created_at, type, content, username, token_name, model_name, quota, prompt_tokens, completion_tokens, use_time, is_stream, channel_id, token_id, "group", ip, request_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO request_logs (user_id, created_at, type, content, username, token_name, model_name, quota, prompt_tokens, completion_tokens, use_time, is_stream, channel_id, token_id, "group", ip, request_id, upstream_request_id, other)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         l.user_id ?? 0,
@@ -451,6 +452,8 @@ export class Store {
         l.group ?? "",
         l.ip ?? "",
         l.request_id ?? "",
+        l.upstream_request_id ?? "",
+        l.other ?? "",
       )
       .run();
   }
@@ -467,28 +470,89 @@ export class Store {
     tokenName?: string;
     channel?: number;
     requestId?: string;
+    group?: string;
+    upstreamRequestId?: string;
   }): Promise<{ items: LogRow[]; total: number }> {
     const where: string[] = ["1=1"];
     const binds: unknown[] = [];
     if (opts.userId) {
-      where.push("user_id = ?");
+      where.push("request_logs.user_id = ?");
       binds.push(opts.userId);
     }
     if (opts.type) {
-      where.push("type = ?");
+      where.push("request_logs.type = ?");
       binds.push(opts.type);
     }
     if (opts.start) {
-      where.push("created_at >= ?");
+      where.push("request_logs.created_at >= ?");
       binds.push(opts.start);
     }
     if (opts.end) {
-      where.push("created_at <= ?");
+      where.push("request_logs.created_at <= ?");
       binds.push(opts.end);
     }
     if (opts.model) {
-      where.push("model_name = ?");
+      where.push("request_logs.model_name = ?");
       binds.push(opts.model);
+    }
+    if (opts.username) {
+      where.push("request_logs.username = ?");
+      binds.push(opts.username);
+    }
+    if (opts.tokenName) {
+      where.push("request_logs.token_name = ?");
+      binds.push(opts.tokenName);
+    }
+    if (opts.channel) {
+      where.push("request_logs.channel_id = ?");
+      binds.push(opts.channel);
+    }
+    if (opts.requestId) {
+      where.push("request_logs.request_id = ?");
+      binds.push(opts.requestId);
+    }
+    if (opts.group) {
+      where.push('request_logs."group" = ?');
+      binds.push(opts.group);
+    }
+    if (opts.upstreamRequestId) {
+      where.push("request_logs.upstream_request_id = ?");
+      binds.push(opts.upstreamRequestId);
+    }
+    const w = where.join(" AND ");
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM request_logs WHERE ${w}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(
+        `SELECT request_logs.*, channels.name as channel_name FROM request_logs LEFT JOIN channels ON channels.id = request_logs.channel_id WHERE ${w} ORDER BY request_logs.id DESC LIMIT ? OFFSET ?`,
+      )
+      .bind(...binds, opts.limit, opts.offset)
+      .all<LogRow>();
+    return { items: results, total: num(totalRow?.c) };
+  }
+
+  async logStat(opts: {
+    userId?: number;
+    start?: number;
+    end?: number;
+    username?: string;
+    tokenName?: string;
+    model?: string;
+    channel?: number;
+    group?: string;
+    type?: number;
+  }): Promise<{
+    quota: number;
+    rpm: number;
+    tpm: number;
+  }> {
+    const where: string[] = [`type = ${Number(opts.type || 2)}`];
+    const binds: unknown[] = [];
+    if (opts.userId) {
+      where.push("user_id = ?");
+      binds.push(opts.userId);
     }
     if (opts.username) {
       where.push("username = ?");
@@ -498,40 +562,17 @@ export class Store {
       where.push("token_name = ?");
       binds.push(opts.tokenName);
     }
+    if (opts.model) {
+      where.push("model_name = ?");
+      binds.push(opts.model);
+    }
     if (opts.channel) {
       where.push("channel_id = ?");
       binds.push(opts.channel);
     }
-    if (opts.requestId) {
-      where.push("request_id = ?");
-      binds.push(opts.requestId);
-    }
-    const w = where.join(" AND ");
-    const totalRow = await this.db
-      .prepare(`SELECT COUNT(*) as c FROM request_logs WHERE ${w}`)
-      .bind(...binds)
-      .first<{ c: number }>();
-    const { results } = await this.db
-      .prepare(`SELECT * FROM request_logs WHERE ${w} ORDER BY id DESC LIMIT ? OFFSET ?`)
-      .bind(...binds, opts.limit, opts.offset)
-      .all<LogRow>();
-    return { items: results, total: num(totalRow?.c) };
-  }
-
-  async logStat(opts: { userId?: number; start?: number; end?: number; username?: string }): Promise<{
-    quota: number;
-    rpm: number;
-    tpm: number;
-  }> {
-    const where: string[] = ["type = 2"];
-    const binds: unknown[] = [];
-    if (opts.userId) {
-      where.push("user_id = ?");
-      binds.push(opts.userId);
-    }
-    if (opts.username) {
-      where.push("username = ?");
-      binds.push(opts.username);
+    if (opts.group) {
+      where.push('"group" = ?');
+      binds.push(opts.group);
     }
     if (opts.start) {
       where.push("created_at >= ?");
@@ -569,19 +610,27 @@ export class Store {
     }
     await this.db
       .prepare(
-        "INSERT INTO quota_data (user_id, username, model_name, created_at, quota, token_used, count) VALUES (?, ?, ?, ?, ?, ?, 1)",
+        "INSERT INTO quota_data (user_id, username, model_name, created_at, quota, token_used, count, use_group, token_id, channel_id, node_name) VALUES (?, ?, ?, ?, ?, ?, 1, '', 0, 0, 'workerd')",
       )
       .bind(user.id, user.username, model, day, quota, tokens)
       .run();
   }
 
-  async quotaDates(userId: number | null, start: number, end: number): Promise<unknown[]> {
-    const where = userId ? "user_id = ? AND created_at >= ? AND created_at <= ?" : "created_at >= ? AND created_at <= ?";
-    const binds = userId ? [userId, start, end] : [start, end];
+  async quotaDates(userId: number | null, start: number, end: number, username = ""): Promise<unknown[]> {
+    const where = ["created_at >= ?", "created_at <= ?"];
+    const binds: unknown[] = [start, end];
+    if (userId) {
+      where.push("user_id = ?");
+      binds.push(userId);
+    }
+    if (username) {
+      where.push("username = ?");
+      binds.push(username);
+    }
     const { results } = await this.db
       .prepare(
-        `SELECT created_at, model_name, username, SUM(quota) as quota, SUM(token_used) as token_used, SUM(count) as count
-         FROM quota_data WHERE ${where} GROUP BY created_at, model_name, username ORDER BY created_at`,
+        `SELECT created_at, model_name, username, use_group, token_id, channel_id, node_name, SUM(quota) as quota, SUM(token_used) as token_used, SUM(count) as count
+         FROM quota_data WHERE ${where.join(" AND ")} GROUP BY created_at, model_name, username, use_group, token_id, channel_id, node_name ORDER BY created_at`,
       )
       .bind(...binds)
       .all();
@@ -689,12 +738,8 @@ export class Store {
   }
 
   async uniqueGroups(): Promise<string[]> {
-    const { results } = await this.db.prepare(`SELECT DISTINCT "group" as g FROM channels`).all<{ g: string }>();
-    const set = new Set<string>(["default"]);
-    for (const r of results) for (const g of csv(r.g || "")) set.add(g);
-    const { results: ur } = await this.db.prepare(`SELECT DISTINCT "group" as g FROM users`).all<{ g: string }>();
-    for (const r of ur) if (r.g) set.add(r.g);
-    return [...set];
+    const ratios = parseJson<Record<string, number>>(await this.option("GroupRatio"), { default: 1 });
+    return Object.keys(ratios);
   }
 
   async audit(userId: number, username: string, type: string, content: string, ip: string): Promise<void> {
@@ -756,14 +801,76 @@ export class Store {
   }
 
   async enabledModels(group: string): Promise<string[]> {
+    return this.enabledModelsForGroups([group]);
+  }
+
+  async enabledModelsAll(): Promise<string[]> {
     const channels = await this.enabledChannels();
     const set = new Set<string>();
     for (const c of channels) {
-      const groups = csv(c.group || "default");
-      if (groups.length && !groups.includes(group) && !groups.includes("all")) continue;
       for (const m of csv(c.models)) set.add(m);
     }
     return [...set].sort();
+  }
+
+  async enabledModelsForGroups(groups: string[]): Promise<string[]> {
+    if (!groups.length) return [];
+    const channels = await this.enabledChannels();
+    const want = new Set(groups.filter(Boolean));
+    const set = new Set<string>();
+    for (const c of channels) {
+      const chGroups = csv(c.group || "default");
+      if (want.size && !chGroups.includes("all") && !chGroups.some((g) => want.has(g))) continue;
+      for (const m of csv(c.models)) set.add(m);
+    }
+    return [...set].sort();
+  }
+
+  async hasCheckedIn(userId: number, date: string): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT id FROM checkins WHERE user_id = ? AND checkin_date = ?")
+      .bind(userId, date)
+      .first<{ id: number }>();
+    return !!row;
+  }
+
+  async insertCheckin(userId: number, date: string, quota: number): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO checkins (user_id, checkin_date, quota_awarded, created_at) VALUES (?, ?, ?, ?)")
+      .bind(userId, date, quota, nowSec())
+      .run();
+  }
+
+  async checkinStats(
+    userId: number,
+    month: string,
+  ): Promise<{
+    checked_in_today: boolean;
+    total_checkins: number;
+    total_quota: number;
+    checkin_count: number;
+    records: { checkin_date: string; quota_awarded: number }[];
+  }> {
+    const start = `${month}-01`;
+    const end = `${month}-31`;
+    const { results } = await this.db
+      .prepare(
+        "SELECT checkin_date, quota_awarded FROM checkins WHERE user_id = ? AND checkin_date >= ? AND checkin_date <= ? ORDER BY checkin_date DESC",
+      )
+      .bind(userId, start, end)
+      .all<{ checkin_date: string; quota_awarded: number }>();
+    const totals = await this.db
+      .prepare("SELECT COUNT(*) as c, COALESCE(SUM(quota_awarded),0) as q FROM checkins WHERE user_id = ?")
+      .bind(userId)
+      .first<{ c: number; q: number }>();
+    const today = new Date().toISOString().slice(0, 10);
+    return {
+      checked_in_today: await this.hasCheckedIn(userId, today),
+      total_checkins: num(totals?.c),
+      total_quota: num(totals?.q),
+      checkin_count: results.length,
+      records: results,
+    };
   }
 
   async counts(): Promise<{ users: number; channels: number; tokens: number; logs: number }> {
@@ -939,15 +1046,15 @@ export class Store {
     await this.db.prepare(`UPDATE topups SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
   }
 
-  async rankings(start: number, end: number, limit = 50): Promise<unknown[]> {
+  async rankings(start: number, end: number, limit = 50): Promise<{ model_name: string; token_used: number; quota: number }[]> {
     const { results } = await this.db
       .prepare(
-        `SELECT username, user_id, SUM(quota) as quota, SUM(token_used) as token_used, SUM(count) as count
+        `SELECT model_name, SUM(token_used) as token_used, SUM(quota) as quota
          FROM quota_data WHERE created_at >= ? AND created_at <= ?
-         GROUP BY user_id, username ORDER BY quota DESC LIMIT ?`,
+         GROUP BY model_name ORDER BY token_used DESC LIMIT ?`,
       )
       .bind(start, end, limit)
-      .all();
+      .all<{ model_name: string; token_used: number; quota: number }>();
     return results;
   }
 

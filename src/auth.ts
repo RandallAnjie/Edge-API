@@ -87,8 +87,8 @@ export async function issueSession(
   return { token, cookie, cookies, data, sid };
 }
 
-export function sessionResponse(issued: { data: Record<string, unknown>; cookies: string[] }, status = 200): Response {
-  const res = apiOk(issued.data);
+export function sessionResponse(issued: { data: Record<string, unknown>; cookies: string[] }, status = 200, message = ""): Response {
+  const res = apiOk(issued.data, message);
   const headers = new Headers(res.headers);
   for (const c of issued.cookies) headers.append("set-cookie", c);
   return new Response(res.body, { status, headers });

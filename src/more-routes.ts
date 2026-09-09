@@ -26,7 +26,7 @@ import {
   verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, displayTokenKey } from "./crypto.js";
-import { publicToken, verificationRequirements } from "./dto.js";
+import { publicToken, verificationRequirements, publicLog, rankingsResponse, exposedRatioConfig } from "./dto.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { apiFail, apiFailCode, apiOk, clientIp, json, pageData, pageQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
@@ -76,20 +76,28 @@ export function registerMore(r: Router<Env>): void {
 
   r.get("/api/rankings", async (c) => {
     const s = store(c);
-    if (!(await s.optionBool("RankingsEnabled", true))) return apiFail("排行榜未启用");
-    const start = Number(c.url.searchParams.get("start_timestamp") || nowSec() - 86400 * 7);
+    if (!(await s.optionBool("RankingsEnabled", true))) return apiFail("排行榜未启用", null, 400);
+    const period = c.url.searchParams.get("period") || "week";
+    const days = period === "today" ? 1 : period === "month" ? 30 : period === "year" ? 365 : 7;
+    const start = Number(c.url.searchParams.get("start_timestamp") || nowSec() - 86400 * days);
     const end = Number(c.url.searchParams.get("end_timestamp") || nowSec());
-    return apiOk(await s.rankings(start, end));
+    return apiOk(rankingsResponse(await s.rankings(start, end)));
   });
 
   r.get("/api/ratio_config", async (c) => {
     const s = store(c);
-    if (!(await s.optionBool("ExposeRatioEnabled", false))) return apiFail("倍率配置未公开");
-    return apiOk({
-      ModelRatio: parseJson(await s.option("ModelRatio"), {}),
-      CompletionRatio: parseJson(await s.option("CompletionRatio"), {}),
-      GroupRatio: parseJson(await s.option("GroupRatio"), { default: 1 }),
-    });
+    if (!(await s.optionBool("ExposeRatioEnabled", false))) return json(403, { success: false, message: "倍率配置接口未启用" });
+    return apiOk(
+      exposedRatioConfig({
+        model_ratio: parseJson(await s.option("ModelRatio"), {}),
+        completion_ratio: parseJson(await s.option("CompletionRatio"), {}),
+        cache_ratio: parseJson(await s.option("CacheRatio"), {}),
+        create_cache_ratio: parseJson(await s.option("CreateCacheRatio"), {}),
+        model_price: parseJson(await s.option("ModelPrice"), {}),
+        billing_mode: parseJson(await s.option("billing_setting.billing_mode"), {}),
+        billing_expr: parseJson(await s.option("billing_setting.billing_expr"), {}),
+      }),
+    );
   });
 
   r.get("/api/verification", async (c) => {
@@ -167,22 +175,52 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const secret = generateTotpSecret();
-    await s.updateUser(u.id, { totp_secret: secret, totp_enabled: 0 });
+    const codes = generateBackupCodes();
+    const flowToken = randomHex(16);
+    const expiresAt = nowSec() + 300;
+    await s.insertAuthFlow({
+      token: flowToken,
+      type: "2fa_setup",
+      user_id: u.id,
+      expires_at: expiresAt,
+      payload: JSON.stringify({ secret, backup_codes: codes }),
+    });
     const issuer = (await s.option("SystemName")) || "Edge API";
-    return apiOk({ secret, otpauth_url: otpauthUrl(secret, u.username, issuer) });
+    const qr = otpauthUrl(secret, u.username, issuer);
+    return apiOk({
+      secret,
+      qr_code_data: qr,
+      backup_codes: codes,
+      flow_token: flowToken,
+      expires_at: expiresAt,
+      otpauth_url: qr,
+    });
   });
 
   r.post("/api/user/2fa/enable", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { code?: string };
+    const body = (await readJson(c.req)) as { code?: string; flow_token?: string };
     const user = await s.getUserById(u.id);
-    if (!user?.totp_secret) return apiFail("请先调用 setup");
-    if (!(await verifyTotp(user.totp_secret, body.code || ""))) return apiFail("验证码错误");
-    const codes = generateBackupCodes();
-    await s.updateUser(u.id, { totp_enabled: 1, totp_backup: codes.join(",") });
-    return apiOk({ backup_codes: codes }, "已启用 2FA");
+    if (!user) return apiFail("用户不存在");
+    if (!body.flow_token) return apiFailCode("The two-factor setup has expired or changed. Start setup again.", "TWOFA_SETUP_INVALID");
+    const flow = await s.getAuthFlow(body.flow_token);
+    if (!flow || flow.type !== "2fa_setup" || flow.user_id !== u.id || flow.expires_at < nowSec()) {
+      return apiFailCode("The two-factor setup has expired or changed. Start setup again.", "TWOFA_SETUP_INVALID");
+    }
+    const payload = parseJson<{ secret?: string; backup_codes?: string[] }>(flow.payload, {});
+    const secret = payload.secret || "";
+    const codes = payload.backup_codes;
+    await s.deleteAuthFlow(body.flow_token);
+    if (!secret) return apiFailCode("The two-factor setup has expired or changed. Start setup again.", "TWOFA_SETUP_INVALID");
+    if (!(await verifyTotp(secret, body.code || ""))) return apiFail("验证码错误");
+    const backup = codes || generateBackupCodes();
+    await s.updateUser(u.id, { totp_secret: secret, totp_enabled: 1, totp_backup: backup.join(",") });
+    const fresh = await s.getUserById(u.id);
+    const issued = await issueSession(s, c.env, fresh || user, c.req, "twofa_enabled");
+    issued.data.backup_codes = backup;
+    return sessionResponse(issued);
   });
 
   r.post("/api/user/2fa/disable", async (c) => {
@@ -196,7 +234,9 @@ export function registerMore(r: Router<Env>): void {
     const backup = verifyBackupCode(user.totp_backup || "", body.code || "");
     if (!totpOk && !backup.ok) return apiFail("验证码错误");
     await s.updateUser(u.id, { totp_enabled: 0, totp_secret: "", totp_backup: "" });
-    return apiOk(null, "已关闭 2FA");
+    const fresh = await s.getUserById(u.id);
+    const issued = await issueSession(s, c.env, fresh || user, c.req, "twofa_disabled");
+    return sessionResponse(issued, 200, "两步验证已禁用");
   });
 
   r.post("/api/user/2fa/backup_codes", async (c) => {
@@ -783,13 +823,13 @@ export function registerMore(r: Router<Env>): void {
     const auth = await authenticateApiToken(c, s);
     if (auth instanceof Response) return auth;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listLogs({
+    const { items } = await s.listLogs({
       offset: q.offset,
       limit: q.page_size,
       userId: auth.user.id,
       tokenName: auth.token.name,
     });
-    return apiOk(pageData(items, total, q));
+    return apiOk(items.map((row) => publicLog(row, 1)));
   });
 
   r.get("/api/subscription/plans", async (c) => {

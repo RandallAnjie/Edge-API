@@ -5,6 +5,8 @@ import {
   ROOT_QUOTA,
   START_TIME,
   TOKEN_ENABLED,
+  TOKEN_EXPIRED,
+  TOKEN_EXHAUSTED,
   USER_DISABLED,
   USER_ENABLED,
   VERSION,
@@ -33,7 +35,7 @@ import {
   sessionResponse,
 } from "./auth.js";
 import { Store, permissionsFor, publicUser, stripChannelKey } from "./store.js";
-import { publicToken, buildPricing, userGroupsView } from "./dto.js";
+import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, dashboardListModels, channelListModels, publicOptions } from "./dto.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { formatQuota } from "./quota.js";
 import { registerMore } from "./more-routes.js";
@@ -279,7 +281,14 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.enabledModels(u.group || "default"));
+    const usable = await userUsableGroups(s, u.group || "default");
+    const group = c.url.searchParams.get("group") || "";
+    let groups: string[] = [];
+    if (!group) groups = Object.keys(usable);
+    else if (group === "auto") {
+      if (usable.auto) groups = await userAutoGroups(s, u.group || "default");
+    } else if (usable[group] != null) groups = [group];
+    return apiOk(await s.enabledModelsForGroups(groups));
   });
 
   r.get("/api/user/groups", async (c) => {
@@ -300,48 +309,50 @@ export function adminRouter(): Router<Env> {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
-    return apiOk({
-      aff_code: user?.aff_code,
-      aff_count: user?.aff_count || 0,
-      aff_quota: user?.aff_quota || 0,
-      aff_history: user?.aff_quota || 0,
-    });
+    let code = user?.aff_code || "";
+    if (!code) {
+      code = generateAffCode();
+      await s.updateUser(u.id, { aff_code: code });
+    }
+    return apiOk(code);
   });
 
   r.get("/api/user/checkin", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const user = await s.getUserById(u.id);
     const enabled = await s.optionBool("CheckinEnabled", true);
-    const last = user?.checkin_at || 0;
-    const today = Math.floor(Date.now() / 86400000);
-    const lastDay = Math.floor(last / 86400);
-    return apiOk({ enabled, checked_in: lastDay === today, checkin_quota: await s.optionNum("CheckinQuota", 5000) });
+    if (!enabled) return apiFail("签到功能未启用");
+    const month = c.url.searchParams.get("month") || new Date().toISOString().slice(0, 7);
+    const stats = await s.checkinStats(u.id, month);
+    return apiOk({
+      enabled: true,
+      min_quota: await s.optionNum("CheckinMinQuota", 1000),
+      max_quota: await s.optionNum("CheckinMaxQuota", await s.optionNum("CheckinQuota", 5000)),
+      stats,
+    });
   });
 
   r.post("/api/user/checkin", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    if (!(await s.optionBool("CheckinEnabled", true))) return apiFail("签到未启用");
+    if (!(await s.optionBool("CheckinEnabled", true))) return apiFail("签到功能未启用");
     const user = await s.getUserById(u.id);
     if (!user) return apiFail("用户不存在");
-    const today = Math.floor(Date.now() / 86400000);
-    if (Math.floor(user.checkin_at / 86400) === today) return apiFail("今日已签到");
-    const q = await s.optionNum("CheckinQuota", 5000);
-    await s.addQuota(u.id, q);
+    const today = new Date().toISOString().slice(0, 10);
+    if (await s.hasCheckedIn(u.id, today)) return apiFail("今日已签到");
+    const minQ = await s.optionNum("CheckinMinQuota", 1000);
+    const maxQ = await s.optionNum("CheckinMaxQuota", await s.optionNum("CheckinQuota", 5000));
+    const quota = minQ + (maxQ > minQ ? Math.floor(Math.random() * (maxQ - minQ + 1)) : 0);
+    await s.insertCheckin(u.id, today, quota);
+    await s.addQuota(u.id, quota);
     await s.updateUser(u.id, { checkin_at: nowSec() });
-    await s.insertLog({
-      user_id: u.id,
-      type: 1,
-      content: `checkin +${q}`,
-      username: u.username,
-    });
-    return apiOk({ quota: q }, "签到成功");
+    await s.insertLog({ user_id: u.id, type: 4, content: `用户签到，获得额度 ${quota}`, username: u.username, quota });
+    return apiOk({ quota_awarded: quota, checkin_date: today }, "签到成功");
   });
 
-  r.get("/api/user/", async (c) => {
+  r.slash("GET", "/api/user/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -370,7 +381,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(publicUser(user));
   });
 
-  r.post("/api/user/", async (c) => {
+  r.slash("POST", "/api/user/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -391,7 +402,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(null, "创建成功");
   });
 
-  r.put("/api/user/", async (c) => {
+  r.slash("PUT", "/api/user/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -461,7 +472,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(null);
   });
 
-  r.get("/api/token/", async (c) => {
+  r.slash("GET", "/api/token/", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
@@ -488,7 +499,7 @@ export function adminRouter(): Router<Env> {
     return apiOk({ key: displayTokenKey(t.key) });
   });
 
-  r.post("/api/token/", async (c) => {
+  r.slash("POST", "/api/token/", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
@@ -523,12 +534,27 @@ export function adminRouter(): Router<Env> {
     return apiOk({ id, key: displayTokenKey(key) }, "创建成功");
   });
 
-  r.put("/api/token/", async (c) => {
+  r.slash("PUT", "/api/token/", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number };
+    const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number; status?: number };
     if (!body.id) return apiFail("无效的参数");
+    const existing = await s.getTokenById(Number(body.id), u.id);
+    if (!existing) return apiFail("令牌不存在");
+    const statusOnly = c.url.searchParams.get("status_only");
+    if (statusOnly) {
+      if (body.status === TOKEN_ENABLED) {
+        if (existing.status === TOKEN_EXPIRED && existing.expired_time !== -1 && existing.expired_time <= nowSec()) {
+          return apiFail("令牌已过期，无法启用");
+        }
+        if (existing.status === TOKEN_EXHAUSTED && existing.remain_quota <= 0 && !existing.unlimited_quota) {
+          return apiFail("令牌额度已用尽，无法启用");
+        }
+      }
+      await s.updateToken(Number(body.id), u.id, { status: Number(body.status) });
+      return apiOk(null);
+    }
     const patch: Record<string, unknown> = {};
     for (const k of ["name", "status", "remain_quota", "expired_time", "model_limits", "allow_ips", "group"] as const) {
       if (body[k] != null) patch[k] = body[k];
@@ -541,7 +567,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(null, "更新成功");
   });
 
-  r.delete("/api/token/:id", async (c) => {
+  r.slash("DELETE", "/api/token/:id/", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
@@ -549,7 +575,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(null);
   });
 
-  r.get("/api/channel/", async (c) => {
+  r.slash("GET", "/api/channel/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -587,14 +613,14 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.enabledModels("default"));
+    return apiOk(channelListModels());
   });
 
   r.get("/api/channel/models_enabled", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
+    const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.enabledModels(u.group || "default"));
+    return apiOk(await s.enabledModelsAll());
   });
 
   r.get("/api/channel/ops", async (c) => {
@@ -622,7 +648,7 @@ export function adminRouter(): Router<Env> {
     return apiOk({ key: ch.key });
   });
 
-  r.post("/api/channel/", async (c) => {
+  r.slash("POST", "/api/channel/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -657,7 +683,7 @@ export function adminRouter(): Router<Env> {
     return apiOk({ id }, "创建成功");
   });
 
-  r.put("/api/channel/", async (c) => {
+  r.slash("PUT", "/api/channel/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -697,7 +723,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(null, "更新成功");
   });
 
-  r.delete("/api/channel/:id", async (c) => {
+  r.slash("DELETE", "/api/channel/:id/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -804,7 +830,7 @@ export function adminRouter(): Router<Env> {
     }
   });
 
-  r.get("/api/log/", async (c) => {
+  r.slash("GET", "/api/log/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -820,8 +846,10 @@ export function adminRouter(): Router<Env> {
       tokenName: c.url.searchParams.get("token_name") || undefined,
       channel: Number(c.url.searchParams.get("channel") || 0) || undefined,
       requestId: c.url.searchParams.get("request_id") || undefined,
+      group: c.url.searchParams.get("group") || undefined,
+      upstreamRequestId: c.url.searchParams.get("upstream_request_id") || undefined,
     });
-    return apiOk(pageData(items, total, q));
+    return apiOk(pageData(items.map((row) => publicLog(row, u.role)), total, q));
   });
 
   r.get("/api/log/self", async (c) => {
@@ -839,8 +867,10 @@ export function adminRouter(): Router<Env> {
       model: c.url.searchParams.get("model_name") || undefined,
       tokenName: c.url.searchParams.get("token_name") || undefined,
       requestId: c.url.searchParams.get("request_id") || undefined,
+      group: c.url.searchParams.get("group") || undefined,
+      upstreamRequestId: c.url.searchParams.get("upstream_request_id") || undefined,
     });
-    return apiOk(pageData(items, total, q));
+    return apiOk(pageData(items.map((row) => publicLog(row, u.role)), total, q));
   });
 
   r.get("/api/log/stat", async (c) => {
@@ -849,9 +879,14 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     return apiOk(
       await s.logStat({
+        type: Number(c.url.searchParams.get("type") || 0) || undefined,
         start: Number(c.url.searchParams.get("start_timestamp") || 0) || undefined,
         end: Number(c.url.searchParams.get("end_timestamp") || 0) || undefined,
         username: c.url.searchParams.get("username") || undefined,
+        tokenName: c.url.searchParams.get("token_name") || undefined,
+        model: c.url.searchParams.get("model_name") || undefined,
+        channel: Number(c.url.searchParams.get("channel") || 0) || undefined,
+        group: c.url.searchParams.get("group") || undefined,
       }),
     );
   });
@@ -860,16 +895,27 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.logStat({ userId: u.id }));
+    return apiOk(
+      await s.logStat({
+        userId: u.id,
+        username: u.username,
+        type: Number(c.url.searchParams.get("type") || 0) || undefined,
+        start: Number(c.url.searchParams.get("start_timestamp") || 0) || undefined,
+        end: Number(c.url.searchParams.get("end_timestamp") || 0) || undefined,
+        tokenName: c.url.searchParams.get("token_name") || undefined,
+        model: c.url.searchParams.get("model_name") || undefined,
+        group: c.url.searchParams.get("group") || undefined,
+      }),
+    );
   });
 
-  r.get("/api/data/", async (c) => {
+  r.slash("GET", "/api/data/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const start = Number(c.url.searchParams.get("start_timestamp") || nowSec() - 86400 * 7);
     const end = Number(c.url.searchParams.get("end_timestamp") || nowSec());
-    return apiOk(await s.quotaDates(null, start, end));
+    return apiOk(await s.quotaDates(null, start, end, c.url.searchParams.get("username") || ""));
   });
 
   r.get("/api/data/self", async (c) => {
@@ -878,24 +924,25 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const start = Number(c.url.searchParams.get("start_timestamp") || nowSec() - 86400 * 7);
     const end = Number(c.url.searchParams.get("end_timestamp") || nowSec());
+    if (end - start > 2592000) return apiFail("时间跨度不能超过 1 个月");
     return apiOk(await s.quotaDates(u.id, start, end));
   });
 
-  r.get("/api/group/", async (c) => {
+  r.slash("GET", "/api/group/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     return apiOk(await s.uniqueGroups());
   });
 
-  r.get("/api/option/", async (c) => {
+  r.slash("GET", "/api/option/", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.allOptions());
+    return apiOk(publicOptions(await s.allOptions()));
   });
 
-  r.put("/api/option/", async (c) => {
+  r.slash("PUT", "/api/option/", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
@@ -905,7 +952,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(null, "更新成功");
   });
 
-  r.get("/api/redemption/", async (c) => {
+  r.slash("GET", "/api/redemption/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -923,7 +970,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(item);
   });
 
-  r.post("/api/redemption/", async (c) => {
+  r.slash("POST", "/api/redemption/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -938,7 +985,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(keys, "创建成功");
   });
 
-  r.put("/api/redemption/", async (c) => {
+  r.slash("PUT", "/api/redemption/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -952,7 +999,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(null);
   });
 
-  r.delete("/api/redemption/:id", async (c) => {
+  r.slash("DELETE", "/api/redemption/:id/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -994,7 +1041,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(pageData(items, total, q));
   });
 
-  r.get("/api/mj/", async (c) => {
+  r.slash("GET", "/api/mj/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
@@ -1016,7 +1063,7 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.enabledModels(u.group || "default"));
+    return apiOk(dashboardListModels());
   });
 
   r.post("/pg/chat/completions", async (c) => {
@@ -1045,15 +1092,25 @@ async function billingSub(c: C): Promise<Response> {
   const auth = await authenticateApiToken(c, s);
   if (auth instanceof Response) return auth;
   const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
-  const hardLimit = auth.token.unlimited_quota ? 100000000 : auth.token.remain_quota + auth.token.used_quota;
+  const tokenStat = await s.optionBool("DisplayTokenStatEnabled", true);
+  let remain = auth.user.quota;
+  let used = auth.user.used_quota;
+  let expiredTime = auth.token.expired_time;
+  if (tokenStat) {
+    remain = auth.token.remain_quota;
+    used = auth.token.used_quota;
+  }
+  let amount: number = remain + used;
+  if (auth.token.unlimited_quota) amount = 100000000;
+  else amount = amount / quotaPerUnit;
   return new Response(
     JSON.stringify({
       object: "billing_subscription",
       has_payment_method: true,
-      soft_limit_usd: auth.user.quota / quotaPerUnit,
-      hard_limit_usd: hardLimit / quotaPerUnit,
-      system_hard_limit_usd: hardLimit / quotaPerUnit,
-      access_until: auth.token.expired_time > 0 ? auth.token.expired_time : 0,
+      soft_limit_usd: amount,
+      hard_limit_usd: amount,
+      system_hard_limit_usd: amount,
+      access_until: expiredTime > 0 ? expiredTime : 0,
     }),
     { headers: { "content-type": "application/json" } },
   );
@@ -1065,10 +1122,12 @@ async function billingUsage(c: C): Promise<Response> {
   const auth = await authenticateApiToken(c, s);
   if (auth instanceof Response) return auth;
   const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
+  const tokenStat = await s.optionBool("DisplayTokenStatEnabled", true);
+  const quota = tokenStat ? auth.token.used_quota : auth.user.used_quota;
   return new Response(
     JSON.stringify({
       object: "list",
-      total_usage: (auth.user.used_quota / quotaPerUnit) * 100,
+      total_usage: (quota / quotaPerUnit) * 100,
     }),
     { headers: { "content-type": "application/json" } },
   );

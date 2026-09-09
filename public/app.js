@@ -5,20 +5,94 @@ const state = {
   status: null,
   setup: null,
   token: sessionStorage.getItem("edge_token") || "",
-  page: location.hash.replace(/^#\/?/, "") || "home",
+  page: "home",
   notice: "",
   err: "",
 };
 
+const PAGE_HREF = {
+  home: "/",
+  login: "/sign-in",
+  register: "/sign-up",
+  dashboard: "/dashboard/",
+  tokens: "/keys/",
+  logs: "/usage-logs/",
+  mj: "/usage-logs/drawing",
+  tasks: "/usage-logs/task",
+  audit: "/usage-logs/audit",
+  wallet: "/wallet/",
+  profile: "/profile/",
+  security: "/security/",
+  subscriptions: "/subscriptions/",
+  channels: "/channels/",
+  models: "/models/",
+  users: "/users/",
+  redemption: "/redemption-codes/",
+  settings: "/system-settings",
+  plugins: "/task-plugins/",
+  sysinfo: "/system-info/",
+  pricing: "/pricing/",
+  rankings: "/rankings/",
+  about: "/about/",
+  agreement: "/user-agreement",
+  privacy: "/privacy-policy",
+  playground: "/playground/",
+  chat: "/chat2link",
+  setup: "/setup/",
+  deployments: "/models/deployments",
+  data: "/usage-logs/",
+  vendors: "/models/",
+  forgot: "/forgot-password",
+  performance: "/system-settings/operations/performance",
+};
+
+const LEGACY_CONSOLE = {
+  console: "dashboard",
+  "console/models": "models",
+  "console/deployment": "deployments",
+  "console/subscription": "subscriptions",
+  "console/channel": "channels",
+  "console/token": "tokens",
+  "console/playground": "playground",
+  "console/redemption": "redemption",
+  "console/user": "users",
+  "console/personal": "profile",
+  "console/log": "logs",
+  "console/midjourney": "mj",
+  "console/task": "tasks",
+  "console/topup": "wallet",
+  "console/setting": "settings",
+  "console/chat": "dashboard",
+  login: "login",
+  forbidden: "home",
+};
+
+function currentRaw() {
+  const hash = (location.hash.replace(/^#\/?/, "") || "").split("?")[0];
+  if (hash) return hash.replace(/\/+$/, "") || "home";
+  return (location.pathname.replace(/^\//, "") || "home").replace(/\/+$/, "") || "home";
+}
+
 function hashPage() {
-  const raw = (location.hash.replace(/^#\/?/, "") || "home").split("?")[0];
+  const raw = currentRaw();
+  if (LEGACY_CONSOLE[raw]) return LEGACY_CONSOLE[raw];
+  if (raw.startsWith("console/chat/")) return "chat";
+  if (raw.startsWith("console/")) return "dashboard";
+  if (raw.startsWith("system-settings")) return "settings";
+  if (raw.startsWith("usage-logs/drawing") || raw === "midjourney") return "mj";
+  if (raw.startsWith("usage-logs/task")) return "tasks";
+  if (raw.startsWith("usage-logs/audit")) return "audit";
+  if (raw.startsWith("usage-logs")) return "logs";
+  if (raw.startsWith("models/deployments")) return "deployments";
+  if (raw.startsWith("models")) return "models";
+  if (raw.startsWith("chat/") || raw === "chat2link") return "chat";
+  if (raw.startsWith("oauth")) return "login";
+  if (raw.startsWith("errors/") || ["401", "403", "404", "500", "503"].includes(raw)) return "home";
   const aliases = {
     "sign-in": "login",
     "sign-up": "register",
     register: "register",
     keys: "tokens",
-    "usage-logs": "logs",
-    "system-settings": "settings",
     "task-plugins": "plugins",
     "system-info": "sysinfo",
     "redemption-codes": "redemption",
@@ -27,33 +101,38 @@ function hashPage() {
     "forgot-password": "forgot",
     reset: "forgot",
     otp: "login",
-    chat2link: "chat",
     oauth: "login",
     console: "dashboard",
+    dashboard: "dashboard",
+    pricing: "pricing",
+    rankings: "rankings",
+    wallet: "wallet",
+    profile: "profile",
+    security: "security",
+    subscriptions: "subscriptions",
+    channels: "channels",
+    users: "users",
+    playground: "playground",
+    about: "about",
+    setup: "setup",
+    tokens: "tokens",
+    logs: "logs",
+    home: "home",
   };
   if (aliases[raw]) return aliases[raw];
-  const first = raw.split("/")[0];
-  const prefix = {
-    "system-settings": "settings",
-    "usage-logs": "logs",
-    keys: "tokens",
-    "sign-in": "login",
-    "sign-up": "register",
-    "task-plugins": "plugins",
-    "system-info": "sysinfo",
-    "redemption-codes": "redemption",
-    "privacy-policy": "privacy",
-    "user-agreement": "agreement",
-    "forgot-password": "forgot",
-    chat2link: "chat",
-    errors: "home",
-    oauth: "login",
-    pricing: "pricing",
-    dashboard: "dashboard",
-    models: "models",
-    chat: "chat",
-  };
-  return prefix[first] || first;
+  return raw.split("/")[0] || "home";
+}
+
+function currentQuery() {
+  const hashQ = location.hash.split("?")[1];
+  if (hashQ) return new URLSearchParams(hashQ);
+  return new URLSearchParams(location.search);
+}
+
+function goto(path) {
+  const url = path.startsWith("/") ? path : "/" + path;
+  history.pushState({}, "", url);
+  render();
 }
 
 async function api(path, opts = {}) {
@@ -84,7 +163,8 @@ function money(q) {
 
 function nav(id, label, show = true) {
   if (!show) return "";
-  return `<a href="#/${id}" class="${hashPage() === id ? "active" : ""}">${label}</a>`;
+  const href = PAGE_HREF[id] || "/" + id;
+  return `<a href="${href}" class="${hashPage() === id ? "active" : ""}">${label}</a>`;
 }
 
 function layout(content) {
@@ -170,8 +250,15 @@ function bindCommon() {
     state.token = "";
     sessionStorage.removeItem("edge_token");
     state.user = null;
-    location.hash = "/login";
-    render();
+    goto("/sign-in");
+  });
+  document.querySelectorAll("a[href^='/']").forEach((a) => {
+    if (a.target === "_blank" || a.getAttribute("download")) return;
+    a.addEventListener("click", (e) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      goto(a.getAttribute("href"));
+    });
   });
 }
 
@@ -181,8 +268,8 @@ async function pageHome() {
       <h1>${esc(state.status?.system_name || "Edge API")}</h1>
       <p>将 QuantumNous new-api 的完整网关能力运行在 RandallFlare（Cloudflare Workers / workerd）上。兼容 OpenAI / Claude / Gemini 协议，渠道调度、额度、令牌、日志与后台均可在边缘节点完成。</p>
       <div class="row">
-        ${state.user ? `<a class="btn primary" href="#/dashboard">进入控制台</a>` : `<a class="btn primary" href="#/login">登录</a>`}
-        <a class="btn" href="#/pricing">查看定价</a>
+        ${state.user ? `<a class="btn primary" href="/dashboard/">进入控制台</a>` : `<a class="btn primary" href="/sign-in">登录</a>`}
+        <a class="btn" href="/pricing/">查看定价</a>
       </div>
     </div>
     <div class="cards">
@@ -305,6 +392,8 @@ async function pageDashboard() {
   const stat = await api("/api/log/self/stat");
   const data = await api("/api/data/self");
   const ck = await api("/api/user/checkin");
+  const d = ck.data?.data || {};
+  const checked = !!d.stats?.checked_in_today;
   const rows = data.data?.data || [];
   return layout(`
     <div class="topbar">
@@ -312,7 +401,7 @@ async function pageDashboard() {
         <h1>仪表盘</h1>
         <p class="sub">你好，${esc(user.display_name || user.username)} · ${user.role >= 100 ? "超级管理员" : user.role >= 10 ? "管理员" : "用户"}</p>
       </div>
-      ${ck.data?.data?.enabled && !ck.data?.data?.checked_in ? `<button class="btn primary" id="checkinBtn">签到 +${ck.data.data.checkin_quota}</button>` : `<span class="tag on">今日已签到 / 签到关闭</span>`}
+      ${d.enabled && !checked ? `<button class="btn primary" id="checkinBtn">签到 ${d.min_quota && d.max_quota ? d.min_quota + "–" + d.max_quota : ""}</button>` : `<span class="tag on">${checked ? "今日已签到" : "签到关闭"}</span>`}
     </div>
     <div class="cards">
       <div class="card"><div class="k">剩余额度</div><div class="v">${money(user.quota)}</div></div>
@@ -394,7 +483,7 @@ async function pageTokens() {
 
 async function pageLogs() {
   const path = state.user?.role >= 10 ? "/api/log/" : "/api/log/self";
-  const q = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = currentQuery();
   const type = q.get("type") || "";
   const model = q.get("model_name") || "";
   const r = await api(path + `?page_size=50&type=${encodeURIComponent(type)}&model_name=${encodeURIComponent(model)}`);
@@ -408,20 +497,22 @@ async function pageLogs() {
       <button class="btn">筛选</button>
     </form>
     <div class="table-wrap"><table>
-      <thead><tr><th>时间</th><th>用户</th><th>令牌</th><th>模型</th><th>额度</th><th>tokens</th><th>耗时</th></tr></thead>
+      <thead><tr><th>时间</th><th>用户</th><th>令牌</th><th>模型</th><th>渠道</th><th>额度</th><th>tokens</th><th>流式</th><th>request_id</th></tr></thead>
       <tbody>${items.map((l) => `<tr>
         <td>${new Date(l.created_at * 1000).toLocaleString()}</td>
         <td>${esc(l.username)}</td><td>${esc(l.token_name)}</td>
-        <td>${esc(l.model_name)}</td><td>${money(l.quota)}</td>
-        <td>${l.prompt_tokens}/${l.completion_tokens}</td><td>${l.use_time}s</td>
-      </tr>`).join("") || `<tr><td colspan="7">暂无日志</td></tr>`}</tbody>
+        <td>${esc(l.model_name)}</td><td>${esc(l.channel || l.channel_name)}</td><td>${money(l.quota)}</td>
+        <td>${l.prompt_tokens}/${l.completion_tokens}</td><td>${l.is_stream ? "是" : "否"}</td>
+        <td class="mono">${esc(l.request_id)}</td>
+      </tr>`).join("") || `<tr><td colspan="9">暂无日志</td></tr>`}</tbody>
     </table></div>
   `);
 }
 
 async function pageWallet() {
   const aff = await api("/api/user/aff");
-  const a = aff.data?.data || {};
+  const affCode = typeof aff.data?.data === "string" ? aff.data.data : aff.data?.data?.aff_code || state.user?.aff_code;
+  const a = state.user || {};
   const hist = await api("/api/user/topup/self");
   const info = await api("/api/user/topup/info");
   const pay = info.data?.data || {};
@@ -431,7 +522,7 @@ async function pageWallet() {
     <h1>钱包</h1>
     <p class="sub">剩余额度 ${money(state.user?.quota)} · 已用 ${money(state.user?.used_quota)}</p>
     <div class="cards">
-      <div class="card"><div class="k">邀请码</div><div class="v" style="font-size:18px">${esc(a.aff_code)}</div></div>
+      <div class="card"><div class="k">邀请码</div><div class="v" style="font-size:18px">${esc(affCode)}</div></div>
       <div class="card"><div class="k">邀请人数</div><div class="v">${esc(a.aff_count)}</div></div>
       <div class="card"><div class="k">待划转邀请额度</div><div class="v">${money(a.aff_quota)}</div></div>
     </div>
@@ -613,7 +704,7 @@ async function pageSettings() {
   const items = r.data?.data || [];
   const groups = {
     站点: ["SystemName", "Logo", "Footer", "Notice", "About", "HomePageContent", "DocsLink", "UserAgreement", "PrivacyPolicy"],
-    额度: ["QuotaPerUnit", "DisplayInCurrency", "QuotaForNewUser", "QuotaForInviter", "QuotaForInvitee", "CheckinEnabled", "CheckinQuota"],
+    额度: ["QuotaPerUnit", "DisplayInCurrency", "QuotaForNewUser", "QuotaForInviter", "QuotaForInvitee", "CheckinEnabled", "CheckinQuota", "CheckinMinQuota", "CheckinMaxQuota"],
     注册登录: ["RegisterEnabled", "PasswordLoginEnabled", "PasswordRegisterEnabled", "EmailVerificationEnabled", "GitHubOAuthEnabled", "GitHubClientId", "DiscordOAuthEnabled", "DiscordClientId", "LinuxDOOAuthEnabled", "LinuxDOClientId", "OIDCAuthEnabled", "OIDCClientId", "PasskeyEnabled"],
     渠道: ["RetryTimes", "AutomaticDisableChannelEnabled", "AutomaticEnableChannelEnabled", "ChannelDisableThreshold"],
     倍率: ["ModelRatio", "CompletionRatio", "GroupRatio", "ExposeRatioEnabled", "RankingsEnabled"],
@@ -666,15 +757,27 @@ async function pageMj() {
 }
 
 async function pageRankings() {
-  const r = await api("/api/rankings");
-  const items = r.data?.data || [];
+  const r = await api("/api/rankings?period=week");
+  const d = r.data?.data || {};
+  const models = d.models || [];
+  const vendors = d.vendors || [];
   return layout(`
     <h1>排行榜</h1>
-    <p class="sub">按近 7 日 quota_data 汇总。</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>用户</th><th>额度</th><th>次数</th></tr></thead>
-      <tbody>${items.map((x) => `<tr><td>${esc(x.username)}</td><td>${money(x.quota)}</td><td>${esc(x.count)}</td></tr>`).join("") || `<tr><td colspan="3">暂无</td></tr>`}</tbody>
-    </table></div>
+    <p class="sub">原项目 GetRankings：models / vendors / top_movers / models_history。</p>
+    <div class="card">
+      <h3>模型</h3>
+      <div class="table-wrap" style="margin-top:10px"><table>
+        <thead><tr><th>#</th><th>模型</th><th>厂商</th><th>tokens</th><th>份额</th></tr></thead>
+        <tbody>${models.map((x) => `<tr><td>${esc(x.rank)}</td><td>${esc(x.model_name)}</td><td>${esc(x.vendor)}</td><td>${esc(x.total_tokens)}</td><td>${((x.share || 0) * 100).toFixed(2)}%</td></tr>`).join("") || `<tr><td colspan="5">暂无</td></tr>`}</tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <h3>厂商</h3>
+      <div class="table-wrap" style="margin-top:10px"><table>
+        <thead><tr><th>#</th><th>厂商</th><th>tokens</th><th>模型数</th><th>头部模型</th></tr></thead>
+        <tbody>${vendors.map((x) => `<tr><td>${esc(x.rank)}</td><td>${esc(x.vendor)}</td><td>${esc(x.total_tokens)}</td><td>${esc(x.models_count)}</td><td>${esc(x.top_model)}</td></tr>`).join("") || `<tr><td colspan="5">暂无</td></tr>`}</tbody>
+      </table></div>
+    </div>
   `);
 }
 
@@ -924,7 +1027,7 @@ async function afterRender(page) {
       body.SelfUseModeEnabled = fd.get("SelfUseModeEnabled") === "on";
       const r = await api("/api/setup", { method: "POST", body });
       if (!r.data.success) return flash(r.data.message, true);
-      location.hash = "/login";
+      goto("/sign-in");
       await boot();
     };
   }
@@ -939,7 +1042,7 @@ async function afterRender(page) {
         state.token = r.data.data.access_token;
         sessionStorage.setItem("edge_token", state.token);
         state.user = r.data.data.user;
-        location.hash = "/dashboard";
+        goto("/dashboard/");
         render();
         return;
       }
@@ -954,8 +1057,7 @@ async function afterRender(page) {
       state.token = r.data.data.access_token;
       sessionStorage.setItem("edge_token", state.token);
       state.user = r.data.data.user;
-      location.hash = "/dashboard";
-      render();
+      goto("/dashboard/");
     };
   }
   if (page === "register") {
@@ -972,8 +1074,7 @@ async function afterRender(page) {
       state.token = r.data.data.access_token;
       sessionStorage.setItem("edge_token", state.token);
       state.user = r.data.data.user;
-      location.hash = "/dashboard";
-      render();
+      goto("/dashboard/");
     };
   }
   if (page === "forgot") {
@@ -987,7 +1088,7 @@ async function afterRender(page) {
       const body = Object.fromEntries(new FormData(e.target).entries());
       const r = await api("/api/user/reset", { method: "POST", body });
       flash(r.data.message || "ok", !r.data.success);
-      if (r.data.success) location.hash = "/login";
+      if (r.data.success) goto("/sign-in");
     });
   }
   if (page === "dashboard") {
@@ -1004,7 +1105,7 @@ async function afterRender(page) {
     $("#logFilter")?.addEventListener("submit", (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
-      location.hash = "/logs?type=" + encodeURIComponent(fd.get("type") || "") + "&model_name=" + encodeURIComponent(fd.get("model_name") || "");
+      goto("/usage-logs/?type=" + encodeURIComponent(fd.get("type") || "") + "&model_name=" + encodeURIComponent(fd.get("model_name") || ""));
     });
   }
   if (page === "wallet") {
@@ -1086,8 +1187,12 @@ function flash(msg, err = false) {
 }
 
 function bindChat() {
-  const q = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = currentQuery();
   let convId = Number(q.get("id") || 0);
+  if (!convId) {
+    const m = location.pathname.match(/\/chat\/([^/]+)/);
+    if (m) convId = Number(m[1]);
+  }
   const history = [];
   const msgs = $("#msgs");
   async function load() {
@@ -1108,8 +1213,7 @@ function bindChat() {
   load();
   $("#newConv").onclick = async () => {
     const r = await api("/api/conversations", { method: "POST", body: { title: "新对话", model: $("#pgModel").value } });
-    location.hash = "/chat?id=" + r.data.data.id;
-    render();
+    goto("/chat/" + r.data.data.id);
   };
   $("#pgSend").onclick = send;
   $("#pgInput").addEventListener("keydown", (e) => {
@@ -1180,13 +1284,21 @@ function bindSecurity() {
   $("#setup2fa")?.addEventListener("click", async () => {
     const setup = await api("/api/user/2fa/setup", { method: "POST" });
     if (!setup.data.success) return flash(setup.data.message, true);
-    $("#otpauth").textContent = setup.data.data.otpauth_url + "\nsecret: " + setup.data.data.secret;
+    const d = setup.data.data || {};
+    $("#otpauth").textContent = (d.qr_code_data || d.otpauth_url || "") + "\nsecret: " + d.secret + "\nflow_token: " + d.flow_token;
+    if (d.backup_codes) alert("备用码（请保存）：\n" + d.backup_codes.join("\n"));
     const code = prompt("请输入认证器中的 6 位验证码");
     if (!code) return;
-    const en = await api("/api/user/2fa/enable", { method: "POST", body: { code } });
+    const en = await api("/api/user/2fa/enable", { method: "POST", body: { code, flow_token: d.flow_token } });
     flash(en.data.message || "ok", !en.data.success);
     if (en.data.success && en.data.data?.backup_codes) alert("备用码：\n" + en.data.data.backup_codes.join("\n"));
-    if (en.data.success) render();
+    if (en.data.success) {
+      if (en.data.data?.access_token) {
+        state.token = en.data.data.access_token;
+        sessionStorage.setItem("edge_token", state.token);
+      }
+      render();
+    }
   });
   $("#disable2fa")?.addEventListener("click", async () => {
     const code = prompt("输入 2FA 验证码");
@@ -1343,7 +1455,7 @@ function bindTokens() {
   });
   document.querySelectorAll("[data-toggle]").forEach((b) => {
     b.onclick = async () => {
-      await api("/api/token/", { method: "PUT", body: { id: Number(b.dataset.toggle), status: Number(b.dataset.status) === 1 ? 2 : 1 } });
+      await api("/api/token/?status_only=true", { method: "PUT", body: { id: Number(b.dataset.toggle), status: Number(b.dataset.status) === 1 ? 2 : 1 } });
       render();
     };
   });
@@ -1479,7 +1591,9 @@ async function render() {
   state.page = hashPage();
   state.err = "";
   if (state.setup && !state.setup.status && state.page !== "setup") {
-    if (location.hash !== "#/setup") location.hash = "/setup";
+    if (location.pathname !== "/setup/" && location.pathname !== "/setup") {
+      history.replaceState({}, "", "/setup/");
+    }
     state.page = "setup";
   }
   const fn = pages[state.page] || pageHome;
@@ -1492,4 +1606,5 @@ async function render() {
 }
 
 window.addEventListener("hashchange", render);
+window.addEventListener("popstate", render);
 boot().then(render);
