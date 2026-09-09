@@ -40,6 +40,7 @@ QuantumNous [new-api](https://github.com/QuantumNous/new-api) 的 **RandallFlare
 - `POST /v1/images/generations` `/v1/moderations` `/v1/audio/*` `/v1/rerank` `/v1/responses`
 - `POST /v1/alpha/search`、`POST /v1/engines/:model/embeddings`
 - `POST /v1/video/generations`、`GET /v1/video/generations/:id`、`POST /v1/videos/:id/remix`
+- `POST /v1/videos`、`GET /v1/videos/:id`、`GET /v1/videos/:id/content`、`GET /v1/responses/:id`
 - `POST/GET /v1/tasks/:key`（产物可写入可选 R2）
 - `GET /v1/realtime` WebSocket 升级代理
 - Gemini 原生 `POST /v1beta/models/{model}:generateContent`
@@ -53,7 +54,7 @@ QuantumNous [new-api](https://github.com/QuantumNous/new-api) 的 **RandallFlare
 
 **后台 UI**
 
-单页控制台覆盖：首页、定价、排行榜、关于、协议/隐私、初始化、登录（2FA/OAuth/找回密码）、注册、仪表盘、对话、Playground、令牌、日志筛选、钱包/邀请、订阅、个人设置、安全、渠道（测试全部）、模型、用户、兑换码、审计、MJ、异步任务、系统设置分组。页脚保留上游署名与仓库链接。
+单页控制台覆盖：首页、定价、排行榜、关于、协议/隐私、初始化、登录（2FA/OAuth/微信/Telegram/自定义提供商）、注册、仪表盘、对话、Playground、令牌、日志筛选、钱包/邀请、订阅、个人设置、安全、渠道、模型、用户、兑换码、审计、用量数据、厂商、部署、任务插件、系统信息、性能、MJ、异步任务、系统设置。Hash 别名对齐原项目路径（`/sign-in`、`/keys`、`/usage-logs`、`/system-settings`、`/task-plugins` 等）。页脚保留上游署名与仓库链接。
 
 ## 部署到 RandallFlare
 
@@ -114,7 +115,7 @@ npm run dev          # rrangler dev --port 8787，需本机 workerd
 控制台类型目录与 new-api `constant/channel.go` 对齐（含 OpenAI、Azure、Anthropic、Gemini、OpenRouter、DeepSeek、硅基流动、xAI 等）。  
 需要厂商 SDK 签名的渠道（部分 AWS/Vertex 服务账号）在未提供 HTTP 兼容 Key 时会返回结构化错误；配置了兼容 Base URL 的仍按 HTTP 中继。
 
-任务插件 Go 运行时、SMTP、Stripe/Epay 收银台、io.net 部署集群不在 workerd 内运行；对应路由返回明确失败/未启用，不会静默吞掉。邮件请配置 `ResendApiKey`。订阅用余额购买。
+任务插件的 Goja 运行时、SMTP、io.net 集群编排不在 workerd 内执行；对应能力以 D1 登记 + HTTP 探测/passthrough 或明确错误返回。Stripe/Epay/Creem/Waffo 使用 HTTP Checkout（配置密钥后启用）。邮件请配置 `ResendApiKey`。订阅可用余额或在线支付。
 
 ## 配置项（系统设置）
 

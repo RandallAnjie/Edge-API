@@ -3,6 +3,7 @@ import type { PageQuery } from "./types.js";
 export function json(status: number, body: unknown, extra?: HeadersInit): Response {
   const headers = new Headers(extra);
   headers.set("content-type", "application/json; charset=utf-8");
+  if (!headers.has("cache-control")) headers.set("cache-control", "no-store");
   return new Response(JSON.stringify(body), { status, headers });
 }
 
@@ -83,9 +84,9 @@ export function cookieGet(req: Request, name: string): string | null {
   return null;
 }
 
-export function sessionCookie(token: string, maxAge: number, secure: boolean): string {
+export function sessionCookie(token: string, maxAge: number, secure: boolean, name = "session"): string {
   const parts = [
-    `session=${encodeURIComponent(token)}`,
+    `${name}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
@@ -95,8 +96,22 @@ export function sessionCookie(token: string, maxAge: number, secure: boolean): s
   return parts.join("; ");
 }
 
+export function sessionHintCookie(maxAge: number, secure: boolean): string {
+  const parts = ["new_api_has_session=1", "Path=/", "SameSite=Lax", `Max-Age=${maxAge}`];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
 export function clearSessionCookie(secure: boolean): string {
   return sessionCookie("", 0, secure);
+}
+
+export function clearAuthCookies(secure: boolean): string[] {
+  return [
+    sessionCookie("", 0, secure, "session"),
+    sessionCookie("", 0, secure, "new_api_refresh"),
+    "new_api_has_session=; Path=/; Max-Age=0; SameSite=Lax",
+  ];
 }
 
 export function isSecureRequest(req: Request): boolean {

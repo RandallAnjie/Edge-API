@@ -1,7 +1,8 @@
 import { generateAffCode, generateTokenKey } from "./crypto.js";
+import { hmacSha256Hex, sha256Bytes, timingSafeEqualStr } from "./crypto.js";
 import { nowSec, randomHex } from "./constants.js";
 import { apiFail, apiOk } from "./http.js";
-import { issueSession } from "./auth.js";
+import { issueSession, sessionResponse } from "./auth.js";
 import type { Store } from "./store.js";
 import type { Env, UserRow } from "./types.js";
 import type { Context } from "./router.js";
@@ -11,7 +12,7 @@ export interface OAuthProfile {
   username: string;
   display_name: string;
   email?: string;
-  field: "github_id" | "discord_id" | "linuxdo_id" | "oidc_id";
+  field: "github_id" | "discord_id" | "linuxdo_id" | "oidc_id" | "wechat_id" | "telegram_id";
 }
 
 export async function exchangeGithub(clientId: string, secret: string, code: string): Promise<OAuthProfile> {
@@ -166,10 +167,10 @@ export async function loginOrBindOAuth(
 ): Promise<Response> {
   if (existingUser) {
     await store.updateUser(existingUser.id, { [profile.field]: profile.id });
-    const issued = await issueSession(store, env, existingUser, req);
+    const issued = await issueSession(store, env, existingUser, req, "oauth:" + profile.field.replace(/_id$/, ""));
     const origin = new URL(req.url).origin;
     const headers = new Headers({ location: origin + "/#/dashboard" });
-    headers.append("set-cookie", issued.cookie);
+    for (const cookie of issued.cookies) headers.append("set-cookie", cookie);
     return new Response(null, { status: 302, headers });
   }
   let user = await store.getUserByField(profile.field, profile.id);
@@ -189,10 +190,10 @@ export async function loginOrBindOAuth(
     }
     user = await store.getUserById(id);
   }
-  const issued = await issueSession(store, env, user!, req);
+  const issued = await issueSession(store, env, user!, req, "oauth:" + profile.field.replace(/_id$/, ""));
   const origin = new URL(req.url).origin;
   const headers = new Headers({ location: origin + "/#/dashboard" });
-  headers.append("set-cookie", issued.cookie);
+  for (const cookie of issued.cookies) headers.append("set-cookie", cookie);
   return new Response(null, { status: 302, headers });
 }
 
@@ -218,13 +219,46 @@ export function newAccessToken(): string {
   return generateTokenKey() + randomHex(8);
 }
 
+export async function wechatIdFromCode(store: Store, code: string): Promise<string> {
+  const addr = await store.option("WeChatServerAddress");
+  const token = await store.option("WeChatServerToken");
+  if (!addr) throw new Error("管理员未开启通过微信登录以及注册");
+  const res = await fetch(`${addr.replace(/\/$/, "")}/api/wechat/user?code=${encodeURIComponent(code)}`, {
+    headers: { authorization: token },
+  });
+  const json = (await res.json()) as { success?: boolean; message?: string; data?: string };
+  if (!json.success || !json.data) throw new Error(json.message || "验证码错误或已过期");
+  return json.data;
+}
+
+export async function verifyTelegramLogin(store: Store, params: URLSearchParams): Promise<OAuthProfile> {
+  const botToken = await store.option("TelegramBotToken");
+  if (!botToken) throw new Error("Telegram 未配置");
+  const hash = params.get("hash") || "";
+  const pairs = [...params.entries()]
+    .filter(([k]) => k !== "hash")
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  const dataCheck = pairs.map(([k, v]) => `${k}=${v}`).join("\n");
+  const secret = await sha256Bytes(botToken);
+  const sig = await hmacSha256Hex(secret, dataCheck);
+  if (!timingSafeEqualStr(sig.toLowerCase(), hash.toLowerCase())) throw new Error("Telegram 校验失败");
+  const id = params.get("id") || "";
+  if (!id) throw new Error("无效的 Telegram 授权");
+  return {
+    id,
+    username: (params.get("username") || `tg_${id}`).slice(0, 20),
+    display_name: params.get("first_name") || params.get("username") || id,
+    field: "telegram_id",
+  };
+}
+
 export function paymentDisabled(c: Context<Env>): Response {
   void c;
-  return apiFail("支付收银台未在边缘运行时启用（Stripe / Epay / Creem / Waffo）。请使用兑换码或余额购买订阅。");
+  return apiFail("支付方式未配置。请在系统设置中填写 Stripe / Epay / Creem / Waffo 密钥后启用在线充值。");
 }
 
 export function pluginDisabled(): Response {
-  return apiFail("任务插件 / 性能诊断 / 部署集群不在 workerd 内运行");
+  return apiFail("该能力需要对应配置；边缘运行时已提供等价接口，请检查插件是否已上传或部署密钥是否已设置");
 }
 
 export { apiOk };

@@ -38,10 +38,11 @@ Material changes from upstream:
   (existing upstream password hashes are not portable).
 - Admin UI is a new compact SPA. It is not a copy of the upstream React app.
 - Channel types that require vendor SDKs or local plugins (AWS SigV4 service
-  accounts, Vertex service-account JWT minting, in-process task plugins, email
-  SMTP, Stripe/Epay/Creem checkout) are exposed in the catalog and will relay
-  when the channel is OpenAI/Anthropic/Gemini compatible or uses HTTP
-  pass-through; otherwise they return a structured error.
+  accounts, Vertex service-account JWT minting, in-process JS task plugins)
+  are exposed in the catalog and will relay when the channel is
+  OpenAI/Anthropic/Gemini compatible or uses HTTP pass-through; otherwise they
+  return a structured error. Stripe/Epay/Creem/Waffo checkout use HTTP APIs
+  (no vendor SDK). Task plugins are a D1 registry plus passthrough routes.
 - Password storage and session cookies are HMAC-signed on the Worker.
 
 ==== End of Notices ====

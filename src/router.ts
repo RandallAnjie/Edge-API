@@ -16,6 +16,13 @@ interface Route<E> {
   handler: Handler<E>;
 }
 
+function pathParts(path: string): string[] {
+  const endsWithSlash = path.endsWith("/") && path.length > 1;
+  const parts = path.split("/").filter(Boolean);
+  if (endsWithSlash) parts.push("");
+  return parts;
+}
+
 function match(pattern: string[], path: string[]): Params | null {
   if (pattern.length !== path.length) {
     const star = pattern.findIndex((p) => p === "*");
@@ -25,16 +32,20 @@ function match(pattern: string[], path: string[]): Params | null {
     const params: Params = { "*": path.slice(star).join("/") };
     for (let i = 0; i < star; i++) {
       const p = pattern[i];
-      if (p.startsWith(":")) params[p.slice(1)] = decodeURIComponent(path[i]);
-      else if (p !== path[i]) return null;
+      if (p.startsWith(":")) {
+        if (!path[i]) return null;
+        params[p.slice(1)] = decodeURIComponent(path[i]);
+      } else if (p !== path[i]) return null;
     }
     return params;
   }
   const params: Params = {};
   for (let i = 0; i < pattern.length; i++) {
     const p = pattern[i];
-    if (p.startsWith(":")) params[p.slice(1)] = decodeURIComponent(path[i]);
-    else if (p !== path[i]) return null;
+    if (p.startsWith(":")) {
+      if (!path[i]) return null;
+      params[p.slice(1)] = decodeURIComponent(path[i]);
+    } else if (p !== path[i]) return null;
   }
   return params;
 }
@@ -45,7 +56,7 @@ export class Router<E = unknown> {
   on(method: string, path: string, handler: Handler<E>): this {
     this.routes.push({
       method: method.toUpperCase(),
-      parts: path.split("/").filter(Boolean),
+      parts: pathParts(path),
       handler,
     });
     return this;
@@ -68,7 +79,7 @@ export class Router<E = unknown> {
   }
 
   async dispatch(c: Context<E>): Promise<Response | null> {
-    const parts = c.url.pathname.split("/").filter(Boolean);
+    const parts = pathParts(c.url.pathname);
     let best: { handler: Handler<E>; params: Params; score: number } | null = null;
     for (const r of this.routes) {
       if (r.method !== c.req.method && r.method !== "*") continue;

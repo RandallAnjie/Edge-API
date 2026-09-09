@@ -18,6 +18,8 @@ import type { RelayMode } from "./upstream.js";
 import { extractGeminiModelAction } from "./convert.js";
 import { ensureSchema } from "./schema.js";
 import { Store } from "./store.js";
+import { hit } from "./metrics.js";
+import { matchPluginRoute } from "./plugin-dispatch.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
 
 const api = adminRouter();
@@ -54,8 +56,9 @@ function relayModeFrom(path: string, method: string): RelayMode | null {
   if (path === "/v1/alpha/search") return "alpha_search";
   if (path.startsWith("/v1/engines/") && path.endsWith("/embeddings")) return "engines_embeddings";
   if (path === "/v1/video/generations" || path.startsWith("/v1/video/generations/")) return "video";
-  if (path.startsWith("/v1/videos/") && path.endsWith("/remix")) return "video";
+  if (path === "/v1/videos" || path.startsWith("/v1/videos/")) return "video";
   if (path.startsWith("/v1/tasks/")) return "passthrough";
+  if (path.startsWith("/v1/responses/") && method === "GET") return "responses";
   if (path.startsWith("/v1beta/models") && method === "POST") return "gemini";
   if (path.startsWith("/v1/models/") && method === "POST") return "gemini";
   return null;
@@ -92,6 +95,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   const auth = await authenticateApiToken(ctxStore(req, env, ctx), store);
   if (auth instanceof Response) return auth;
   if (!(await rateLimit(env, auth.token.id))) return openaiError(429, "请求过于频繁", "rate_limit");
+  hit("relay");
 
   if (notImplemented(req.method, path)) {
     return openaiError(501, "尚未实现该接口", "not_implemented");
@@ -135,6 +139,36 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     return relayJson(req, env, store, auth, "video", path, { id: taskId }, ctx, "GET");
   }
 
+  if ((req.method === "GET" || req.method === "HEAD") && path.startsWith("/v1/videos/")) {
+    const rest = path.slice("/v1/videos/".length);
+    const [taskId, ...tail] = rest.split("/");
+    if (tail[0] === "content") {
+      if (env.R2 && taskId) {
+        const obj = await env.R2.get(`tasks/${taskId}/content`);
+        if (obj) {
+          return new Response(req.method === "HEAD" ? null : await obj.arrayBuffer(), {
+            headers: { "content-type": obj.httpMetadata?.contentType || "application/octet-stream" },
+          });
+        }
+      }
+      const local = await store.getTaskByTid(taskId);
+      if (local) {
+        return new Response(JSON.stringify(local), { headers: { "content-type": "application/json" } });
+      }
+      return relayJson(req, env, store, auth, "video", path, { id: taskId }, ctx, req.method);
+    }
+    const local = await store.getTaskByTid(taskId);
+    if (local) return new Response(JSON.stringify(local), { headers: { "content-type": "application/json" } });
+    return relayJson(req, env, store, auth, "video", path, { id: taskId }, ctx, "GET");
+  }
+
+  if (req.method === "GET" && path.startsWith("/v1/responses/")) {
+    const responseId = decodeURIComponent(path.slice("/v1/responses/".length));
+    const local = await store.getTaskByTid(responseId);
+    if (local) return new Response(JSON.stringify(local), { headers: { "content-type": "application/json" } });
+    return relayJson(req, env, store, auth, "responses", path, { id: responseId }, ctx, "GET");
+  }
+
   if (req.method === "GET" && path.startsWith("/v1/tasks/")) {
     const rest = path.slice("/v1/tasks/".length);
     const [taskId, ...tail] = rest.split("/");
@@ -159,6 +193,31 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
 
   const mode = relayModeFrom(path, req.method);
   if (!mode) {
+    const plugin = await matchPluginRoute(store, req.method, path);
+    if (plugin) {
+      let body: unknown = {};
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        try {
+          body = await readJson(req);
+        } catch {
+          body = {};
+        }
+      }
+      return relay({
+        req,
+        env,
+        store,
+        auth,
+        mode: "passthrough",
+        clientFormat: "openai",
+        model: detectModel(body, path, url) || plugin.key,
+        body,
+        stream: detectStream(body, req),
+        path,
+        ctx,
+        method: req.method,
+      });
+    }
     return openaiError(501, "尚未实现该接口", "not_implemented");
   }
 
@@ -220,7 +279,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     method: req.method,
   });
 
-  if (req.method === "POST" && (path === "/v1/video/generations" || path.startsWith("/v1/tasks/") || path.endsWith("/remix"))) {
+  if (req.method === "POST" && (path === "/v1/video/generations" || path === "/v1/videos" || path.startsWith("/v1/tasks/") || path.endsWith("/remix"))) {
     const clone = res.clone();
     const text = await clone.text().catch(() => "");
     try {
@@ -276,6 +335,7 @@ async function relayJson(
 async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
+  hit("http");
 
   if (req.method === "OPTIONS") {
     return withCors(req, new Response(null, { status: 204 }));
@@ -321,13 +381,27 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
 
     try {
       if (isRelay && !path.startsWith("/v1/dashboard")) {
-        return withCors(req, await handleRelay(req, env, ctx));
+        try {
+          return withCors(req, await handleRelay(req, env, ctx));
+        } catch (err) {
+          hit("error");
+          const msg = err instanceof Error ? err.message : String(err);
+          return withCors(req, openaiError(500, msg, "internal_error"));
+        }
       }
 
       const c = ctxStore(req, env, ctx);
       const routed = await api.dispatch(c);
       if (routed) return withCors(req, routed);
+
+      const store = new Store(env.DB);
+      const plugin = await matchPluginRoute(store, req.method, path);
+      if (plugin) {
+        hit("relay");
+        return withCors(req, await handleRelay(req, env, ctx));
+      }
     } catch (err) {
+      hit("error");
       const msg = err instanceof Error ? err.message : String(err);
       if (path.startsWith("/v1") || path.startsWith("/v1beta")) {
         return withCors(req, openaiError(500, msg, "internal_error"));

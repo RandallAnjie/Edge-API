@@ -11,8 +11,25 @@ const state = {
 };
 
 function hashPage() {
-  const raw = location.hash.replace(/^#\/?/, "") || "home";
-  return raw.split("?")[0];
+  const raw = (location.hash.replace(/^#\/?/, "") || "home").split("?")[0];
+  const aliases = {
+    "sign-in": "login",
+    "sign-up": "register",
+    register: "register",
+    keys: "tokens",
+    "usage-logs": "logs",
+    "system-settings": "settings",
+    "task-plugins": "plugins",
+    "system-info": "sysinfo",
+    "redemption-codes": "redemption",
+    "privacy-policy": "privacy",
+    "user-agreement": "agreement",
+    "forgot-password": "forgot",
+    reset: "forgot",
+    otp: "login",
+    "chat2link": "chat",
+  };
+  return aliases[raw] || raw.split("/")[0];
 }
 
 async function api(path, opts = {}) {
@@ -93,7 +110,13 @@ function layout(content) {
         ${nav("users", "用户")}
         ${nav("redemption", "兑换码")}
         ${nav("audit", "审计")}
+        ${nav("data", "用量数据")}
+        ${nav("vendors", "厂商")}
+        ${nav("deployments", "部署")}
+        ${nav("plugins", "任务插件")}
+        ${nav("sysinfo", "系统信息")}
         ${root ? nav("settings", "系统设置") : ""}
+        ${root ? nav("performance", "性能") : ""}
         ` : ""}
         <div class="nav-sec"></div>
         <button class="link" id="logoutBtn">退出登录</button>
@@ -192,7 +215,10 @@ async function pageLogin() {
   const gh = state.status?.github_oauth && state.status?.github_client_id;
   const dc = state.status?.discord_oauth && state.status?.discord_client_id;
   const ld = state.status?.linuxdo_oauth && state.status?.linuxdo_client_id;
-  const oidc = state.status?.oidc_auth;
+  const oidc = state.status?.oidc_enabled || state.status?.oidc_auth;
+  const wechat = state.status?.wechat_login;
+  const tg = state.status?.telegram_oauth;
+  const customs = state.status?.custom_oauth_providers || [];
   return `
   <div class="auth"><div class="card">
     <h1>登录 ${esc(state.status?.system_name || "")}</h1>
@@ -209,7 +235,10 @@ async function pageLogin() {
       ${gh ? ` <a class="btn" href="/api/oauth/github">GitHub</a>` : ""}
       ${dc ? ` <a class="btn" href="/api/oauth/discord">Discord</a>` : ""}
       ${ld ? ` <a class="btn" href="/api/oauth/linuxdo">LinuxDO</a>` : ""}
-      ${oidc ? ` <a class="btn" href="/api/oauth/oidc">OIDC</a>` : ""}
+      ${oidc ? ` <a class="btn" href="/api/oauth/oidc">${esc(state.status?.oidc_display_name || "OIDC")}</a>` : ""}
+      ${wechat ? ` <a class="btn" href="/api/oauth/wechat">微信</a>` : ""}
+      ${tg ? ` <a class="btn" href="/api/oauth/telegram">Telegram</a>` : ""}
+      ${customs.map((p) => `<a class="btn" href="/api/oauth/${esc(p.slug || p.name)}">${esc(p.name || p.slug)}</a>`).join(" ")}
     </div>
   </div></div>`;
 }
@@ -732,6 +761,85 @@ async function pageTasks() {
   `);
 }
 
+async function pagePlugins() {
+  const r = await api("/api/plugin/task");
+  const items = r.data?.data || [];
+  return layout(`
+    <h1>任务插件</h1>
+    <p class="sub">对应原项目 /task-plugins。插件清单存于 D1，激活后可匹配公开路由并按 passthrough 转发。</p>
+    <form id="pluginForm" class="card">
+      <div class="row">
+        <input name="key" placeholder="key" required />
+        <input name="name" placeholder="名称" />
+        <input name="version" placeholder="1.0.0" />
+        <button class="btn primary" type="submit">登记</button>
+      </div>
+    </form>
+    <div class="table-wrap"><table>
+      <thead><tr><th>key</th><th>名称</th><th>版本</th><th>状态</th></tr></thead>
+      <tbody>${(Array.isArray(items) ? items : []).map((p) => `<tr><td class="mono">${esc(p.key)}</td><td>${esc(p.name)}</td><td>${esc(p.version)}</td><td>${esc(p.status)}</td></tr>`).join("") || `<tr><td colspan="4">暂无插件</td></tr>`}</tbody>
+    </table></div>
+  `);
+}
+
+async function pageSysinfo() {
+  const r = await api("/api/system-info/instances");
+  const items = r.data?.data || [];
+  return layout(`
+    <h1>系统信息</h1>
+    <p class="sub">workerd 单 isolate。原项目多实例列表在此以本节点表示。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>节点</th><th>版本</th><th>其它</th></tr></thead>
+      <tbody>${(Array.isArray(items) ? items : [items]).map((x) => `<tr><td>${esc(x.node_name || x.runtime || "")}</td><td>${esc(x.version || "")}</td><td class="mono">${esc(JSON.stringify(x).slice(0, 180))}</td></tr>`).join("")}</tbody>
+    </table></div>
+  `);
+}
+
+async function pagePerformance() {
+  const r = await api("/api/performance/stats");
+  return layout(`
+    <h1>性能</h1>
+    <pre class="card">${esc(JSON.stringify(r.data?.data || r.data, null, 2))}</pre>
+  `);
+}
+
+async function pageDeployments() {
+  const r = await api("/api/deployments/");
+  const items = r.data?.data?.items || r.data?.data || [];
+  return layout(`
+    <h1>模型部署</h1>
+    <p class="sub">对应原项目 /deployments。io.net 等外部集群在配置密钥后可探测连通。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>名称</th><th>模型</th><th>状态</th><th>硬件</th></tr></thead>
+      <tbody>${(Array.isArray(items) ? items : []).map((d) => `<tr><td>${esc(d.name)}</td><td>${esc(d.model_name)}</td><td>${esc(d.status)}</td><td>${esc(d.hardware)}</td></tr>`).join("") || `<tr><td colspan="4">暂无部署</td></tr>`}</tbody>
+    </table></div>
+  `);
+}
+
+async function pageData() {
+  const r = await api("/api/data/");
+  const items = r.data?.data || [];
+  return layout(`
+    <h1>用量数据</h1>
+    <div class="table-wrap"><table>
+      <thead><tr><th>日期</th><th>用户</th><th>额度</th></tr></thead>
+      <tbody>${(Array.isArray(items) ? items : []).map((d) => `<tr><td>${esc(d.date || d.created_at || "")}</td><td>${esc(d.username || d.user_id || "")}</td><td>${esc(d.quota)}</td></tr>`).join("") || `<tr><td colspan="3">暂无</td></tr>`}</tbody>
+    </table></div>
+  `);
+}
+
+async function pageVendors() {
+  const r = await api("/api/vendors/");
+  const items = r.data?.data?.items || r.data?.data || [];
+  return layout(`
+    <h1>厂商</h1>
+    <div class="table-wrap"><table>
+      <thead><tr><th>ID</th><th>名称</th></tr></thead>
+      <tbody>${(Array.isArray(items) ? items : []).map((v) => `<tr><td>${esc(v.id)}</td><td>${esc(v.name || v.vendor_name)}</td></tr>`).join("") || `<tr><td colspan="2">暂无</td></tr>`}</tbody>
+    </table></div>
+  `);
+}
+
 const pages = {
   home: pageHome,
   about: pageAbout,
@@ -760,6 +868,12 @@ const pages = {
   audit: pageAudit,
   mj: pageMj,
   tasks: pageTasks,
+  plugins: pagePlugins,
+  sysinfo: pageSysinfo,
+  performance: pagePerformance,
+  deployments: pageDeployments,
+  data: pageData,
+  vendors: pageVendors,
 };
 
 async function afterRender(page) {
@@ -793,7 +907,7 @@ async function afterRender(page) {
       }
       const r = await api("/api/user/login", { method: "POST", body: { username: fd.get("username"), password: fd.get("password") } });
       if (!r.data.success) return flash(r.data.message, true);
-      if (r.data.data?.require_2fa) {
+      if (r.data.data?.require_2fa || r.data.data?.require_verification) {
         e.target.flow_token.value = r.data.data.flow_token;
         $("#twofaField").classList.remove("hidden");
         flash("请输入 2FA 验证码");
@@ -913,6 +1027,16 @@ async function afterRender(page) {
       }
       flash("已保存");
     };
+  }
+  if (page === "plugins") {
+    $("#pluginForm")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = Object.fromEntries(new FormData(e.target).entries());
+      body.status = "active";
+      const r = await api("/api/plugin/task", { method: "POST", body });
+      flash(r.data.message || (r.data.success ? "已登记" : "失败"), !r.data.success);
+      if (r.data.success) render();
+    });
   }
 }
 

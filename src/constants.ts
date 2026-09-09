@@ -1,4 +1,4 @@
-export const VERSION = "edge-api/1.1.0 (new-api RandallFlare port)";
+export const VERSION = "edge-api/1.2.0 (new-api RandallFlare port)";
 export const START_TIME = Date.now();
 
 export const ROLE_GUEST = 0;
@@ -95,6 +95,46 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   ResendFrom: "",
   StripeEnabled: "false",
   EpayEnabled: "false",
+  CreemEnabled: "false",
+  WaffoEnabled: "false",
+  StripeApiSecret: "",
+  StripeWebhookSecret: "",
+  StripeUnitPrice: "8",
+  EpayPid: "",
+  EpayKey: "",
+  EpayUrl: "",
+  CreemApiKey: "",
+  WaffoApiKey: "",
+  WeChatServerAddress: "",
+  WeChatServerToken: "",
+  WeChatAccountQRCodeImageURL: "",
+  TelegramBotName: "",
+  TelegramBotToken: "",
+  TurnstileCheckEnabled: "false",
+  TurnstileSiteKey: "",
+  LinuxDOMinimumTrustLevel: "0",
+  BatchUpdateEnabled: "false",
+  DrawingEnabled: "true",
+  TaskEnabled: "true",
+  DataExportEnabled: "true",
+  DataExportDefaultTime: "hour",
+  DefaultCollapseSidebar: "false",
+  MjNotifyEnabled: "false",
+  DefaultUseAutoGroup: "false",
+  PasswordLoginEncryptionEnabled: "false",
+  USDExchangeRate: "1",
+  Price: "7.3",
+  CustomCurrencySymbol: "$",
+  CustomCurrencyExchangeRate: "1",
+  Theme: "default",
+  Chats: "[]",
+  ApiInfoEnabled: "false",
+  UptimeKumaEnabled: "false",
+  AnnouncementsEnabled: "false",
+  FAQEnabled: "false",
+  MinTopup: "1",
+  PaymentComplianceConfirmed: "false",
+  IoNetApiKey: "",
 };
 
 export function nowSec(): number {

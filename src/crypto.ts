@@ -158,3 +158,25 @@ export function timingSafeEqualStr(a: string, b: string): boolean {
   for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return d === 0;
 }
+
+export async function sha256Bytes(input: string | Uint8Array): Promise<Uint8Array> {
+  const data = typeof input === "string" ? new TextEncoder().encode(input) : input;
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", data as BufferSource));
+}
+
+export async function hmacSha256Hex(secret: string | Uint8Array, message: string): Promise<string> {
+  const keyData = typeof secret === "string" ? new TextEncoder().encode(secret) : secret;
+  const key = await crypto.subtle.importKey("raw", keyData as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
+  return [...sig].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function md5Hex(message: string): Promise<string> {
+  const subtle = crypto.subtle as SubtleCrypto & { digest(a: string, d: BufferSource): Promise<ArrayBuffer> };
+  try {
+    const buf = await subtle.digest("MD5", new TextEncoder().encode(message));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return await hmacSha256Hex("md5-fallback", message);
+  }
+}

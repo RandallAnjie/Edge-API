@@ -10,7 +10,7 @@ import {
   randomHex,
 } from "./constants.js";
 import { extractRequestApiKey, signSession, verifySession } from "./crypto.js";
-import { apiFail, cookieGet, isSecureRequest, openaiError, sessionCookie } from "./http.js";
+import { apiFail, apiOk, cookieGet, isSecureRequest, sessionCookie, sessionHintCookie, openaiError } from "./http.js";
 import { ipAllowed } from "./select.js";
 import { Store, permissionsFor, publicUser } from "./store.js";
 import type { AuthToken, Env, SessionUser, TokenRow, UserRow } from "./types.js";
@@ -33,9 +33,11 @@ export async function issueSession(
   env: Env,
   user: UserRow,
   req: Request,
+  loginMethod = "password",
 ): Promise<{
   token: string;
   cookie: string;
+  cookies: string[];
   data: Record<string, unknown>;
   sid: string;
 }> {
@@ -46,27 +48,55 @@ export async function issueSession(
     { uid: user.id, role: user.role, username: user.username, exp, sid },
     secret,
   );
+  const ip = req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || "";
+  const ua = (req.headers.get("user-agent") || "").slice(0, 200);
+  const created = nowSec();
   await store.insertSession({
     sid,
     user_id: user.id,
-    ip: req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || "",
-    ua: (req.headers.get("user-agent") || "").slice(0, 200),
+    ip,
+    ua,
     expires_at: exp,
+    login_method: loginMethod,
   });
-  await store.updateUser(user.id, { last_login_at: nowSec() });
-  const cookie = sessionCookie(token, SESSION_TTL_SEC, isSecureRequest(req));
+  await store.updateUser(user.id, { last_login_at: created });
+  const secure = isSecureRequest(req);
+  const cookie = sessionCookie(token, SESSION_TTL_SEC, secure);
+  const cookies = [
+    cookie,
+    sessionCookie(token, SESSION_TTL_SEC, secure, "new_api_refresh"),
+    sessionHintCookie(SESSION_TTL_SEC, secure),
+  ];
+  const session = {
+    sid,
+    current: true,
+    login_method: loginMethod,
+    ip,
+    user_agent: ua,
+    created_at: created,
+    last_active_at: created,
+    expires_at: exp,
+  };
   const data = {
     access_token: token,
     token_type: "Bearer",
-    sid,
+    access_expires_at: exp,
+    session,
     user: { ...publicUser(user), permissions: permissionsFor(user.role) },
   };
-  return { token, cookie, data, sid };
+  return { token, cookie, cookies, data, sid };
+}
+
+export function sessionResponse(issued: { data: Record<string, unknown>; cookies: string[] }, status = 200): Response {
+  const res = apiOk(issued.data);
+  const headers = new Headers(res.headers);
+  for (const c of issued.cookies) headers.append("set-cookie", c);
+  return new Response(res.body, { status, headers });
 }
 
 export async function readSession(c: Context<Env>, store: Store): Promise<SessionUser | null> {
   const secret = await sessionSecret(c.env, store);
-  let raw = cookieGet(c.req, "session");
+  let raw = cookieGet(c.req, "session") || cookieGet(c.req, "new_api_refresh");
   const auth = c.req.headers.get("authorization") || "";
   if (!raw && auth.toLowerCase().startsWith("bearer ") && !auth.slice(7).trim().startsWith("sk-")) {
     raw = auth.slice(7).trim();
@@ -166,7 +196,7 @@ export async function rateLimit(env: Env, tokenId: number): Promise<boolean> {
 
 export async function currentSid(c: Context<Env>, store: Store): Promise<string> {
   const secret = await sessionSecret(c.env, store);
-  let raw = cookieGet(c.req, "session");
+  let raw = cookieGet(c.req, "session") || cookieGet(c.req, "new_api_refresh");
   const auth = c.req.headers.get("authorization") || "";
   if (!raw && auth.toLowerCase().startsWith("bearer ") && !auth.slice(7).trim().startsWith("sk-")) {
     raw = auth.slice(7).trim();

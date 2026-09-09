@@ -23,11 +23,11 @@ import {
   loginOrBindOAuth,
   newAccessToken,
   oauthAuthorizeUrl,
-  paymentDisabled,
-  pluginDisabled,
+  verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, maskKey, displayTokenKey } from "./crypto.js";
-import { apiFail, apiOk, clientIp, pageData, pageQuery, readJson } from "./http.js";
+import { registerParity, sessionViews } from "./parity-routes.js";
+import { apiFail, apiOk, clientIp, json, pageData, pageQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -38,7 +38,9 @@ import {
   requireAdmin,
   requireRoot,
   requireUser,
+  sessionResponse,
 } from "./auth.js";
+import { httpStats } from "./metrics.js";
 import { Store, publicUser } from "./store.js";
 import { testChannel } from "./relay.js";
 import type { Env, UserRow } from "./types.js";
@@ -57,18 +59,19 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk({
-      d1: true,
-      kv: Boolean(c.env.KV),
-      r2: Boolean(c.env.R2),
-      version: (await import("./constants.js")).VERSION,
-      users: (await s.counts()).users,
+    return json(200, {
+      success: true,
+      message: "Server is running",
+      http_stats: httpStats(),
+      data: {
+        d1: true,
+        kv: Boolean(c.env.KV),
+        r2: Boolean(c.env.R2),
+        version: (await import("./constants.js")).VERSION,
+        users: (await s.counts()).users,
+      },
     });
   });
-
-  r.get("/api/uptime/status", () => apiOk({ monitors: [] }));
-  r.get("/api/perf-metrics", () => apiOk([]));
-  r.get("/api/perf-metrics/summary", () => apiOk({}));
 
   r.get("/api/rankings", async (c) => {
     const s = store(c);
@@ -130,7 +133,7 @@ export function registerMore(r: Router<Env>): void {
     const body = (await readJson(c.req)) as { flow_token?: string; code?: string };
     if (!body.flow_token || !body.code) return apiFail("无效的参数");
     const flow = await s.getAuthFlow(body.flow_token);
-    if (!flow || flow.type !== "2fa_login" || flow.expires_at < nowSec()) return apiFail("登录流程已过期");
+    if (!flow || (flow.type !== "2fa_login" && flow.type !== "login_verify") || flow.expires_at < nowSec()) return apiFail("登录流程已过期");
     const user = await s.getUserById(flow.user_id);
     if (!user) return apiFail("用户不存在");
     const totpOk = await verifyTotp(user.totp_secret || "", body.code);
@@ -138,12 +141,9 @@ export function registerMore(r: Router<Env>): void {
     if (!totpOk && !backup.ok) return apiFail("验证码错误");
     if (backup.ok) await s.updateUser(user.id, { totp_backup: backup.rest });
     await s.deleteAuthFlow(body.flow_token);
-    const issued = await issueSession(s, c.env, user, c.req);
+    const issued = await issueSession(s, c.env, user, c.req, "2fa");
     await s.audit(user.id, user.username, "login", "Logged in via 2FA", clientIp(c.req));
-    const res = apiOk(issued.data);
-    const headers = new Headers(res.headers);
-    headers.append("set-cookie", issued.cookie);
-    return new Response(res.body, { status: 200, headers });
+    return sessionResponse(issued);
   });
 
   r.get("/api/user/2fa/status", async (c) => {
@@ -224,8 +224,7 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const sid = await currentSid(c, s);
-    const items = (await s.listSessions(u.id)) as { sid: string }[];
-    return apiOk(items.map((x) => ({ ...x, current: x.sid === sid })));
+    return apiOk(sessionViews(await s.listSessions(u.id), sid));
   });
 
   r.delete("/api/user/sessions/:sid", async (c) => {
@@ -381,11 +380,8 @@ export function registerMore(r: Router<Env>): void {
     const user = await s.getUserById(flow.user_id);
     if (!user) return apiFail("用户不存在");
     await s.deleteAuthFlow(flow.token);
-    const issued = await issueSession(s, c.env, user, c.req);
-    const res = apiOk(issued.data);
-    const headers = new Headers(res.headers);
-    headers.append("set-cookie", issued.cookie);
-    return new Response(res.body, { status: 200, headers });
+    const issued = await issueSession(s, c.env, user, c.req, "passkey");
+    return sessionResponse(issued);
   });
 
   r.post("/api/user/login/passkey/begin", async (c) => {
@@ -459,19 +455,6 @@ export function registerMore(r: Router<Env>): void {
     return apiOk(null, "已保存");
   });
 
-  r.get("/api/user/topup/info", async (c) => {
-    const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    return apiOk({
-      enable_online_topup: false,
-      stripe: false,
-      epay: false,
-      min_topup: 1,
-      quota_per_unit: await s.optionNum("QuotaPerUnit", 500000),
-      message: "请使用兑换码或余额订阅。在线支付未在边缘运行时启用。",
-    });
-  });
 
   r.get("/api/user/topup/self", async (c) => {
     const s = store(c);
@@ -502,19 +485,6 @@ export function registerMore(r: Router<Env>): void {
     return apiOk(null);
   });
 
-  r.post("/api/user/pay", paymentDisabled);
-  r.post("/api/user/amount", paymentDisabled);
-  r.post("/api/user/stripe/pay", paymentDisabled);
-  r.post("/api/user/stripe/amount", paymentDisabled);
-  r.post("/api/user/creem/pay", paymentDisabled);
-  r.post("/api/user/waffo/pay", paymentDisabled);
-  r.post("/api/user/waffo/amount", paymentDisabled);
-  r.post("/api/user/epay/notify", paymentDisabled);
-  r.get("/api/user/epay/notify", paymentDisabled);
-  r.post("/api/stripe/webhook", paymentDisabled);
-  r.post("/api/creem/webhook", paymentDisabled);
-  r.post("/api/waffo/webhook", paymentDisabled);
-
   r.get("/api/user/oauth/bindings", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
@@ -525,10 +495,84 @@ export function registerMore(r: Router<Env>): void {
       discord: Boolean(user?.discord_id),
       linuxdo: Boolean(user?.linuxdo_id),
       oidc: Boolean(user?.oidc_id),
+      wechat: Boolean(user?.wechat_id),
+      telegram: Boolean(user?.telegram_id),
     });
   });
 
-  r.post("/api/oauth/state", async () => apiOk({ state: randomHex(16) }));
+  r.delete("/api/user/oauth/bindings/:provider_id", async (c) => {
+    const s = store(c);
+    const u = await requireUser(c, s);
+    if (isResponse(u)) return u;
+    const map: Record<string, string> = {
+      github: "github_id",
+      discord: "discord_id",
+      linuxdo: "linuxdo_id",
+      oidc: "oidc_id",
+      wechat: "wechat_id",
+      telegram: "telegram_id",
+    };
+    const col = map[c.params.provider_id];
+    if (col) {
+      await s.updateUser(u.id, { [col]: "" });
+      return apiOk(null);
+    }
+    return apiFail("未知绑定");
+  });
+
+  r.post("/api/oauth/state", async (c) => {
+    const s = store(c);
+    const body = (await readJson(c.req)) as { provider?: string; intent?: string; aff?: string };
+    const provider = (body.provider || "").trim();
+    const intent = (body.intent || "login").trim();
+    if (!provider) return apiFail("无效的参数");
+    const flow = randomHex(16);
+    const expires = nowSec() + 600;
+    await s.insertAuthFlow({
+      token: flow,
+      type: "oauth",
+      user_id: 0,
+      expires_at: expires,
+      payload: JSON.stringify({ provider, intent, aff: body.aff || "" }),
+    });
+    const origin = new URL(c.req.url).origin;
+    const data: Record<string, unknown> = { flow_token: flow, state: flow, expires_at: expires };
+    if (provider === "telegram") {
+      const token = await s.option("TelegramBotToken");
+      const botId = token.split(":")[0] || "";
+      const returnTo = `${origin}/api/oauth/telegram`;
+      data.authorization_url = `https://oauth.telegram.org/auth?bot_id=${encodeURIComponent(botId)}&origin=${encodeURIComponent(origin)}&request_access=write&return_to=${encodeURIComponent(returnTo)}`;
+    } else if (provider === "github") {
+      data.authorization_url = oauthAuthorizeUrl("github", await s.option("GitHubClientId"), `${origin}/api/oauth/github`) + `&state=${flow}`;
+    } else if (provider === "discord") {
+      data.authorization_url = oauthAuthorizeUrl("discord", await s.option("DiscordClientId"), `${origin}/api/oauth/discord`) + `&state=${flow}`;
+    } else if (provider === "linuxdo") {
+      data.authorization_url = oauthAuthorizeUrl("linuxdo", await s.option("LinuxDOClientId"), `${origin}/api/oauth/linuxdo`) + `&state=${flow}`;
+    } else if (provider === "oidc") {
+      const authUrl = await s.option("OIDCAuthorizationEndpoint");
+      const q = new URLSearchParams({
+        client_id: await s.option("OIDCClientId"),
+        redirect_uri: `${origin}/api/oauth/oidc`,
+        response_type: "code",
+        scope: "openid profile email",
+        state: flow,
+      });
+      data.authorization_url = `${authUrl}?${q}`;
+    } else {
+      const custom = await s.getOAuthProvider(provider);
+      if (custom) {
+        const q = new URLSearchParams({
+          client_id: String(custom.client_id),
+          redirect_uri: `${origin}/api/oauth/${provider}`,
+          response_type: "code",
+          scope: String(custom.scopes || "openid profile email"),
+          state: flow,
+        });
+        data.authorization_url = `${custom.auth_url}?${q}`;
+      }
+    }
+    return apiOk(data);
+  });
 
   r.get("/api/oauth/:provider", async (c) => {
     const s = store(c);
@@ -584,8 +628,20 @@ export function registerMore(r: Router<Env>): void {
         });
         return loginOrBindOAuth(s, c.env, c.req, profile, existing);
       }
-      if (provider === "wechat" || provider === "telegram") {
-        return apiFail("该登录方式未配置");
+      if (provider === "telegram") {
+        if (!(await s.optionBool("TelegramOAuthEnabled", false))) return apiFail("Telegram 未启用");
+        if (!c.url.searchParams.get("hash") && !c.url.searchParams.get("id")) {
+          const token = await s.option("TelegramBotToken");
+          if (!token) return apiFail("Telegram 未配置");
+          const botId = token.split(":")[0] || "";
+          const url = `https://oauth.telegram.org/auth?bot_id=${encodeURIComponent(botId)}&origin=${encodeURIComponent(origin)}&request_access=write&return_to=${encodeURIComponent(redirect)}`;
+          return Response.redirect(url, 302);
+        }
+        const profile = await verifyTelegramLogin(s, c.url.searchParams);
+        return loginOrBindOAuth(s, c.env, c.req, profile, existing);
+      }
+      if (provider === "wechat") {
+        return apiFail("请使用 /api/oauth/wechat");
       }
       const custom = await s.getOAuthProvider(provider);
       if (!custom || !Number(custom.enabled)) return apiFail("未知的 OAuth 提供商");
@@ -707,18 +763,8 @@ export function registerMore(r: Router<Env>): void {
     return apiOk({ count: await s.deleteInvalidRedemptions() });
   });
 
-  r.get("/api/usage/token", async (c) => {
-    const s = store(c);
-    const auth = await authenticateApiToken(c, s);
-    if (auth instanceof Response) return auth;
-    return apiOk({
-      name: auth.token.name,
-      remain_quota: auth.token.remain_quota,
-      used_quota: auth.token.used_quota,
-      unlimited_quota: Boolean(auth.token.unlimited_quota),
-      expired_time: auth.token.expired_time,
-    });
-  });
+  r.get("/api/usage/token", tokenUsage);
+  r.get("/api/usage/token/", tokenUsage);
 
   r.get("/api/log/token", async (c) => {
     const s = store(c);
@@ -783,10 +829,6 @@ export function registerMore(r: Router<Env>): void {
     await s.insertTopup({ user_id: u.id, amount: grant, payment_method: "subscription", trade_no: String(id) });
     return apiOk({ id, expire_at: expire }, "订阅成功");
   });
-
-  r.post("/api/subscription/epay/pay", paymentDisabled);
-  r.post("/api/subscription/stripe/pay", paymentDisabled);
-  r.post("/api/subscription/creem/pay", paymentDisabled);
 
   r.get("/api/subscription/admin/plans", async (c) => {
     const s = store(c);
@@ -1157,14 +1199,40 @@ export function registerMore(r: Router<Env>): void {
     return apiFail("校验失败");
   });
 
-  r.get("/api/plugin/task", () => pluginDisabled());
-  r.get("/api/performance/stats", pluginDisabled);
-  r.get("/api/system-task/list", pluginDisabled);
-  r.get("/api/system-info/instances", pluginDisabled);
-  r.get("/api/deployments/", pluginDisabled);
-  r.get("/api/task_plugin_options", () => apiOk([]));
+  registerParity(r);
 
   void totpCode;
   void generateTokenKey;
   void publicUser;
+}
+
+async function tokenUsage(c: C): Promise<Response> {
+  const s = store(c);
+  const auth = await authenticateApiToken(c, s);
+  if (auth instanceof Response) return auth;
+  const remain = Number(auth.token.remain_quota || 0);
+  const used = Number(auth.token.used_quota || 0);
+  const expiredAt = auth.token.expired_time === -1 ? 0 : auth.token.expired_time;
+  const limits = String(auth.token.model_limits || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const modelLimits: Record<string, boolean> = {};
+  for (const m of limits) modelLimits[m] = true;
+  return json(200, {
+    success: true,
+    code: true,
+    message: "ok",
+    data: {
+      object: "token_usage",
+      name: auth.token.name,
+      total_granted: remain + used,
+      total_used: used,
+      total_available: remain,
+      unlimited_quota: Boolean(auth.token.unlimited_quota),
+      model_limits: modelLimits,
+      model_limits_enabled: Boolean(auth.token.model_limits_enabled),
+      expires_at: expiredAt,
+    },
+  });
 }

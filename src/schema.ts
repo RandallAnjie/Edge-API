@@ -154,7 +154,8 @@ CREATE TABLE IF NOT EXISTS login_sessions (
   expires_at INTEGER NOT NULL DEFAULT 0,
   ip TEXT NOT NULL DEFAULT '',
   ua TEXT NOT NULL DEFAULT '',
-  revoked INTEGER NOT NULL DEFAULT 0
+  revoked INTEGER NOT NULL DEFAULT 0,
+  login_method TEXT NOT NULL DEFAULT 'password'
 );
 CREATE TABLE IF NOT EXISTS auth_flows (
   token TEXT PRIMARY KEY,
@@ -281,6 +282,38 @@ CREATE TABLE IF NOT EXISTS model_meta (
   tags TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS task_plugins (
+  key TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  version TEXT NOT NULL DEFAULT '1.0.0',
+  status TEXT NOT NULL DEFAULT 'inactive',
+  active_version TEXT NOT NULL DEFAULT '',
+  icon TEXT NOT NULL DEFAULT '',
+  manifest TEXT NOT NULL DEFAULT '',
+  routes TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS system_tasks (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  progress TEXT NOT NULL DEFAULT '',
+  result TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS deployments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL DEFAULT '',
+  model_name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  hardware TEXT NOT NULL DEFAULT '',
+  location TEXT NOT NULL DEFAULT '',
+  replicas INTEGER NOT NULL DEFAULT 1,
+  extra TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_key ON api_tokens(key);
 CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
@@ -314,6 +347,7 @@ const USER_ALTERS = [
   "ALTER TABLE users ADD COLUMN billing_preference TEXT NOT NULL DEFAULT 'quota'",
   "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE channels ADD COLUMN balance TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE login_sessions ADD COLUMN login_method TEXT NOT NULL DEFAULT 'password'",
 ];
 
 import type { D1Database } from "./types.js";

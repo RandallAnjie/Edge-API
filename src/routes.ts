@@ -21,7 +21,7 @@ import {
   displayTokenKey,
   verifyPassword,
 } from "./crypto.js";
-import { apiFail, apiOk, clientIp, clearSessionCookie, isSecureRequest, pageData, pageQuery, readJson } from "./http.js";
+import { apiFail, apiOk, clientIp, clearAuthCookies, isSecureRequest, pageData, pageQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -31,11 +31,13 @@ import {
   requireAdmin,
   requireRoot,
   requireUser,
+  sessionResponse,
 } from "./auth.js";
 import { Store, permissionsFor, publicUser, stripChannelKey } from "./store.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { formatQuota } from "./quota.js";
 import { registerMore } from "./more-routes.js";
+import { buildStatus } from "./status.js";
 import type { Env, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -90,58 +92,7 @@ export function adminRouter(): Router<Env> {
     return apiOk(null, "系统初始化成功");
   });
 
-  r.get("/api/status", async (c) => {
-    const s = store(c);
-    const setup = await s.setupDone();
-    const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
-    return apiOk({
-      version: VERSION,
-      start_time: Math.floor(START_TIME / 1000),
-      system_name: c.env.SYSTEM_NAME || (await s.option("SystemName")) || "Edge API",
-      logo: await s.option("Logo"),
-      footer_html: await s.option("Footer"),
-      notice: await s.option("Notice"),
-      about: await s.option("About"),
-      home_page_content: await s.option("HomePageContent"),
-      quota_per_unit: quotaPerUnit,
-      display_in_currency: await s.optionBool("DisplayInCurrency", true),
-      quota_display_type: (await s.optionBool("DisplayInCurrency", true)) ? "USD" : "TOKENS",
-      register_enabled: await s.optionBool("RegisterEnabled", true),
-      password_login_enabled: await s.optionBool("PasswordLoginEnabled", true),
-      password_register_enabled: await s.optionBool("PasswordRegisterEnabled", true),
-      email_verification: await s.optionBool("EmailVerificationEnabled", false),
-      github_oauth: await s.optionBool("GitHubOAuthEnabled", false),
-      github_client_id: await s.option("GitHubClientId"),
-      discord_oauth: await s.optionBool("DiscordOAuthEnabled", false),
-      discord_client_id: await s.option("DiscordClientId"),
-      linuxdo_oauth: await s.optionBool("LinuxDOOAuthEnabled", false),
-      linuxdo_client_id: await s.option("LinuxDOClientId"),
-      oidc_auth: await s.optionBool("OIDCAuthEnabled", false),
-      passkey: await s.optionBool("PasskeyEnabled", true),
-      rankings_enabled: await s.optionBool("RankingsEnabled", true),
-      setup,
-      checkin_enabled: await s.optionBool("CheckinEnabled", true),
-      self_use_mode_enabled: await s.optionBool("SelfUseModeEnabled", true),
-      demo_site_enabled: await s.optionBool("DemoSiteEnabled", false),
-      docs_link: await s.option("DocsLink"),
-      HeaderNavModules: JSON.stringify({
-        home: true,
-        console: true,
-        pricing: { enabled: true, requireAuth: false },
-        rankings: { enabled: await s.optionBool("RankingsEnabled", true), requireAuth: false },
-        docs: true,
-        about: true,
-      }),
-      SidebarModulesAdmin: JSON.stringify({
-        chat: { enabled: true, playground: true, chat: true },
-        console: { enabled: true, detail: true, token: true, log: true, audit: true, midjourney: true, task: true },
-        personal: { enabled: true, topup: true, personal: true, security: true },
-        admin: { enabled: true, channel: true, models: true, redemption: true, user: true, setting: true, subscription: true },
-      }),
-      runtime: "randallflare-workerd",
-      original_project: "https://github.com/QuantumNous/new-api",
-    });
-  });
+  r.get("/api/status", async (c) => apiOk(await buildStatus(store(c), c.env)));
 
   r.get("/api/notice", async (c) => apiOk(await store(c).option("Notice")));
   r.get("/api/about", async (c) => apiOk(await store(c).option("About")));
@@ -175,18 +126,33 @@ export function adminRouter(): Router<Env> {
     const user = await s.getUserByUsername(body.username);
     if (!user || !(await verifyPassword(body.password, user.password))) return apiFail("用户名或密码错误");
     if (user.status !== USER_ENABLED) return apiFail("用户已被封禁");
-    if (Number(user.totp_enabled) === 1) {
+    const passkeys = (await s.listPasskeys(user.id)).length > 0;
+    const totp = Number(user.totp_enabled) === 1;
+    if (totp || passkeys) {
       const { randomHex } = await import("./constants.js");
       const flow = randomHex(16);
-      await s.insertAuthFlow({ token: flow, type: "2fa_login", user_id: user.id, expires_at: nowSec() + 300, payload: "" });
-      return apiOk({ require_2fa: true, flow_token: flow });
+      const expires = nowSec() + 300;
+      await s.insertAuthFlow({
+        token: flow,
+        type: totp ? "2fa_login" : "login_verify",
+        user_id: user.id,
+        expires_at: expires,
+        payload: JSON.stringify({ login_method: "password" }),
+      });
+      const methods = [];
+      if (totp) methods.push({ method: "2fa", available: true });
+      if (passkeys) methods.push({ method: "passkey", available: true });
+      return apiOk({
+        require_verification: true,
+        require_2fa: totp,
+        flow_token: flow,
+        expires_at: expires,
+        methods,
+      });
     }
-    const issued = await issueSession(s, c.env, user, c.req);
+    const issued = await issueSession(s, c.env, user, c.req, "password");
     await s.audit(user.id, user.username, "login", "Logged in successfully via password", clientIp(c.req));
-    const res = apiOk(issued.data);
-    const headers = new Headers(res.headers);
-    headers.append("set-cookie", issued.cookie);
-    return new Response(res.body, { status: 200, headers });
+    return sessionResponse(issued);
   });
 
   r.post("/api/user/auth/logout", async (c) => {
@@ -196,7 +162,7 @@ export function adminRouter(): Router<Env> {
     if (sid) await s.revokeSession(sid);
     const res = apiOk(null, "已退出");
     const headers = new Headers(res.headers);
-    headers.append("set-cookie", clearSessionCookie(isSecureRequest(c.req)));
+    for (const cookie of clearAuthCookies(isSecureRequest(c.req))) headers.append("set-cookie", cookie);
     return new Response(res.body, { status: 200, headers });
   });
 
@@ -206,14 +172,19 @@ export function adminRouter(): Router<Env> {
     if (!u) return apiFail("未登录", null, 401);
     const user = await s.getUserById(u.id);
     if (!user) return apiFail("用户不存在", null, 401);
-    const issued = await issueSession(s, c.env, user, c.req);
-    const res = apiOk(issued.data);
-    const headers = new Headers(res.headers);
-    headers.append("set-cookie", issued.cookie);
-    return new Response(res.body, { status: 200, headers });
+    const issued = await issueSession(s, c.env, user, c.req, "refresh");
+    return sessionResponse(issued);
   });
 
-  r.get("/api/user/login/encryption-key", () => apiOk({ enabled: false }));
+  r.get("/api/user/login/encryption-key", async (c) => {
+    const s = store(c);
+    if (!(await s.optionBool("PasswordLoginEncryptionEnabled", false))) return apiOk({ enabled: false });
+    return apiOk({
+      enabled: true,
+      kid: await s.option("PasswordEncryptionKid"),
+      public_key: await s.option("PasswordEncryptionPublicKey"),
+    });
+  });
 
   r.post("/api/user/register", async (c) => {
     const s = store(c);
@@ -267,11 +238,8 @@ export function adminRouter(): Router<Env> {
       }
     }
     const user = await s.getUserById(id);
-    const issued = await issueSession(s, c.env, user!, c.req);
-    const res = apiOk(issued.data, "注册成功");
-    const headers = new Headers(res.headers);
-    headers.append("set-cookie", issued.cookie);
-    return new Response(res.body, { status: 200, headers });
+    const issued = await issueSession(s, c.env, user!, c.req, "password");
+    return sessionResponse(issued);
   });
 
   r.get("/api/user/self", async (c) => {

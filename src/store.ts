@@ -9,6 +9,7 @@ import {
   dayStartSec,
   nowSec,
 } from "./constants.js";
+import { capabilities } from "./authz.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
 import type {
   ChannelRow,
@@ -122,8 +123,8 @@ export class Store {
   async insertUser(u: Partial<UserRow>): Promise<number> {
     const r = await this.db
       .prepare(
-        `INSERT INTO users (username, password, display_name, role, status, email, github_id, quota, used_quota, request_count, "group", aff_code, inviter_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)`,
+        `INSERT INTO users (username, password, display_name, role, status, email, github_id, discord_id, oidc_id, linuxdo_id, wechat_id, telegram_id, quota, used_quota, request_count, "group", aff_code, inviter_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)`,
       )
       .bind(
         u.username,
@@ -133,6 +134,11 @@ export class Store {
         u.status ?? USER_ENABLED,
         u.email ?? "",
         u.github_id ?? "",
+        u.discord_id ?? "",
+        u.oidc_id ?? "",
+        u.linuxdo_id ?? "",
+        u.wechat_id ?? "",
+        u.telegram_id ?? "",
         u.quota ?? 0,
         u.group ?? "default",
         u.aff_code ?? "",
@@ -575,6 +581,38 @@ export class Store {
     return results;
   }
 
+  async quotaDatesByUser(start: number, end: number): Promise<unknown[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT user_id, username, SUM(quota) as quota, SUM(token_used) as token_used, SUM(count) as count
+         FROM quota_data WHERE created_at >= ? AND created_at <= ? GROUP BY user_id, username ORDER BY quota DESC`,
+      )
+      .bind(start, end)
+      .all();
+    return results;
+  }
+
+  async flowQuotaDates(start: number, end: number, userId: number | null, username = ""): Promise<unknown[]> {
+    const where = ["created_at >= ?", "created_at <= ?"];
+    const binds: unknown[] = [start, end];
+    if (userId) {
+      where.push("user_id = ?");
+      binds.push(userId);
+    }
+    if (username) {
+      where.push("username = ?");
+      binds.push(username);
+    }
+    const { results } = await this.db
+      .prepare(
+        `SELECT created_at, model_name, username, quota, prompt_tokens, completion_tokens, token_id, channel_id
+         FROM request_logs WHERE ${where.join(" AND ")} ORDER BY created_at`,
+      )
+      .bind(...binds)
+      .all();
+    return results;
+  }
+
   async insertRedemption(r: Partial<RedemptionRow>): Promise<number> {
     const res = await this.db
       .prepare("INSERT INTO redemptions (name, key, status, quota, created_time) VALUES (?, ?, 1, ?, ?)")
@@ -735,12 +773,13 @@ export class Store {
     ip: string;
     ua: string;
     expires_at: number;
+    login_method?: string;
   }): Promise<void> {
     await this.db
       .prepare(
-        "INSERT INTO login_sessions (sid, user_id, created_at, last_seen, expires_at, ip, ua, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+        "INSERT INTO login_sessions (sid, user_id, created_at, last_seen, expires_at, ip, ua, revoked, login_method) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
       )
-      .bind(row.sid, row.user_id, nowSec(), nowSec(), row.expires_at, row.ip, row.ua)
+      .bind(row.sid, row.user_id, nowSec(), nowSec(), row.expires_at, row.ip, row.ua, row.login_method || "password")
       .run();
   }
 
@@ -753,6 +792,7 @@ export class Store {
     ua: string;
     created_at: number;
     last_seen: number;
+    login_method?: string;
   } | null> {
     return this.db.prepare("SELECT * FROM login_sessions WHERE sid = ?").bind(sid).first();
   }
@@ -776,12 +816,34 @@ export class Store {
       .run();
   }
 
-  async listSessions(userId: number): Promise<unknown[]> {
+  async listSessions(userId: number): Promise<
+    {
+      sid: string;
+      created_at: number;
+      last_seen: number;
+      ip: string;
+      ua: string;
+      revoked: number;
+      expires_at: number;
+      login_method?: string;
+    }[]
+  > {
     const { results } = await this.db
-      .prepare("SELECT sid, created_at, last_seen, ip, ua, revoked, expires_at FROM login_sessions WHERE user_id = ? ORDER BY last_seen DESC")
+      .prepare(
+        "SELECT sid, created_at, last_seen, ip, ua, revoked, expires_at, login_method FROM login_sessions WHERE user_id = ? ORDER BY last_seen DESC",
+      )
       .bind(userId)
       .all();
-    return results;
+    return results as {
+      sid: string;
+      created_at: number;
+      last_seen: number;
+      ip: string;
+      ua: string;
+      revoked: number;
+      expires_at: number;
+      login_method?: string;
+    }[];
   }
 
   async insertAuthFlow(row: { token: string; type: string; user_id: number; expires_at: number; payload?: string }): Promise<void> {
@@ -853,6 +915,21 @@ export class Store {
       .bind(...binds, limit, offset)
       .all();
     return { items: results, total: num(totalRow?.c) };
+  }
+
+  async getTopupByTrade(tradeNo: string): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM topups WHERE trade_no = ?").bind(tradeNo).first();
+  }
+
+  async updateTopup(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE topups SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
   }
 
   async rankings(start: number, end: number, limit = 50): Promise<unknown[]> {
@@ -1237,6 +1314,137 @@ export class Store {
     await this.db.prepare("DELETE FROM model_meta WHERE id = ?").bind(id).run();
   }
 
+  async getModelMeta(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM model_meta WHERE id = ?").bind(id).first();
+  }
+
+  async searchModelMeta(keyword: string): Promise<unknown[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM model_meta WHERE model_name LIKE ? OR description LIKE ? ORDER BY id")
+      .bind(`%${keyword}%`, `%${keyword}%`)
+      .all();
+    return results;
+  }
+
+  async deleteModelMetaBatch(ids: number[]): Promise<number> {
+    if (!ids.length) return 0;
+    const ph = ids.map(() => "?").join(",");
+    const r = await this.db.prepare(`DELETE FROM model_meta WHERE id IN (${ph})`).bind(...ids).run();
+    return Number(r.meta.changes || 0);
+  }
+
+  async listTaskPlugins(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM task_plugins ORDER BY key").all();
+    return results;
+  }
+
+  async getTaskPlugin(key: string): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM task_plugins WHERE key = ?").bind(key).first();
+  }
+
+  async upsertTaskPlugin(p: Record<string, unknown>): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO task_plugins (key, name, version, status, active_version, icon, manifest, routes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET name=excluded.name, version=excluded.version, status=excluded.status,
+           active_version=excluded.active_version, icon=excluded.icon, manifest=excluded.manifest, routes=excluded.routes, updated_at=excluded.updated_at`,
+      )
+      .bind(
+        String(p.key),
+        String(p.name || p.key),
+        String(p.version || "1.0.0"),
+        String(p.status || "inactive"),
+        String(p.active_version || p.version || "1.0.0"),
+        String(p.icon || ""),
+        typeof p.manifest === "string" ? p.manifest : JSON.stringify(p.manifest || {}),
+        typeof p.routes === "string" ? p.routes : JSON.stringify(p.routes || []),
+        nowSec(),
+        nowSec(),
+      )
+      .run();
+  }
+
+  async deleteTaskPlugin(key: string): Promise<void> {
+    await this.db.prepare("DELETE FROM task_plugins WHERE key = ?").bind(key).run();
+  }
+
+  async insertSystemTask(row: { id: string; type: string; status?: string; progress?: string; result?: string }): Promise<void> {
+    await this.db
+      .prepare(
+        "INSERT INTO system_tasks (id, type, status, progress, result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(row.id, row.type, row.status || "running", row.progress ?? "", row.result ?? "", nowSec(), nowSec())
+      .run();
+  }
+
+  async updateSystemTask(id: string, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = ["updated_at = ?"];
+    const vals: unknown[] = [nowSec()];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE system_tasks SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async listSystemTasks(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM system_tasks ORDER BY created_at DESC").all();
+    return results;
+  }
+
+  async getSystemTask(id: string): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM system_tasks WHERE id = ?").bind(id).first();
+  }
+
+  async currentSystemTask(): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM system_tasks WHERE status = 'running' ORDER BY created_at DESC LIMIT 1").first();
+  }
+
+  async listDeployments(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM deployments ORDER BY id DESC").all();
+    return results;
+  }
+
+  async getDeployment(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM deployments WHERE id = ?").bind(id).first();
+  }
+
+  async insertDeployment(p: Record<string, unknown>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        "INSERT INTO deployments (name, model_name, status, hardware, location, replicas, extra, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        String(p.name || ""),
+        String(p.model_name || ""),
+        String(p.status || "pending"),
+        String(p.hardware || ""),
+        String(p.location || ""),
+        Number(p.replicas || 1),
+        typeof p.extra === "string" ? p.extra : JSON.stringify(p.extra || {}),
+        nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateDeployment(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE deployments SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async deleteDeployment(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM deployments WHERE id = ?").bind(id).run();
+  }
+
   async cleanupExpired(cutoff: number): Promise<void> {
     await this.db.prepare("DELETE FROM email_codes WHERE expires_at < ?").bind(cutoff).run();
     await this.db.prepare("DELETE FROM auth_flows WHERE expires_at < ?").bind(cutoff).run();
@@ -1250,26 +1458,35 @@ export function publicUser(u: UserRow): Record<string, unknown> {
     id: u.id,
     username: u.username,
     display_name: u.display_name,
+    has_password: !!u.password,
     role: u.role,
     status: u.status,
     email: u.email,
     github_id: u.github_id,
     discord_id: u.discord_id || "",
-    linuxdo_id: u.linuxdo_id || "",
     oidc_id: u.oidc_id || "",
+    wechat_id: u.wechat_id || "",
+    telegram_id: u.telegram_id || "",
     group: u.group,
     quota: u.quota,
     used_quota: u.used_quota,
     request_count: u.request_count,
     aff_code: u.aff_code,
-    aff_quota: u.aff_quota || 0,
     aff_count: u.aff_count || 0,
+    aff_quota: u.aff_quota || 0,
+    aff_history_quota: u.aff_quota || 0,
+    inviter_id: u.inviter_id,
+    linux_do_id: u.linuxdo_id || "",
+    linuxdo_id: u.linuxdo_id || "",
+    setting: u.settings || "",
+    settings: u.settings || "",
+    stripe_customer: "",
+    sidebar_modules: "",
     billing_preference: u.billing_preference || "quota",
     totp_enabled: Number(u.totp_enabled) === 1,
     email_verified: Number(u.email_verified) === 1,
-    has_password: !!u.password,
     has_access_token: Boolean(u.access_token),
-    settings: u.settings || "",
+    permissions: permissionsFor(u.role),
   };
 }
 
@@ -1277,18 +1494,11 @@ export function permissionsFor(role: number): Record<string, unknown> {
   const admin = role >= 10;
   const root = role >= 100;
   return {
+    sidebar_settings: !root,
+    sidebar_modules: root ? {} : admin ? { admin: { setting: false } } : { admin: false },
+    admin_permissions: capabilities(role),
     is_admin: admin,
     is_root: root,
-    admin_permissions: admin
-      ? {
-          channel: true,
-          user: true,
-          redemption: true,
-          token: true,
-          log: true,
-          setting: root,
-        }
-      : {},
   };
 }
 
