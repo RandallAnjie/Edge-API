@@ -90,6 +90,7 @@ export interface UserRow {
   email_verified?: number;
   auth_version?: number;
   admin_permissions?: string;
+  remark?: string;
 }
 
 export interface LoginSessionRow {
@@ -195,6 +196,8 @@ export interface RedemptionRow {
   created_time: number;
   redeemed_time: number;
   used_user_id: number;
+  user_id?: number;
+  expired_time?: number;
 }
 
 export interface SessionUser {

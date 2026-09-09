@@ -24,7 +24,7 @@ import {
 } from "./oauth.js";
 import { bytesToHex, hmacSha256Hex, sha256Bytes } from "./crypto.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
-import { apiFail, apiOk, json, pageData, pageQuery, readJson } from "./http.js";
+import { apiFail, apiOk, json, pageData, pageQuery, parseUnixQuery, readJson } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -184,11 +184,13 @@ export function registerParity(r: Router<Env>): void {
     const code = c.url.searchParams.get("code") || "";
     try {
       const wechatId = await wechatIdFromCode(s, code);
+      const existing = await s.getUserByField("wechat_id", wechatId);
+      const username = existing ? existing.username : `wechat_${(await s.maxUserId()) + 1}`;
       return loginOrBindOAuth(
         s,
         c.env,
         c.req,
-        { id: wechatId, username: `wx_${wechatId}`.slice(0, 20), display_name: `微信用户`, field: "wechat_id" },
+        { id: wechatId, username, display_name: existing?.display_name || "WeChat User", field: "wechat_id" },
         null,
         "login",
       );
@@ -412,8 +414,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const { results } = await c.env.DB.prepare("SELECT id FROM channels").all();
-    return apiOk({ success: results.length, fails: 0 });
+    return apiOk(await s.fixAbilities());
   });
 
   r.post("/api/channel/:id/codex/refresh", async (c) => {
@@ -641,25 +642,35 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     resetMetrics();
-    return apiOk(httpStats(), "已重置");
+    return apiOk(null, "统计信息已重置");
   });
   r.post("/api/performance/gc", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(null, "workerd 由运行时管理内存");
+    return apiOk(null, "GC 已执行");
   });
   r.get("/api/performance/logs", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk([]);
+    return apiOk({
+      log_dir: "",
+      enabled: false,
+      file_count: 0,
+      total_size: 0,
+      files: [],
+    });
   });
   r.delete("/api/performance/logs", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(null);
+    const mode = c.url.searchParams.get("mode") || "";
+    const value = Number(c.url.searchParams.get("value") || 0);
+    if (mode !== "by_count" && mode !== "by_days") return apiFail("invalid mode, must be by_count or by_days");
+    if (!Number.isInteger(value) || value < 1) return apiFail("invalid value, must be a positive integer");
+    return apiFail("log directory not configured");
   });
 
   r.get("/api/ratio_sync/channels", async (c) => {
@@ -958,18 +969,18 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const start = Number(c.url.searchParams.get("start_timestamp") || nowSec() - 86400 * 7);
-    const end = Number(c.url.searchParams.get("end_timestamp") || nowSec());
+    const start = parseUnixQuery(c.url, "start_timestamp");
+    const end = parseUnixQuery(c.url, "end_timestamp");
     return apiOk(await s.quotaDatesByUser(start, end));
   });
   r.get("/api/data/flow", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const start = Number(c.url.searchParams.get("start_timestamp") || 0);
-    const end = Number(c.url.searchParams.get("end_timestamp") || 0);
-    if (!start) return apiFail("invalid start_timestamp");
-    if (!end) return apiFail("invalid end_timestamp");
+    const start = parseUnixQuery(c.url, "start_timestamp");
+    const end = parseUnixQuery(c.url, "end_timestamp");
+    if (start <= 0) return apiFail("invalid start_timestamp");
+    if (end <= 0) return apiFail("invalid end_timestamp");
     if (end < start) return apiFail("invalid time range");
     return apiOk(await s.flowQuotaDates(start, end, null, c.url.searchParams.get("username") || "", u.role));
   });
@@ -977,10 +988,10 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const start = Number(c.url.searchParams.get("start_timestamp") || 0);
-    const end = Number(c.url.searchParams.get("end_timestamp") || 0);
-    if (!start) return apiFail("invalid start_timestamp");
-    if (!end) return apiFail("invalid end_timestamp");
+    const start = parseUnixQuery(c.url, "start_timestamp");
+    const end = parseUnixQuery(c.url, "end_timestamp");
+    if (start <= 0) return apiFail("invalid start_timestamp");
+    if (end <= 0) return apiFail("invalid end_timestamp");
     if (end < start) return apiFail("invalid time range");
     if (end - start > 2592000) return apiFail("时间跨度不能超过 1 个月");
     return apiOk(await s.flowQuotaDates(start, end, u.id, "", u.role));

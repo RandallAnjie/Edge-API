@@ -116,19 +116,23 @@ export async function userAutoGroups(store: Store, userGroup = ""): Promise<stri
   return auto.filter((g) => g && g !== "auto" && usable[g] != null && ratios[g] != null);
 }
 
+export async function userGroupRatio(store: Store, userGroup = "", group: string): Promise<number> {
+  const overlay = parseJson<Record<string, Record<string, number>>>(await store.option("GroupGroupRatio"), {});
+  const nested = userGroup ? overlay[userGroup] : undefined;
+  if (nested && nested[group] != null) return Number(nested[group]);
+  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { default: 1 });
+  return ratios[group] ?? 1;
+}
+
 export async function userGroupsView(store: Store, userGroup = ""): Promise<Record<string, { ratio: number | string; desc: string }>> {
   const usable = await userUsableGroups(store, userGroup);
   const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { default: 1 });
   const out: Record<string, { ratio: number | string; desc: string }> = {};
-  for (const [name, desc] of Object.entries(usable)) {
-    if (name === "auto") {
-      out.auto = { ratio: "自动", desc };
-      continue;
-    }
-    if (ratios[name] == null) continue;
-    out[name] = { ratio: ratios[name], desc };
+  for (const name of Object.keys(ratios)) {
+    if (usable[name] == null) continue;
+    out[name] = { ratio: await userGroupRatio(store, userGroup, name), desc: usable[name] };
   }
-  if (usable.auto && !out.auto) out.auto = { ratio: "自动", desc: usable.auto };
+  if (usable.auto) out.auto = { ratio: "自动", desc: usable.auto };
   return out;
 }
 
@@ -211,6 +215,21 @@ export function publicChannel(c: ChannelRow, includeKey = false): Record<string,
 
 export function stripChannelKey(c: ChannelRow): Record<string, unknown> {
   return publicChannel(c, false);
+}
+
+export function publicTopup(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: Number(row.id || 0),
+    user_id: Number(row.user_id || 0),
+    amount: Number(row.amount || 0),
+    money: Number(row.money || 0),
+    trade_no: String(row.trade_no || ""),
+    payment_method: String(row.payment_method || ""),
+    payment_provider: String(row.payment_provider || ""),
+    create_time: Number(row.create_time ?? row.created_at ?? 0),
+    complete_time: Number(row.complete_time || 0),
+    status: String(row.status || ""),
+  };
 }
 
 export async function buildPricing(
@@ -417,12 +436,21 @@ export function formatLogOtherJSON(value: string, visibility: LogVisibility): st
     return visibility === "root" ? value : "{}";
   }
   const out = { ...parsed };
+  let changed = false;
   if (visibility === "user") {
-    for (const key of LOG_OTHER_USER_STRIP) delete out[key];
+    for (const key of LOG_OTHER_USER_STRIP) {
+      if (key in out) {
+        delete out[key];
+        changed = true;
+      }
+    }
   } else if (visibility === "admin") {
-    delete out.root_info;
+    if ("root_info" in out) {
+      delete out.root_info;
+      changed = true;
+    }
   }
-  return JSON.stringify(out);
+  return changed ? JSON.stringify(out) : value;
 }
 
 export function publicModelMeta(

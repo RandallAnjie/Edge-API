@@ -213,6 +213,7 @@ export async function loginOrBindOAuth(
   }
   if (!user) {
     if (profile.field === "telegram_id") return apiFail("该 Telegram 账号尚未绑定");
+    if (!(await store.optionBool("RegisterEnabled", true))) return apiFail("管理员关闭了新用户注册");
     const exists = await store.getUserByUsername(profile.username);
     const finalName = exists ? `${profile.field.slice(0, 2)}_${profile.id}`.slice(0, 20) : profile.username;
     const id = await store.insertUser({
@@ -229,6 +230,7 @@ export async function loginOrBindOAuth(
     if (profile.provider_id) await store.upsertUserOAuthBinding(id, profile.provider_id, profile.id);
     user = await store.getUserById(id);
   }
+  if (user && user.status !== 1) return apiFail("用户已被封禁");
   const issued = await issueSessionSafe(store, env, user!, req, "oauth:" + (profile.slug || profile.field.replace(/_id$/, "")));
   if (issued instanceof Response) return issued;
   return sessionResponse(issued);
@@ -257,11 +259,12 @@ export function newAccessToken(): string {
 }
 
 export async function wechatIdFromCode(store: Store, code: string): Promise<string> {
+  if (!code) throw new Error("无效的参数");
   const addr = await store.option("WeChatServerAddress");
   const token = await store.option("WeChatServerToken");
-  if (!addr) throw new Error("管理员未开启通过微信登录以及注册");
+  if (!addr) throw new Error("无效的参数");
   const res = await fetch(`${addr.replace(/\/$/, "")}/api/wechat/user?code=${encodeURIComponent(code)}`, {
-    headers: { authorization: token },
+    headers: { Authorization: token },
   });
   const json = (await res.json()) as { success?: boolean; message?: string; data?: string };
   if (!json.success || !json.data) throw new Error(json.message || "验证码错误或已过期");

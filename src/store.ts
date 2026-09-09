@@ -11,6 +11,7 @@ import {
   parseJson,
 } from "./constants.js";
 import { capabilities, parsePermissionOverrides } from "./authz.js";
+import { pickAbilityChannelId } from "./select.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
 import { normalizeBillingPreference } from "./subscription.js";
 import type {
@@ -181,20 +182,69 @@ export class Store {
     await this.db.prepare("DELETE FROM users WHERE id = ?").bind(id).run();
   }
 
-  async listUsers(offset: number, limit: number, keyword = ""): Promise<{ items: UserRow[]; total: number }> {
+  async maxUserId(): Promise<number> {
+    const row = await this.db.prepare("SELECT COALESCE(MAX(id), 0) as c FROM users").first<{ c: number }>();
+    return Number(row?.c || 0);
+  }
+
+  async listUsers(
+    offset: number,
+    limit: number,
+    keywordOrOpts:
+      | string
+      | {
+          keyword?: string;
+          group?: string;
+          role?: number;
+          status?: number;
+          sortBy?: string;
+          sortOrder?: string;
+        } = "",
+  ): Promise<{ items: UserRow[]; total: number }> {
+    const opts = typeof keywordOrOpts === "string" ? { keyword: keywordOrOpts } : keywordOrOpts;
+    const keyword = opts.keyword || "";
     let where = "1=1";
     const binds: unknown[] = [];
     if (keyword) {
-      where += " AND (username LIKE ? OR display_name LIKE ? OR email LIKE ?)";
-      const q = `%${keyword}%`;
-      binds.push(q, q, q);
+      const like = `%${keyword}%`;
+      const id = Number(keyword);
+      if (Number.isInteger(id) && String(id) === keyword) {
+        where += " AND (id = ? OR username LIKE ? OR display_name LIKE ? OR email LIKE ?)";
+        binds.push(id, like, like, like);
+      } else {
+        where += " AND (username LIKE ? OR display_name LIKE ? OR email LIKE ?)";
+        binds.push(like, like, like);
+      }
     }
+    if (opts.group) {
+      where += ` AND "group" = ?`;
+      binds.push(opts.group);
+    }
+    if (opts.role != null) {
+      where += " AND role = ?";
+      binds.push(opts.role);
+    }
+    if (opts.status != null) {
+      where += " AND status = ?";
+      binds.push(opts.status);
+    }
+    const sortCols: Record<string, string> = {
+      id: "id",
+      username: "username",
+      quota: "quota",
+      group: `"group"`,
+      created_at: "created_at",
+      last_login_at: "last_login_at",
+    };
+    const sortBy = sortCols[(opts.sortBy || "").toLowerCase()] || "id";
+    const sortOrder = (opts.sortOrder || "").toLowerCase() === "asc" ? "ASC" : "DESC";
+    const order = sortBy === "id" ? `${sortBy} ${sortOrder}` : `${sortBy} ${sortOrder}, id DESC`;
     const totalRow = await this.db
       .prepare(`SELECT COUNT(*) as c FROM users WHERE ${where}`)
       .bind(...binds)
       .first<{ c: number }>();
     const { results } = await this.db
-      .prepare(`SELECT * FROM users WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM users WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`)
       .bind(...binds, limit, offset)
       .all<UserRow>();
     return { items: results, total: num(totalRow?.c) };
@@ -348,7 +398,43 @@ export class Store {
         c.setting ?? "",
       )
       .run();
-    return Number(r.meta.last_row_id || 0);
+    const id = Number(r.meta.last_row_id || 0);
+    const ch = await this.getChannel(id);
+    if (ch) await this.replaceChannelAbilities(ch);
+    return id;
+  }
+
+  async replaceChannelAbilities(ch: ChannelRow): Promise<void> {
+    await this.db.prepare("DELETE FROM abilities WHERE channel_id = ?").bind(ch.id).run();
+    const models = csv(ch.models);
+    const groups = csv(ch.group || "default");
+    const enabled = Number(ch.status) === CHANNEL_ENABLED ? 1 : 0;
+    for (const group of groups) {
+      for (const model of models) {
+        await this.db
+          .prepare(
+            `INSERT OR IGNORE INTO abilities ("group", model, channel_id, enabled, priority, weight, tag) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(group, model, ch.id, enabled, ch.priority || 0, ch.weight || 0, ch.tag || "")
+          .run();
+      }
+    }
+  }
+
+  async fixAbilities(): Promise<{ success: number; fails: number }> {
+    await this.db.exec("DELETE FROM abilities");
+    const { results } = await this.db.prepare("SELECT * FROM channels").all<ChannelRow>();
+    let success = 0;
+    let fails = 0;
+    for (const ch of results) {
+      try {
+        await this.replaceChannelAbilities(ch);
+        success += 1;
+      } catch {
+        fails += 1;
+      }
+    }
+    return { success, fails };
   }
 
   async updateChannel(id: number, patch: Record<string, unknown>): Promise<void> {
@@ -362,13 +448,17 @@ export class Store {
     if (!cols.length) return;
     vals.push(id);
     await this.db.prepare(`UPDATE channels SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+    const ch = await this.getChannel(id);
+    if (ch) await this.replaceChannelAbilities(ch);
   }
 
   async deleteChannel(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM abilities WHERE channel_id = ?").bind(id).run();
     await this.db.prepare("DELETE FROM channels WHERE id = ?").bind(id).run();
   }
 
   async deleteDisabledChannels(): Promise<number> {
+    await this.db.prepare("DELETE FROM abilities WHERE channel_id IN (SELECT id FROM channels WHERE status != 1)").run();
     const r = await this.db.prepare("DELETE FROM channels WHERE status != 1").run();
     return Number(r.meta.changes || 0);
   }
@@ -376,6 +466,7 @@ export class Store {
   async deleteChannelsBatch(ids: number[]): Promise<number> {
     let n = 0;
     for (const id of ids) {
+      await this.db.prepare("DELETE FROM abilities WHERE channel_id = ?").bind(id).run();
       const r = await this.db.prepare("DELETE FROM channels WHERE id = ?").bind(id).run();
       n += Number(r.meta.changes || 0);
     }
@@ -384,6 +475,8 @@ export class Store {
 
   async setChannelsByTag(tag: string, status: number): Promise<number> {
     const r = await this.db.prepare("UPDATE channels SET status = ? WHERE tag = ?").bind(status, tag).run();
+    const { results } = await this.db.prepare("SELECT * FROM channels WHERE tag = ?").bind(tag).all<ChannelRow>();
+    for (const ch of results) await this.replaceChannelAbilities(ch);
     return Number(r.meta.changes || 0);
   }
 
@@ -467,6 +560,23 @@ export class Store {
   async enabledChannels(): Promise<ChannelRow[]> {
     const { results } = await this.db.prepare("SELECT * FROM channels WHERE status = 1").all<ChannelRow>();
     return results;
+  }
+
+  async abilitiesFor(group: string, model: string): Promise<{ channel_id: number; priority: number; weight: number }[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT channel_id, priority, weight FROM abilities WHERE "group" = ? AND model = ? AND enabled = 1 ORDER BY priority DESC, weight DESC`,
+      )
+      .bind(group, model)
+      .all<{ channel_id: number; priority: number; weight: number }>();
+    return results;
+  }
+
+  async getRandomSatisfiedChannel(group: string, model: string, retry: number): Promise<ChannelRow | null> {
+    const abilities = await this.abilitiesFor(group, model);
+    const id = pickAbilityChannelId(abilities, retry);
+    if (!id) return null;
+    return this.getChannel(id);
   }
 
   async allChannels(): Promise<ChannelRow[]> {
@@ -804,8 +914,10 @@ export class Store {
 
   async insertRedemption(r: Partial<RedemptionRow>): Promise<number> {
     const res = await this.db
-      .prepare("INSERT INTO redemptions (name, key, status, quota, created_time) VALUES (?, ?, 1, ?, ?)")
-      .bind(r.name ?? "", r.key, r.quota ?? 0, nowSec())
+      .prepare(
+        "INSERT INTO redemptions (user_id, name, key, status, quota, created_time, expired_time) VALUES (?, ?, ?, 1, ?, ?, ?)",
+      )
+      .bind(r.user_id ?? 0, r.name ?? "", r.key, r.quota ?? 0, nowSec(), r.expired_time ?? 0)
       .run();
     return Number(res.meta.last_row_id || 0);
   }
@@ -822,6 +934,7 @@ export class Store {
     offset: number,
     limit: number,
     keyword = "",
+    status = "",
   ): Promise<{ items: RedemptionRow[]; total: number }> {
     let where = "1=1";
     const binds: unknown[] = [];
@@ -829,6 +942,10 @@ export class Store {
       where += " AND (name LIKE ? OR key LIKE ?)";
       const q = `%${keyword}%`;
       binds.push(q, q);
+    }
+    if (status) {
+      where += " AND status = ?";
+      binds.push(Number(status));
     }
     const totalRow = await this.db
       .prepare(`SELECT COUNT(*) as c FROM redemptions WHERE ${where}`)
@@ -1050,25 +1167,37 @@ export class Store {
   }
 
   async enabledModelsAll(): Promise<string[]> {
+    const { results } = await this.db
+      .prepare(`SELECT DISTINCT model FROM abilities WHERE enabled = 1`)
+      .all<{ model: string }>();
+    if (results.length) return results.map((r) => r.model);
     const channels = await this.enabledChannels();
     const set = new Set<string>();
     for (const c of channels) {
       for (const m of csv(c.models)) set.add(m);
     }
-    return [...set].sort();
+    return [...set];
   }
 
   async enabledModelsForGroups(groups: string[]): Promise<string[]> {
     if (!groups.length) return [];
+    const want = groups.filter(Boolean);
+    if (!want.length) return [];
+    const ph = want.map(() => "?").join(",");
+    const { results } = await this.db
+      .prepare(`SELECT DISTINCT model FROM abilities WHERE enabled = 1 AND "group" IN (${ph})`)
+      .bind(...want)
+      .all<{ model: string }>();
+    if (results.length) return results.map((r) => r.model);
     const channels = await this.enabledChannels();
-    const want = new Set(groups.filter(Boolean));
     const set = new Set<string>();
+    const wantSet = new Set(want);
     for (const c of channels) {
       const chGroups = csv(c.group || "default");
-      if (want.size && !chGroups.includes("all") && !chGroups.some((g) => want.has(g))) continue;
+      if (wantSet.size && !chGroups.includes("all") && !chGroups.some((g) => wantSet.has(g))) continue;
       for (const m of csv(c.models)) set.add(m);
     }
-    return [...set].sort();
+    return [...set];
   }
 
   async hasCheckedIn(userId: number, date: string): Promise<boolean> {
@@ -1377,11 +1506,13 @@ export class Store {
     money?: number;
     trade_no?: string;
     payment_method?: string;
+    payment_provider?: string;
     status?: string;
+    complete_time?: number;
   }): Promise<number> {
     const r = await this.db
       .prepare(
-        "INSERT INTO topups (user_id, amount, money, trade_no, payment_method, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO topups (user_id, amount, money, trade_no, payment_method, payment_provider, complete_time, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         row.user_id,
@@ -1389,6 +1520,8 @@ export class Store {
         row.money ?? 0,
         row.trade_no ?? "",
         row.payment_method ?? "redemption",
+        row.payment_provider ?? "",
+        row.complete_time ?? 0,
         row.status ?? "success",
         nowSec(),
       )
@@ -1396,15 +1529,30 @@ export class Store {
     return Number(r.meta.last_row_id || 0);
   }
 
-  async listTopups(userId: number | null, offset: number, limit: number): Promise<{ items: unknown[]; total: number }> {
-    const where = userId ? "user_id = ?" : "1=1";
-    const binds: unknown[] = userId ? [userId] : [];
+  async listTopups(
+    userId: number | null,
+    offset: number,
+    limit: number,
+    keyword = "",
+  ): Promise<{ items: unknown[]; total: number }> {
+    const cutoff = nowSec() - 30 * 24 * 60 * 60;
+    const where: string[] = ["created_at >= ?"];
+    const binds: unknown[] = [cutoff];
+    if (userId) {
+      where.push("user_id = ?");
+      binds.push(userId);
+    }
+    if (keyword) {
+      where.push("trade_no LIKE ?");
+      binds.push(`%${keyword}%`);
+    }
+    const w = where.join(" AND ");
     const totalRow = await this.db
-      .prepare(`SELECT COUNT(*) as c FROM topups WHERE ${where}`)
+      .prepare(`SELECT COUNT(*) as c FROM topups WHERE ${w}`)
       .bind(...binds)
       .first<{ c: number }>();
     const { results } = await this.db
-      .prepare(`SELECT * FROM topups WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM topups WHERE ${w} ORDER BY id DESC LIMIT ? OFFSET ?`)
       .bind(...binds, limit, offset)
       .all();
     return { items: results, total: num(totalRow?.c) };
@@ -2185,6 +2333,9 @@ export function publicUser(u: UserRow): Record<string, unknown> {
     inviter_id: u.inviter_id,
     linux_do_id: u.linuxdo_id || "",
     setting: settingRaw,
+    remark: u.remark || "",
+    created_at: u.created_at || 0,
+    last_login_at: u.last_login_at || 0,
     stripe_customer,
     sidebar_modules,
     permissions: permissionsFor(u),

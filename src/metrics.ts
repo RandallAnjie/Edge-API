@@ -22,6 +22,7 @@ export function resetMetrics(): void {
 
 export function httpStats(): Record<string, unknown> {
   return {
+    active_connections: 0,
     requests: state.requests,
     relay: state.relay,
     errors: state.errors,

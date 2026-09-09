@@ -744,6 +744,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
     const fixData = fix.body.data as { success: number; fails: number };
     assert.equal(typeof fixData.success, "number");
     assert.equal(fixData.fails, 0);
+    assert.ok(fixData.success >= 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -977,4 +978,245 @@ test("original subscription self/plans wrapping, token mask, plugin get, tag mod
   assert.equal(missingUserReset.body.success, false);
   assert.equal(missingUserReset.body.message, "该用户没有有效的此套餐订阅");
 });
+
+test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const setup = await json(new Request("http://local/api/setup"), e);
+  const setupData = setup.body.data as { status: boolean; root_init: boolean; database_type: string };
+  assert.equal(setupData.status, true);
+  assert.equal(setupData.root_init, false);
+  assert.equal(setupData.database_type, "");
+
+  const deniedTopup = await json(
+    new Request("http://local/api/user/topup", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ key: "missing" }),
+    }),
+    e,
+  );
+  assert.equal(deniedTopup.body.success, false);
+  assert.equal(deniedTopup.body.message, "支付、兑换码、订阅计划和邀请返利功能已禁用。管理员需先确认合规声明后方可启用。");
+
+  const deniedRedemption = await json(
+    new Request("http://local/api/redemption/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "gift", quota: 100, count: 1 }),
+    }),
+    e,
+  );
+  assert.equal(deniedRedemption.body.success, false);
+  assert.equal(deniedRedemption.body.message, deniedTopup.body.message);
+
+  const deniedAff = await json(
+    new Request("http://local/api/user/aff_transfer", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ quota: 500000 }),
+    }),
+    e,
+  );
+  assert.equal(deniedAff.body.success, false);
+  assert.equal(deniedAff.body.message, deniedTopup.body.message);
+
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+
+  const badRedeem = await json(
+    new Request("http://local/api/user/topup", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ key: "nope" }),
+    }),
+    e,
+  );
+  assert.equal(badRedeem.body.success, false);
+  assert.equal(badRedeem.body.message, "兑换失败，请稍后重试");
+
+  const created = await json(
+    new Request("http://local/api/redemption/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "gift", quota: 4321, count: 1 }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  assert.equal(created.body.message, "");
+  assert.ok(Array.isArray(created.body.data));
+  const code = (created.body.data as string[])[0];
+  const redeemed = await json(
+    new Request("http://local/api/user/topup", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ key: code }),
+    }),
+    e,
+  );
+  assert.equal(redeemed.body.success, true);
+  assert.equal(redeemed.body.data, 4321);
+  assert.equal(redeemed.body.message, "");
+
+  const users = await json(new Request("http://local/api/user/?p=1&page_size=20&sort_by=id&sort_order=asc", { headers: auth }), e);
+  const page = users.body.data as { items: Record<string, unknown>[]; total: number; page: number; page_size: number };
+  assert.equal(page.page, 1);
+  assert.equal(typeof page.total, "number");
+  assert.equal(typeof page.page_size, "number");
+  for (const k of ["id", "username", "created_at", "last_login_at", "remark", "setting", "aff_code", "quota"]) {
+    assert.ok(k in page.items[0], "missing GetAllUsers field " + k);
+  }
+
+  const createUser = await json(
+    new Request("http://local/api/user/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ username: "vipuser", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(createUser.body.success, true, String(createUser.body.message));
+  assert.equal(createUser.body.message, "");
+  assert.equal(createUser.body.data, null);
+  const createdUser = await json(new Request("http://local/api/user/search?keyword=vipuser", { headers: auth }), e);
+  const vip = ((createdUser.body.data as { items: { id: number; username: string }[] }).items || []).find((u) => u.username === "vipuser");
+  assert.ok(vip);
+  const putGroup = await json(
+    new Request("http://local/api/user/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: vip.id, group: "vip" }),
+    }),
+    e,
+  );
+  assert.equal(putGroup.body.success, true, String(putGroup.body.message));
+  const searched = await json(new Request("http://local/api/user/search?keyword=vipuser&group=vip&role=1", { headers: auth }), e);
+  const found = ((searched.body.data as { items: { username: string; group: string }[] }).items || []).find((u) => u.username === "vipuser");
+  assert.ok(found);
+  assert.equal(found.group, "vip");
+
+  const groups = await json(new Request("http://local/api/user/groups", { headers: auth }), e);
+  const groupMap = groups.body.data as Record<string, { ratio: number | string; desc: string }>;
+  assert.equal(typeof groupMap.default.ratio, "number");
+  assert.equal(typeof groupMap.default.desc, "string");
+
+  const badSetting = await json(
+    new Request("http://local/api/user/setting", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ notify_type: "sms", quota_warning_threshold: 1 }),
+    }),
+    e,
+  );
+  assert.equal(badSetting.body.message, "无效的预警类型");
+  const okSetting = await json(
+    new Request("http://local/api/user/setting", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ notify_type: "email", quota_warning_threshold: 1000, record_ip_log: true }),
+    }),
+    e,
+  );
+  assert.equal(okSetting.body.success, true);
+  assert.equal(okSetting.body.message, "设置已更新");
+
+  const flowMissing = await json(new Request("http://local/api/data/flow", { headers: auth }), e);
+  assert.equal(flowMissing.body.message, "invalid start_timestamp");
+  const flowRange = await json(
+    new Request("http://local/api/data/flow?start_timestamp=100&end_timestamp=50", { headers: auth }),
+    e,
+  );
+  assert.equal(flowRange.body.message, "invalid time range");
+  const selfSpan = await json(
+    new Request("http://local/api/data/self?start_timestamp=1&end_timestamp=3000000", { headers: auth }),
+    e,
+  );
+  assert.equal(selfSpan.body.message, "时间跨度不能超过 1 个月");
+  const selfOk = await json(new Request("http://local/api/data/self?start_timestamp=1&end_timestamp=10", { headers: auth }), e);
+  assert.ok(Array.isArray(selfOk.body.data));
+
+  const perf = await json(new Request("http://local/api/performance/stats", { headers: auth }), e);
+  const pd = perf.body.data as Record<string, unknown>;
+  for (const k of ["cache_stats", "memory_stats", "disk_cache_info", "disk_space_info", "config"]) {
+    assert.ok(k in pd, "missing performance field " + k);
+  }
+  const cache = pd.cache_stats as Record<string, unknown>;
+  for (const k of [
+    "active_disk_files",
+    "current_disk_usage_bytes",
+    "active_memory_buffers",
+    "current_memory_usage_bytes",
+    "disk_cache_hits",
+    "memory_cache_hits",
+    "disk_cache_max_bytes",
+    "disk_cache_threshold_bytes",
+  ]) {
+    assert.ok(k in cache, "missing cache_stats " + k);
+  }
+  const mem = pd.memory_stats as Record<string, unknown>;
+  for (const k of ["alloc", "total_alloc", "sys", "num_gc", "num_goroutine"]) {
+    assert.ok(k in mem, "missing memory_stats " + k);
+  }
+  const logs = await json(new Request("http://local/api/performance/logs", { headers: auth }), e);
+  const lf = logs.body.data as Record<string, unknown>;
+  assert.equal(lf.enabled, false);
+  assert.equal(typeof lf.file_count, "number");
+  assert.ok(Array.isArray(lf.files));
+
+  const ch = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "ability", type: 1, key: "sk-x", models: "gpt-4o-mini", group: "default" }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, String(ch.body.message));
+  const userModels = await json(new Request("http://local/api/user/models", { headers: auth }), e);
+  assert.ok((userModels.body.data as string[]).includes("gpt-4o-mini"));
+  const fix = await json(new Request("http://local/api/channel/fix", { method: "POST", headers: auth }), e);
+  assert.equal((fix.body.data as { success: number; fails: number }).fails, 0);
+  assert.ok((fix.body.data as { success: number }).success >= 1);
+
+  const webhook = await json(new Request("http://local/api/stripe/webhook", { method: "POST", body: "{}" }), e);
+  assert.equal(webhook.res.status, 403);
+  const creemHook = await json(new Request("http://local/api/creem/webhook", { method: "POST", body: "{}" }), e);
+  assert.equal(creemHook.res.status, 403);
+
+  const wechatOff = await json(new Request("http://local/api/oauth/wechat?code=abc"), e);
+  assert.equal(wechatOff.body.success, false);
+  assert.equal(wechatOff.body.message, "管理员未开启通过微信登录以及注册");
+
+  const topups = await json(new Request("http://local/api/user/topup/self", { headers: auth }), e);
+  const topPage = topups.body.data as { items: Record<string, unknown>[] };
+  assert.ok(topPage.items.length >= 1);
+  for (const k of ["id", "user_id", "amount", "money", "trade_no", "payment_method", "payment_provider", "create_time", "complete_time", "status"]) {
+    assert.ok(k in topPage.items[0], "missing GetUserTopUps field " + k);
+  }
+
+  const self = await json(new Request("http://local/api/user/self", { headers: auth }), e);
+  const sd = self.body.data as Record<string, unknown>;
+  for (const k of ["has_password", "sidebar_modules", "permissions", "setting", "linux_do_id", "aff_history_quota"]) {
+    assert.ok(k in sd, "missing GetSelf field " + k);
+  }
+  assert.equal(typeof (sd.permissions as { admin_permissions?: unknown }).admin_permissions, "object");
+
+  const stTest = await json(new Request("http://local/api/status/test", { headers: auth }), e);
+  assert.equal(stTest.body.success, true);
+  assert.equal(stTest.body.message, "Server is running");
+  assert.equal(typeof (stTest.body.http_stats as { active_connections: number }).active_connections, "number");
+
+  const higher = await json(
+    new Request("http://local/api/user/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ username: "root2", password: "password12", role: 100 }),
+    }),
+    e,
+  );
+  assert.equal(higher.body.message, "无法创建权限大于等于自己的用户");
+});
+
 

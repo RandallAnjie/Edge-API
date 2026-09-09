@@ -185,6 +185,11 @@ export function bytesToHex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+export async function sha1Hex(message: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(message));
+  return bytesToHex(new Uint8Array(buf));
+}
+
 export async function hashRefreshSecret(sessionSecret: string, secret: string): Promise<string> {
   return bytesToHex(await hmacSha256Raw(await authSigningKey(sessionSecret, "refresh"), secret));
 }

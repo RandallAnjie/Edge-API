@@ -125,6 +125,7 @@ test("setup + login + channel + token + mocked relay", async () => {
   assert.equal(models.body.object, "list");
   assert.ok(models.body.data.some((m: { id: string }) => m.id === "gpt-4o-mini"));
 
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
   const red = await json(
     new Request("http://local/api/redemption/", {
       method: "POST",
@@ -133,7 +134,7 @@ test("setup + login + channel + token + mocked relay", async () => {
     }),
     e,
   );
-  assert.equal(red.body.success, true);
+  assert.equal(red.body.success, true, String(red.body.message));
   const code = red.body.data[0] as string;
   const topup = await json(
     new Request("http://local/api/user/topup", {
@@ -144,6 +145,7 @@ test("setup + login + channel + token + mocked relay", async () => {
     e,
   );
   assert.equal(topup.body.success, true, topup.body.message);
+  assert.equal(topup.body.data, 1234);
 });
 
 test("status reports setup after init", async () => {

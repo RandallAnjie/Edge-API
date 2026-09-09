@@ -27,7 +27,7 @@ import {
   verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
-import { publicToken, verificationRequirements, publicLog, rankingsResponse, exposedRatioConfig, enrichModelMeta } from "./dto.js";
+import { publicToken, verificationRequirements, publicLog, rankingsResponse, exposedRatioConfig, enrichModelMeta, publicTopup } from "./dto.js";
 import { requirePaymentCompliance } from "./payments.js";
 import {
   calcNextResetTime,
@@ -581,24 +581,102 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
+    const denied = await requirePaymentCompliance(s);
+    if (denied) return denied;
     const body = (await readJson(c.req)) as { quota?: number };
     const user = await s.getUserById(u.id);
     if (!user) return apiFail("用户不存在");
     const q = Math.floor(Number(body.quota || 0));
-    if (q <= 0) return apiFail("额度无效");
-    if ((user.aff_quota || 0) < q) return apiFail("邀请额度不足");
+    const min = await s.optionNum("QuotaPerUnit", 500000);
+    if (q < min) return apiFail(`划转失败 转移额度最小为${min}！`);
+    if ((user.aff_quota || 0) < q) return apiFail("划转失败 邀请额度不足！");
     await s.updateUser(u.id, { aff_quota: (user.aff_quota || 0) - q });
     await s.addQuota(u.id, q);
-    return apiOk({ quota: q }, "划转成功");
+    return apiOk(null, "划转成功");
   });
 
   r.put("/api/user/setting", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown>;
-    await s.updateUser(u.id, { settings: JSON.stringify(body) });
-    return apiOk(null, "已保存");
+    const body = (await readJson(c.req)) as {
+      notify_type?: string;
+      quota_warning_threshold?: number;
+      webhook_url?: string;
+      webhook_secret?: string;
+      notification_email?: string;
+      bark_url?: string;
+      gotify_url?: string;
+      gotify_token?: string;
+      gotify_priority?: number;
+      upstream_model_update_notify_enabled?: boolean;
+      accept_unset_model_ratio_model?: boolean;
+      record_ip_log?: boolean;
+    };
+    const notify = String(body.notify_type || "");
+    if (!["email", "webhook", "bark", "gotify"].includes(notify)) return apiFail("无效的预警类型");
+    if (Number(body.quota_warning_threshold) <= 0) return apiFail("预警阈值必须大于0");
+    if (notify === "webhook") {
+      if (!body.webhook_url) return apiFail("Webhook地址不能为空");
+      try {
+        new URL(body.webhook_url);
+      } catch {
+        return apiFail("无效的Webhook地址");
+      }
+    }
+    if (notify === "email" && body.notification_email && !String(body.notification_email).includes("@")) {
+      return apiFail("无效的邮箱地址");
+    }
+    if (notify === "bark") {
+      if (!body.bark_url) return apiFail("Bark推送URL不能为空");
+      try {
+        new URL(body.bark_url);
+      } catch {
+        return apiFail("无效的Bark推送URL");
+      }
+      if (!body.bark_url.startsWith("http://") && !body.bark_url.startsWith("https://")) {
+        return apiFail("URL必须以http://或https://开头");
+      }
+    }
+    if (notify === "gotify") {
+      if (!body.gotify_url) return apiFail("Gotify服务器地址不能为空");
+      if (!body.gotify_token) return apiFail("Gotify令牌不能为空");
+      try {
+        new URL(body.gotify_url);
+      } catch {
+        return apiFail("无效的Gotify服务器地址");
+      }
+      if (!body.gotify_url.startsWith("http://") && !body.gotify_url.startsWith("https://")) {
+        return apiFail("URL必须以http://或https://开头");
+      }
+    }
+    const user = await s.getUserById(u.id);
+    if (!user) return apiFail("用户不存在");
+    const existing = parseJson<Record<string, unknown>>(user.settings || "", {});
+    const settings: Record<string, unknown> = {
+      ...existing,
+      notify_type: notify,
+      quota_warning_threshold: Number(body.quota_warning_threshold),
+      accept_unset_model_ratio_model: Boolean(body.accept_unset_model_ratio_model),
+      record_ip_log: Boolean(body.record_ip_log),
+    };
+    if (u.role >= 10 && body.upstream_model_update_notify_enabled != null) {
+      settings.upstream_model_update_notify_enabled = Boolean(body.upstream_model_update_notify_enabled);
+    }
+    if (notify === "webhook") {
+      settings.webhook_url = body.webhook_url;
+      if (body.webhook_secret) settings.webhook_secret = body.webhook_secret;
+    }
+    if (notify === "email" && body.notification_email) settings.notification_email = body.notification_email;
+    if (notify === "bark") settings.bark_url = body.bark_url;
+    if (notify === "gotify") {
+      settings.gotify_url = body.gotify_url;
+      settings.gotify_token = body.gotify_token;
+      const p = Number(body.gotify_priority);
+      settings.gotify_priority = p < 0 || p > 10 ? 5 : p;
+    }
+    await s.updateUser(u.id, { settings: JSON.stringify(settings) });
+    return apiOk(null, "设置已更新");
   });
 
 
@@ -607,8 +685,8 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listTopups(u.id, q.offset, q.page_size);
-    return apiOk(pageData(items, total, q));
+    const { items, total } = await s.listTopups(u.id, q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
+    return apiOk(pageData((items as Record<string, unknown>[]).map(publicTopup), total, q));
   });
 
   r.get("/api/user/topup", async (c) => {
@@ -616,8 +694,8 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listTopups(null, q.offset, q.page_size);
-    return apiOk(pageData(items, total, q));
+    const { items, total } = await s.listTopups(null, q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
+    return apiOk(pageData((items as Record<string, unknown>[]).map(publicTopup), total, q));
   });
 
   r.post("/api/user/topup/complete", async (c) => {
@@ -899,7 +977,12 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listRedemptions(q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
+    const { items, total } = await s.listRedemptions(
+      q.offset,
+      q.page_size,
+      c.url.searchParams.get("keyword") || "",
+      c.url.searchParams.get("status") || "",
+    );
     return apiOk(pageData(items, total, q));
   });
 

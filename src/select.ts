@@ -13,6 +13,36 @@ export function channelInGroup(channel: Pick<ChannelRow, "group">, group: string
   return groups.includes(group) || groups.includes("all");
 }
 
+export interface AbilityCandidate {
+  channel_id: number;
+  priority: number;
+  weight: number;
+}
+
+/** Original GetChannel: unique priorities DESC, retry indexes that tier, weight+10. */
+export function pickAbilityChannelId(
+  abilities: AbilityCandidate[],
+  retry: number,
+  random: () => number = Math.random,
+): number | null {
+  if (!abilities.length) return null;
+  const unique = [...new Set(abilities.map((a) => Number(a.priority) || 0))].sort((a, b) => b - a);
+  let idx = retry;
+  if (idx >= unique.length) idx = unique.length - 1;
+  if (idx < 0) idx = 0;
+  const target = unique[idx];
+  const pool = abilities.filter((a) => (Number(a.priority) || 0) === target);
+  if (!pool.length) return null;
+  let weightSum = 0;
+  for (const a of pool) weightSum += (Number(a.weight) || 0) + 10;
+  let weight = Math.floor(random() * weightSum);
+  for (const a of pool) {
+    weight -= (Number(a.weight) || 0) + 10;
+    if (weight <= 0) return a.channel_id;
+  }
+  return pool[pool.length - 1].channel_id;
+}
+
 export function pickWeighted<T extends { weight: number; id: number }>(
   items: T[],
   exclude: Set<number>,

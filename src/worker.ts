@@ -13,7 +13,6 @@ import {
   detectStream,
 } from "./relay.js";
 import type { ClientFormat } from "./relay.js";
-import { orderChannels } from "./select.js";
 import type { RelayMode } from "./upstream.js";
 import { extractGeminiModelAction } from "./convert.js";
 import { ensureSchema } from "./schema.js";
@@ -148,9 +147,9 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
       return openaiError(426, "Realtime 需要 WebSocket Upgrade", "upgrade_required");
     }
     const model = url.searchParams.get("model") || "gpt-4o-realtime-preview";
-    const channels = orderChannels(await store.enabledChannels(), model, auth.usingGroup);
-    if (!channels.length) return openaiError(503, `没有可用渠道（模型 ${model}）`, "no_available_channel");
-    return proxyRealtime(req, channels[0], model);
+    const channel = await store.getRandomSatisfiedChannel(auth.usingGroup, model, 0);
+    if (!channel) return openaiError(503, `没有可用渠道（模型 ${model}）`, "no_available_channel");
+    return proxyRealtime(req, channel, model);
   }
 
   if (req.method === "GET" && path.startsWith("/v1/video/generations/")) {

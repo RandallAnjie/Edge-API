@@ -1,6 +1,6 @@
 import { nowSec, parseJson, randomHex } from "./constants.js";
-import { hmacSha256Hex, timingSafeEqualStr } from "./crypto.js";
-import { apiFail, apiOk, json, payErr, payOk, readJson } from "./http.js";
+import { hmacSha256Hex, sha1Hex, timingSafeEqualStr } from "./crypto.js";
+import { apiFail, json, payErr, payOk, readJson } from "./http.js";
 import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
 import type { Store } from "./store.js";
 import type { UserRow } from "./types.js";
@@ -165,32 +165,45 @@ export async function requestStripePay(
   if (amount > 10000) return json(200, { message: "充值数量不能大于 10000", data: 10, success: false });
   const secret = await stripeSecret(store);
   if (!secret.startsWith("sk_") && !secret.startsWith("rk_")) return payErr("拉起支付失败");
-  const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
   const unitPrice = await store.optionNum("StripeUnitPrice", 8);
   const money = payMoney(amount, unitPrice);
-  const trade = "st_" + randomHex(12);
-  const credited = Math.round(amount * quotaPerUnit);
+  if (money <= 0.01) return payErr("充值金额过低");
+  const reference = `new-api-ref-${user.id}-${Date.now()}-${randomHex(2)}`;
+  const trade = "ref_" + (await sha1Hex(reference));
   await store.insertTopup({
     user_id: user.id,
-    amount: credited,
+    amount,
     money,
     trade_no: trade,
     payment_method: "stripe",
+    payment_provider: "stripe",
     status: "pending",
   });
+  const priceId = await store.option("StripePriceId");
   const params = new URLSearchParams({
     mode: "payment",
     success_url: body.success_url || paymentReturnPath(req, "/usage-logs"),
     cancel_url: body.cancel_url || paymentReturnPath(req, "/wallet"),
-    "line_items[0][price_data][currency]": "usd",
-    "line_items[0][price_data][product_data][name]": `Quota x${amount}`,
-    "line_items[0][price_data][unit_amount]": String(Math.round(money * 100)),
-    "line_items[0][quantity]": "1",
+    "line_items[0][price]": priceId,
+    "line_items[0][quantity]": String(amount),
     client_reference_id: trade,
-    "metadata[user_id]": String(user.id),
-    "metadata[trade_no]": trade,
-    "metadata[quota]": String(credited),
   });
+  if (await store.optionBool("StripePromotionCodesEnabled", false)) {
+    params.set("allow_promotion_codes", "true");
+  }
+  let stripeCustomer = "";
+  try {
+    const parsed = JSON.parse(user.settings || "{}") as Record<string, unknown>;
+    stripeCustomer = String(parsed.stripe_customer || parsed.stripeCustomer || "");
+  } catch {
+    /* ignore */
+  }
+  if (stripeCustomer) {
+    params.set("customer", stripeCustomer);
+  } else {
+    if (user.email) params.set("customer_email", user.email);
+    params.set("customer_creation", "always");
+  }
   const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
     method: "POST",
     headers: {
@@ -200,11 +213,12 @@ export async function requestStripePay(
     body: params,
   });
   const data = (await res.json()) as { id?: string; url?: string; error?: { message?: string } };
-  if (!res.ok || !data.url) return json(200, { message: "error", data: data.error?.message || "拉起支付失败" });
-  return json(200, { message: "success", data: { pay_link: data.url }, success: true });
+  if (!res.ok || !data.url) return payErr("拉起支付失败");
+  return payOk({ pay_link: data.url });
 }
 
 export async function handleStripeWebhook(store: Store, req: Request): Promise<Response> {
+  if (!(await paymentEnabled(store, "stripe"))) return new Response(null, { status: 403 });
   const secret = await store.option("StripeWebhookSecret");
   const raw = await req.text();
   if (secret) {
@@ -217,15 +231,26 @@ export async function handleStripeWebhook(store: Store, req: Request): Promise<R
     );
     const signed = `${parts.t}.${raw}`;
     const expected = await hmacSha256Hex(secret, signed);
-    if (!timingSafeEqualStr(expected, parts.v1 || "")) return apiFail("invalid signature", null, 400);
+    if (!timingSafeEqualStr(expected, parts.v1 || "")) return new Response(null, { status: 400 });
   }
   const event = parseJson<{ type?: string; data?: { object?: Record<string, unknown> } }>(raw, {});
-  if (event.type === "checkout.session.completed") {
+  if (
+    event.type === "checkout.session.completed" ||
+    event.type === "checkout.session.async_payment_succeeded"
+  ) {
     const obj = event.data?.object || {};
+    const status = String(obj.status || "");
+    const paymentStatus = String(obj.payment_status || "");
+    if (event.type === "checkout.session.completed" && status && status !== "complete") {
+      return new Response(null, { status: 200 });
+    }
+    if (event.type === "checkout.session.completed" && paymentStatus && paymentStatus !== "paid") {
+      return new Response(null, { status: 200 });
+    }
     const trade = String(obj.client_reference_id || (obj.metadata as { trade_no?: string } | undefined)?.trade_no || "");
     if (trade) await completePendingTopup(store, trade);
   }
-  return apiOk({ received: true });
+  return new Response(null, { status: 200 });
 }
 
 export async function requestEpay(
@@ -245,16 +270,15 @@ export async function requestEpay(
   const gateway = (await store.option("PayAddress")) || (await store.option("EpayUrl")) || "";
   if (!gateway || !pid || !key) return payErr("当前管理员未配置支付信息");
   const origin = new URL(req.url).origin;
-  const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
   const money = payMoney(amount, await store.optionNum("Price", 7.3));
   const trade = "ep_" + randomHex(12);
-  const credited = Math.round(amount * quotaPerUnit);
   await store.insertTopup({
     user_id: user.id,
-    amount: credited,
+    amount,
     money,
     trade_no: trade,
     payment_method: body.payment_method || "alipay",
+    payment_provider: "epay",
     status: "pending",
   });
   const params: Record<string, string> = {
@@ -318,6 +342,7 @@ export async function requestCreemPay(
     money: Number(selected.price || 0),
     trade_no: trade,
     payment_method: "creem",
+    payment_provider: "creem",
     status: "pending",
   });
   const testMode = await store.optionBool("CreemTestMode", false);
@@ -356,14 +381,14 @@ export async function requestWaffoPay(
   if (amount < min) return payErr(`充值数量不能小于 ${min}`);
   const money = payMoney(amount, await store.optionNum("Price", 7.3));
   if (money < 0.01) return payErr("充值金额过低");
-  const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
   const trade = `WAFFO-${user.id}-${Date.now()}-${randomHex(3)}`;
   await store.insertTopup({
     user_id: user.id,
-    amount: Math.round(amount * quotaPerUnit),
+    amount,
     money,
     trade_no: trade,
     payment_method: "waffo",
+    payment_provider: "waffo",
     status: "pending",
   });
   const endpoint = (await store.option("WaffoCheckoutUrl")) || "https://api.waffo.com/v1/checkout";
@@ -407,14 +432,14 @@ export async function requestWaffoPancakePay(
   const min = await store.optionNum("WaffoPancakeMinTopUp", await store.optionNum("MinTopup", 1));
   if (amount < min) return payErr(`充值数量不能小于 ${min}`);
   const money = payMoney(amount, await store.optionNum("Price", 7.3));
-  const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
   const trade = `WAFFO_PANCAKE-${user.id}-${Date.now()}-${randomHex(3)}`;
   await store.insertTopup({
     user_id: user.id,
-    amount: Math.round(amount * quotaPerUnit),
+    amount,
     money,
     trade_no: trade,
     payment_method: "waffo_pancake",
+    payment_provider: "waffo_pancake",
     status: "pending",
   });
   const endpoint = (await store.option("WaffoPancakeCheckoutUrl")) || "https://api.waffo.com/v1/pancake/checkout";
@@ -468,23 +493,39 @@ export async function requestHttpPay(
 }
 
 export async function handleCreemWebhook(store: Store, req: Request): Promise<Response> {
+  if (!(await paymentEnabled(store, "creem"))) return new Response(null, { status: 403 });
   const secret = await store.option("CreemWebhookSecret");
   const raw = await req.text();
   if (secret) {
     const signature = req.headers.get("creem-signature") || "";
+    if (!signature) return new Response(null, { status: 401 });
     const expected = await hmacSha256Hex(secret, raw);
-    if (!timingSafeEqualStr(expected, signature)) return new Response("invalid signature", { status: 401 });
+    if (!timingSafeEqualStr(expected, signature)) return new Response(null, { status: 401 });
   }
-  const event = parseJson<{ eventType?: string; object?: { request_id?: string; order?: { id?: string } } }>(raw, {});
-  const trade = String(event.object?.request_id || "");
-  if (trade) await completePendingTopup(store, trade);
+  const event = parseJson<{ eventType?: string; object?: { request_id?: string; order?: { id?: string; status?: string } } }>(raw, {});
+  if (event.eventType === "checkout.completed") {
+    if (event.object?.order?.status && event.object.order.status !== "paid") return new Response(null, { status: 200 });
+    const trade = String(event.object?.request_id || "");
+    if (trade) await completePendingTopup(store, trade);
+  }
   return new Response(null, { status: 200 });
 }
 
 export async function completePendingTopup(store: Store, tradeNo: string): Promise<boolean> {
   const row = await store.getTopupByTrade(tradeNo);
   if (!row || String(row.status) !== "pending") return false;
-  await store.updateTopup(Number(row.id), { status: "success" });
-  await store.addQuota(Number(row.user_id), Number(row.amount || 0));
+  await store.updateTopup(Number(row.id), { status: "success", complete_time: nowSec() });
+  const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
+  const method = String(row.payment_method || "");
+  const provider = String(row.payment_provider || "");
+  const amount = Number(row.amount || 0);
+  const money = Number(row.money || 0);
+  let credit = amount;
+  if (provider === "stripe" || method === "stripe") credit = Math.round(money * quotaPerUnit);
+  else if (provider === "creem" || method === "creem") credit = amount;
+  else if (provider === "epay" || provider === "waffo" || provider === "waffo_pancake") {
+    credit = Math.round(amount * quotaPerUnit);
+  }
+  if (credit > 0) await store.addQuota(Number(row.user_id), credit);
   return true;
 }

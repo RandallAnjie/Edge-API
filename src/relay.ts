@@ -14,7 +14,7 @@ import {
 } from "./convert.js";
 import { clientIp, openaiError } from "./http.js";
 import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
-import { orderChannels, pickChannelKey } from "./select.js";
+import { pickChannelKey } from "./select.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
 import { applyModelMapping, buildUpstream, joinUrl, modelsUrl, type RelayMode } from "./upstream.js";
@@ -185,10 +185,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   if (!model) return openaiError(400, "未提供模型名称", "model_not_found");
   if (!tokenAllows(auth, model)) return openaiError(403, `令牌无权访问模型 ${model}`, "model_not_allowed");
 
-  const channels = orderChannels(await store.enabledChannels(), model, auth.usingGroup);
-  if (channels.length === 0) return openaiError(503, `没有可用渠道（模型 ${model}）`, "no_available_channel");
-
   const retryTimes = Math.max(1, await store.optionNum("RetryTimes", 3));
+  const first = await store.getRandomSatisfiedChannel(auth.usingGroup, model, 0);
+  if (!first) return openaiError(503, `没有可用渠道（模型 ${model}）`, "no_available_channel");
+
   const autoDisable = await store.optionBool("AutomaticDisableChannelEnabled", false);
   const ip = clientIp(opts.req);
   const rid = opts.req.headers.get("x-oneapi-request-id") || crypto.randomUUID();
@@ -207,9 +207,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
 
   let lastErr = "所有渠道均失败";
   let lastStatus = 502;
-  const tried = channels.slice(0, retryTimes);
 
-  for (const channel of tried) {
+  for (let retry = 0; retry < retryTimes; retry++) {
+    const channel = retry === 0 ? first : await store.getRandomSatisfiedChannel(auth.usingGroup, model, retry);
+    if (!channel) break;
+    const lastAttempt = retry === retryTimes - 1;
     const kind = channelKind(channel.type);
     const outbound = opts.rawBody ? opts.body : convertOutbound(kind, clientFormat, opts.body);
     const target = buildUpstream(
@@ -244,7 +246,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       requestPath: path,
     };
 
-    if (!res.ok && retryable(res.status) && channel !== tried[tried.length - 1]) {
+    if (!res.ok && retryable(res.status) && !lastAttempt) {
       lastErr = await res.text().catch(() => res.statusText);
       lastStatus = res.status;
       continue;
@@ -256,7 +258,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       lastStatus = res.status;
       await settle(store, auth, channel, model, promptEst, 0, useTime, opts.stream, ip, rid, false, lastErr.slice(0, 2000), extra);
       if (res.status >= 500 && autoDisable) await store.autoDisableChannel(channel.id);
-      if (channel !== tried[tried.length - 1] && retryable(res.status)) continue;
+      if (!lastAttempt && retryable(res.status)) continue;
       try {
         const parsed = JSON.parse(text) as unknown;
         return new Response(JSON.stringify(parsed), {

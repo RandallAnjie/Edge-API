@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { channelInGroup, channelSupportsModel, ipAllowed, orderChannels, pickWeighted } from "../src/select.js";
+import { channelInGroup, channelSupportsModel, ipAllowed, orderChannels, pickAbilityChannelId, pickWeighted } from "../src/select.js";
 import type { ChannelRow } from "../src/types.js";
 
 function ch(p: Partial<ChannelRow> & { id: number }): ChannelRow {
@@ -65,6 +65,17 @@ test("orderChannels sorts by priority then weight", () => {
   );
   assert.equal(ordered[0].id, 2);
   assert.equal(ordered[1].id, 1);
+});
+
+test("pickAbilityChannelId uses original GetChannel priority+weight+10", () => {
+  const abilities = [
+    { channel_id: 1, priority: 10, weight: 0 },
+    { channel_id: 2, priority: 1, weight: 100 },
+  ];
+  assert.equal(pickAbilityChannelId(abilities, 0, () => 0), 1);
+  assert.equal(pickAbilityChannelId(abilities, 1, () => 0), 2);
+  assert.equal(pickAbilityChannelId(abilities, 9, () => 0), 2);
+  assert.equal(pickAbilityChannelId([], 0), null);
 });
 
 test("ipAllowed", () => {

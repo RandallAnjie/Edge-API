@@ -23,7 +23,7 @@ import {
   hashPassword,
   verifyPassword,
 } from "./crypto.js";
-import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, json, pageData, pageQuery, readJson, serveRevalidatedJSON } from "./http.js";
+import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, json, pageData, pageQuery, parseUnixQuery, readJson, serveRevalidatedJSON } from "./http.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -45,6 +45,7 @@ import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGr
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
+import { requirePaymentCompliance } from "./payments.js";
 import type { Env, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -371,7 +372,11 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
     const keyword = c.url.searchParams.get("keyword") || "";
-    const { items, total } = await s.listUsers(q.offset, q.page_size, keyword);
+    const { items, total } = await s.listUsers(q.offset, q.page_size, {
+      keyword,
+      sortBy: c.url.searchParams.get("sort_by") || "",
+      sortOrder: c.url.searchParams.get("sort_order") || "",
+    });
     return apiOk(pageData(items.map(publicUser), total, q));
   });
 
@@ -380,8 +385,18 @@ export function adminRouter(): Router<Env> {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const keyword = c.url.searchParams.get("keyword") || "";
-    const { items, total } = await s.listUsers(q.offset, q.page_size, keyword);
+    const roleRaw = c.url.searchParams.get("role") || "";
+    const statusRaw = c.url.searchParams.get("status") || "";
+    const role = roleRaw === "" ? undefined : Number(roleRaw);
+    const status = statusRaw === "" ? undefined : Number(statusRaw);
+    const { items, total } = await s.listUsers(q.offset, q.page_size, {
+      keyword: c.url.searchParams.get("keyword") || "",
+      group: c.url.searchParams.get("group") || "",
+      role: Number.isInteger(role) ? role : undefined,
+      status: Number.isInteger(status) ? status : undefined,
+      sortBy: c.url.searchParams.get("sort_by") || "",
+      sortOrder: c.url.searchParams.get("sort_order") || "",
+    });
     return apiOk(pageData(items.map(publicUser), total, q));
   });
 
@@ -399,20 +414,20 @@ export function adminRouter(): Router<Env> {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as Partial<UserRow> & { password?: string };
-    if (!body.username || !body.password) return apiFail("无效的参数");
-    if (await s.getUserByUsername(body.username)) return apiFail("用户已存在");
+    const username = String(body.username || "").trim();
+    if (!username || !body.password) return apiFail("无效的参数");
+    if (await s.getUserByUsername(username)) return apiFail("用户已存在");
     const role = Number(body.role || ROLE_USER);
-    if (role >= u.role) return apiFail("无法创建同级或更高等级用户");
+    if (role >= u.role) return apiFail("无法创建权限大于等于自己的用户");
     await s.insertUser({
-      username: body.username,
+      username,
       password: await hashPassword(body.password),
-      display_name: body.display_name || body.username,
+      display_name: body.display_name || username,
       role,
-      quota: Number(body.quota || 0),
-      group: body.group || "default",
+      quota: await s.optionNum("QuotaForNewUser", 0),
       aff_code: generateAffCode(),
     });
-    return apiOk(null, "创建成功");
+    return apiOk(null);
   });
 
   r.slash("PUT", "/api/user/", async (c) => {
@@ -954,8 +969,8 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const start = Number(c.url.searchParams.get("start_timestamp") || nowSec() - 86400 * 7);
-    const end = Number(c.url.searchParams.get("end_timestamp") || nowSec());
+    const start = parseUnixQuery(c.url, "start_timestamp");
+    const end = parseUnixQuery(c.url, "end_timestamp");
     return apiOk(await s.quotaDates(null, start, end, c.url.searchParams.get("username") || ""));
   });
 
@@ -963,8 +978,8 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const start = Number(c.url.searchParams.get("start_timestamp") || nowSec() - 86400 * 7);
-    const end = Number(c.url.searchParams.get("end_timestamp") || nowSec());
+    const start = parseUnixQuery(c.url, "start_timestamp");
+    const end = parseUnixQuery(c.url, "end_timestamp");
     if (end - start > 2592000) return apiFail("时间跨度不能超过 1 个月");
     return apiOk(await s.quotaDates(u.id, start, end));
   });
@@ -1015,15 +1030,29 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { name?: string; quota?: number; count?: number };
-    const count = Math.min(100, Math.max(1, Number(body.count || 1)));
+    const denied = await requirePaymentCompliance(s);
+    if (denied) return denied;
+    const body = (await readJson(c.req)) as { name?: string; quota?: number; count?: number; expired_time?: number };
+    const name = String(body.name || "");
+    if (Array.from(name).length < 1 || Array.from(name).length > 20) return apiFail("兑换码名称长度必须在1-20之间");
+    const count = Number(body.count || 0);
+    if (count <= 0) return apiFail("兑换码个数必须大于0");
+    if (count > 100) return apiFail("一次兑换码批量生成的个数不能大于 100");
+    const quota = Number(body.quota || 0);
+    if (quota <= 0) return apiFail("redemption quota must be positive");
     const keys: string[] = [];
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < Math.min(100, count); i++) {
       const key = generateRedemptionKey();
-      await s.insertRedemption({ name: body.name || "default", key, quota: Number(body.quota || 0) });
+      await s.insertRedemption({
+        name,
+        key,
+        quota,
+        user_id: u.id,
+        expired_time: Number(body.expired_time || 0),
+      });
       keys.push(key);
     }
-    return apiOk(keys, "创建成功");
+    return apiOk(keys);
   });
 
   r.slash("PUT", "/api/redemption/", async (c) => {
@@ -1052,16 +1081,28 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
+    const denied = await requirePaymentCompliance(s);
+    if (denied) return denied;
     const body = (await readJson(c.req)) as { key?: string };
-    if (!body.key) return apiFail("请输入兑换码");
-    const red = await s.getRedemptionByKey(body.key.trim());
-    if (!red) return apiFail("兑换码无效");
-    if (red.status !== 1) return apiFail("兑换码不可用");
-    await s.updateRedemption(red.id, { status: 3, redeemed_time: nowSec(), used_user_id: u.id });
-    await s.addQuota(u.id, red.quota);
-    await s.insertTopup({ user_id: u.id, amount: red.quota, payment_method: "redemption", trade_no: red.key });
-    await s.insertLog({ user_id: u.id, type: 1, content: `redeem ${red.key}`, username: u.username, quota: red.quota });
-    return apiOk({ quota: red.quota }, "兑换成功");
+    const key = String(body.key || "").trim();
+    try {
+      const red = await s.getRedemptionByKey(key);
+      if (!red || red.status !== 1) throw new Error("redeem");
+      if (Number(red.expired_time || 0) > 0 && Number(red.expired_time) < nowSec()) throw new Error("redeem");
+      await s.updateRedemption(red.id, { status: 3, redeemed_time: nowSec(), used_user_id: u.id });
+      await s.addQuota(u.id, red.quota);
+      await s.insertTopup({ user_id: u.id, amount: red.quota, payment_method: "redemption", trade_no: red.key });
+      await s.insertLog({
+        user_id: u.id,
+        type: 1,
+        content: `通过兑换码充值 ${red.quota}，兑换码ID ${red.id}`,
+        username: u.username,
+        quota: red.quota,
+      });
+      return apiOk(red.quota);
+    } catch {
+      return apiFail("兑换失败，请稍后重试");
+    }
   });
 
   r.get("/api/audit", async (c) => {

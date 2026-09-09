@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS users (
   email_verified INTEGER NOT NULL DEFAULT 0,
   auth_version INTEGER NOT NULL DEFAULT 1,
   admin_permissions TEXT NOT NULL DEFAULT '',
-  access_token_created_at INTEGER NOT NULL DEFAULT 0
+  access_token_created_at INTEGER NOT NULL DEFAULT 0,
+  remark TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS api_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,6 +88,16 @@ CREATE TABLE IF NOT EXISTS channels (
   channel_info TEXT NOT NULL DEFAULT '',
   setting TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS abilities (
+  "group" TEXT NOT NULL,
+  model TEXT NOT NULL,
+  channel_id INTEGER NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  priority INTEGER NOT NULL DEFAULT 0,
+  weight INTEGER NOT NULL DEFAULT 0,
+  tag TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY ("group", model, channel_id)
+);
 CREATE TABLE IF NOT EXISTS request_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL DEFAULT 0,
@@ -115,13 +126,15 @@ CREATE TABLE IF NOT EXISTS options (
 );
 CREATE TABLE IF NOT EXISTS redemptions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL DEFAULT 0,
   name TEXT NOT NULL DEFAULT '',
   key TEXT NOT NULL UNIQUE,
   status INTEGER NOT NULL DEFAULT 1,
   quota INTEGER NOT NULL DEFAULT 0,
   created_time INTEGER NOT NULL DEFAULT 0,
   redeemed_time INTEGER NOT NULL DEFAULT 0,
-  used_user_id INTEGER NOT NULL DEFAULT 0
+  used_user_id INTEGER NOT NULL DEFAULT 0,
+  expired_time INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -245,6 +258,8 @@ CREATE TABLE IF NOT EXISTS topups (
   money REAL NOT NULL DEFAULT 0,
   trade_no TEXT NOT NULL DEFAULT '',
   payment_method TEXT NOT NULL DEFAULT 'redemption',
+  payment_provider TEXT NOT NULL DEFAULT '',
+  complete_time INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'success',
   created_at INTEGER NOT NULL DEFAULT 0
 );
@@ -434,6 +449,8 @@ CREATE TABLE IF NOT EXISTS deployments (
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_key ON api_tokens(key);
 CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
+CREATE INDEX IF NOT EXISTS idx_abilities_channel ON abilities(channel_id);
+CREATE INDEX IF NOT EXISTS idx_abilities_enabled ON abilities(enabled, "group");
 CREATE INDEX IF NOT EXISTS idx_logs_created ON request_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_logs_user ON request_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_logs_type ON request_logs(type);
@@ -543,6 +560,11 @@ const USER_ALTERS = [
   "ALTER TABLE task_plugins ADD COLUMN source TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE task_plugins ADD COLUMN source_hash TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE task_plugins ADD COLUMN remark TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE users ADD COLUMN remark TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE redemptions ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE redemptions ADD COLUMN expired_time INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE topups ADD COLUMN payment_provider TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE topups ADD COLUMN complete_time INTEGER NOT NULL DEFAULT 0",
 ];
 
 import type { D1Database } from "./types.js";

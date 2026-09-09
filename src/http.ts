@@ -96,6 +96,14 @@ export function withCors(req: Request, res: Response): Response {
   return new Response(res.body, { status: res.status, headers });
 }
 
+/** Original `strconv.ParseInt(c.Query(name), 10, 64)`: missing/invalid → 0. */
+export function parseUnixQuery(url: URL, name: string): number {
+  const raw = url.searchParams.get(name);
+  if (!raw) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+
 export function pageQuery(url: URL): PageQuery {
   const page = Math.max(1, Number(url.searchParams.get("p") || url.searchParams.get("page") || "1") || 1);
   const page_size = Math.min(
