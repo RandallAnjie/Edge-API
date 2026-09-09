@@ -1,5 +1,5 @@
 import { CHANNEL_ENABLED, START_TIME, VERSION, csv, nowSec, parseJson, randomHex } from "./constants.js";
-import { permissionCatalog, can } from "./authz.js";
+import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { httpStats, performanceStats, resetMetrics } from "./metrics.js";
 import {
   completePendingTopup,
@@ -90,7 +90,10 @@ async function authzCheck(c: C): Promise<Response> {
   if (!resource || !action) return apiFail("resource and action are required");
   const user = await s.getUserById(u.id);
   if (!user) return apiFail("用户不存在");
-  return apiOk({ allowed: can(user, resource, action), resource, action });
+  const roleKey = roleKeyForSystemRole(user.role);
+  const userPolicies = await s.casbinPolicies(userSubject(user.id));
+  const rolePolicies = roleKey ? await s.casbinPolicies(roleSubject(roleKey)) : [];
+  return apiOk({ allowed: canWithPolicies(user, resource, action, userPolicies, rolePolicies), resource, action });
 }
 
 export function registerParity(r: Router<Env>): void {
@@ -712,7 +715,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.listTaskPlugins());
+    return apiOk(((await s.listTaskPlugins()) as Record<string, unknown>[]).map(publicTaskPlugin));
   });
   r.post("/api/plugin/task", (c) => upsertPlugin(c));
   r.put("/api/plugin/task", (c) => upsertPlugin(c));
@@ -1354,6 +1357,33 @@ async function applyUpdates(c: C, all: boolean): Promise<Response> {
     await s.updateChannel(ch.id, { models });
   }
   return apiOk({ count: (parsed.data || []).length });
+}
+
+function publicTaskPlugin(row: Record<string, unknown>): Record<string, unknown> {
+  const key = String(row.key || "");
+  const version = String(row.version || "1.0.0");
+  const status = String(row.status || "inactive");
+  const active = status === "active" || status === "enabled";
+  const manifest = parseJson<Record<string, unknown>>(String(row.manifest || "{}"), {});
+  const icon = String(row.icon || "");
+  return {
+    meta: {
+      key,
+      version: String(manifest.version || version),
+      api_version: String(manifest.api_version || "v1"),
+      name: String(manifest.name || row.name || key),
+    },
+    source: "override",
+    enabled: active,
+    active,
+    source_hash: String(row.source_hash || ""),
+    has_icon: Boolean(icon),
+    remark: String(row.remark || ""),
+    runtime_status: active ? "registered" : "disabled",
+    runtime_error: "workerd cannot execute Goja JS task-plugin runtime; plugins are a D1 registry plus HTTP passthrough",
+    channel_count: 0,
+    in_flight_count: 0,
+  };
 }
 
 async function upsertPlugin(c: C): Promise<Response> {

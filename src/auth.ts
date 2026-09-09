@@ -12,7 +12,7 @@ import {
   csv,
   nowSec,
 } from "./constants.js";
-import { can } from "./authz.js";
+import { canWithPolicies, capabilitiesFromStore, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import {
   deriveNextRefreshSecret,
   extractRequestApiKey,
@@ -116,7 +116,7 @@ async function bundleFor(
     token_type: "Bearer",
     access_expires_at: accessExp,
     session: sessionView(sess, true),
-    user: { ...publicUser(user), permissions: permissionsFor(user) },
+    user: await publicSelf(store, user),
   };
   return { token, cookie, cookies, data, sid: sess.sid };
 }
@@ -286,25 +286,8 @@ async function sessionUserFromAccess(store: Store, secret: string, raw: string, 
   }
   const user = await store.getUserByField("access_token", raw);
   if (!user || user.status !== USER_ENABLED) return null;
-  const session = toSessionUser(user, "");
-  if (req) {
-    const { accessTokenFingerprint } = await import("./crypto.js");
-    const ref = await accessTokenFingerprint(raw);
-    const url = new URL(req.url);
-    await store.audit(user.id, user.username, "access_token", "", clientIp(req), {
-      actor_role: user.role,
-      category: "access_token",
-      action: url.pathname,
-      token_ref: ref,
-      auth_method: "access_token",
-      user_agent: req.headers.get("user-agent") || "",
-      method: req.method,
-      route: url.pathname,
-      status: 200,
-      success: true,
-    });
-  }
-  return session;
+  if (req) await beginAccessTokenAudit(store, req, user, raw);
+  return toSessionUser(user, "");
 }
 
 function toSessionUser(user: UserRow, sid: string, uv = 0, sv = 0): SessionUser {
@@ -363,6 +346,80 @@ export async function requireRoot(c: Context<Env>, store: Store): Promise<Sessio
   return u;
 }
 
+export async function publicSelf(store: Store, user: UserRow): Promise<Record<string, unknown>> {
+  const permissions = permissionsFor(user);
+  permissions.admin_permissions = await capabilitiesFromStore(store, user);
+  return { ...publicUser(user), permissions };
+}
+
+type PendingAccessAudit = {
+  userId: number;
+  username: string;
+  actorRole: number;
+  tokenRef: string;
+  ip: string;
+  userAgent: string;
+  method: string;
+  route: string;
+};
+
+const pendingAccessAudits = new WeakMap<Request, PendingAccessAudit>();
+
+export async function beginAccessTokenAudit(store: Store, req: Request, user: UserRow, token: string): Promise<void> {
+  if (pendingAccessAudits.has(req)) return;
+  const { accessTokenFingerprint } = await import("./crypto.js");
+  const url = new URL(req.url);
+  pendingAccessAudits.set(req, {
+    userId: user.id,
+    username: user.username,
+    actorRole: user.role,
+    tokenRef: await accessTokenFingerprint(token),
+    ip: clientIp(req),
+    userAgent: req.headers.get("user-agent") || "",
+    method: req.method,
+    route: url.pathname,
+  });
+}
+
+export async function maybeBeginAccessTokenAudit(store: Store, req: Request, secret: string): Promise<void> {
+  const raw = bearerCredential(req);
+  if (!raw) return;
+  if (await verifyAccessJwt(raw, secret)) return;
+  if (splitRefreshToken(raw)) return;
+  if (raw.split(".").length === 2 && (await verifySession(raw, secret))) return;
+  const user = await store.getUserByField("access_token", raw);
+  if (!user || user.status !== USER_ENABLED) return;
+  await beginAccessTokenAudit(store, req, user, raw);
+}
+
+export async function finishAccessTokenAudit(store: Store, req: Request, res: Response): Promise<void> {
+  const pending = pendingAccessAudits.get(req);
+  if (!pending) return;
+  pendingAccessAudits.delete(req);
+  let success = res.status < 400;
+  const ct = res.headers.get("content-type") || "";
+  if (success && ct.includes("json")) {
+    try {
+      const body = (await res.clone().json()) as { success?: boolean };
+      if (typeof body.success === "boolean") success = body.success && res.status < 400;
+    } catch {
+      /* body was not JSON */
+    }
+  }
+  await store.audit(pending.userId, pending.username, "access_token", pending.route, pending.ip, {
+    actor_role: pending.actorRole,
+    category: "access_token",
+    action: pending.route,
+    token_ref: pending.tokenRef,
+    auth_method: "access_token",
+    user_agent: pending.userAgent,
+    method: pending.method,
+    route: pending.route,
+    status: res.status,
+    success,
+  });
+}
+
 export async function requirePermission(
   c: Context<Env>,
   store: Store,
@@ -373,9 +430,10 @@ export async function requirePermission(
   if (u instanceof Response) return u;
   const user = await store.getUserById(u.id);
   if (!user) return json(403, { success: false, message: "无权进行此操作，权限不足" });
-  const casbin = await store.userPermissionOverrides(user.id);
-  const forCheck = casbin ? { ...user, admin_permissions: JSON.stringify(casbin) } : user;
-  if (!can(forCheck, resource, action)) {
+  const roleKey = roleKeyForSystemRole(user.role);
+  const userPolicies = await store.casbinPolicies(userSubject(user.id));
+  const rolePolicies = roleKey ? await store.casbinPolicies(roleSubject(roleKey)) : [];
+  if (!canWithPolicies(user, resource, action, userPolicies, rolePolicies)) {
     return json(403, { success: false, message: "无权进行此操作，权限不足" });
   }
   return u;

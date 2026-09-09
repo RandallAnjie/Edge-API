@@ -93,6 +93,11 @@ export async function topupInfo(store: Store): Promise<Record<string, unknown>> 
   };
 }
 
+function paymentReturnPath(req: Request, suffix: string, serverAddress = ""): string {
+  const base = (serverAddress || new URL(req.url).origin).replace(/\/+$/, "");
+  return base + suffix;
+}
+
 function payMoney(amount: number, unitPrice: number): number {
   return Math.round(amount * unitPrice * 100) / 100;
 }
@@ -119,7 +124,6 @@ export async function requestStripePay(
   const min = await store.optionNum("MinTopup", 1);
   if (amount < min) return apiFail(`充值数量不能小于 ${min}`);
   const secret = await stripeSecret(store);
-  const origin = new URL(req.url).origin;
   const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
   const unitPrice = await store.optionNum("StripeUnitPrice", 8);
   const money = payMoney(amount, unitPrice);
@@ -135,8 +139,8 @@ export async function requestStripePay(
   });
   const params = new URLSearchParams({
     mode: "payment",
-    success_url: body.success_url || `${origin}/#/wallet?topup=success`,
-    cancel_url: body.cancel_url || `${origin}/#/wallet?topup=cancel`,
+    success_url: body.success_url || paymentReturnPath(req, "/usage-logs"),
+    cancel_url: body.cancel_url || paymentReturnPath(req, "/wallet"),
     "line_items[0][price_data][currency]": "usd",
     "line_items[0][price_data][product_data][name]": `Quota x${amount}`,
     "line_items[0][price_data][unit_amount]": String(Math.round(money * 100)),
@@ -155,8 +159,8 @@ export async function requestStripePay(
     body: params,
   });
   const data = (await res.json()) as { id?: string; url?: string; error?: { message?: string } };
-  if (!res.ok || !data.url) return apiFail(data.error?.message || "Stripe Checkout 创建失败");
-  return apiOk({ url: data.url, checkout_url: data.url, trade_no: trade, session_id: data.id });
+  if (!res.ok || !data.url) return json(200, { message: "error", data: data.error?.message || "拉起支付失败" });
+  return json(200, { message: "success", data: { pay_link: data.url }, success: true });
 }
 
 export async function handleStripeWebhook(store: Store, req: Request): Promise<Response> {
@@ -214,7 +218,7 @@ export async function requestEpay(
     type: body.payment_method || "alipay",
     out_trade_no: trade,
     notify_url: `${origin}/api/user/epay/notify`,
-    return_url: `${origin}/#/wallet`,
+    return_url: paymentReturnPath(req, "/usage-logs"),
     name: "quota",
     money: money.toFixed(2),
   };
@@ -227,7 +231,7 @@ export async function requestEpay(
   params.sign = await md5Hex(signStr);
   params.sign_type = "MD5";
   const url = gateway + (gateway.includes("?") ? "&" : "?") + new URLSearchParams(params).toString();
-  return apiOk({ url, pay_link: url, trade_no: trade });
+  return json(200, { message: "success", data: params, url, success: true });
 }
 
 export async function handleEpayNotify(store: Store, req: Request, url: URL): Promise<Response> {
@@ -258,7 +262,6 @@ export async function requestHttpPay(
   const amount = Number(body.amount || 0);
   const min = await store.optionNum("MinTopup", 1);
   if (amount < min) return apiFail(`充值数量不能小于 ${min}`);
-  const origin = new URL(req.url).origin;
   const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
   const money = payMoney(amount, await store.optionNum("Price", 7.3));
   const trade = (kind === "creem" ? "cr_" : "wf_") + randomHex(12);
@@ -282,7 +285,7 @@ export async function requestHttpPay(
     body: JSON.stringify({
       amount: money,
       currency: "USD",
-      success_url: body.success_url || `${origin}/#/wallet`,
+      success_url: body.success_url || paymentReturnPath(req, "/wallet?show_history=true"),
       metadata: { user_id: user.id, trade_no: trade, quota: credited },
     }),
   });

@@ -1,5 +1,5 @@
 import { START_TIME, VERSION, nowSec } from "./constants.js";
-import { authenticateApiToken, rateLimit } from "./auth.js";
+import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
 import { apiFail, openaiError, readJson, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
 import {
@@ -356,6 +356,18 @@ async function relayJson(
 }
 
 async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
+  const res = await dispatchFetch(req, env, ctx);
+  if (env.DB) {
+    try {
+      await finishAccessTokenAudit(new Store(env.DB), req, res);
+    } catch {
+      /* audit must not fail the request */
+    }
+  }
+  return res;
+}
+
+async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   hit("http");
@@ -395,6 +407,12 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
       );
     }
     await ensureSchema(env.DB);
+    const store = new Store(env.DB);
+    try {
+      await maybeBeginAccessTokenAudit(store, req, await sessionSecret(env, store));
+    } catch {
+      /* PAT audit begin is best-effort */
+    }
 
     const isRelay =
       (path.startsWith("/v1/") && !path.startsWith("/v1/dashboard")) ||
@@ -417,7 +435,6 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
       const routed = await api.dispatch(c);
       if (routed) return withCors(req, routed);
 
-      const store = new Store(env.DB);
       const plugin = await matchPluginRoute(store, req.method, path);
       if (plugin) {
         hit("relay");

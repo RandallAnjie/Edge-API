@@ -22,15 +22,16 @@ function pathMatches(pattern: string, path: string): boolean {
   if (!pattern) return false;
   const pp = pattern.split("/").filter(Boolean);
   const sp = path.split("/").filter(Boolean);
-  if (pp.length !== sp.length) {
-    const star = pp.findIndex((p) => p.startsWith("*"));
-    if (star === -1) return false;
-    if (sp.length < star) return false;
+  let si = 0;
+  for (let i = 0; i < pp.length; i++) {
+    if (pp[i].startsWith("*")) return true;
+    if (si >= sp.length) return false;
+    if (pp[i].startsWith(":")) {
+      si += 1;
+      continue;
+    }
+    if (pp[i] !== sp[si]) return false;
+    si += 1;
   }
-  const n = Math.min(pp.length, sp.length);
-  for (let i = 0; i < n; i++) {
-    if (pp[i].startsWith(":") || pp[i].startsWith("*")) continue;
-    if (pp[i] !== sp[i]) return false;
-  }
-  return true;
+  return si === sp.length;
 }

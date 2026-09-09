@@ -246,7 +246,7 @@ test("system-info, task plugin upsert, original token usage, sessions view", asy
   );
   assert.equal(plugin.body.success, true, plugin.body.message);
   const listed = await json(new Request("http://local/api/plugin/task", { headers: auth }), e);
-  assert.ok((listed.body.data as { key: string }[]).some((p) => p.key === "demo"));
+  assert.ok((listed.body.data as { meta: { key: string }; active: boolean; runtime_status: string }[]).some((p) => p.meta.key === "demo" && p.active && p.runtime_status === "registered"));
 
   const tk = await json(
     new Request("http://local/api/token/", {
@@ -355,7 +355,8 @@ test("payments topup info reflects config; oauth state returns flow_token", asyn
   );
   assert.equal(st.body.success, true);
   assert.equal(typeof st.body.data.flow_token, "string");
-  assert.equal(st.body.data.state, st.body.data.flow_token);
+  assert.equal(typeof st.body.data.expires_at, "number");
+  assert.equal("state" in st.body.data, false);
 });
 
 test("GetPricing / topup info / verify methods / token booleans / channel DTO match original JSON", async () => {

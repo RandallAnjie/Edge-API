@@ -369,7 +369,7 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    if (!(await s.optionBool("PasskeyEnabled", true))) return apiFail("Passkey 未启用");
+    if (!(await s.optionBool("PasskeyEnabled", true))) return apiFail("管理员未启用 Passkey 登录");
     const ch = newChallenge();
     const rp = rpFromRequest(c.req);
     const expiresAt = nowSec() + 300;
@@ -380,14 +380,12 @@ export function registerMore(r: Router<Env>): void {
       user: { id: String(u.id), name: u.username, displayName: u.display_name || u.username },
       pubKeyCredParams: [{ type: "public-key", alg: -7 }],
       timeout: 60000,
-      authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
+      authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
     };
     return apiOk({
       options,
       flow_token: ch.id,
       expires_at: expiresAt,
-      flow_id: ch.id,
-      publicKey: options,
     });
   });
 

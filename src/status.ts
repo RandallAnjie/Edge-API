@@ -5,7 +5,8 @@ import type { Env } from "./types.js";
 export async function buildStatus(store: Store, env: Env): Promise<Record<string, unknown>> {
   const setup = await store.setupDone();
   const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
-  const displayCurrency = await store.optionBool("DisplayInCurrency", true);
+  const quotaDisplayType = (await store.option("QuotaDisplayType")) || "USD";
+  const displayCurrency = quotaDisplayType !== "TOKENS";
   const agreement = await store.option("UserAgreement");
   const privacy = await store.option("PrivacyPolicy");
   const telegramBot = await store.option("TelegramBotName");
@@ -47,7 +48,7 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
     docs_link: await store.option("DocsLink"),
     quota_per_unit: quotaPerUnit,
     display_in_currency: displayCurrency,
-    quota_display_type: displayCurrency ? "USD" : "TOKENS",
+    quota_display_type: quotaDisplayType,
     custom_currency_symbol: (await store.option("CustomCurrencySymbol")) || "$",
     custom_currency_exchange_rate: await store.optionNum("CustomCurrencyExchangeRate", 1),
     enable_batch_update: await store.optionBool("BatchUpdateEnabled", false),

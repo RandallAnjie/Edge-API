@@ -468,9 +468,66 @@ test("original JSON fields for status, models, deployments, performance, data, u
   }
 
   const pat = String(issued.body.data);
-  await json(new Request("http://local/api/user/self", { headers: { authorization: "Bearer " + pat } }), e);
+  const selfPat = await json(new Request("http://local/api/user/self", { headers: { authorization: "Bearer " + pat } }), e);
+  assert.equal(selfPat.body.success, true);
   const used = await json(new Request("http://local/api/user/token/status", { headers: auth }), e);
   const usedData = used.body.data as { last_used_at: number | null; last_used_ip: string };
   assert.equal(typeof usedData.last_used_at, "number");
+
+  await json(new Request("http://local/api/this-route-does-not-exist", { headers: { authorization: "Bearer " + pat } }), e);
+  const patAudit = await json(new Request("http://local/api/audit?category=access_token", { headers: auth }), e);
+  const patItems = (patAudit.body.data as { items: { route: string; status: number; success: boolean }[] }).items;
+  assert.ok(patItems.some((row) => row.route === "/api/user/self" && row.status === 200 && row.success === true));
+  assert.ok(patItems.some((row) => row.route === "/api/this-route-does-not-exist" && row.status === 404 && row.success === false));
+
+  const users = await json(new Request("http://local/api/user/search?keyword=admin1", { headers: auth }), e);
+  const adminRow = ((users.body.data as { items: { id: number; username: string }[] }).items || []).find((u) => u.username === "admin1");
+  assert.ok(adminRow);
+  await json(
+    new Request("http://local/api/user/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: adminRow!.id, admin_permissions: { channel: { read: false } } }),
+    }),
+    e,
+  );
+  const deniedRead = await json(new Request("http://local/api/channel/", { headers: adminAuth }), e);
+  assert.equal(deniedRead.res.status, 403);
+  assert.equal(deniedRead.body.message, "无权进行此操作，权限不足");
+
+  const plugins = await json(new Request("http://local/api/plugin/task", { headers: auth }), e);
+  assert.ok(Array.isArray(plugins.body.data));
+
+  await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ key: "suno", name: "Suno", version: "1.0.0", status: "active", routes: [{ method: "POST", path: "/suno/submit" }] }),
+    }),
+    e,
+  );
+  const pluginList = await json(new Request("http://local/api/plugin/task", { headers: auth }), e);
+  const suno = (pluginList.body.data as { meta: { key: string }; enabled: boolean; active: boolean; runtime_status: string; has_icon: boolean; channel_count: number }[]).find(
+    (p) => p.meta.key === "suno",
+  );
+  assert.equal(suno?.enabled, true);
+  assert.equal(suno?.active, true);
+  assert.equal(suno?.runtime_status, "registered");
+  assert.equal(typeof suno?.has_icon, "boolean");
+  assert.equal(typeof suno?.channel_count, "number");
+
+  const stripePay = await json(
+    new Request("http://local/api/user/stripe/pay", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ amount: 10, payment_method: "stripe" }),
+    }),
+    e,
+  );
+  assert.equal(stripePay.body.success, false);
+  assert.equal(stripePay.body.message, "Stripe 未配置");
+
+  const statusType = await json(new Request("http://local/api/status"), e);
+  assert.equal((statusType.body.data as { quota_display_type: string }).quota_display_type, "USD");
 });
 

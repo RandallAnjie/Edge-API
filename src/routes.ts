@@ -37,9 +37,10 @@ import {
   requireProof,
   requireRoot,
   requireUser,
+  publicSelf,
   sessionResponse,
 } from "./auth.js";
-import { Store, permissionsFor, publicUser, stripChannelKey } from "./store.js";
+import { Store, publicUser, stripChannelKey } from "./store.js";
 import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, dashboardListModels, channelListModels, publicOptions } from "./dto.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { registerMore } from "./more-routes.js";
@@ -255,10 +256,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
     if (!user) return apiFail("用户不存在");
-    return apiOk({
-      ...publicUser(user),
-      permissions: permissionsFor(user),
-    });
+    return apiOk(await publicSelf(s, user));
   });
 
   r.put("/api/user/self", async (c) => {

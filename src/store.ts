@@ -1295,11 +1295,16 @@ export class Store {
     await this.db.prepare("DELETE FROM auth_flows WHERE token = ?").bind(token).run();
   }
 
-  async userPermissionOverrides(userId: number): Promise<Record<string, Record<string, boolean>> | null> {
+  async casbinPolicies(subject: string): Promise<{ v1: string; v2: string; v3: string }[]> {
     const { results } = await this.db
       .prepare("SELECT v1, v2, v3 FROM casbin_rule WHERE ptype = 'p' AND v0 = ?")
-      .bind(`user:${userId}`)
+      .bind(subject)
       .all<{ v1: string; v2: string; v3: string }>();
+    return results;
+  }
+
+  async userPermissionOverrides(userId: number): Promise<Record<string, Record<string, boolean>> | null> {
+    const results = await this.casbinPolicies(`user:${userId}`);
     if (!results.length) return null;
     const out: Record<string, Record<string, boolean>> = {};
     for (const row of results) {

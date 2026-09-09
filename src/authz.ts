@@ -181,6 +181,61 @@ export function permissionDeltas(
   return deltas;
 }
 
+export function isKnownPermission(resource: string, action: string): boolean {
+  const def = RESOURCES.find((r) => r.resource === resource);
+  return Boolean(def?.actions.some((a) => a.action === action));
+}
+
+export function userSubject(userId: number): string {
+  return `user:${userId}`;
+}
+
+export function roleSubject(roleKey: string): string {
+  return `role:${roleKey}`;
+}
+
+export function roleKeyForSystemRole(role: number): string | null {
+  if (role >= 100) return "root";
+  if (role >= 10) return "admin";
+  return null;
+}
+
+export type CasbinPolicyRow = { v1: string; v2: string; v3: string };
+
+export function explicitSubjectEffect(
+  policies: CasbinPolicyRow[],
+  resource: string,
+  action: string,
+): "allow" | "deny" | null {
+  let hasAllow = false;
+  for (const row of policies) {
+    if (row.v1 !== resource || row.v2 !== action) continue;
+    const effect = row.v3 || "allow";
+    if (effect === "deny") return "deny";
+    if (effect === "allow") hasAllow = true;
+  }
+  return hasAllow ? "allow" : null;
+}
+
+export function canWithPolicies(
+  user: { id?: number; role: number; admin_permissions?: string },
+  resource: string,
+  action: string,
+  userPolicies: CasbinPolicyRow[],
+  rolePolicies: CasbinPolicyRow[],
+): boolean {
+  if (user.role >= 100) return true;
+  if (user.role < 10) return false;
+  if (!isKnownPermission(resource, action)) return false;
+  const userEffect = explicitSubjectEffect(userPolicies, resource, action);
+  if (userEffect === "deny") return false;
+  if (userEffect === "allow") return true;
+  const roleEffect = explicitSubjectEffect(rolePolicies, resource, action);
+  if (roleEffect === "deny") return false;
+  if (roleEffect === "allow") return true;
+  return can(user, resource, action);
+}
+
 export function can(
   user: { role: number; admin_permissions?: string },
   resource: string,
@@ -189,4 +244,22 @@ export function can(
   if (user.role >= 100) return true;
   const matrix = capabilities(user.role, parsePermissionOverrides(user.admin_permissions));
   return matrix[resource]?.[action] === true;
+}
+
+export async function capabilitiesFromStore(
+  store: { casbinPolicies(subject: string): Promise<CasbinPolicyRow[]> },
+  user: { id: number; role: number; admin_permissions?: string },
+): Promise<Record<string, Record<string, boolean>>> {
+  const roleKey = roleKeyForSystemRole(user.role);
+  const userPolicies = user.role >= 100 ? [] : await store.casbinPolicies(userSubject(user.id));
+  const rolePolicies = roleKey && user.role < 100 ? await store.casbinPolicies(roleSubject(roleKey)) : [];
+  const result: Record<string, Record<string, boolean>> = {};
+  for (const resource of RESOURCES) {
+    const actions: Record<string, boolean> = {};
+    for (const action of resource.actions) {
+      actions[action.action] = canWithPolicies(user, resource.resource, action.action, userPolicies, rolePolicies);
+    }
+    result[resource.resource] = actions;
+  }
+  return result;
 }
