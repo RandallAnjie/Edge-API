@@ -84,8 +84,18 @@ export function multiKeyInfoFromKeys(keys: string[], mode = "random"): ChannelIn
 function statusAt(info: ChannelInfo, index: number): number {
   const list = info.multi_key_status_list;
   if (!list) return 1;
-  const v = list[index] ?? list[String(index) as unknown as number];
+  const v = list[String(index)] ?? list[index as unknown as string];
   return Number(v || 1);
+}
+
+function lookupNum(map: Record<string, number> | undefined, index: number): number {
+  if (!map) return 0;
+  return Number(map[String(index)] ?? map[index as unknown as string] ?? 0);
+}
+
+function lookupStr(map: Record<string, string> | undefined, index: number): string {
+  if (!map) return "";
+  return String(map[String(index)] ?? map[index as unknown as string] ?? "");
 }
 
 function keyPreview(key: string): string {
@@ -138,8 +148,8 @@ export function manageMultiKeys(ch: ChannelRow, request: MultiKeyManageRequest):
         else if (status === 3) autoDisabledCount += 1;
         const row: Record<string, unknown> = { index: i, status, key_preview: keyPreview(keys[i] || "") };
         if (status !== 1) {
-          const disabledTime = Number((info.multi_key_disabled_time || {})[i] ?? (info.multi_key_disabled_time || {})[String(i)] || 0);
-          const reason = String((info.multi_key_disabled_reason || {})[i] ?? (info.multi_key_disabled_reason || {})[String(i)] || "");
+          const disabledTime = lookupNum(info.multi_key_disabled_time, i);
+          const reason = lookupStr(info.multi_key_disabled_reason, i);
           if (disabledTime) row.disabled_time = disabledTime;
           if (reason) row.reason = reason;
         }
@@ -224,8 +234,8 @@ export function manageMultiKeys(ch: ChannelRow, request: MultiKeyManageRequest):
         remaining.push(keys[i]);
         const status = statusAt(info, i);
         if (status !== 1) newStatus[String(newIndex)] = status;
-        const t = Number((info.multi_key_disabled_time || {})[i] ?? (info.multi_key_disabled_time || {})[String(i)] || 0);
-        const r = String((info.multi_key_disabled_reason || {})[i] ?? (info.multi_key_disabled_reason || {})[String(i)] || "");
+        const t = lookupNum(info.multi_key_disabled_time, i);
+        const r = lookupStr(info.multi_key_disabled_reason, i);
         if (t) newTime[String(newIndex)] = t;
         if (r) newReason[String(newIndex)] = r;
         newIndex += 1;
@@ -256,8 +266,8 @@ export function manageMultiKeys(ch: ChannelRow, request: MultiKeyManageRequest):
         remaining.push(keys[i]);
         if (status !== 1) {
           newStatus[String(newIndex)] = status;
-          const t = Number((info.multi_key_disabled_time || {})[i] ?? (info.multi_key_disabled_time || {})[String(i)] || 0);
-          const r = String((info.multi_key_disabled_reason || {})[i] ?? (info.multi_key_disabled_reason || {})[String(i)] || "");
+          const t = lookupNum(info.multi_key_disabled_time, i);
+          const r = lookupStr(info.multi_key_disabled_reason, i);
           if (t) newTime[String(newIndex)] = t;
           if (r) newReason[String(newIndex)] = r;
         }

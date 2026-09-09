@@ -298,10 +298,11 @@ test("original JSON fields for status, models, deployments, performance, data, u
   assert.equal(typeof ud.unlimited_quota, "boolean");
   const usageNoAuth = await json(new Request("http://local/api/usage/token"), e);
   assert.equal(usageNoAuth.res.status, 401);
-  assert.equal(usageNoAuth.body.message, "No Authorization header");
+  assert.equal(usageNoAuth.body.success, false);
+  assert.equal(usageNoAuth.body.message, "Token not provided");
   const usageBad = await json(new Request("http://local/api/usage/token", { headers: { authorization: "Token x" } }), e);
   assert.equal(usageBad.res.status, 401);
-  assert.equal(usageBad.body.message, "Invalid Bearer token");
+  assert.equal(usageBad.body.message, "Invalid token");
   assert.equal(typeof ud.model_limits_enabled, "boolean");
   assert.equal(typeof ud.expires_at, "number");
 

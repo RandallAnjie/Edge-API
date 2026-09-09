@@ -1372,5 +1372,3 @@ async function billingUsage(c: C): Promise<Response> {
     { headers: { "content-type": "application/json" } },
   );
 }
-
-void parseBool;
