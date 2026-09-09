@@ -64,6 +64,18 @@ export async function serveRevalidatedJSON(req: Request, content: string): Promi
   return new Response(JSON.stringify({ success: true, message: "", data }), { status: 200, headers });
 }
 
+/** Original `controller.videoProxyError`. */
+export function videoProxyError(status: number, type: string, message: string): Response {
+  return json(status, { error: { message, type } }, { "cache-control": "private, no-store" });
+}
+
+/** Original `controller.writeTaskArtifactError`. */
+export function taskArtifactError(status: number, code: string, message: string, apiPath = false): Response {
+  const extra = { "cache-control": "private, no-store" };
+  if (apiPath) return json(status, { success: false, code, message }, extra);
+  return json(status, { error: { message, type: code, code } }, extra);
+}
+
 export function openaiError(
   status: number,
   message: string,

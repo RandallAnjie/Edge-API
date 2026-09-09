@@ -375,8 +375,8 @@ export class Store {
   async insertChannel(c: Partial<ChannelRow>): Promise<number> {
     const r = await this.db
       .prepare(
-        `INSERT INTO channels (type, key, status, name, weight, created_time, base_url, other, models, "group", model_mapping, status_code_mapping, priority, auto_ban, tag, header_override, param_override, remark, settings, openai_organization, test_model, balance, balance_updated_time, other_info, channel_info, setting)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO channels (type, key, status, name, weight, created_time, test_time, response_time, base_url, other, models, "group", used_quota, model_mapping, status_code_mapping, priority, auto_ban, tag, header_override, param_override, remark, settings, openai_organization, test_model, balance, balance_updated_time, other_info, channel_info, setting)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         c.type ?? 1,
@@ -385,10 +385,13 @@ export class Store {
         c.name,
         c.weight ?? 1,
         c.created_time ?? nowSec(),
+        c.test_time ?? 0,
+        c.response_time ?? 0,
         c.base_url ?? "",
         c.other ?? "",
         c.models ?? "",
         c.group ?? "default",
+        c.used_quota ?? 0,
         c.model_mapping ?? "",
         c.status_code_mapping ?? "",
         c.priority ?? 0,
@@ -656,6 +659,7 @@ export class Store {
     model?: string;
     username?: string;
     tokenName?: string;
+    tokenId?: number;
     channel?: number;
     requestId?: string;
     group?: string;
@@ -691,6 +695,10 @@ export class Store {
       where.push("request_logs.token_name = ?");
       binds.push(opts.tokenName);
     }
+    if (opts.tokenId) {
+      where.push("request_logs.token_id = ?");
+      binds.push(opts.tokenId);
+    }
     if (opts.channel) {
       where.push("request_logs.channel_id = ?");
       binds.push(opts.channel);
@@ -718,7 +726,7 @@ export class Store {
       )
       .bind(...binds, opts.limit, opts.offset)
       .all<LogRow>();
-    return { items: results, total: num(totalRow?.c) };
+    return { items: results ?? [], total: num(totalRow?.c) };
   }
 
   async logStat(opts: {
@@ -736,7 +744,7 @@ export class Store {
     rpm: number;
     tpm: number;
   }> {
-    const where: string[] = [`type = ${Number(opts.type || 2)}`];
+    const where: string[] = [`type = ${LOG_CONSUME}`];
     const binds: unknown[] = [];
     if (opts.userId) {
       where.push("user_id = ?");
@@ -1159,15 +1167,34 @@ export class Store {
     return Number(r.meta.last_row_id || 0);
   }
 
-  async listMj(userId: number | null, offset: number, limit: number): Promise<{ items: unknown[]; total: number }> {
-    const where = userId ? "user_id = ?" : "1=1";
+  async listMj(
+    userId: number | null,
+    offset: number,
+    limit: number,
+    filters: { channel_id?: string; mj_id?: string; start_timestamp?: string; end_timestamp?: string } = {},
+  ): Promise<{ items: unknown[]; total: number }> {
+    const where: string[] = [userId ? "user_id = ?" : "1=1"];
     const binds: unknown[] = userId ? [userId] : [];
-    const totalRow = await this.db
-      .prepare(`SELECT COUNT(*) as c FROM mj_tasks WHERE ${where}`)
-      .bind(...binds)
-      .first<{ c: number }>();
+    if (userId == null && filters.channel_id) {
+      where.push("channel_id = ?");
+      binds.push(filters.channel_id);
+    }
+    if (filters.mj_id) {
+      where.push("mj_id = ?");
+      binds.push(filters.mj_id);
+    }
+    if (filters.start_timestamp) {
+      where.push("submit_time >= ?");
+      binds.push(filters.start_timestamp);
+    }
+    if (filters.end_timestamp) {
+      where.push("submit_time <= ?");
+      binds.push(filters.end_timestamp);
+    }
+    const w = where.join(" AND ");
+    const totalRow = await this.db.prepare(`SELECT COUNT(*) as c FROM mj_tasks WHERE ${w}`).bind(...binds).first<{ c: number }>();
     const { results } = await this.db
-      .prepare(`SELECT * FROM mj_tasks WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM mj_tasks WHERE ${w} ORDER BY id DESC LIMIT ? OFFSET ?`)
       .bind(...binds, limit, offset)
       .all();
     return { items: results, total: num(totalRow?.c) };
@@ -1913,14 +1940,16 @@ export class Store {
   async insertTask(row: Record<string, unknown>): Promise<number> {
     const r = await this.db
       .prepare(
-        `INSERT INTO tasks (task_id, user_id, token_id, channel_id, platform, action, status, progress, model_name, prompt, fail_reason, result, properties, submit_time)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (task_id, user_id, token_id, channel_id, "group", quota, platform, action, status, progress, model_name, prompt, fail_reason, result, properties, data, private_data, created_at, updated_at, submit_time)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         row.task_id ?? crypto.randomUUID(),
         row.user_id ?? 0,
         row.token_id ?? 0,
         row.channel_id ?? 0,
+        row.group ?? "",
+        row.quota ?? 0,
         row.platform ?? "",
         row.action ?? "",
         row.status ?? "SUBMITTED",
@@ -1930,6 +1959,10 @@ export class Store {
         row.fail_reason ?? "",
         typeof row.result === "string" ? row.result : JSON.stringify(row.result ?? ""),
         typeof row.properties === "string" ? row.properties : JSON.stringify(row.properties ?? {}),
+        typeof row.data === "string" ? row.data : JSON.stringify(row.data ?? null),
+        typeof row.private_data === "string" ? row.private_data : JSON.stringify(row.private_data ?? {}),
+        nowSec(),
+        nowSec(),
         nowSec(),
       )
       .run();
@@ -1952,18 +1985,62 @@ export class Store {
     await this.db.prepare(`UPDATE tasks SET ${cols.join(", ")} WHERE task_id = ?`).bind(...vals).run();
   }
 
-  async listTasks(userId: number | null, offset: number, limit: number): Promise<{ items: unknown[]; total: number }> {
-    const where = userId ? "user_id = ?" : "1=1";
+  async listTasks(
+    userId: number | null,
+    offset: number,
+    limit: number,
+    filters: {
+      platform?: string;
+      task_id?: string;
+      status?: string;
+      action?: string;
+      start_timestamp?: number;
+      end_timestamp?: number;
+      channel_id?: string;
+    } = {},
+  ): Promise<{ items: unknown[]; total: number }> {
+    const where: string[] = [userId ? "t.user_id = ?" : "1=1"];
     const binds: unknown[] = userId ? [userId] : [];
-    const totalRow = await this.db
-      .prepare(`SELECT COUNT(*) as c FROM tasks WHERE ${where}`)
-      .bind(...binds)
-      .first<{ c: number }>();
+    if (filters.platform) {
+      where.push("t.platform = ?");
+      binds.push(filters.platform);
+    }
+    if (filters.task_id) {
+      where.push("t.task_id = ?");
+      binds.push(filters.task_id);
+    }
+    if (filters.status) {
+      where.push("t.status = ?");
+      binds.push(filters.status);
+    }
+    if (filters.action) {
+      where.push("t.action = ?");
+      binds.push(filters.action);
+    }
+    if (filters.start_timestamp) {
+      where.push("t.submit_time >= ?");
+      binds.push(filters.start_timestamp);
+    }
+    if (filters.end_timestamp) {
+      where.push("t.submit_time <= ?");
+      binds.push(filters.end_timestamp);
+    }
+    if (userId == null && filters.channel_id) {
+      where.push("t.channel_id = ?");
+      binds.push(filters.channel_id);
+    }
+    const w = where.join(" AND ");
+    const totalRow = await this.db.prepare(`SELECT COUNT(*) as c FROM tasks t WHERE ${w}`).bind(...binds).first<{ c: number }>();
     const { results } = await this.db
-      .prepare(`SELECT * FROM tasks WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .prepare(
+        `SELECT t.id, t.created_at, t.updated_at, t.task_id, t.user_id, t.token_id, t.channel_id, t."group" AS "group",
+                t.quota, t.platform, t.action, t.status, t.progress, t.model_name, t.prompt, t.fail_reason, t.result,
+                t.properties, t.data, t.private_data, t.submit_time, t.start_time, t.finish_time, u.username AS username
+         FROM tasks t LEFT JOIN users u ON t.user_id = u.id WHERE ${w} ORDER BY t.id DESC LIMIT ? OFFSET ?`,
+      )
       .bind(...binds, limit, offset)
       .all();
-    return { items: results, total: num(totalRow?.c) };
+    return { items: results ?? [], total: num(totalRow?.c) };
   }
 
   async listConversations(userId: number): Promise<unknown[]> {

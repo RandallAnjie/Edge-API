@@ -194,7 +194,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   if (!model) return openaiError(400, "未提供模型名称", "model_not_found");
   if (!tokenAllows(auth, model)) return openaiError(403, `令牌无权访问模型 ${model}`, "model_not_allowed");
 
-  const retryTimes = Math.max(1, await store.optionNum("RetryTimes", 3));
+  const retryTimes = Math.max(1, await store.optionNum("RetryTimes", 0));
   const first = await store.getRandomSatisfiedChannel(auth.usingGroup, model, 0);
   if (!first) return openaiError(503, `没有可用渠道（模型 ${model}）`, "no_available_channel");
 

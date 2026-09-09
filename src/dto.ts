@@ -1,6 +1,6 @@
 import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_CREATED } from "./channel-models.js";
 import { DEFAULT_GROUP_RATIO, csv, parseJson } from "./constants.js";
-import { maskKey, md5Hex } from "./crypto.js";
+import { hmacSha256Raw, maskKey, md5Hex } from "./crypto.js";
 import type { Store } from "./store.js";
 import type { ChannelRow, LogRow, TokenRow, UserRow } from "./types.js";
 
@@ -159,24 +159,25 @@ export function publicToken(t: TokenRow): Record<string, unknown> {
   };
 }
 
-function defaultChannelInfo(key: string): Record<string, unknown> {
-  const keys = String(key || "")
-    .split(/[\n,]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const multi = keys.length > 1;
-  return {
-    is_multi_key: multi,
-    multi_key_size: keys.length,
-    multi_key_status_list: {},
-    multi_key_polling_index: 0,
-    multi_key_mode: "random",
-  };
-}
-
 export function publicChannel(c: ChannelRow, includeKey = false): Record<string, unknown> {
   const parsedInfo = parseJson<Record<string, unknown> | null>(String(c.channel_info || ""), null);
-  const info = parsedInfo && typeof parsedInfo === "object" ? { ...defaultChannelInfo(c.key), ...parsedInfo } : defaultChannelInfo(c.key);
+  const info =
+    parsedInfo && typeof parsedInfo === "object"
+      ? {
+          is_multi_key: false,
+          multi_key_size: 0,
+          multi_key_status_list: null,
+          multi_key_polling_index: 0,
+          multi_key_mode: "",
+          ...parsedInfo,
+        }
+      : {
+          is_multi_key: false,
+          multi_key_size: 0,
+          multi_key_status_list: null,
+          multi_key_polling_index: 0,
+          multi_key_mode: "",
+        };
   const setting = c.setting || c.settings || "";
   return {
     id: c.id,
@@ -576,6 +577,16 @@ export function publicLog(row: LogRow, role = 1): Record<string, unknown> {
   };
 }
 
+/** Original `model.formatUserLogs`: user-visible other, empty channel_name, 1-based display ids. */
+export function publicUserLogs(rows: LogRow[], startIdx: number): Record<string, unknown>[] {
+  return rows.map((row, i) => {
+    const item = publicLog(row, 1);
+    item.id = startIdx + i + 1;
+    item.channel_name = "";
+    return item;
+  });
+}
+
 export function dashboardListModels(): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const [id, models] of Object.entries(CHANNEL_TYPE_MODELS)) out[id] = [...models];
@@ -936,5 +947,223 @@ export function publicSystemTask(row: Record<string, unknown>, numericId = 0): R
     locked_by: String(row.locked_by || ""),
     created_at: Number(row.created_at || 0),
     updated_at: Number(row.updated_at || 0),
+  };
+}
+
+const LEGACY_TASK_ACTIONS: Record<string, string> = {
+  generate: "image_to_video",
+  textGenerate: "text_to_video",
+  firstTailGenerate: "first_tail_to_video",
+  referenceGenerate: "reference_to_video",
+  remixGenerate: "remix",
+};
+
+const VIDEO_TASK_ACTIONS = new Set(["image_to_video", "text_to_video", "first_tail_to_video", "reference_to_video", "remix"]);
+
+export function normalizeTaskAction(action: string): string {
+  return LEGACY_TASK_ACTIONS[action] || action;
+}
+
+function parseTaskPrivate(row: Record<string, unknown>): Record<string, unknown> {
+  return parseJson<Record<string, unknown>>(String(row.private_data || ""), {});
+}
+
+function taskFailReasonIsLegacyResultURL(reason: string): boolean {
+  return /^https?:\/\//i.test(reason.trim());
+}
+
+export function taskResultURL(row: Record<string, unknown>): string {
+  const priv = parseTaskPrivate(row);
+  const url = String(priv.result_url || "").trim();
+  if (url) return url;
+  return String(row.fail_reason || "").trim();
+}
+
+export function taskHasPluginExecution(row: Record<string, unknown>): boolean {
+  const exec = parseTaskPrivate(row).execution as { task_plugin?: { key?: string } } | undefined;
+  return Boolean(exec?.task_plugin?.key?.trim());
+}
+
+export function legacyVideoAvailable(row: Record<string, unknown>): boolean {
+  if (String(row.status) !== "SUCCESS") return false;
+  if (taskHasPluginExecution(row)) return false;
+  if (String(row.platform) === "suno") return false;
+  if (!taskResultURL(row)) return false;
+  return VIDEO_TASK_ACTIONS.has(normalizeTaskAction(String(row.action || "")));
+}
+
+export function publicTask(row: Record<string, unknown>, fillUser: boolean, viewerRole: number): Record<string, unknown> {
+  const status = String(row.status || "");
+  let failReason = String(row.fail_reason || "");
+  if (status === "SUCCESS") {
+    if (taskFailReasonIsLegacyResultURL(failReason)) failReason = "";
+  }
+  const createdAt = Number(row.created_at || 0) || Number(row.submit_time || 0);
+  const propertiesRaw = row.properties;
+  const parsedProperties =
+    typeof propertiesRaw === "string"
+      ? parseJson<Record<string, unknown>>(propertiesRaw, {})
+      : ((propertiesRaw as Record<string, unknown>) ?? {});
+  const properties =
+    parsedProperties && typeof parsedProperties === "object" && !Array.isArray(parsedProperties)
+      ? { input: "", ...parsedProperties }
+      : { input: "" };
+  const dataRaw = row.data;
+  const data =
+    typeof dataRaw === "string" ? parseJson(dataRaw, dataRaw ? dataRaw : null) : dataRaw ?? null;
+  const item: Record<string, unknown> = {
+    id: Number(row.id || 0),
+    created_at: createdAt,
+    updated_at: Number(row.updated_at || 0),
+    task_id: String(row.task_id || ""),
+    platform: String(row.platform || ""),
+    user_id: Number(row.user_id || 0),
+    group: String(row.group || ""),
+    channel_id: Number(row.channel_id || 0),
+    quota: Number(row.quota || 0),
+    action: normalizeTaskAction(String(row.action || "")),
+    status,
+    fail_reason: failReason,
+    submit_time: Number(row.submit_time || 0),
+    start_time: Number(row.start_time || 0),
+    finish_time: Number(row.finish_time || 0),
+    progress: String(row.progress || ""),
+    properties,
+    data,
+  };
+  if (status !== "SUCCESS") {
+    const url = taskResultURL(row);
+    if (url) item.result_url = url;
+  }
+  if (legacyVideoAvailable(row)) item.legacy_video_available = true;
+  if (fillUser) item.username = String(row.username || "");
+  const priv = parseTaskPrivate(row);
+  const execution = priv.execution as
+    | {
+        request_id?: string;
+        request_path?: string;
+        task_plugin?: { key?: string; name?: string; version?: string; author?: { name?: string; url?: string } };
+      }
+    | undefined;
+  if (viewerRole >= 10) {
+    const admin: Record<string, unknown> = {};
+    if (execution?.request_id) admin.request_id = execution.request_id;
+    if (execution?.request_path) admin.request_path = execution.request_path;
+    if (execution?.task_plugin?.key) {
+      admin.task_plugin = {
+        key: execution.task_plugin.key,
+        name: execution.task_plugin.name || "",
+        version: execution.task_plugin.version || undefined,
+        author: execution.task_plugin.author
+          ? { name: execution.task_plugin.author.name || "", url: execution.task_plugin.author.url }
+          : undefined,
+      };
+    }
+    if (Object.keys(admin).length) item.admin_info = admin;
+  }
+  if (viewerRole >= 100) {
+    const plugin = execution?.task_plugin;
+    const root: Record<string, unknown> = {};
+    if (plugin?.key) {
+      root.task_plugin = {
+        key: plugin.key,
+        version: plugin.version || "",
+        api_version: 1,
+        generation: 0,
+      };
+    }
+    if (priv.upstream_task_id) root.upstream_task_id = priv.upstream_task_id;
+    if (priv.node_name) root.node_name = priv.node_name;
+    if (Object.keys(root).length) item.root_info = root;
+  }
+  return item;
+}
+
+export function taskFetchView(row: Record<string, unknown>): Record<string, unknown> {
+  const createdAt = Number(row.created_at || 0) || Number(row.submit_time || 0);
+  const status = String(row.status || "");
+  let failReason = String(row.fail_reason || "");
+  if (status === "SUCCESS" && taskFailReasonIsLegacyResultURL(failReason)) failReason = "";
+  return {
+    task_id: String(row.task_id || ""),
+    platform: String(row.platform || ""),
+    status,
+    progress: String(row.progress || ""),
+    fail_reason: failReason,
+    created_at: createdAt,
+    finished_at: Number(row.finish_time || 0),
+  };
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export async function issueTaskArtifactAccess(secret: string, taskID: string, artifactKey: string): Promise<string> {
+  const msg = new TextEncoder().encode(`v1\0${taskID}\0${artifactKey}`);
+  return bytesToBase64Url(await hmacSha256Raw(secret, msg));
+}
+
+export async function buildTaskArtifactContentURL(store: Store, taskID: string, artifactKey: string): Promise<string> {
+  const baseAddress = ((await store.option("TaskPublicAddress")) || (await store.option("ServerAddress"))).trim();
+  if (!baseAddress) throw new Error("task artifact base URL is empty");
+  const parsed = new URL(baseAddress);
+  if (!/^https?:$/i.test(parsed.protocol) || !parsed.host) throw new Error("task artifact base URL is invalid");
+  const secret = (await store.option("SessionSecret")) || "new-api";
+  const access = await issueTaskArtifactAccess(secret, taskID, artifactKey);
+  const prefix = parsed.pathname.replace(/\/$/, "");
+  parsed.pathname = `${prefix}/v1/tasks/${taskID}/artifacts/${artifactKey}/content`;
+  parsed.search = "";
+  parsed.hash = "";
+  parsed.searchParams.set("access", access);
+  return parsed.toString();
+}
+
+export async function taskArtifactsView(
+  store: Store,
+  row: Record<string, unknown>,
+): Promise<{ task_id: string; artifacts: { key: string; type: string; mime_type?: string; content_url: string }[]; legacy_content_url?: string }> {
+  const taskId = String(row.task_id || "");
+  const artifacts: { key: string; type: string; mime_type?: string; content_url: string }[] = [];
+  const response: {
+    task_id: string;
+    artifacts: { key: string; type: string; mime_type?: string; content_url: string }[];
+    legacy_content_url?: string;
+  } = { task_id: taskId, artifacts };
+  if (legacyVideoAvailable(row)) {
+    response.legacy_content_url = await buildTaskArtifactContentURL(store, taskId, "video");
+  }
+  return response;
+}
+
+export function publicMj(row: Record<string, unknown>, serverAddress: string, forwardUrl: boolean): Record<string, unknown> {
+  const mjId = String(row.mj_id || "");
+  const imageUrl =
+    forwardUrl && serverAddress ? `${serverAddress.replace(/\/$/, "")}/mj/image/${mjId}` : String(row.image_url || "");
+  return {
+    id: Number(row.id || 0),
+    code: Number(row.code || 0),
+    user_id: Number(row.user_id || 0),
+    action: String(row.action || ""),
+    mj_id: mjId,
+    prompt: String(row.prompt || ""),
+    prompt_en: String(row.prompt_en || ""),
+    description: String(row.description || ""),
+    state: String(row.state || ""),
+    submit_time: Number(row.submit_time || 0),
+    start_time: Number(row.start_time || 0),
+    finish_time: Number(row.finish_time || 0),
+    image_url: imageUrl,
+    video_url: String(row.video_url || ""),
+    video_urls: String(row.video_urls || ""),
+    status: String(row.status || ""),
+    progress: String(row.progress || ""),
+    fail_reason: String(row.fail_reason || ""),
+    channel_id: Number(row.channel_id || 0),
+    quota: Number(row.quota || 0),
+    buttons: String(row.buttons || ""),
+    properties: String(row.properties || ""),
   };
 }

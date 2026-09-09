@@ -1,6 +1,6 @@
 /** Original `config.GlobalConfig.ExportAllConfigs()` nested option keys. */
 
-const CHANNEL_AFFINITY_RULES = [
+export const CHANNEL_AFFINITY_RULES = [
   {
     name: "codex cli trace",
     model_regex: ["^gpt-.*$"],
@@ -252,6 +252,9 @@ const ALIAS_PAIRS: [string, string][] = [
   ["AmountDiscount", "payment_setting.amount_discount"],
   ["PaymentComplianceConfirmed", "payment_setting.compliance_confirmed"],
   ["PaymentComplianceTermsVersion", "payment_setting.compliance_terms_version"],
+  ["DisplayInCurrency", "DisplayInCurrencyEnabled"],
+  ["EpayPid", "EpayId"],
+  ["MinTopup", "MinTopUp"],
 ];
 
 export const OPTION_ALIASES: Record<string, string[]> = {};

@@ -63,14 +63,14 @@ export function performanceStats(): Record<string, unknown> {
     disk_space_info: { total: 0, free: 0, used: 0, used_percent: 0 },
     config: {
       disk_cache_enabled: false,
-      disk_cache_threshold_mb: 0,
-      disk_cache_max_size_mb: 0,
+      disk_cache_threshold_mb: 10,
+      disk_cache_max_size_mb: 1024,
       disk_cache_path: "",
       is_running_in_container: true,
       monitor_enabled: true,
       monitor_cpu_threshold: 90,
       monitor_memory_threshold: 90,
-      monitor_disk_threshold: 90,
+      monitor_disk_threshold: 95,
     },
   };
 }

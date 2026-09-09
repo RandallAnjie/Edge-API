@@ -1,4 +1,4 @@
-import { START_TIME, VERSION, parseJson } from "./constants.js";
+import { START_TIME, VERSION, DEFAULT_HEADER_NAV_MODULES, DEFAULT_SIDEBAR_MODULES_ADMIN, parseJson } from "./constants.js";
 import type { Store } from "./store.js";
 import type { Env } from "./types.js";
 
@@ -36,7 +36,7 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
     telegram_oauth_configured: Boolean(telegramToken) || (Boolean(telegramClient) && Boolean(telegramSecret)),
     telegram_bot_name: telegramBot,
     theme: (await store.option("Theme")) || "default",
-    system_name: env.SYSTEM_NAME || (await store.option("SystemName")) || "Edge API",
+    system_name: env.SYSTEM_NAME || (await store.option("SystemName")) || "New API",
     logo: await store.option("Logo"),
     footer_html: await store.option("Footer"),
     wechat_qrcode: wechatQr,
@@ -62,7 +62,7 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
     mj_notify_enabled: await store.optionBool("MjNotifyEnabled", false),
     chats,
     demo_site_enabled: await store.optionBool("DemoSiteEnabled", false),
-    self_use_mode_enabled: await store.optionBool("SelfUseModeEnabled", true),
+    self_use_mode_enabled: await store.optionBool("SelfUseModeEnabled", false),
     register_enabled: await store.optionBool("RegisterEnabled", true),
     password_login_enabled: await store.optionBool("PasswordLoginEnabled", true),
     password_register_enabled: await store.optionBool("PasswordRegisterEnabled", true),
@@ -75,32 +75,8 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
     uptime_kuma_enabled: await store.optionBool("console_setting.uptime_kuma_enabled", true),
     announcements_enabled: announcementsEnabled,
     faq_enabled: faqEnabled,
-    HeaderNavModules:
-      (await store.option("HeaderNavModules")) ||
-      JSON.stringify({
-        home: true,
-        console: true,
-        pricing: { enabled: true, requireAuth: false },
-        rankings: { enabled: await store.optionBool("RankingsEnabled", true), requireAuth: false },
-        docs: true,
-        about: true,
-      }),
-    SidebarModulesAdmin:
-      (await store.option("SidebarModulesAdmin")) ||
-      JSON.stringify({
-        chat: { enabled: true, playground: true, chat: true },
-        console: { enabled: true, detail: true, token: true, log: true, audit: true, midjourney: true, task: true },
-        personal: { enabled: true, topup: true, personal: true, security: true },
-        admin: {
-          enabled: true,
-          channel: true,
-          models: true,
-          redemption: true,
-          user: true,
-          setting: true,
-          subscription: true,
-        },
-      }),
+    HeaderNavModules: (await store.option("HeaderNavModules")) || DEFAULT_HEADER_NAV_MODULES,
+    SidebarModulesAdmin: (await store.option("SidebarModulesAdmin")) || DEFAULT_SIDEBAR_MODULES_ADMIN,
     oidc_enabled: await store.optionBool("oidc.enabled", false),
     oidc_auth: await store.optionBool("oidc.enabled", false),
     oidc_client_id: await store.option("oidc.client_id"),

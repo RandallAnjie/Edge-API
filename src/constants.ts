@@ -1,4 +1,14 @@
 import { DEFAULT_MARKETPLACE_SOURCES, NESTED_OPTION_DEFAULTS } from "./option-defaults.js";
+import {
+  DEFAULT_AUDIO_COMPLETION_RATIO_JSON,
+  DEFAULT_AUDIO_RATIO_JSON,
+  DEFAULT_CACHE_RATIO_JSON,
+  DEFAULT_COMPLETION_RATIO_JSON,
+  DEFAULT_CREATE_CACHE_RATIO_JSON,
+  DEFAULT_IMAGE_RATIO_JSON,
+  DEFAULT_MODEL_PRICE_JSON,
+  DEFAULT_MODEL_RATIO_JSON,
+} from "./ratio-defaults.js";
 
 export const VERSION = "edge-api/1.2.0 (new-api RandallFlare port)";
 export const START_TIME = Date.now();
@@ -50,9 +60,33 @@ export const RATE_LIMIT_PER_MIN = 120;
 /** Original `setting/ratio_setting.defaultGroupRatio`. */
 export const DEFAULT_GROUP_RATIO: Record<string, number> = { default: 1, vip: 1, svip: 1 };
 
+export const DEFAULT_HEADER_NAV_MODULES = JSON.stringify({
+  home: true,
+  console: true,
+  pricing: { enabled: true, requireAuth: false },
+  rankings: { enabled: true, requireAuth: false },
+  docs: true,
+  about: true,
+});
+
+export const DEFAULT_SIDEBAR_MODULES_ADMIN = JSON.stringify({
+  chat: { enabled: true, playground: true, chat: true },
+  console: { enabled: true, detail: true, token: true, log: true, audit: true, midjourney: true, task: true },
+  personal: { enabled: true, topup: true, personal: true, security: true },
+  admin: {
+    enabled: true,
+    channel: true,
+    models: true,
+    redemption: true,
+    user: true,
+    setting: true,
+    subscription: true,
+  },
+});
+
 export const DEFAULT_OPTIONS: Record<string, string> = {
   ...NESTED_OPTION_DEFAULTS,
-  SystemName: "Edge API",
+  SystemName: "New API",
   Logo: "",
   Footer: "",
   Notice: "",
@@ -60,6 +94,7 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   HomePageContent: "",
   QuotaPerUnit: "500000",
   DisplayInCurrency: "true",
+  DisplayInCurrencyEnabled: "true",
   RegisterEnabled: "true",
   PasswordLoginEnabled: "true",
   PasswordRegisterEnabled: "true",
@@ -70,20 +105,83 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   QuotaForNewUser: "0",
   QuotaForInviter: "0",
   QuotaForInvitee: "0",
+  QuotaRemindThreshold: "1000",
+  PreConsumedQuota: "500",
   CheckinEnabled: "false",
   CheckinQuota: "5000",
   CheckinMinQuota: "1000",
   CheckinMaxQuota: "10000",
   DisplayTokenStatEnabled: "true",
-  RetryTimes: "3",
+  RetryTimes: "0",
   ChannelDisableThreshold: "5",
   AutomaticDisableChannelEnabled: "false",
   AutomaticEnableChannelEnabled: "false",
-  SelfUseModeEnabled: "true",
+  SelfUseModeEnabled: "false",
   DemoSiteEnabled: "false",
+  FileUploadPermission: "0",
+  FileDownloadPermission: "0",
+  ImageUploadPermission: "0",
+  ImageDownloadPermission: "0",
+  LogConsumeEnabled: "true",
+  EmailDomainRestrictionEnabled: "false",
+  EmailAliasRestrictionEnabled: "false",
+  EmailDomainWhitelist: "gmail.com,163.com,126.com,qq.com,outlook.com,hotmail.com,icloud.com,yahoo.com,foxmail.com",
+  SMTPServer: "",
+  SMTPFrom: "",
+  SMTPPort: "587",
+  SMTPAccount: "",
+  SMTPSSLEnabled: "false",
+  SMTPStartTLSEnabled: "false",
+  SMTPInsecureSkipVerify: "false",
+  SMTPForceAuthLogin: "false",
+  TaskPublicAddress: "",
+  WorkerUrl: "",
+  WorkerAllowHttpImageRequestEnabled: "false",
+  CustomCallbackAddress: "",
+  EpayId: "",
+  TaskPluginEnabled: "true",
+  HeaderNavModules: DEFAULT_HEADER_NAV_MODULES,
+  SidebarModulesAdmin: DEFAULT_SIDEBAR_MODULES_ADMIN,
+  DataExportInterval: "5",
+  ModelPrice: DEFAULT_MODEL_PRICE_JSON,
+  CacheRatio: DEFAULT_CACHE_RATIO_JSON,
+  CreateCacheRatio: DEFAULT_CREATE_CACHE_RATIO_JSON,
+  ImageRatio: DEFAULT_IMAGE_RATIO_JSON,
+  AudioRatio: DEFAULT_AUDIO_RATIO_JSON,
+  AudioCompletionRatio: DEFAULT_AUDIO_COMPLETION_RATIO_JSON,
+  TopupGroupRatio: "{}",
+  MjAccountFilterEnabled: "false",
+  MjModeClearEnabled: "false",
+  MjForwardUrlEnabled: "false",
+  MjActionCheckSuccessEnabled: "false",
+  CheckSensitiveEnabled: "false",
+  CheckSensitiveOnPromptEnabled: "false",
+  StopOnSensitiveEnabled: "false",
+  SensitiveWords: "",
+  StreamCacheQueueLength: "0",
+  AutomaticDisableKeywords: "",
+  AutomaticDisableStatusCodes: "",
+  AutomaticRetryStatusCodes: "",
+  ModelRequestRateLimitEnabled: "false",
+  ModelRequestRateLimitCount: "0",
+  ModelRequestRateLimitDurationMinutes: "1",
+  ModelRequestRateLimitSuccessCount: "0",
+  ModelRequestRateLimitGroup: "{}",
+  CreemProducts: "",
+  CreemTestMode: "false",
+  WaffoMerchantId: "",
+  WaffoNotifyUrl: "",
+  WaffoReturnUrl: "",
+  WaffoSubscriptionReturnUrl: "",
+  WaffoCurrency: "CNY",
+  WaffoUnitPrice: "8",
+  WaffoPayMethods: "[]",
+  WaffoPancakeReturnURL: "",
+  WaffoPancakeUnitPrice: "8",
+  WaffoPancakeStoreID: "",
   GroupRatio: JSON.stringify(DEFAULT_GROUP_RATIO),
-  ModelRatio: JSON.stringify({}),
-  CompletionRatio: JSON.stringify({}),
+  ModelRatio: DEFAULT_MODEL_RATIO_JSON,
+  CompletionRatio: DEFAULT_COMPLETION_RATIO_JSON,
   DocsLink: "https://docs.newapi.pro",
   ServerAddress: "",
   SessionSecret: "",
@@ -162,6 +260,7 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   TaskPluginMarketplaceSources: JSON.stringify(DEFAULT_MARKETPLACE_SOURCES),
   TaskPluginDisabledFactoryKeys: "[]",
   MinTopup: "1",
+  MinTopUp: "1",
   PaymentComplianceConfirmed: "false",
   PaymentComplianceTermsVersion: "v1",
   TopUpLink: "",
@@ -208,6 +307,15 @@ export function hourStartSec(ts = nowSec()): number {
 export function parseBool(v: string | undefined | null, fallback = false): boolean {
   if (v == null || v === "") return fallback;
   return v === "true" || v === "1" || v === "TRUE";
+}
+
+/** Original `strconv.ParseBool`; invalid values keep `fallback`. */
+export function parseGoBool(v: string | undefined | null, fallback = false): boolean {
+  if (v == null || v === "") return fallback;
+  const s = v.trim();
+  if (/^(1|t|true)$/i.test(s)) return true;
+  if (/^(0|f|false)$/i.test(s)) return false;
+  return fallback;
 }
 
 export function parseJson<T>(raw: string, fallback: T): T {

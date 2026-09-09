@@ -122,6 +122,7 @@ const ORIGINAL_API: { method: string; path: string }[] = [
   { method: "GET", path: "/api/audit" },
   { method: "GET", path: "/api/log/" },
   { method: "GET", path: "/api/log/self" },
+  { method: "GET", path: "/api/log/token" },
   { method: "GET", path: "/api/system-task/list" },
   { method: "GET", path: "/api/system-info/instances" },
   { method: "GET", path: "/api/data/" },
@@ -1605,6 +1606,14 @@ test("original JSON fields: perf-metrics, rankings, quota data, model sync", asy
     "oidc.enabled",
     "channel_affinity_setting.enabled",
     "TaskPluginMarketplaceSources",
+    "SMTPPort",
+    "EpayId",
+    "MinTopUp",
+    "DisplayInCurrencyEnabled",
+    "TaskPluginEnabled",
+    "HeaderNavModules",
+    "LogConsumeEnabled",
+    "QuotaRemindThreshold",
   ]) {
     assert.ok(optionKeys.includes(key), "missing option " + key);
   }
@@ -1613,6 +1622,257 @@ test("original JSON fields: perf-metrics, rankings, quota data, model sync", asy
   const sources = market.body.data as { name: string; index_url: string }[];
   assert.ok(sources.some((s) => s.name === "Official"));
   assert.ok(sources.some((s) => s.name === "GitHub"));
+
+  const ops = await json(new Request("http://local/api/channel/ops", { headers: auth }), e);
+  assert.equal((ops.body.data as { retry_times: number }).retry_times, 0);
+
+  const affinity = await json(new Request("http://local/api/option/channel_affinity_cache", { headers: auth }), e);
+  const aff = affinity.body.data as Record<string, unknown>;
+  for (const k of ["enabled", "total", "unknown", "by_rule_name", "cache_capacity", "cache_algo"]) {
+    assert.ok(k in aff, "missing affinity cache field " + k);
+  }
+  assert.equal(aff.cache_algo, "lru");
+  assert.equal(typeof (aff.by_rule_name as Record<string, number>)["codex cli trace"], "number");
+  const affClear = await json(new Request("http://local/api/option/channel_affinity_cache?all=true", { method: "DELETE", headers: auth }), e);
+  assert.equal((affClear.body.data as { deleted: number }).deleted, 0);
+  const affMissing = await json(new Request("http://local/api/option/channel_affinity_cache", { method: "DELETE", headers: auth }), e);
+  assert.equal(affMissing.res.status, 400);
+  assert.match(String(affMissing.body.message), /rule_name/);
+
+  const usageCache = await json(
+    new Request("http://local/api/log/channel_affinity_usage_cache?rule_name=codex%20cli%20trace&key_fp=abc", { headers: auth }),
+    e,
+  );
+  const uc = usageCache.body.data as Record<string, unknown>;
+  for (const k of ["rule_name", "using_group", "key_fp", "hit", "total", "prompt_tokens", "cached_tokens", "last_seen_at"]) {
+    assert.ok(k in uc, "missing usage cache field " + k);
+  }
+
+  const pricing = await json(new Request("http://local/api/option/model_pricing", { headers: auth }), e);
+  const snap = pricing.body.data as { entries: unknown[]; options: Record<string, string>; empty_version: string };
+  assert.ok(Array.isArray(snap.entries));
+  assert.equal(typeof snap.empty_version, "string");
+  assert.equal(snap.empty_version.length, 64);
+  for (const k of [
+    "ModelRatio",
+    "CompletionRatio",
+    "ModelPrice",
+    "CacheRatio",
+    "CreateCacheRatio",
+    "ImageRatio",
+    "AudioRatio",
+    "AudioCompletionRatio",
+    "billing_setting.billing_mode",
+    "billing_setting.billing_expr",
+  ]) {
+    assert.ok(k in snap.options, "missing pricing option " + k);
+  }
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "ModelRatio", value: JSON.stringify({ "gpt-test": 1.5 }) }),
+    }),
+    e,
+  );
+  const priced = await json(new Request("http://local/api/option/model_pricing?model=gpt-test", { headers: auth }), e);
+  const entry = (priced.body.data as { entries: { model_name: string; version: string; configured: Record<string, unknown>; effective: Record<string, unknown> }[] }).entries[0];
+  assert.equal(entry.model_name, "gpt-test");
+  assert.equal(entry.configured.ModelRatio, 1.5);
+  const patch = await json(
+    new Request("http://local/api/option/model_pricing", {
+      method: "PATCH",
+      headers: auth,
+      body: JSON.stringify({
+        changes: [{ model_name: "gpt-test", expected_version: entry.version, pricing: { ModelRatio: 2 } }],
+      }),
+    }),
+    e,
+  );
+  assert.equal(patch.body.success, true);
+  assert.deepEqual((patch.body.data as { updated_models: string[] }).updated_models, ["gpt-test"]);
+  const stale = await json(
+    new Request("http://local/api/option/model_pricing", {
+      method: "PATCH",
+      headers: auth,
+      body: JSON.stringify({
+        changes: [{ model_name: "gpt-test", expected_version: entry.version, pricing: { ModelRatio: 3 } }],
+      }),
+    }),
+    e,
+  );
+  assert.equal(stale.res.status, 409);
+
+  const resetRatio = await json(new Request("http://local/api/option/rest_model_ratio", { method: "POST", headers: auth }), e);
+  assert.equal(resetRatio.body.message, "重置模型倍率成功");
+  const afterReset = await json(new Request("http://local/api/option/", { headers: auth }), e);
+  const ratioOpt = (afterReset.body.data as { key: string; value: string }[]).find((o) => o.key === "ModelRatio");
+  assert.ok(ratioOpt, "ModelRatio option missing after reset");
+  const restored = JSON.parse(ratioOpt!.value) as Record<string, number>;
+  assert.equal(restored["gpt-4"], 15);
+  assert.equal(restored["gpt-4o-mini"], 0.075);
+  assert.equal("gpt-test" in restored, false);
+
+  await e.DB.prepare(
+    "INSERT INTO tasks (task_id, user_id, platform, action, status, progress, fail_reason, created_at, submit_time, finish_time, properties, data) VALUES (?, 1, 'suno', 'generate', 'SUCCESS', '100%', '', ?, ?, 0, '{}', '{}')",
+  ).bind("task_json_1", Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000)).run();
+  const tok = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "task-json", remain_quota: 1000, unlimited_quota: true }),
+    }),
+    e,
+  );
+  const sk = String((tok.body.data as { key?: string })?.key || "");
+  const tokenId = Number((tok.body.data as { id?: number })?.id || 0);
+  const fetched = await json(new Request("http://local/v1/tasks/task_json_1", { headers: { authorization: "Bearer " + sk } }), e);
+  const tv = fetched.body as Record<string, unknown>;
+  for (const k of ["task_id", "platform", "status", "progress", "fail_reason", "created_at", "finished_at"]) {
+    assert.ok(k in tv, "missing GetTask field " + k);
+  }
+  assert.equal(tv.task_id, "task_json_1");
+  assert.equal(tv.platform, "suno");
+  const missingTask = await json(new Request("http://local/v1/tasks/missing", { headers: { authorization: "Bearer " + sk } }), e);
+  assert.equal(missingTask.res.status, 404);
+  assert.equal((missingTask.body.error as { type: string }).type, "invalid_request_error");
+  const arts = await json(new Request("http://local/v1/tasks/task_json_1/artifacts", { headers: { authorization: "Bearer " + sk } }), e);
+  assert.equal((arts.body as { task_id: string }).task_id, "task_json_1");
+  assert.ok(Array.isArray((arts.body as { artifacts: unknown[] }).artifacts));
+  const dashArts = await json(new Request("http://local/api/task/task_json_1/artifacts", { headers: auth }), e);
+  assert.equal((dashArts.body.data as { task_id: string }).task_id, "task_json_1");
+  assert.ok(Array.isArray((dashArts.body.data as { artifacts: unknown[] }).artifacts));
+
+  const taskList = await json(new Request("http://local/api/task", { headers: auth }), e);
+  assert.equal(taskList.body.success, true, JSON.stringify(taskList.body));
+  const taskPage = taskList.body.data as { items?: Record<string, unknown>[] } | undefined;
+  assert.ok(taskPage && Array.isArray(taskPage.items) && taskPage.items.length, JSON.stringify(taskList.body));
+  const t0 = taskPage.items![0];
+  for (const k of ["id", "task_id", "platform", "user_id", "action", "status", "submit_time", "progress", "properties", "data"]) {
+    assert.ok(k in t0, "missing TaskDto field " + k);
+  }
+  assert.equal(t0.action, "image_to_video");
+
+  await e.DB.prepare(
+    "INSERT INTO mj_tasks (action, user_id, mj_id, prompt, status, progress, channel_id, submit_time, code, description, state, video_url, video_urls, quota, buttons, properties) VALUES ('imagine', 1, 'mj-1', 'a cat', 'SUCCESS', '100%', 1, ?, 1, '', '', '', '', 0, '', '')",
+  ).bind(Math.floor(Date.now() / 1000)).run();
+  const mjList = await json(new Request("http://local/api/mj/", { headers: auth }), e);
+  const m0 = (mjList.body.data as { items: Record<string, unknown>[] }).items[0];
+  for (const k of ["id", "code", "user_id", "action", "mj_id", "prompt", "prompt_en", "image_url", "video_url", "status", "progress", "fail_reason", "channel_id", "quota", "buttons", "properties"]) {
+    assert.ok(k in m0, "missing Midjourney field " + k);
+  }
+
+  await e.DB.prepare(
+    `INSERT INTO request_logs (user_id, created_at, type, content, username, token_name, model_name, quota, prompt_tokens, completion_tokens, use_time, is_stream, channel_id, token_id, "group", ip, other)
+     VALUES (1, ?, 2, 'ok', 'root', 'task-json', 'gpt-4', 1, 1, 1, 1, 0, 9, ?, 'default', '127.0.0.1', ?)`,
+  )
+    .bind(Math.floor(Date.now() / 1000), tokenId || 1, JSON.stringify({ admin_info: { channel_id: 9 }, root_info: { node: "x" } }))
+    .run();
+  const selfLogs = await json(new Request("http://local/api/log/self", { headers: auth }), e);
+  const selfItems = (selfLogs.body.data as { items: { id: number; channel_name: string; other: string }[] }).items;
+  assert.ok(selfItems.length);
+  for (let i = 0; i < selfItems.length; i++) {
+    assert.equal(selfItems[i].id, i + 1);
+    assert.equal(selfItems[i].channel_name, "");
+  }
+  const other = JSON.parse(selfItems[0].other || "{}") as Record<string, unknown>;
+  assert.equal("admin_info" in other, false);
+  assert.equal("root_info" in other, false);
+  const byKey = await json(new Request("http://local/api/log/token", { headers: { authorization: "Bearer " + sk } }), e);
+  assert.ok(Array.isArray(byKey.body.data), JSON.stringify(byKey.body));
+  const keyed = byKey.body.data as { id: number; channel_name: string; token_id: number }[];
+  assert.ok(keyed.length);
+  assert.equal(keyed[0].id, 1);
+  assert.equal(keyed[0].channel_name, "");
+  if (tokenId) assert.equal(keyed[0].token_id, tokenId);
+
+  const logBySession = await json(new Request("http://local/api/log/token", { headers: auth }), e);
+  assert.equal(logBySession.res.status, 401);
+  assert.equal(logBySession.body.success, false);
+  assert.equal(logBySession.body.message, "Invalid token");
+  assert.equal("error" in logBySession.body, false);
+
+  const created = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "copy-src",
+        type: 1,
+        key: "sk-a\nsk-b",
+        models: "gpt-4o-mini",
+        group: "default",
+        base_url: "https://example.invalid",
+        mode: "multi_to_single",
+        multi_key_mode: "random",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const srcId = Number((created.body.data as { id: number }).id);
+  const badCopy = await json(new Request("http://local/api/channel/copy/abc", { method: "POST", headers: auth }), e);
+  assert.equal(badCopy.body.message, "invalid id");
+  const missingCopy = await json(new Request("http://local/api/channel/copy/999999", { method: "POST", headers: auth }), e);
+  assert.equal(missingCopy.body.message, "获取渠道信息失败，请稍后重试");
+  const copied = await json(new Request("http://local/api/channel/copy/" + srcId, { method: "POST", headers: auth }), e);
+  assert.equal(copied.body.success, true, String(copied.body.message));
+  assert.equal(copied.body.message, "");
+  const copyId = Number((copied.body.data as { id: number }).id);
+  assert.ok(copyId > 0);
+  const copyGet = await json(new Request("http://local/api/channel/" + copyId, { headers: auth }), e);
+  const copyCh = copyGet.body.data as { name: string; used_quota: number; test_time: number; response_time: number; channel_info: { is_multi_key: boolean } };
+  assert.equal(copyCh.name, "copy-src_复制");
+  assert.equal(copyCh.used_quota, 0);
+  assert.equal(copyCh.test_time, 0);
+  assert.equal(copyCh.response_time, 0);
+  assert.equal(copyCh.channel_info.is_multi_key, true);
+
+  const status = await json(
+    new Request("http://local/api/channel/multi_key/manage", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ channel_id: srcId, action: "get_key_status" }),
+    }),
+    e,
+  );
+  const st = status.body.data as {
+    keys: { index: number; status: number; key_preview: string }[];
+    total: number;
+    page: number;
+    page_size: number;
+    total_pages: number;
+    enabled_count: number;
+    manual_disabled_count: number;
+    auto_disabled_count: number;
+  };
+  assert.equal(status.body.success, true, String(status.body.message));
+  assert.equal(st.total, 2);
+  assert.equal(st.page, 1);
+  assert.equal(st.page_size, 50);
+  assert.equal(st.enabled_count, 2);
+  assert.equal(st.keys[0].key_preview.length > 0, true);
+
+  const disabled = await json(
+    new Request("http://local/api/channel/multi_key/manage", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ channel_id: srcId, action: "disable_key", key_index: 0 }),
+    }),
+    e,
+  );
+  assert.equal(disabled.body.message, "密钥已禁用");
+
+  const fetchBad = await json(
+    new Request("http://local/api/channel/fetch_models", {
+      method: "POST",
+      headers: auth,
+      body: "{",
+    }),
+    e,
+  );
+  assert.equal(fetchBad.res.status, 400);
+  assert.equal(fetchBad.body.message, "Invalid request");
 });
 
 

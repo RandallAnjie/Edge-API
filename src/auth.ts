@@ -4,6 +4,7 @@ import {
   ROLE_ADMIN,
   ROLE_ROOT,
   SESSION_TTL_SEC,
+  TOKEN_DISABLED,
   TOKEN_ENABLED,
   USER_ENABLED,
   USER_SESSION_ACTIVE_LIMIT,
@@ -16,6 +17,7 @@ import { canWithPolicies, capabilitiesFromStore, roleKeyForSystemRole, roleSubje
 import {
   deriveNextRefreshSecret,
   extractRequestApiKey,
+  parseApiKey,
   hashRefreshSecret,
   randomCharsKey,
   signAccessJwt,
@@ -449,6 +451,39 @@ export async function requireChannel(
 
 export function isResponse(v: unknown): v is Response {
   return v instanceof Response;
+}
+
+function tokenAuthReadOnlyMessage(req: Request, zh: string, en: string): string {
+  const lang = (req.headers.get("accept-language") || "").toLowerCase();
+  if (lang.startsWith("zh")) return zh;
+  return en;
+}
+
+/** Original `middleware.TokenAuthReadOnly` — gin JSON, not OpenAI errors. */
+export async function authenticateTokenReadOnly(
+  c: Context<Env>,
+  store: Store,
+): Promise<{ token: TokenRow; user: UserRow } | Response> {
+  const header = c.req.headers.get("authorization") || "";
+  if (!header) {
+    return json(401, { success: false, message: tokenAuthReadOnlyMessage(c.req, "未提供令牌", "Token not provided") });
+  }
+  const key = parseApiKey(header);
+  const token = await store.getTokenByKey(key);
+  if (!token) {
+    return json(401, { success: false, message: tokenAuthReadOnlyMessage(c.req, "无效的令牌", "Invalid token") });
+  }
+  if (token.status === TOKEN_DISABLED) {
+    return json(401, { success: false, message: tokenAuthReadOnlyMessage(c.req, "该令牌状态不可用", "This token status is unavailable") });
+  }
+  const user = await store.getUserById(token.user_id);
+  if (!user) {
+    return json(500, { success: false, message: tokenAuthReadOnlyMessage(c.req, "数据库错误", "Database error") });
+  }
+  if (user.status !== USER_ENABLED) {
+    return json(403, { success: false, message: tokenAuthReadOnlyMessage(c.req, "用户已被封禁", "User has been banned") });
+  }
+  return { token, user };
 }
 
 export async function authenticateApiToken(c: Context<Env>, store: Store): Promise<AuthToken | Response> {

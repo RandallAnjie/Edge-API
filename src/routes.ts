@@ -11,10 +11,11 @@ import {
   USER_ENABLED,
   VERSION,
   nowSec,
-  parseBool,
+  parseGoBool,
 } from "./constants.js";
-import { permissionDeltas } from "./authz.js";
-import { CHANNEL_TYPES } from "./catalog.js";
+import { canWithPolicies, permissionDeltas, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
+import { CHANNEL_TYPES, defaultBaseUrl } from "./catalog.js";
+import { channelKeys, multiKeyInfoFromKeys, stringifyChannelInfo } from "./channel-info.js";
 import {
   generateAffCode,
   generateRedemptionKey,
@@ -41,7 +42,7 @@ import {
   sessionResponse,
 } from "./auth.js";
 import { Store, publicUser, stripChannelKey } from "./store.js";
-import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, dashboardListModels, channelListModels, publicOptions, publicQuotaData, manageUserView } from "./dto.js";
+import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, publicUserLogs, dashboardListModels, channelListModels, publicOptions, publicQuotaData, manageUserView, publicMj, publicChannel } from "./dto.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
@@ -53,6 +54,15 @@ type C = Context<Env>;
 
 function store(c: C): Store {
   return new Store(c.env.DB);
+}
+
+async function canTaskPluginBind(s: Store, u: { id: number }): Promise<boolean> {
+  const user = await s.getUserById(u.id);
+  if (!user) return false;
+  const roleKey = roleKeyForSystemRole(user.role);
+  const userPolicies = await s.casbinPolicies(userSubject(user.id));
+  const rolePolicies = roleKey ? await s.casbinPolicies(roleSubject(roleKey)) : [];
+  return canWithPolicies(user, "task_plugin", "bind", userPolicies, rolePolicies);
 }
 
 export function adminRouter(): Router<Env> {
@@ -95,7 +105,7 @@ export function adminRouter(): Router<Env> {
         aff_code: generateAffCode(),
       });
     }
-    await s.setOption("SelfUseModeEnabled", String(Boolean(body.SelfUseModeEnabled ?? true)));
+    await s.setOption("SelfUseModeEnabled", String(Boolean(body.SelfUseModeEnabled ?? false)));
     await s.setOption("DemoSiteEnabled", String(Boolean(body.DemoSiteEnabled ?? false)));
     await s.setOption("Setup", "true");
     return apiOk(null, "系统初始化成功");
@@ -689,7 +699,7 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
-    return apiOk({ retry_times: await s.optionNum("RetryTimes", 3) });
+    return apiOk({ retry_times: await s.optionNum("RetryTimes", 0) });
   });
 
   r.get("/api/channel/:id", async (c) => {
@@ -724,9 +734,21 @@ export function adminRouter(): Router<Env> {
     const body = (await readJson(c.req)) as Record<string, unknown>;
     const ch = (body.channel || body) as Record<string, unknown>;
     if (!ch.name) return apiFail("渠道名称不能为空");
+    const type = Number(ch.type || 1);
+    if (type === 61 && !(await canTaskPluginBind(s, u))) {
+      return apiFail("task plugin channels require the task_plugin.bind permission");
+    }
+    let key = String(ch.key || "");
+    let channelInfo =
+      typeof ch.channel_info === "string" ? ch.channel_info : ch.channel_info ? JSON.stringify(ch.channel_info) : "";
+    if (String(body.mode || "") === "multi_to_single") {
+      const keys = channelKeys(key).map((k) => k.trim()).filter(Boolean);
+      key = keys.join("\n");
+      channelInfo = stringifyChannelInfo(multiKeyInfoFromKeys(keys, String(body.multi_key_mode || "random")));
+    }
     const id = await s.insertChannel({
-      type: Number(ch.type || 1),
-      key: String(ch.key || ""),
+      type,
+      key,
       name: String(ch.name),
       weight: Number(ch.weight ?? 1),
       base_url: String(ch.base_url || ""),
@@ -745,11 +767,11 @@ export function adminRouter(): Router<Env> {
       settings: typeof ch.settings === "string" ? ch.settings : JSON.stringify(ch.settings || ""),
       setting: typeof ch.setting === "string" ? ch.setting : JSON.stringify(ch.setting || ch.settings || ""),
       other_info: String(ch.other_info || ""),
-      channel_info: typeof ch.channel_info === "string" ? ch.channel_info : JSON.stringify(ch.channel_info || ""),
+      channel_info: channelInfo,
       balance: String(ch.balance ?? ""),
     });
     await s.audit(u.id, u.username, "channel.create", `create channel ${ch.name}`, clientIp(c.req));
-    return apiOk({ id }, "创建成功");
+    return apiOk({ id });
   });
 
   r.slash("PUT", "/api/channel/", async (c) => {
@@ -789,7 +811,8 @@ export function adminRouter(): Router<Env> {
       if (ch[k] != null) patch[k] = typeof ch[k] === "object" ? JSON.stringify(ch[k]) : ch[k];
     }
     await s.updateChannel(id, patch);
-    return apiOk(null, "更新成功");
+    const updated = await s.getChannel(id);
+    return apiOk(updated ? publicChannel(updated, false) : null);
   });
 
   r.slash("DELETE", "/api/channel/:id/", async (c) => {
@@ -805,8 +828,12 @@ export function adminRouter(): Router<Env> {
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { status?: number };
-    await s.updateChannel(Number(c.params.id), { status: Number(body.status) });
-    return apiOk(null);
+    const id = Number(c.params.id);
+    const ch = await s.getChannel(id);
+    const status = Number(body.status);
+    const changed = Boolean(ch) && Number(ch!.status) !== status;
+    if (changed) await s.updateChannel(id, { status });
+    return apiOk(changed);
   });
 
   r.post("/api/channel/status/batch", async (c) => {
@@ -814,8 +841,14 @@ export function adminRouter(): Router<Env> {
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[]; status?: number };
-    for (const id of body.ids || []) await s.updateChannel(id, { status: Number(body.status) });
-    return apiOk(null);
+    let changedCount = 0;
+    for (const id of body.ids || []) {
+      const ch = await s.getChannel(id);
+      if (!ch || Number(ch.status) === Number(body.status)) continue;
+      await s.updateChannel(id, { status: Number(body.status) });
+      changedCount += 1;
+    }
+    return apiOk(changedCount);
   });
 
   r.delete("/api/channel/disabled", async (c) => {
@@ -823,17 +856,38 @@ export function adminRouter(): Router<Env> {
     const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const n = await s.deleteDisabledChannels();
-    return apiOk({ count: n });
+    return apiOk(n);
   });
 
   r.post("/api/channel/copy/:id", async (c) => {
     const s = store(c);
     const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
-    const ch = await s.getChannel(Number(c.params.id));
-    if (!ch) return apiFail("渠道不存在");
-    const id = await s.insertChannel({ ...ch, name: ch.name + " Copy", id: undefined as unknown as number });
-    return apiOk({ id });
+    const id = Number(c.params.id);
+    if (!Number.isInteger(id)) return apiFail("invalid id");
+    const origin = await s.getChannel(id);
+    if (!origin) return apiFail("获取渠道信息失败，请稍后重试");
+    if (origin.type === 61 && !(await canTaskPluginBind(s, u))) {
+      return apiFail("task plugin channels require the task_plugin.bind permission");
+    }
+    const suffix = c.url.searchParams.get("suffix") ?? "_复制";
+    const resetBalance = parseGoBool(c.url.searchParams.get("reset_balance"), true);
+    try {
+      const cloneId = await s.insertChannel({
+        ...origin,
+        id: undefined as unknown as number,
+        name: origin.name + suffix,
+        created_time: nowSec(),
+        test_time: 0,
+        response_time: 0,
+        balance: resetBalance ? "0" : origin.balance,
+        used_quota: resetBalance ? 0 : origin.used_quota,
+      });
+      await s.audit(u.id, u.username, "channel.copy", `copy channel ${origin.name}`, clientIp(c.req));
+      return apiOk({ id: cloneId });
+    } catch {
+      return apiFail("复制渠道失败，请稍后重试");
+    }
   });
 
   r.get("/api/channel/test/:id", async (c) => {
@@ -856,7 +910,7 @@ export function adminRouter(): Router<Env> {
       const models = await fetchUpstreamModels(ch);
       return apiOk(models);
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiFail(`获取模型列表失败: ${e instanceof Error ? e.message : String(e)}`);
     }
   });
 
@@ -864,13 +918,59 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { type?: number; key?: string; base_url?: string };
+    let body: {
+      type?: number;
+      key?: string;
+      base_url?: string;
+      channel_id?: number;
+      advanced_custom?: string;
+      header_override?: string;
+      proxy?: string;
+    };
     try {
+      const text = await c.req.text();
+      if (!text) return json(400, { success: false, message: "Invalid request" });
+      body = JSON.parse(text) as typeof body;
+    } catch {
+      return json(400, { success: false, message: "Invalid request" });
+    }
+    try {
+      const type = Number(body.type || 0);
+      const channelId = Number(body.channel_id || 0);
+      let key = String(body.key || "").trim();
+      if (type !== 57) key = key.split("\n")[0] || "";
+      let baseUrl = String(body.base_url || "").trim();
+      let settings = "";
+      let headerOverride = String(body.header_override || "");
+      if (type === 58 || channelId > 0) {
+        let saved = channelId > 0 ? await s.getChannel(channelId) : null;
+        if (channelId > 0) {
+          if (!saved) return apiFail("record not found");
+          if (saved.type !== 58) return apiFail(`channel ${channelId} is not an advanced custom channel`);
+        } else if (type !== 58) {
+          return apiFail("channel type must be advanced custom");
+        }
+        if (saved) {
+          key = key || saved.key.split("\n")[0] || "";
+          if (!baseUrl) baseUrl = saved.base_url || "";
+          settings = saved.settings || saved.setting || "";
+          if (!headerOverride) headerOverride = saved.header_override || "";
+        }
+        if (body.advanced_custom != null) {
+          const raw = String(body.advanced_custom).trim();
+          if (!raw) return apiFail("advanced_custom is required");
+          settings = raw;
+        } else if (channelId <= 0) {
+          return apiFail("advanced_custom is required");
+        }
+      } else if (!baseUrl) {
+        baseUrl = defaultBaseUrl(type);
+      }
       const models = await fetchUpstreamModels({
         id: 0,
-        type: Number(body.type || 1),
-        key: String(body.key || ""),
-        base_url: String(body.base_url || ""),
+        type: type || 1,
+        key,
+        base_url: baseUrl,
         status: 1,
         name: "tmp",
         weight: 1,
@@ -886,16 +986,16 @@ export function adminRouter(): Router<Env> {
         priority: 0,
         auto_ban: 1,
         tag: "",
-        header_override: "",
+        header_override: headerOverride,
         param_override: "",
         remark: "",
-        settings: "",
+        settings,
         openai_organization: "",
         test_model: "",
       });
       return apiOk(models);
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiFail(`获取模型列表失败: ${e instanceof Error ? e.message : String(e)}`);
     }
   });
 
@@ -939,7 +1039,7 @@ export function adminRouter(): Router<Env> {
       group: c.url.searchParams.get("group") || undefined,
       upstreamRequestId: c.url.searchParams.get("upstream_request_id") || undefined,
     });
-    return apiOk(pageData(items.map((row) => publicLog(row, u.role)), total, q));
+    return apiOk(pageData(publicUserLogs(items, q.offset), total, q));
   });
 
   r.get("/api/log/stat", async (c) => {
@@ -1166,8 +1266,15 @@ export function adminRouter(): Router<Env> {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listMj(null, q.offset, q.page_size);
-    return apiOk(pageData(items, total, q));
+    const { items, total } = await s.listMj(null, q.offset, q.page_size, {
+      channel_id: c.url.searchParams.get("channel_id") || "",
+      mj_id: c.url.searchParams.get("mj_id") || "",
+      start_timestamp: c.url.searchParams.get("start_timestamp") || "",
+      end_timestamp: c.url.searchParams.get("end_timestamp") || "",
+    });
+    const forward = await s.optionBool("MjForwardUrlEnabled", false);
+    const server = await s.option("ServerAddress");
+    return apiOk(pageData(items.map((row) => publicMj(row as Record<string, unknown>, server, forward)), total, q));
   });
 
   r.get("/api/mj/self", async (c) => {
@@ -1175,8 +1282,14 @@ export function adminRouter(): Router<Env> {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listMj(u.id, q.offset, q.page_size);
-    return apiOk(pageData(items, total, q));
+    const { items, total } = await s.listMj(u.id, q.offset, q.page_size, {
+      mj_id: c.url.searchParams.get("mj_id") || "",
+      start_timestamp: c.url.searchParams.get("start_timestamp") || "",
+      end_timestamp: c.url.searchParams.get("end_timestamp") || "",
+    });
+    const forward = await s.optionBool("MjForwardUrlEnabled", false);
+    const server = await s.option("ServerAddress");
+    return apiOk(pageData(items.map((row) => publicMj(row as Record<string, unknown>, server, forward)), total, q));
   });
 
   r.get("/api/models", async (c) => {

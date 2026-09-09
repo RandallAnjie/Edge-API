@@ -27,7 +27,9 @@ import {
   verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
-import { publicToken, verificationRequirements, publicLog, exposedRatioConfig, enrichModelMeta, publicTopup, publicVendor, publicPrefill } from "./dto.js";
+import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicTopup, publicVendor, publicPrefill, publicTask } from "./dto.js";
+import { DEFAULT_MODEL_RATIO_JSON } from "./ratio-defaults.js";
+import { getModelPricingSnapshot, ModelPricingError, updateModelPricing, type ModelPricingChange } from "./model-pricing.js";
 import { buildRankingsSnapshot } from "./rankings.js";
 import { requirePaymentCompliance } from "./payments.js";
 import {
@@ -46,7 +48,7 @@ import { apiFail, apiFailCode, apiOk, clientIp, json, pageData, pageQuery, readJ
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
-  authenticateApiToken,
+  authenticateTokenReadOnly,
   currentSid,
   dashboardIdentity,
   issueSessionSafe,
@@ -959,7 +961,7 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[] };
     const n = await s.deleteChannelsBatch(body.ids || []);
-    return apiOk({ count: n });
+    return apiOk(n);
   });
 
   r.post("/api/channel/tag/enabled", async (c) => {
@@ -1000,14 +1002,14 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[] };
-    return apiOk({ count: await s.deleteRedemptionsBatch(body.ids || []) });
+    return apiOk(await s.deleteRedemptionsBatch(body.ids || []));
   });
 
   r.delete("/api/redemption/invalid", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk({ count: await s.deleteInvalidRedemptions() });
+    return apiOk(await s.deleteInvalidRedemptions());
   });
 
   r.get("/api/usage/token", tokenUsage);
@@ -1015,16 +1017,15 @@ export function registerMore(r: Router<Env>): void {
 
   r.get("/api/log/token", async (c) => {
     const s = store(c);
-    const auth = await authenticateApiToken(c, s);
+    const auth = await authenticateTokenReadOnly(c, s);
     if (auth instanceof Response) return auth;
-    const q = pageQuery(c.url);
+    if (!auth.token.id) return apiFail("无效的令牌");
     const { items } = await s.listLogs({
-      offset: q.offset,
-      limit: q.page_size,
-      userId: auth.user.id,
-      tokenName: auth.token.name,
+      offset: 0,
+      limit: 1000,
+      tokenId: auth.token.id,
     });
-    return apiOk(items.map((row) => publicLog(row, 1)));
+    return apiOk(publicUserLogs(items, 0));
   });
 
   r.get("/api/subscription/plans", async (c) => {
@@ -1373,8 +1374,16 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listTasks(null, q.offset, q.page_size);
-    return apiOk(pageData(items, total, q));
+    const { items, total } = await s.listTasks(null, q.offset, q.page_size, {
+      platform: c.url.searchParams.get("platform") || "",
+      task_id: c.url.searchParams.get("task_id") || "",
+      status: c.url.searchParams.get("status") || "",
+      action: c.url.searchParams.get("action") || "",
+      start_timestamp: Number(c.url.searchParams.get("start_timestamp") || 0) || 0,
+      end_timestamp: Number(c.url.searchParams.get("end_timestamp") || 0) || 0,
+      channel_id: c.url.searchParams.get("channel_id") || "",
+    });
+    return apiOk(pageData(items.map((row) => publicTask(row as Record<string, unknown>, true, u.role)), total, q));
   });
 
   r.get("/api/task/self", async (c) => {
@@ -1382,8 +1391,15 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listTasks(u.id, q.offset, q.page_size);
-    return apiOk(pageData(items, total, q));
+    const { items, total } = await s.listTasks(u.id, q.offset, q.page_size, {
+      platform: c.url.searchParams.get("platform") || "",
+      task_id: c.url.searchParams.get("task_id") || "",
+      status: c.url.searchParams.get("status") || "",
+      action: c.url.searchParams.get("action") || "",
+      start_timestamp: Number(c.url.searchParams.get("start_timestamp") || 0) || 0,
+      end_timestamp: Number(c.url.searchParams.get("end_timestamp") || 0) || 0,
+    });
+    return apiOk(pageData(items.map((row) => publicTask(row as Record<string, unknown>, false, 1)), total, q));
   });
 
   r.get("/api/conversations", async (c) => {
@@ -1481,31 +1497,29 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk({
-      ModelRatio: await s.option("ModelRatio"),
-      CompletionRatio: await s.option("CompletionRatio"),
-      GroupRatio: await s.option("GroupRatio"),
-    });
+    return apiOk(await getModelPricingSnapshot(s, c.url.searchParams.getAll("model")));
   });
 
   r.patch("/api/option/model_pricing", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown>;
-    for (const k of ["ModelRatio", "CompletionRatio", "GroupRatio"]) {
-      if (body[k] != null) await s.setOption(k, typeof body[k] === "string" ? String(body[k]) : JSON.stringify(body[k]));
+    const body = (await readJson(c.req)) as { changes?: ModelPricingChange[] };
+    try {
+      const names = await updateModelPricing(s, body.changes || []);
+      return apiOk({ updated_models: names });
+    } catch (e) {
+      const err = e as ModelPricingError;
+      return json(err.status || 400, { success: false, message: err.message });
     }
-    return apiOk(null);
   });
 
   r.post("/api/option/rest_model_ratio", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    await s.setOption("ModelRatio", "{}");
-    await s.setOption("CompletionRatio", "{}");
-    return apiOk(null, "已重置");
+    await s.setOption("ModelRatio", DEFAULT_MODEL_RATIO_JSON);
+    return apiOk(null, "重置模型倍率成功");
   });
 
   r.get("/api/verify/methods", async (c) => {
@@ -1593,6 +1607,8 @@ async function generateUserAccessToken(c: C): Promise<Response> {
 
 async function tokenUsage(c: C): Promise<Response> {
   const s = store(c);
+  const gated = await authenticateTokenReadOnly(c, s);
+  if (gated instanceof Response) return gated;
   const authHeader = c.req.headers.get("authorization") || "";
   if (!authHeader) return json(401, { success: false, message: "No Authorization header" });
   const parts = authHeader.split(" ");

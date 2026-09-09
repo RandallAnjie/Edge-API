@@ -23,8 +23,9 @@ import {
   wechatIdFromCode,
 } from "./oauth.js";
 import { bytesToHex, sha256Bytes, md5Hex } from "./crypto.js";
+import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
-import { apiFail, apiOk, json, pageData, pageQuery, parseUnixQuery, readJson } from "./http.js";
+import { apiFail, apiOk, json, pageData, pageQuery, parseUnixQuery, readJson, taskArtifactError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -45,7 +46,8 @@ import {
 import { Store } from "./store.js";
 import { testChannel, fetchUpstreamModels } from "./relay.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
-import { enrichModelMeta, extractPluginMeta, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskPluginMetaView } from "./dto.js";
+import { enrichModelMeta, extractPluginMeta, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView } from "./dto.js";
+import { channelAffinityCacheStats, clearAffinityCacheAll, clearAffinityCacheByRule, emptyAffinityUsageStats } from "./channel-affinity.js";
 import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
 import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
 import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
@@ -576,14 +578,24 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { id?: number; action?: string; keys?: string[]; index?: number };
-    const ch = await s.getChannel(Number(body.id));
+    const body = (await readJson(c.req)) as {
+      channel_id?: number;
+      action?: string;
+      key_index?: number;
+      page?: number;
+      page_size?: number;
+      status?: number;
+    };
+    const ch = await s.getChannel(Number(body.channel_id));
     if (!ch) return apiFail("渠道不存在");
-    const keys = ch.key.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
-    if (body.action === "add" && body.keys) keys.push(...body.keys);
-    if (body.action === "remove" && body.index != null) keys.splice(body.index, 1);
-    await s.updateChannel(ch.id, { key: keys.join("\n") });
-    return apiOk({ count: keys.length });
+    if (body.action === "delete_key" || body.action === "delete_disabled_keys") {
+      const allowed = await requirePermission(c, s, "channel", "sensitive_write");
+      if (isResponse(allowed)) return allowed;
+    }
+    const result = manageMultiKeys(ch, body);
+    if (result instanceof Response) return result;
+    await s.updateChannel(ch.id, result.patch);
+    return result.response;
   });
 
   r.post("/api/channel/upstream_updates/detect", async (c) => detectUpdates(c, false));
@@ -660,18 +672,26 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const raw = c.env.KV ? await c.env.KV.get("channel_affinity") : await s.option("ChannelAffinityCache");
-    const cache = parseJson<Record<string, unknown>>(raw || "{}", {});
-    return apiOk({ size: Object.keys(cache).length, entries: cache });
+    return apiOk(await channelAffinityCacheStats(s, c.env));
   });
 
   r.delete("/api/option/channel_affinity_cache", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    if (c.env.KV) await c.env.KV.put("channel_affinity", "{}");
-    await s.setOption("ChannelAffinityCache", "{}");
-    return apiOk(null, "已清理");
+    const all = (c.url.searchParams.get("all") || "").trim();
+    const ruleName = (c.url.searchParams.get("rule_name") || "").trim();
+    if (all === "true") {
+      return apiOk({ deleted: await clearAffinityCacheAll(s, c.env) });
+    }
+    if (!ruleName) {
+      return json(400, { success: false, message: "缺少参数：rule_name，或使用 all=true 清空全部" });
+    }
+    try {
+      return apiOk({ deleted: await clearAffinityCacheByRule(s, c.env, ruleName) });
+    } catch (e) {
+      return json(400, { success: false, message: (e as Error).message });
+    }
   });
 
   r.get("/api/option/waffo-pancake/catalog", async (c) => {
@@ -1021,7 +1041,12 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk({ size: 0, hits: 0, misses: 0 });
+    const ruleName = (c.url.searchParams.get("rule_name") || "").trim();
+    const usingGroup = (c.url.searchParams.get("using_group") || "").trim();
+    const keyFp = (c.url.searchParams.get("key_fp") || "").trim();
+    if (!ruleName) return json(400, { success: false, message: "missing param: rule_name" });
+    if (!keyFp) return json(400, { success: false, message: "missing param: key_fp" });
+    return apiOk(emptyAffinityUsageStats(ruleName, usingGroup, keyFp));
   });
 
   r.post("/api/system-task/log-cleanup", async (c) => {
@@ -1139,9 +1164,13 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const task = await s.getTaskByTid(c.params.task_id);
-    if (!task) return apiFail("任务不存在");
-    if (Number(task.user_id) !== u.id && u.role < 10) return apiFail("无权访问");
-    return apiOk([{ task_id: task.task_id, result: task.result }]);
+    if (!task) return taskArtifactError(404, "artifact_not_found", "Task or artifact not found", true);
+    if (Number(task.user_id) !== u.id && u.role < 10) return taskArtifactError(404, "artifact_not_found", "Task or artifact not found", true);
+    try {
+      return apiOk(await taskArtifactsView(s, task));
+    } catch {
+      return taskArtifactError(500, "artifact_url_error", "Failed to build artifact content URL", true);
+    }
   });
 
   r.post("/api/vendors/operations/preview", async (c) => {
@@ -1576,9 +1605,16 @@ async function ollamaOp(c: C, action: "pull" | "delete"): Promise<Response> {
   const s = store(c);
   const u = await requireChannel(c, s, "sensitive_write");
   if (isResponse(u)) return u;
-  const body = (await readJson(c.req)) as { channel_id?: number; id?: number; model_name?: string; name?: string; model?: string };
-  const channelId = Number(body.channel_id || body.id);
-  const modelName = String(body.model_name || body.name || body.model || "");
+  let body: { channel_id?: number; model_name?: string };
+  try {
+    const text = await c.req.text();
+    if (!text) return json(400, { success: false, message: "Invalid request parameters" });
+    body = JSON.parse(text) as typeof body;
+  } catch {
+    return json(400, { success: false, message: "Invalid request parameters" });
+  }
+  const channelId = Number(body.channel_id);
+  const modelName = String(body.model_name || "");
   if (!channelId || !modelName) return json(400, { success: false, message: "Channel ID and model name are required" });
   const ch = await s.getChannel(channelId);
   if (!ch) return json(404, { success: false, message: "Channel not found" });

@@ -182,16 +182,24 @@ CREATE TABLE IF NOT EXISTS checkins (
 );
 CREATE TABLE IF NOT EXISTS mj_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code INTEGER NOT NULL DEFAULT 0,
   action TEXT NOT NULL DEFAULT '',
   user_id INTEGER NOT NULL DEFAULT 0,
   mj_id TEXT NOT NULL DEFAULT '',
   prompt TEXT NOT NULL DEFAULT '',
   prompt_en TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT '',
   image_url TEXT NOT NULL DEFAULT '',
+  video_url TEXT NOT NULL DEFAULT '',
+  video_urls TEXT NOT NULL DEFAULT '',
   progress TEXT NOT NULL DEFAULT '',
   fail_reason TEXT NOT NULL DEFAULT '',
   channel_id INTEGER NOT NULL DEFAULT 0,
+  quota INTEGER NOT NULL DEFAULT 0,
+  buttons TEXT NOT NULL DEFAULT '',
+  properties TEXT NOT NULL DEFAULT '',
   submit_time INTEGER NOT NULL DEFAULT 0,
   start_time INTEGER NOT NULL DEFAULT 0,
   finish_time INTEGER NOT NULL DEFAULT 0
@@ -318,10 +326,14 @@ CREATE TABLE IF NOT EXISTS user_subscriptions (
 );
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0,
   task_id TEXT NOT NULL UNIQUE,
   user_id INTEGER NOT NULL DEFAULT 0,
   token_id INTEGER NOT NULL DEFAULT 0,
   channel_id INTEGER NOT NULL DEFAULT 0,
+  "group" TEXT NOT NULL DEFAULT '',
+  quota INTEGER NOT NULL DEFAULT 0,
   platform TEXT NOT NULL DEFAULT '',
   action TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'SUBMITTED',
@@ -331,6 +343,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   fail_reason TEXT NOT NULL DEFAULT '',
   result TEXT NOT NULL DEFAULT '',
   properties TEXT NOT NULL DEFAULT '',
+  data TEXT NOT NULL DEFAULT '',
+  private_data TEXT NOT NULL DEFAULT '',
   submit_time INTEGER NOT NULL DEFAULT 0,
   start_time INTEGER NOT NULL DEFAULT 0,
   finish_time INTEGER NOT NULL DEFAULT 0
@@ -620,14 +634,28 @@ const USER_ALTERS = [
   "ALTER TABLE system_tasks ADD COLUMN state TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE system_tasks ADD COLUMN error TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE system_tasks ADD COLUMN locked_by TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE mj_tasks ADD COLUMN code INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE mj_tasks ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE mj_tasks ADD COLUMN state TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE mj_tasks ADD COLUMN video_url TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE mj_tasks ADD COLUMN video_urls TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE mj_tasks ADD COLUMN quota INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE mj_tasks ADD COLUMN buttons TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE mj_tasks ADD COLUMN properties TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE tasks ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE tasks ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE tasks ADD COLUMN \"group\" TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE tasks ADD COLUMN quota INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE tasks ADD COLUMN data TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE tasks ADD COLUMN private_data TEXT NOT NULL DEFAULT ''",
 ];
 
 import type { D1Database } from "./types.js";
 
-let schemaReady = false;
+const schemaReady = new WeakSet<D1Database>();
 
 export async function ensureSchema(db: D1Database): Promise<void> {
-  if (schemaReady) return;
+  if (schemaReady.has(db)) return;
   await db.exec(SCHEMA_SQL);
   for (const sql of USER_ALTERS) {
     try {
@@ -646,9 +674,9 @@ export async function ensureSchema(db: D1Database): Promise<void> {
      INSERT OR IGNORE INTO authz_roles (key, name, description, built_in, enabled, sort, created_at, updated_at)
        VALUES ('admin', 'Admin', 'Built-in admin authorization role', 1, 1, 10, ${now}, ${now});`,
   );
-  schemaReady = true;
+  schemaReady.add(db);
 }
 
 export function resetSchemaFlag(): void {
-  schemaReady = false;
+  /* Per-database WeakSet: each in-memory D1 is a new object, so tests do not share schema state. */
 }

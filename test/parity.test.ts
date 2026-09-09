@@ -378,6 +378,8 @@ test("GetPricing / topup info / verify methods / token booleans / channel DTO ma
         models: "gpt-4o-mini",
         group: "default",
         base_url: "https://example.invalid",
+        mode: "multi_to_single",
+        multi_key_mode: "random",
       }),
     }),
     e,

@@ -1,6 +1,6 @@
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
-import { apiFail, openaiError, readJson, relayNotImplemented, withCors } from "./http.js";
+import { apiFail, openaiError, readJson, relayNotImplemented, taskArtifactError, videoProxyError, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -19,17 +19,32 @@ import { ensureSchema } from "./schema.js";
 import { Store } from "./store.js";
 import { hit } from "./metrics.js";
 import { matchPluginRoute } from "./plugin-dispatch.js";
+import { taskArtifactsView, taskFetchView } from "./dto.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
+
+/** Original `/:mode/mj` relay group. `/api/mj` is dashboard GetAllMidjourney, not relay. */
+function isMjModeRelayPath(path: string): boolean {
+  if (path.startsWith("/api/") || path.startsWith("/v1") || path.startsWith("/pg/") || path.startsWith("/dashboard/")) {
+    return false;
+  }
+  return /^\/[^/]+\/mj(\/|$)/.test(path);
+}
 
 function mjRelayPath(path: string): string {
   if (path.startsWith("/mj/") || path === "/mj") return path.slice(3) || "/";
+  if (!isMjModeRelayPath(path)) return path;
   const nested = path.match(/^\/[^/]+\/mj(\/.*)$/);
   if (nested) return nested[1] || "/";
   return path;
 }
 
 function isMjImagePath(path: string): boolean {
-  return /^\/mj\/image\/[^/]+$/.test(path) || /^\/[^/]+\/mj\/image\/[^/]+$/.test(path);
+  if (/^\/mj\/image\/[^/]+$/.test(path)) return true;
+  return isMjModeRelayPath(path) && /^\/[^/]+\/mj\/image\/[^/]+$/.test(path);
+}
+
+function isMjRelayRequest(path: string): boolean {
+  return path.startsWith("/mj/") || path === "/mj" || isMjModeRelayPath(path);
 }
 
 const api = adminRouter();
@@ -138,7 +153,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     return retrieveModel(store, auth, model, fmt);
   }
 
-  if (path.startsWith("/mj/") || path.match(/^\/[^/]+\/mj\//)) {
+  if (isMjRelayRequest(path)) {
     return proxyMj(req, store, auth, mjRelayPath(path));
   }
 
@@ -191,26 +206,47 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     return relayJson(req, env, store, auth, "responses", path, { id: responseId }, ctx, "GET");
   }
 
-  if (req.method === "GET" && path.startsWith("/v1/tasks/")) {
+  if ((req.method === "GET" || req.method === "HEAD") && path.startsWith("/v1/tasks/")) {
     const rest = path.slice("/v1/tasks/".length);
-    const [taskId, ...tail] = rest.split("/");
+    const [taskId, ...tail] = rest.split("/").filter(Boolean);
+    const decodedId = decodeURIComponent(taskId || "");
+    const local = decodedId ? await store.getTaskByTid(decodedId) : null;
+    const owned = local && Number(local.user_id) === auth.user.id;
     if (tail[0] === "artifacts") {
-      const artifactKey = tail[1];
-      if (tail[2] === "content" && env.R2 && artifactKey) {
-        const obj = await env.R2.get(`tasks/${taskId}/${artifactKey}`);
-        if (!obj) return openaiError(404, "artifact 不存在", "not_found");
-        return new Response(await obj.arrayBuffer(), {
-          headers: { "content-type": obj.httpMetadata?.contentType || "application/octet-stream" },
-        });
+      const artifactKey = tail[1] ? decodeURIComponent(tail[1]) : "";
+      if (tail[2] === "content") {
+        if (!owned || !local) return taskArtifactError(404, "artifact_not_found", "Task or artifact not found");
+        if (!/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(artifactKey)) {
+          return taskArtifactError(404, "artifact_not_found", "Task or artifact not found");
+        }
+        if (String(local.status) !== "SUCCESS") {
+          return taskArtifactError(409, "artifact_not_ready", "Task artifacts are not ready");
+        }
+        if (env.R2 && artifactKey) {
+          const obj = await env.R2.get(`tasks/${decodedId}/${artifactKey}`);
+          if (obj) {
+            return new Response(req.method === "HEAD" ? null : await obj.arrayBuffer(), {
+              headers: { "content-type": obj.httpMetadata?.contentType || "application/octet-stream", "cache-control": "private, no-store" },
+            });
+          }
+        }
+        return taskArtifactError(404, "artifact_not_found", "Task or artifact not found");
       }
-      const local = await store.getTaskByTid(taskId);
-      return new Response(JSON.stringify({ data: local ? [local] : [] }), {
-        headers: { "content-type": "application/json" },
-      });
+      if (!owned || !local) return taskArtifactError(404, "artifact_not_found", "Task or artifact not found");
+      try {
+        const body = await taskArtifactsView(store, local);
+        return new Response(JSON.stringify(body), {
+          headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" },
+        });
+      } catch {
+        return taskArtifactError(500, "artifact_url_error", "Failed to build artifact content URL");
+      }
     }
-    const local = await store.getTaskByTid(taskId);
-    if (local) return new Response(JSON.stringify(local), { headers: { "content-type": "application/json" } });
-    return openaiError(404, "任务不存在", "not_found");
+    if (!owned || !local) return videoProxyError(404, "invalid_request_error", "Task not found");
+    if (req.method === "HEAD") return new Response(null, { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
+    return new Response(JSON.stringify(taskFetchView(local)), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
   }
 
   const mode = relayModeFrom(path, req.method);
@@ -396,7 +432,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
     path.startsWith("/pg/") ||
     path.startsWith("/mj/") ||
     path.startsWith("/dashboard/billing") ||
-    /^\/[^/]+\/mj\//.test(path);
+    isMjModeRelayPath(path);
 
   if (needsDb) {
     if (!env.DB) {
@@ -416,8 +452,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
     const isRelay =
       (path.startsWith("/v1/") && !path.startsWith("/v1/dashboard")) ||
       path.startsWith("/v1beta") ||
-      path.startsWith("/mj/") ||
-      /^\/[^/]+\/mj\//.test(path);
+      isMjRelayRequest(path);
 
     try {
       if (isRelay && !path.startsWith("/v1/dashboard")) {
