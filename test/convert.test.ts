@@ -9,14 +9,16 @@ import {
   getOpenAIChatCapabilities,
   convertOpenAIRequest,
   convertOpenAIResponsesRequest,
+  convertClaudeRequest,
+  convertOpenAIChatToClaude,
 } from "../src/convert.js";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
+import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
 import { isClientError } from "../src/reasoning.js";
 import { mapModel } from "../src/select.js";
 import { buildUpstream } from "../src/upstream.js";
 import type { ChannelRow } from "../src/types.js";
 
-test("openaiToAnthropic extracts system", () => {
+test("original OpenAI→Claude ConvertRequest system is a text block list", () => {
   const out = openaiToAnthropic({
     model: "claude-3-5-sonnet",
     messages: [
@@ -25,8 +27,9 @@ test("openaiToAnthropic extracts system", () => {
     ],
     max_tokens: 10,
   });
-  assert.equal(out.system, "sys");
+  assert.deepEqual(out.system, [{ type: "text", text: "sys" }]);
   assert.deepEqual(out.messages, [{ role: "user", content: "hi" }]);
+  assert.equal(out.max_tokens, 10);
 });
 
 test("openaiToGemini maps roles", () => {
@@ -41,6 +44,10 @@ test("openaiToGemini maps roles", () => {
   const contents = out.contents as { role: string }[];
   assert.equal(contents[0].role, "user");
   assert.equal(contents[1].role, "model");
+  assert.deepEqual(out.systemInstruction, { parts: [{ text: "s" }] });
+  const safety = out.safetySettings as { category: string; threshold: string }[];
+  assert.equal(safety.length, 4);
+  assert.equal(safety[0].threshold, "OFF");
 });
 
 test("anthropic response to openai usage", () => {
@@ -281,4 +288,136 @@ test("original ConvertOpenAIRequest token limit pointer semantics", () => {
     assert.equal(bothZero.max_tokens, 0);
     assert.equal(bothZero.max_completion_tokens, 0);
   }
+});
+
+test("original OpenAI→Claude ConvertRequest golden JSON fields", () => {
+  const out = JSON.parse(
+    JSON.stringify(
+      convertOpenAIChatToClaude(
+        {
+          model: "gpt-test",
+          max_tokens: 1024,
+          stream: true,
+          messages: [
+            { role: "system", content: "You are a helpful assistant." },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "What is in this image?" },
+                { type: "image_url", image_url: { url: "https://example.com/cat.png", detail: "high" } },
+              ],
+            },
+            {
+              role: "assistant",
+              tool_calls: [{ id: "call_abc", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"Paris\"}" } }],
+            },
+            { role: "tool", tool_call_id: "call_abc", content: "15 degrees" },
+            { role: "user", content: "Summarize." },
+          ],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "get_weather",
+                description: "Get weather by city",
+                parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+              },
+            },
+          ],
+          tool_choice: "auto",
+        },
+        {
+          originModelName: "gpt-test",
+          upstreamModelName: "gpt-test",
+          resolveMedia: () => ({ data: "aGVsbG8=", mime: "image/png" }),
+        },
+      ),
+    ),
+  ) as Record<string, unknown>;
+  assert.equal(out.model, "gpt-test");
+  assert.deepEqual(out.system, [{ type: "text", text: "You are a helpful assistant." }]);
+  assert.equal(out.max_tokens, 1024);
+  assert.equal(out.stream, true);
+  assert.deepEqual(out.tool_choice, { type: "auto" });
+  const tools = out.tools as { name: string; description: string; input_schema: Record<string, unknown> }[];
+  assert.equal(tools[0].name, "get_weather");
+  assert.equal(tools[0].description, "Get weather by city");
+  assert.equal(tools[0].input_schema.type, "object");
+  assert.deepEqual(tools[0].input_schema.required, ["city"]);
+  const messages = out.messages as { role: string; content: unknown }[];
+  assert.equal(messages.length, 4);
+  const user0 = messages[0].content as { type: string; text?: string; source?: { type: string; media_type: string; data: string } }[];
+  assert.equal(user0[0].type, "text");
+  assert.equal(user0[0].text, "What is in this image?");
+  assert.equal(user0[1].type, "image");
+  assert.deepEqual(user0[1].source, { type: "base64", media_type: "image/png", data: "aGVsbG8=" });
+  const assistant = messages[1].content as { type: string; text?: string; id?: string; name?: string; input?: { city: string } }[];
+  assert.equal(assistant[0].type, "text");
+  assert.equal(assistant[0].text, "...");
+  assert.equal(assistant[1].type, "tool_use");
+  assert.equal(assistant[1].id, "call_abc");
+  assert.equal(assistant[1].name, "get_weather");
+  assert.deepEqual(assistant[1].input, { city: "Paris" });
+  const toolResult = messages[2].content as { type: string; content: unknown; tool_use_id: string }[];
+  assert.equal(messages[2].role, "user");
+  assert.equal(toolResult[0].type, "tool_result");
+  assert.equal(toolResult[0].tool_use_id, "call_abc");
+  assert.equal(toolResult[0].content, "15 degrees");
+  assert.deepEqual(messages[3], { role: "user", content: "Summarize." });
+});
+
+test("original Claude ConvertOpenAIRequest injects default max_tokens and thinking adapter JSON", () => {
+  const missing = convertOpenAIRequest(
+    { model: "claude-3-5-sonnet", messages: [{ role: "user", content: "hi" }] },
+    { channelType: CHANNEL_TYPE_ANTHROPIC, originModelName: "claude-3-5-sonnet", upstreamModelName: "claude-3-5-sonnet" },
+  );
+  assert.equal(missing.max_tokens, 8192);
+  const thinking = convertOpenAIRequest(
+    { model: "claude-3-7-sonnet-thinking", messages: [{ role: "user", content: "hi" }], max_tokens: 4096 },
+    { channelType: CHANNEL_TYPE_ANTHROPIC, originModelName: "claude-3-7-sonnet-thinking", upstreamModelName: "claude-3-7-sonnet-thinking" },
+  );
+  assert.equal(thinking.model, "claude-3-7-sonnet");
+  const rendered = thinking.thinking as { type: string; budget_tokens: number };
+  assert.equal(rendered.type, "enabled");
+  assert.equal(rendered.budget_tokens, Math.max(Math.trunc((4096 * 80) / 100), 1024));
+  const native = convertClaudeRequest({ model: "claude-3-5-sonnet", messages: [{ role: "user", content: "hi" }], max_tokens: 0 });
+  assert.equal(native.max_tokens, 8192);
+});
+
+test("original OpenAI→Gemini ConvertRequest JSON fields", () => {
+  const out = convertOpenAIRequest(
+    {
+      model: "gemini-2.0-flash",
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: "hi" },
+      ],
+      temperature: 0.2,
+      top_p: 0.8,
+      max_tokens: 1024,
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "get_weather",
+            description: "Get weather by city",
+            parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+          },
+        },
+      ],
+      tool_choice: "auto",
+    },
+    { channelType: CHANNEL_TYPE_GEMINI, originModelName: "gemini-2.0-flash", upstreamModelName: "gemini-2.0-flash" },
+  );
+  assert.deepEqual(out.systemInstruction, { parts: [{ text: "You are a helpful assistant." }] });
+  const contents = out.contents as { role: string; parts: { text: string }[] }[];
+  assert.equal(contents[0].role, "user");
+  assert.equal(contents[0].parts[0].text, "hi");
+  const gc = out.generationConfig as { temperature: number; topP: number; maxOutputTokens: number };
+  assert.equal(gc.temperature, 0.2);
+  assert.equal(gc.topP, 0.8);
+  assert.equal(gc.maxOutputTokens, 1024);
+  const tools = out.tools as { functionDeclarations: { name: string }[] }[];
+  assert.equal(tools[0].functionDeclarations[0].name, "get_weather");
+  assert.deepEqual(out.toolConfig, { functionCallingConfig: { mode: "AUTO" } });
 });

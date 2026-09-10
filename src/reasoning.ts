@@ -52,8 +52,26 @@ export type ReasoningHostSettings = {
   effortTailModelIDs?: string[];
   claudeThinkingAdapterEnabled?: boolean;
   geminiThinkingAdapterEnabled?: boolean;
+  claudeThinkingAdapterBudgetTokensPercentage?: number;
+  geminiThinkingAdapterBudgetTokensPercentage?: number;
+  claudeDefaultMaxTokens?: Record<string, number>;
+  geminiSafetySettings?: Record<string, string>;
+  geminiSupportedImagineModels?: string[];
+  geminiFunctionCallThoughtSignatureEnabled?: boolean;
   passThrough?: boolean;
 };
+
+export const DEFAULT_CLAUDE_MAX_TOKENS: Record<string, number> = { default: 8192 };
+export const DEFAULT_GEMINI_SAFETY = "OFF";
+export const GEMINI_SAFETY_CATEGORIES = [
+  "HARM_CATEGORY_HARASSMENT",
+  "HARM_CATEGORY_HATE_SPEECH",
+  "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+  "HARM_CATEGORY_DANGEROUS_CONTENT",
+];
+export const GEMINI_THOUGHT_SIGNATURE_BYPASS = "context_engineering_is_the_way_to_go";
+export const ERR_MISSING_CLAUDE_MAX_TOKENS =
+  "claude messages request requires max_tokens: set max_tokens on the request or configure Options.Claude.DefaultMaxTokens";
 
 export class ReasoningClientError extends Error {
   constructor(message: string) {
@@ -590,7 +608,7 @@ export function baseModelName(modelName: string, settings: ReasoningHostSettings
   return base;
 }
 
-type ParsedModelModifiers = {
+export type ParsedModelModifiers = {
   base: string;
   hasSyntax: boolean;
   intent: ReasoningIntent;
@@ -600,6 +618,11 @@ type ParsedModelModifiers = {
   hasTemperature: boolean;
   hasTopP: boolean;
 };
+
+/** Original `helper.parseRequestModelName`. */
+export function parseHostModelModifiers(modelName: string, settings: ReasoningHostSettings = {}): ParsedModelModifiers {
+  return parseRequestModelName(modelName, settings);
+}
 
 function modelModifierClientError(message: string): ReasoningClientError {
   return new ReasoningClientError(`${message}. ${MODEL_MODIFIER_EXEMPTION_HINT}`);
@@ -1042,4 +1065,555 @@ export function convertOpenAIResponsesAdaptorRequest(
     reasoningEffort = canonical;
   }
   return { body: out, upstreamModelName: upstream, reasoningEffort };
+}
+
+export function claudeDefaultMaxTokensFor(model: string, settings: ReasoningHostSettings = {}): number {
+  const table = settings.claudeDefaultMaxTokens || DEFAULT_CLAUDE_MAX_TOKENS;
+  const exact = table[model];
+  if (exact != null) return exact;
+  return table.default ?? 8192;
+}
+
+export function geminiSafetySettingFor(category: string, settings: ReasoningHostSettings = {}): string {
+  const table = settings.geminiSafetySettings || { default: DEFAULT_GEMINI_SAFETY };
+  return table[category] || table.default || DEFAULT_GEMINI_SAFETY;
+}
+
+export function geminiSupportsImagine(model: string, settings: ReasoningHostSettings = {}): boolean {
+  const list = settings.geminiSupportedImagineModels;
+  if (!list || !list.length) {
+    return [
+      "gemini-2.0-flash-exp-image-generation",
+      "gemini-2.0-flash-exp",
+      "gemini-3-pro-image-preview",
+      "gemini-3-pro-image",
+      "gemini-2.5-flash-image",
+      "gemini-3.1-flash-image",
+      "gemini-3.1-flash-image-preview",
+    ].includes(model);
+  }
+  return list.includes(model);
+}
+
+/** Original `reasoning.FromClaude`. */
+export function fromClaude(req: Record<string, unknown> | null | undefined): ReasoningIntent {
+  if (!req) return emptyIntent();
+  const thinking = req.thinking && typeof req.thinking === "object" && !Array.isArray(req.thinking) ? (req.thinking as Record<string, unknown>) : undefined;
+  const maxTokens = req.max_tokens != null ? Number(req.max_tokens) : undefined;
+  let intent = thinking ? fromClaudeThinking(thinking, Number.isFinite(maxTokens) ? maxTokens : undefined) : emptyIntent();
+  if (!thinking) intent = emptyIntent();
+  intent.source = SOURCE_NATIVE;
+  const output = req.output_config;
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const effortRaw = (output as { effort?: unknown }).effort;
+    if (typeof effortRaw === "string" && effortRaw) intent.effort = parseEffort(effortRaw);
+  }
+  if (intent.mode === MODE_DISABLED && intent.effort && intent.effort !== EFFORT_NONE) return intent;
+  return normalizeIntent(intent);
+}
+
+/** Original `reasoning.FromGemini`. */
+export function fromGemini(req: Record<string, unknown> | null | undefined): ReasoningIntent {
+  if (!req) return emptyIntent();
+  const gc = (req.generationConfig || req.generation_config || {}) as Record<string, unknown>;
+  const config = (gc.thinkingConfig || gc.thinking_config) as Record<string, unknown> | undefined;
+  if (!config || typeof config !== "object") return emptyIntent();
+  const budget = config.thinkingBudget ?? config.thinking_budget;
+  const level = String(config.thinkingLevel || config.thinking_level || "");
+  if (budget != null && level) throw new Error("reasoning settings conflict: Gemini thinkingBudget and thinkingLevel cannot both be set");
+  const include = config.includeThoughts ?? config.include_thoughts;
+  const intent: ReasoningIntent = {
+    mode: MODE_UNSET,
+    effort: "",
+    source: SOURCE_NATIVE,
+    budgetSource: SOURCE_NATIVE,
+  };
+  if (budget != null) intent.budgetTokens = Number(budget);
+  if (typeof include === "boolean") intent.includeThoughts = include;
+  if (level) {
+    intent.effort = parseEffort(level);
+    intent.mode = MODE_ENABLED;
+  }
+  return normalizeIntent(intent);
+}
+
+type ClaudeCapabilities = {
+  adaptive: boolean;
+  supportsManual: boolean;
+  defaultThinking: boolean;
+  supportsDisable: boolean;
+  supportsEffort: boolean;
+  supportsXHigh: boolean;
+  supportsMax: boolean;
+  strictSampling: boolean;
+};
+
+function claudeCapabilitiesFor(model: string): ClaudeCapabilities {
+  const name = model.toLowerCase();
+  const capabilities: ClaudeCapabilities = {
+    adaptive: false,
+    supportsManual: true,
+    defaultThinking: false,
+    supportsDisable: true,
+    supportsEffort: false,
+    supportsXHigh: false,
+    supportsMax: false,
+    strictSampling: false,
+  };
+  if (name.startsWith("claude-fable-5") || name.startsWith("claude-mythos-5")) {
+    capabilities.adaptive = true;
+    capabilities.supportsManual = false;
+    capabilities.defaultThinking = true;
+    capabilities.supportsDisable = false;
+    capabilities.supportsXHigh = true;
+    capabilities.supportsMax = true;
+    capabilities.strictSampling = true;
+  } else if (name.startsWith("claude-mythos-preview")) {
+    capabilities.adaptive = true;
+    capabilities.defaultThinking = true;
+    capabilities.supportsDisable = false;
+    capabilities.supportsMax = true;
+    capabilities.strictSampling = true;
+  } else if (
+    name.startsWith("claude-opus-5") ||
+    name.startsWith("claude-sonnet-5") ||
+    name.startsWith("claude-opus-4-8") ||
+    name.startsWith("claude-opus-4-7")
+  ) {
+    capabilities.adaptive = true;
+    capabilities.supportsManual = false;
+    if (name.startsWith("claude-opus-5") || name.startsWith("claude-sonnet-5")) capabilities.defaultThinking = true;
+    capabilities.supportsEffort = true;
+    capabilities.supportsXHigh = true;
+    capabilities.supportsMax = true;
+    capabilities.strictSampling = true;
+  } else if (name.startsWith("claude-opus-4-6") || name.startsWith("claude-sonnet-4-6")) {
+    capabilities.adaptive = true;
+    capabilities.supportsEffort = true;
+    capabilities.supportsMax = true;
+  } else if (name.startsWith("claude-opus-4-5")) {
+    capabilities.supportsEffort = true;
+  }
+  return capabilities;
+}
+
+function normalizeClaudeEffort(effort: string, capabilities: ClaudeCapabilities): string {
+  switch (effort) {
+    case EFFORT_MINIMAL:
+      return EFFORT_LOW;
+    case EFFORT_XHIGH:
+      if (capabilities.supportsXHigh) return effort;
+      if (capabilities.supportsMax) return EFFORT_MAX;
+      return EFFORT_HIGH;
+    case EFFORT_MAX:
+      if (!capabilities.supportsMax) return EFFORT_HIGH;
+      break;
+  }
+  return effort;
+}
+
+function effortPercentage(effort: string, adapterBudgetPercentage: number): number {
+  switch (effort) {
+    case EFFORT_MINIMAL:
+      return 5;
+    case EFFORT_LOW:
+      return 20;
+    case EFFORT_MEDIUM:
+      return 50;
+    case EFFORT_HIGH:
+      return 80;
+    case EFFORT_XHIGH:
+    case EFFORT_MAX:
+      return 95;
+  }
+  let percentage = Math.round(adapterBudgetPercentage * 100);
+  if (percentage <= 0) return 80;
+  if (percentage >= 100) return 99;
+  return percentage;
+}
+
+export type ClaudeThinking = {
+  type?: string;
+  budget_tokens?: number;
+  display?: string;
+};
+
+export type ClaudeRender = {
+  thinking?: ClaudeThinking;
+  outputEffort: string;
+  effectiveEffort: string;
+  clearSampling: boolean;
+  constrainThinkingSampling: boolean;
+};
+
+/** Original `reasoning.IsKnownClaudeModel`. */
+export function isKnownClaudeModel(modelName: string): boolean {
+  let baseModel = trimEffortSuffixWithSuffixes(modelName, ["-max", "-xhigh", "-high", "-medium", "-low", "-minimal", "-none"]).base;
+  const marker = baseModel.lastIndexOf("-thinking-");
+  if (marker >= 0) baseModel = baseModel.slice(0, marker);
+  else {
+    if (baseModel.endsWith("-thinking")) baseModel = baseModel.slice(0, -"-thinking".length);
+    else if (baseModel.endsWith("-nothinking")) baseModel = baseModel.slice(0, -"-nothinking".length);
+  }
+  const prefixes = [
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-mythos-preview",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    "claude-opus-4-1",
+    "claude-opus-4-",
+    "claude-sonnet-4-",
+    "claude-3-7-sonnet",
+  ];
+  return prefixes.some((prefix) => baseModel.startsWith(prefix));
+}
+
+/** Original `reasoning.ClaudeUsesManualThinking`. */
+export function claudeUsesManualThinking(model: string, intent: ReasoningIntent): boolean {
+  const capabilities = claudeCapabilitiesFor(model);
+  return capabilities.supportsManual && intent.budgetTokens != null && intent.mode !== MODE_ADAPTIVE;
+}
+
+function thinkingDisplay(intent: ReasoningIntent): string | undefined {
+  if (intent.includeThoughts == null) return undefined;
+  return intent.includeThoughts ? "summarized" : "omitted";
+}
+
+/** Original `reasoning.RenderClaude`. */
+export function renderClaude(model: string, intent: ReasoningIntent, maxTokens: number | undefined, adapterBudgetPercentage: number): ClaudeRender {
+  const disabledWithEffort = intent.mode === MODE_DISABLED && intent.effort !== "" && intent.effort !== EFFORT_NONE;
+  let working = intent;
+  if (!disabledWithEffort) working = normalizeIntent(intent);
+  else working = { ...intent, effort: parseEffort(intent.effort) };
+  const capabilities = claudeCapabilitiesFor(model);
+  const empty: ClaudeRender = { outputEffort: "", effectiveEffort: "", clearSampling: false, constrainThinkingSampling: false };
+  if (!intentHasStrength(working)) {
+    if (working.includeThoughts != null && capabilities.adaptive && capabilities.defaultThinking) {
+      return {
+        thinking: { type: "adaptive", display: thinkingDisplay(working) },
+        outputEffort: "",
+        effectiveEffort: EFFORT_HIGH,
+        clearSampling: capabilities.strictSampling,
+        constrainThinkingSampling: false,
+      };
+    }
+    if (capabilities.defaultThinking) {
+      return { ...empty, effectiveEffort: EFFORT_HIGH, clearSampling: capabilities.strictSampling };
+    }
+    return { ...empty, clearSampling: capabilities.strictSampling };
+  }
+  if (working.mode === MODE_DISABLED || working.effort === EFFORT_NONE) {
+    if (!capabilities.supportsDisable) {
+      if (capabilities.adaptive) {
+        const thinking: ClaudeThinking = { type: "adaptive" };
+        const display = thinkingDisplay(working);
+        if (display) thinking.display = display;
+        let outputEffort = "";
+        let effective = EFFORT_HIGH;
+        if (capabilities.supportsEffort) {
+          outputEffort = EFFORT_LOW;
+          effective = EFFORT_LOW;
+        }
+        return {
+          thinking,
+          outputEffort,
+          effectiveEffort: effective,
+          clearSampling: capabilities.strictSampling,
+          constrainThinkingSampling: false,
+        };
+      }
+      return empty;
+    }
+    return {
+      thinking: { type: "disabled" },
+      outputEffort: "",
+      effectiveEffort: EFFORT_NONE,
+      clearSampling: capabilities.strictSampling,
+      constrainThinkingSampling: false,
+    };
+  }
+  const preferManual = capabilities.supportsManual && working.budgetTokens != null && working.mode !== MODE_ADAPTIVE;
+  if (capabilities.adaptive && !preferManual) {
+    let effort = working.effort;
+    if (!effort && working.budgetTokens != null) effort = effortFromBudget(working.budgetTokens);
+    if (!effort && working.mode === MODE_ENABLED) effort = EFFORT_HIGH;
+    const normalizedEffort = normalizeClaudeEffort(effort, capabilities);
+    effort = normalizedEffort;
+    let effective = effort;
+    if (!effective && working.mode === MODE_ADAPTIVE) effective = EFFORT_HIGH;
+    if (working.mode === MODE_UNSET) {
+      return {
+        outputEffort: effort,
+        effectiveEffort: effective,
+        clearSampling: capabilities.strictSampling,
+        constrainThinkingSampling: false,
+      };
+    }
+    const thinking: ClaudeThinking = { type: "adaptive" };
+    const display = thinkingDisplay(working);
+    if (display) thinking.display = display;
+    return {
+      thinking,
+      outputEffort: effort,
+      effectiveEffort: effective,
+      clearSampling: capabilities.strictSampling,
+      constrainThinkingSampling: !capabilities.strictSampling,
+    };
+  }
+  if (working.mode === MODE_ADAPTIVE) {
+    working = { ...working, mode: MODE_ENABLED, effort: working.effort || EFFORT_HIGH };
+  }
+  if (working.mode === MODE_UNSET) {
+    return { ...empty, outputEffort: working.effort, effectiveEffort: working.effort };
+  }
+  if (maxTokens == null) throw new Error("max_tokens is required for manual Claude thinking");
+  if (maxTokens <= 1024) throw new Error("max_tokens must be greater than 1024 for manual Claude thinking");
+  let budget = 0;
+  if (working.budgetTokens != null && working.budgetTokens >= 0) {
+    const requested = working.budgetTokens;
+    budget = Math.max(requested, 1024);
+    if (budget >= maxTokens) budget = maxTokens - 1;
+  } else {
+    const percentage = effortPercentage(working.effort, adapterBudgetPercentage);
+    budget = Math.max(Math.trunc((maxTokens * percentage) / 100), 1024);
+    if (budget >= maxTokens) budget = maxTokens - 1;
+  }
+  let effective = working.effort;
+  if (working.budgetTokens != null && !capabilities.supportsEffort) effective = effortFromBudget(budget);
+  else if (!effective) effective = effortFromBudget(budget);
+  let outputEffort = "";
+  if (capabilities.supportsEffort && working.effort) {
+    outputEffort = normalizeClaudeEffort(working.effort, capabilities);
+    effective = outputEffort;
+  }
+  const thinking: ClaudeThinking = { type: "enabled", budget_tokens: budget };
+  const display = thinkingDisplay(working);
+  if (display) thinking.display = display;
+  return {
+    thinking,
+    outputEffort,
+    effectiveEffort: effective,
+    clearSampling: false,
+    constrainThinkingSampling: true,
+  };
+}
+
+type GeminiThinkingKind = "unknown" | "not_configurable" | "budget" | "level";
+
+type GeminiCapabilities = {
+  kind: GeminiThinkingKind;
+  supportsDisable: boolean;
+  supportsIncludeThoughts: boolean;
+  minBudget: number;
+  maxBudget: number;
+};
+
+function geminiCapabilitiesFor(model: string): GeminiCapabilities {
+  const name = model.toLowerCase();
+  if (name.startsWith("gemini-2.5-flash-native-audio") || name.startsWith("gemini-live-2.5-flash-preview-native-audio")) {
+    return { kind: "budget", supportsDisable: true, supportsIncludeThoughts: false, minBudget: 0, maxBudget: 24576 };
+  }
+  if (name.startsWith("gemini-2.5-flash-image") || name.includes("-tts") || name.includes("-native-audio") || name.includes("-live")) {
+    return { kind: "not_configurable", supportsDisable: false, supportsIncludeThoughts: false, minBudget: 0, maxBudget: 0 };
+  }
+  if (name.startsWith("gemini-3-pro-image") || name.startsWith("nano-banana-pro")) {
+    return { kind: "not_configurable", supportsDisable: false, supportsIncludeThoughts: true, minBudget: 0, maxBudget: 0 };
+  }
+  if (name === "gemini-flash-latest" || name === "gemini-flash-lite-latest" || name === "gemini-pro-latest") {
+    return { kind: "level", supportsDisable: false, supportsIncludeThoughts: false, minBudget: 0, maxBudget: 0 };
+  }
+  if (name.startsWith("gemini-2.5-pro")) {
+    return { kind: "budget", supportsDisable: false, supportsIncludeThoughts: false, minBudget: 128, maxBudget: 32768 };
+  }
+  if (name.startsWith("gemini-2.5-flash-lite")) {
+    return { kind: "budget", supportsDisable: true, supportsIncludeThoughts: false, minBudget: 512, maxBudget: 24576 };
+  }
+  if (name.startsWith("gemini-2.5-")) {
+    return { kind: "budget", supportsDisable: true, supportsIncludeThoughts: false, minBudget: 0, maxBudget: 24576 };
+  }
+  if (name.startsWith("gemini-3")) {
+    return { kind: "level", supportsDisable: false, supportsIncludeThoughts: false, minBudget: 0, maxBudget: 0 };
+  }
+  return { kind: "unknown", supportsDisable: false, supportsIncludeThoughts: false, minBudget: 0, maxBudget: 0 };
+}
+
+function geminiDefaultEffort(model: string): string {
+  const name = model.toLowerCase();
+  if (name === "gemini-flash-latest" || (name.startsWith("gemini-3.5-flash") && !name.startsWith("gemini-3.5-flash-lite")) || name.startsWith("gemini-3.6-flash")) {
+    return EFFORT_MEDIUM;
+  }
+  if (name === "gemini-flash-lite-latest" || name.startsWith("gemini-3.5-flash-lite") || name.startsWith("gemini-3.1-flash-lite")) {
+    return EFFORT_MINIMAL;
+  }
+  if (name === "gemini-pro-latest" || name.startsWith("gemini-3.1-pro") || name.startsWith("gemini-3-pro") || name.startsWith("gemini-3-flash")) {
+    return EFFORT_HIGH;
+  }
+  return "";
+}
+
+function gemini25BudgetForEffort(effort: string): number {
+  switch (effort) {
+    case EFFORT_MINIMAL:
+    case EFFORT_LOW:
+      return 1024;
+    case EFFORT_MEDIUM:
+      return 8192;
+    case EFFORT_HIGH:
+    case EFFORT_XHIGH:
+    case EFFORT_MAX:
+      return 24576;
+    default:
+      return 0;
+  }
+}
+
+function geminiLevelForEffort(model: string, effort: string): string {
+  const name = model.toLowerCase();
+  if (name.startsWith("gemini-3.1-flash-image") || name.startsWith("gemini-3.1-flash-lite-image")) {
+    if (effort === EFFORT_MINIMAL || effort === EFFORT_LOW) return EFFORT_MINIMAL;
+    return EFFORT_HIGH;
+  }
+  if (name.startsWith("gemini-3-pro") && !name.startsWith("gemini-3.1-pro")) {
+    if (effort === EFFORT_MINIMAL || effort === EFFORT_LOW) return EFFORT_LOW;
+    return EFFORT_HIGH;
+  }
+  if (name.startsWith("gemini-3.1-pro") || name === "gemini-pro-latest") {
+    if (effort === EFFORT_MINIMAL) return EFFORT_LOW;
+  }
+  switch (effort) {
+    case EFFORT_MINIMAL:
+    case EFFORT_LOW:
+    case EFFORT_MEDIUM:
+    case EFFORT_HIGH:
+      return effort;
+    case EFFORT_XHIGH:
+    case EFFORT_MAX:
+      return EFFORT_HIGH;
+    case EFFORT_NONE:
+      throw new Error(`thinking cannot be disabled for model ${JSON.stringify(model)}`);
+    default:
+      throw new Error(`unsupported reasoning effort ${JSON.stringify(effort)} for model ${JSON.stringify(model)}`);
+  }
+}
+
+function clampGeminiBudget(budget: number, capabilities: GeminiCapabilities): number {
+  if (budget < capabilities.minBudget) return capabilities.minBudget;
+  if (budget > capabilities.maxBudget) return capabilities.maxBudget;
+  return budget;
+}
+
+function validateGeminiBudget(model: string, budget: number, capabilities: GeminiCapabilities): void {
+  if (budget === -1) return;
+  if (budget === 0) {
+    if (capabilities.supportsDisable) return;
+    throw new Error(`thinking cannot be disabled for model ${JSON.stringify(model)}`);
+  }
+  if (budget < capabilities.minBudget || budget > capabilities.maxBudget) {
+    throw new Error(`thinking budget ${budget} is outside the supported range [${capabilities.minBudget},${capabilities.maxBudget}] for model ${JSON.stringify(model)}`);
+  }
+}
+
+export type GeminiThinkingConfig = {
+  includeThoughts?: boolean;
+  thinkingBudget?: number;
+  thinkingLevel?: string;
+};
+
+export type GeminiRender = {
+  config?: GeminiThinkingConfig;
+  effectiveEffort: string;
+};
+
+/** Original `reasoning.ResolveGeminiEnabledDefault`. */
+export function resolveGeminiEnabledDefault(model: string, intent: ReasoningIntent, maxOutputTokens?: number): ReasoningIntent {
+  if (intent.mode !== MODE_ENABLED || intent.effort || intent.budgetTokens != null) return intent;
+  const capabilities = geminiCapabilitiesFor(model);
+  if (capabilities.kind === "budget") {
+    if (intent.source === SOURCE_SUFFIX && maxOutputTokens != null && maxOutputTokens > 0) return intent;
+    return { ...intent, budgetTokens: -1, budgetSource: SOURCE_SUFFIX };
+  }
+  if (capabilities.kind === "level") return { ...intent, effort: geminiDefaultEffort(model) };
+  return intent;
+}
+
+/** Original `reasoning.RenderGemini`. */
+export function renderGemini(model: string, intent: ReasoningIntent, maxOutputTokens: number | undefined, adapterBudgetPercentage: number): GeminiRender {
+  const working = normalizeIntent(intent);
+  if (intentIsEmpty(working)) return { effectiveEffort: "" };
+  const capabilities = geminiCapabilitiesFor(model);
+  if (capabilities.kind === "not_configurable") {
+    if (!intentHasStrength(working) && capabilities.supportsIncludeThoughts) {
+      return { config: { includeThoughts: working.includeThoughts }, effectiveEffort: EFFORT_HIGH };
+    }
+    throw new Error(`model ${JSON.stringify(model)} does not support configurable thinking`);
+  }
+  if (capabilities.kind === "unknown") {
+    if (intentHasStrength(working)) throw new Error(`model ${JSON.stringify(model)} does not have a known Gemini thinking configuration`);
+    return { config: { includeThoughts: working.includeThoughts }, effectiveEffort: "" };
+  }
+  const config: GeminiThinkingConfig = {};
+  if (working.includeThoughts != null) config.includeThoughts = working.includeThoughts;
+  if (capabilities.kind === "budget") {
+    if (working.mode === MODE_DISABLED || working.effort === EFFORT_NONE) {
+      if (!capabilities.supportsDisable) throw new Error(`thinking cannot be disabled for model ${JSON.stringify(model)}`);
+      config.thinkingBudget = 0;
+      return { config, effectiveEffort: EFFORT_NONE };
+    }
+    let budget = 0;
+    let hasBudget = false;
+    if (working.budgetTokens != null) {
+      budget = working.budgetTokens;
+      if (working.budgetSource !== SOURCE_NATIVE && budget !== -1) budget = clampGeminiBudget(budget, capabilities);
+      hasBudget = true;
+    } else if (working.effort) {
+      budget = gemini25BudgetForEffort(working.effort);
+      hasBudget = true;
+    } else if (working.mode !== MODE_UNSET && maxOutputTokens != null && maxOutputTokens > 0) {
+      let percentage = adapterBudgetPercentage;
+      if (percentage <= 0) percentage = 0.6;
+      else if (percentage > 1) percentage = 1;
+      budget = Math.round(maxOutputTokens * percentage);
+      budget = clampGeminiBudget(budget, capabilities);
+      hasBudget = true;
+    }
+    if (hasBudget) {
+      validateGeminiBudget(model, budget, capabilities);
+      config.thinkingBudget = budget;
+    }
+    let effort = working.effort;
+    if (hasBudget) effort = effortFromBudget(budget);
+    else if (working.mode === MODE_ENABLED || working.mode === MODE_ADAPTIVE) effort = geminiDefaultEffort(model);
+    return { config, effectiveEffort: effort };
+  }
+  if (working.mode === MODE_DISABLED || working.effort === EFFORT_NONE) {
+    throw new Error(`thinking cannot be disabled for model ${JSON.stringify(model)}`);
+  }
+  let effort = working.effort;
+  if (!effort && working.budgetTokens != null) effort = effortFromBudget(working.budgetTokens);
+  if (effort) {
+    const level = geminiLevelForEffort(model, effort);
+    config.thinkingLevel = level;
+    effort = level;
+  } else if (working.mode === MODE_ENABLED || working.mode === MODE_ADAPTIVE) {
+    effort = geminiDefaultEffort(model);
+  }
+  return { config, effectiveEffort: effort };
+}
+
+/** Original `reasoning.EquivalentGeminiStrength`. */
+export function equivalentGeminiStrength(model: string, left: ReasoningIntent, right: ReasoningIntent): boolean {
+  const leftRendered = renderGemini(model, left, undefined, 0);
+  const rightRendered = renderGemini(model, right, undefined, 0);
+  if (!leftRendered.config || !rightRendered.config) return !leftRendered.config && !rightRendered.config;
+  if (leftRendered.config.thinkingLevel !== rightRendered.config.thinkingLevel) return false;
+  if ((leftRendered.config.thinkingBudget == null) !== (rightRendered.config.thinkingBudget == null)) return false;
+  return leftRendered.config.thinkingBudget == null || leftRendered.config.thinkingBudget === rightRendered.config.thinkingBudget;
 }

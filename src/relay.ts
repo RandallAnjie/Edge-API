@@ -2,6 +2,8 @@ import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEM
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
+  convertClaudeRequest,
+  convertGeminiRequest,
   convertOpenAIRequest,
   convertOpenAIResponsesRequest,
   estimatePromptTokens,
@@ -19,6 +21,7 @@ import {
 import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import {
+  DEFAULT_CLAUDE_MAX_TOKENS,
   DEFAULT_EFFORT_TAIL_MODEL_IDS,
   DEFAULT_THINKING_MODEL_BLACKLIST,
   ReasoningClientError,
@@ -134,6 +137,12 @@ async function reasoningSettingsFromStore(store: Store): Promise<ReasoningHostSe
     effortTailModelIDs: parseJson(await store.option("global.effort_tail_model_ids"), DEFAULT_EFFORT_TAIL_MODEL_IDS),
     claudeThinkingAdapterEnabled: (await store.option("claude.thinking_adapter_enabled")) !== "false",
     geminiThinkingAdapterEnabled: (await store.option("gemini.thinking_adapter_enabled")) === "true",
+    claudeThinkingAdapterBudgetTokensPercentage: Number(await store.option("claude.thinking_adapter_budget_tokens_percentage")) || 0.8,
+    geminiThinkingAdapterBudgetTokensPercentage: Number(await store.option("gemini.thinking_adapter_budget_tokens_percentage")) || 0.6,
+    claudeDefaultMaxTokens: parseJson(await store.option("claude.default_max_tokens"), DEFAULT_CLAUDE_MAX_TOKENS),
+    geminiSafetySettings: parseJson(await store.option("gemini.safety_settings"), { default: "OFF" }),
+    geminiSupportedImagineModels: parseJson(await store.option("gemini.supported_imagine_models"), []),
+    geminiFunctionCallThoughtSignatureEnabled: (await store.option("gemini.function_call_thought_signature_enabled")) !== "false",
   };
 }
 
@@ -162,22 +171,50 @@ function convertOutbound(
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
   const upstream = mappedModel || String(o.model || "");
+  if (client === "anthropic" && kind === "anthropic") {
+    return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
+  }
+  if (client === "gemini" && kind === "gemini") {
+    return convertGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
+  }
   if (client === "openai" && mode === "responses") {
     o = convertOpenAIResponsesRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings });
-    body = o;
-  } else if (client === "openai" && (mode === "chat" || Array.isArray(o.messages))) {
+    if (kind === "anthropic") {
+      return openaiToAnthropic(
+        {
+          ...o,
+          messages: o.input ?? o.messages,
+          max_tokens: o.max_output_tokens ?? o.max_tokens,
+        },
+        settings,
+      );
+    }
+    if (kind === "gemini") {
+      return openaiToGemini(
+        {
+          ...o,
+          messages: o.input ?? o.messages,
+          max_tokens: o.max_output_tokens ?? o.max_tokens,
+        },
+        settings,
+      );
+    }
+    return o;
+  }
+  if (client === "openai" && (mode === "chat" || Array.isArray(o.messages))) {
     o = convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings });
+    if (kind === "anthropic" || kind === "gemini") return o;
     body = o;
   }
-  if (kind === "anthropic" && client === "openai") return openaiToAnthropic(o);
-  if (kind === "gemini" && client === "openai") return openaiToGemini(o);
+  if (kind === "anthropic" && client === "openai") return openaiToAnthropic(o, settings);
+  if (kind === "gemini" && client === "openai") return openaiToGemini(o, settings);
   if (kind === "openai" && client === "anthropic") return anthropicToOpenAI(o);
   if (kind === "openai" && client === "gemini") {
     const model = String(o.model || "");
     return geminiToOpenAIChat(o, model);
   }
-  if (kind === "gemini" && client === "anthropic") return openaiToGemini(anthropicToOpenAI(o));
-  if (kind === "anthropic" && client === "gemini") return openaiToAnthropic(geminiToOpenAIChat(o, String(o.model || "")));
+  if (kind === "gemini" && client === "anthropic") return openaiToGemini(anthropicToOpenAI(o), settings);
+  if (kind === "anthropic" && client === "gemini") return openaiToAnthropic(geminiToOpenAIChat(o, String(o.model || "")), settings);
   return body;
 }
 

@@ -441,8 +441,6 @@ function buildTestTarget(
     if (payload && typeof payload === "object" && typeof (payload as { model?: unknown }).model === "string") {
       info.upstreamModel = String((payload as { model: string }).model);
     }
-    if (kindName === "anthropic") payload = openaiToAnthropic(payload as Record<string, unknown>);
-    if (kindName === "gemini") payload = openaiToGemini(payload as Record<string, unknown>);
   }
   const extra: Record<string, string> = {};
   if (kind === "anthropic" || kindName === "anthropic") extra["anthropic-version"] = CLAUDE_VERSION;

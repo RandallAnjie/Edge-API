@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
+import { CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
 import { applyReasoningModelSuffix } from "../src/reasoning.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
@@ -163,6 +163,102 @@ test("original OpenRouter ConvertOpenAIRequest JSON is sent upstream with usage.
     const err = bad.body.error as { code?: string; message?: string };
     assert.equal(err.code, "convert_request_failed");
     assert.match(String(err.message), /unsupported model modifier "thinkin"/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original Claude ConvertOpenAIRequest JSON is sent upstream with system blocks, tools, and default max_tokens", async () => {
+  const { e, auth, sk } = await boot();
+  const created = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "claude",
+        type: CHANNEL_TYPE_ANTHROPIC,
+        key: "sk-ant",
+        models: "claude-3-5-sonnet,claude-3-7-sonnet-thinking",
+        group: "default",
+        base_url: "https://anthropic.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+
+  const origFetch = globalThis.fetch;
+  let captured: { url: string; body: Record<string, unknown> } | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    captured = { url: String(input), body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {} };
+    return new Response(
+      JSON.stringify({
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const relay = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-3-5-sonnet",
+          messages: [
+            { role: "system", content: "You are a helpful assistant." },
+            { role: "user", content: "hi" },
+          ],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "get_weather",
+                description: "Get weather by city",
+                parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+              },
+            },
+          ],
+          tool_choice: "auto",
+        }),
+      }),
+      e,
+    );
+    assert.equal(relay.res.status, 200, relay.text);
+    if (!captured) throw new Error("missing upstream request");
+    assert.match(captured.url, /anthropic\.example\.test\/v1\/messages/);
+    assert.equal(captured.body.model, "claude-3-5-sonnet");
+    assert.equal(captured.body.max_tokens, 8192);
+    assert.deepEqual(captured.body.system, [{ type: "text", text: "You are a helpful assistant." }]);
+    assert.deepEqual(captured.body.messages, [{ role: "user", content: "hi" }]);
+    assert.deepEqual(captured.body.tool_choice, { type: "auto" });
+    const tools = captured.body.tools as { name: string; input_schema: { type: string } }[];
+    assert.equal(tools[0].name, "get_weather");
+    assert.equal(tools[0].input_schema.type, "object");
+
+    const thinkingRelay = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-3-7-sonnet-thinking",
+          messages: [{ role: "user", content: "hi" }],
+          max_tokens: 4096,
+        }),
+      }),
+      e,
+    );
+    assert.equal(thinkingRelay.res.status, 200, thinkingRelay.text);
+    assert.equal(captured.body.model, "claude-3-7-sonnet");
+    const thinking = captured.body.thinking as { type: string; budget_tokens: number };
+    assert.equal(thinking.type, "enabled");
+    assert.equal(thinking.budget_tokens, Math.max(Math.trunc((4096 * 80) / 100), 1024));
   } finally {
     globalThis.fetch = origFetch;
   }

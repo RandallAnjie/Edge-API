@@ -6,6 +6,9 @@ import {
   convertOpenAIResponsesAdaptorRequest,
   type ReasoningHostSettings,
 } from "./reasoning.js";
+import { convertOpenAIChatToClaude } from "./claude-convert.js";
+import { convertOpenAIChatToGemini } from "./gemini-convert.js";
+import { channelKind } from "./catalog.js";
 import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN } from "./constants.js";
 
 export type ChatMessage = {
@@ -46,37 +49,22 @@ export function estimatePromptTokens(messages: ChatMessage[] | undefined, prompt
   return messages.reduce((n, m) => n + estimateTokens(messageText(m.content)), 0);
 }
 
-export function openaiToAnthropic(body: Record<string, unknown>): Record<string, unknown> {
-  const messages = Array.isArray(body.messages) ? (body.messages as ChatMessage[]) : [];
-  const systemParts: string[] = [];
-  const out: { role: string; content: string }[] = [];
-  for (const m of messages) {
-    const role = (m.role || "user").toLowerCase();
-    const text = messageText(m.content);
-    if (role === "system") {
-      systemParts.push(text);
-      continue;
-    }
-    out.push({ role: role === "assistant" ? "assistant" : "user", content: text });
-  }
-  const max = Number(body.max_tokens ?? body.max_completion_tokens ?? 4096) || 4096;
-  const req: Record<string, unknown> = {
-    model: body.model,
-    max_tokens: max,
-    messages: out,
-    stream: Boolean(body.stream),
-  };
-  if (systemParts.length) req.system = systemParts.join("\n");
-  if (body.temperature != null) req.temperature = body.temperature;
-  if (body.top_p != null) req.top_p = body.top_p;
-  if (body.stop != null) req.stop_sequences = Array.isArray(body.stop) ? body.stop : [body.stop];
-  return req;
+/** Original `service.ConvertRequest(..., RelayFormatClaude)` for OpenAI chat. */
+export function openaiToAnthropic(body: Record<string, unknown>, settings: ReasoningHostSettings = {}): Record<string, unknown> {
+  return convertOpenAIChatToClaude(body, {
+    originModelName: String(body.model || ""),
+    upstreamModelName: String(body.model || ""),
+    settings,
+  });
 }
 
 export function anthropicToOpenAI(body: Record<string, unknown>): Record<string, unknown> {
   const messages: ChatMessage[] = [];
   if (typeof body.system === "string" && body.system) {
     messages.push({ role: "system", content: body.system });
+  } else if (Array.isArray(body.system)) {
+    const text = (body.system as { text?: string }[]).map((p) => (typeof p === "string" ? p : p?.text || "")).join("");
+    if (text) messages.push({ role: "system", content: text });
   }
   const src = Array.isArray(body.messages) ? (body.messages as ChatMessage[]) : [];
   for (const m of src) {
@@ -95,34 +83,13 @@ export function anthropicToOpenAI(body: Record<string, unknown>): Record<string,
   };
 }
 
-export function openaiToGemini(body: Record<string, unknown>): Record<string, unknown> {
-  const messages = Array.isArray(body.messages) ? (body.messages as ChatMessage[]) : [];
-  const contents: { role: string; parts: { text: string }[] }[] = [];
-  const systemParts: string[] = [];
-  for (const m of messages) {
-    const role = (m.role || "user").toLowerCase();
-    const text = messageText(m.content);
-    if (role === "system") {
-      systemParts.push(text);
-      continue;
-    }
-    contents.push({
-      role: role === "assistant" ? "model" : "user",
-      parts: [{ text }],
-    });
-  }
-  const generationConfig: Record<string, unknown> = {};
-  if (body.temperature != null) generationConfig.temperature = body.temperature;
-  if (body.top_p != null) generationConfig.topP = body.top_p;
-  if (body.max_tokens != null || body.max_output_tokens != null) {
-    generationConfig.maxOutputTokens = body.max_tokens ?? body.max_output_tokens;
-  }
-  const req: Record<string, unknown> = { contents };
-  if (Object.keys(generationConfig).length) req.generationConfig = generationConfig;
-  if (systemParts.length) {
-    req.systemInstruction = { parts: [{ text: systemParts.join("\n") }] };
-  }
-  return req;
+/** Original `service.ConvertRequest(..., RelayFormatGemini)` for OpenAI chat. */
+export function openaiToGemini(body: Record<string, unknown>, settings: ReasoningHostSettings = {}): Record<string, unknown> {
+  return convertOpenAIChatToGemini(body, {
+    originModelName: String(body.model || ""),
+    upstreamModelName: String(body.model || ""),
+    settings,
+  });
 }
 
 export function geminiToOpenAIChat(body: Record<string, unknown>, model: string): Record<string, unknown> {
@@ -350,10 +317,28 @@ export type ConvertOpenAIOpts = {
   settings?: ReasoningHostSettings;
 };
 
+export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
+export { convertGeminiRequest, convertOpenAIChatToGemini } from "./gemini-convert.js";
+
 /** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
   const settings = opts.settings || {};
   const suffixed = applyReasoningModelSuffix(body, opts.originModelName, opts.upstreamModelName, settings, "chat");
+  const kind = channelKind(opts.channelType);
+  if (kind === "anthropic") {
+    return convertOpenAIChatToClaude(suffixed.body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
+  }
+  if (kind === "gemini") {
+    return convertOpenAIChatToGemini(suffixed.body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
+  }
   if (opts.channelType === CHANNEL_TYPE_MOONSHOT) {
     return convertMoonshotOpenAIRequest(suffixed.body, suffixed.upstreamModelName);
   }
