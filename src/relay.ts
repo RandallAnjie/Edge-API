@@ -1,4 +1,4 @@
-import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_PALM, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
+import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_PALM, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
@@ -37,6 +37,9 @@ import { openaiFromMokaEmbedding } from "./moka-convert.js";
 import { openaiFromJinaRerank } from "./jina-convert.js";
 import { openaiFromSiliconFlowRerank } from "./siliconflow-convert.js";
 import { openaiFromPalmResponse, palmUpstreamToOpenAIChat } from "./palm-convert.js";
+import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
+import { openaiFromReplicatePrediction } from "./replicate-convert.js";
+import { applyJimengAuthorization, openaiFromJimengImage } from "./jimeng-convert.js";
 import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import {
@@ -193,6 +196,12 @@ function convertOutbound(
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
   const upstream = mappedModel || String(o.model || "");
+  if ((channelType === CHANNEL_TYPE_NEW_API || channelType === CHANNEL_TYPE_SUB2API) && client === "anthropic") {
+    return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
+  }
+  if ((channelType === CHANNEL_TYPE_NEW_API || channelType === CHANNEL_TYPE_SUB2API) && client === "gemini") {
+    return convertGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
+  }
   if (channelType === CHANNEL_TYPE_AWS && client === "anthropic" && !isNovaModel(upstream)) {
     return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
@@ -262,6 +271,51 @@ function convertOutbound(
       settings,
       relayMode: mode,
       channelKey: extras.channelKey,
+    });
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_REPLICATE) {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+    });
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_JIMENG && mode === "images") {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+    });
+  }
+  if (
+    client === "openai" &&
+    channelType === CHANNEL_TYPE_SUBMODEL &&
+    mode !== "chat" &&
+    !Array.isArray(o.messages)
+  ) {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+    });
+  }
+  if (
+    client === "openai" &&
+    (channelType === CHANNEL_TYPE_NEW_API || channelType === CHANNEL_TYPE_SUB2API) &&
+    (mode === "rerank" || mode === "audio_speech" || mode === "audio_transcription" || mode === "audio_translation")
+  ) {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
     });
   }
   if (client === "openai" && mode === "responses") {
@@ -440,6 +494,12 @@ function convertInbound(
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_SILICONFLOW && opts.relayMode === "rerank") {
     return openaiFromSiliconFlowRerank(upstreamJson);
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_REPLICATE && opts.relayMode === "images") {
+    return openaiFromReplicatePrediction(upstreamJson, { created: opts.created });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_JIMENG && opts.relayMode === "images") {
+    return openaiFromJimengImage(upstreamJson, { created: opts.created });
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_AWS) {
     if (isNovaModel(model)) {
@@ -827,6 +887,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       retryIndex: retry,
       affinityTemplate: affinity?.template,
       isStream: opts.stream,
+      relayFormat: clientFormat === "anthropic" ? "claude" : clientFormat === "gemini" ? "gemini" : "openai",
     };
     let target: UpstreamTarget;
     try {
@@ -889,7 +950,29 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (channel.type === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(pickChannelKey(channel.key))) {
         target.body = await applyTencentTc3Authorization(target.headers, target.body, pickChannelKey(channel.key));
       }
-      res = await fetchUpstream(target);
+      if (channel.type === CHANNEL_TYPE_JIMENG) {
+        target.body = await applyJimengAuthorization(
+          target.headers,
+          target.url,
+          target.method || "POST",
+          target.body,
+          pickChannelKey(channel.key),
+        );
+      }
+      if (channel.type === CHANNEL_TYPE_XUNFEI) {
+        try {
+          parseXunfeiAuth(pickChannelKey(channel.key));
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return openaiError(500, message, "channel:invalid_key");
+        }
+        res = await runXunfeiChat(asObj(outbound), pickChannelKey(channel.key), {
+          stream: opts.stream,
+          requestUrl: opts.req.url,
+        });
+      } else {
+        res = await fetchUpstream(target);
+      }
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
       lastStatus = 502;
@@ -960,6 +1043,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       isSSE = Boolean(opts.stream);
     }
     if (channel.type === CHANNEL_TYPE_PALM) {
+      isSSE = Boolean(opts.stream);
+    }
+    if (channel.type === CHANNEL_TYPE_XUNFEI) {
       isSSE = Boolean(opts.stream);
     }
     if (channel.type === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(pickChannelKey(channel.key))) {

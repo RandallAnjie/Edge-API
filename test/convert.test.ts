@@ -24,16 +24,22 @@ import {
   convertMokaEmbeddingRequest,
   convertSiliconFlowImageRequest,
   convertJinaEmbeddingRequest,
+  convertReplicateImageRequest,
+  convertJimengImageRequest,
+  requestOpenAI2Xunfei,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
+import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
 import { isClientError } from "../src/reasoning.js";
 import { getZhipuToken, clearZhipuTokenCache } from "../src/zhipu-convert.js";
 import { applyTencentTc3Authorization, getTencentSign, tencentTokenHubBase, TENCENT_TOKENHUB_BASE } from "../src/tencent-convert.js";
+import { buildXunfeiAuthUrl, xunfeiDomain, xunfeiHostUrl } from "../src/xunfei-convert.js";
+import { applyJimengAuthorization, jimengRequestURL } from "../src/jimeng-convert.js";
+import { mapOpenAISizeToFlux } from "../src/replicate-convert.js";
 import { mapModel } from "../src/select.js";
 import { buildUpstream } from "../src/upstream.js";
 import type { ChannelRow } from "../src/types.js";
@@ -1842,4 +1848,195 @@ test("original Tencent, Mistral, Moka, Jina, SiliconFlow, and PaLM ConvertOpenAI
     buildUpstream(palmBase, "chat", "/v1/chat/completions", "PaLM-2", palm).url,
     "https://generativelanguage.googleapis.com/v1beta2/models/chat-bison-001:generateMessage",
   );
+});
+
+test("original Xunfei, Submodel, Replicate, Sub2API, NewAPI, and Jimeng ConvertOpenAIRequest JSON", async () => {
+  const xunfei = convertOpenAIRequest(
+    {
+      model: "SparkDesk-v3.1",
+      messages: [
+        { role: "system", content: "be helpful" },
+        { role: "user", content: "hi spark" },
+      ],
+      temperature: 0.4,
+      n: 2,
+      max_tokens: 128,
+      stream_options: { include_usage: true },
+    },
+    { channelType: CHANNEL_TYPE_XUNFEI, originModelName: "SparkDesk-v3.1", upstreamModelName: "SparkDesk-v3.1" },
+  );
+  assert.deepEqual(xunfei.stream_options, { include_usage: true });
+  assert.equal(xunfei.model, "SparkDesk-v3.1");
+  const xfNative = requestOpenAI2Xunfei(xunfei, "appid", xunfeiDomain("v3.1"));
+  assert.deepEqual(xfNative.header, { app_id: "appid" });
+  assert.deepEqual((xfNative.parameter as { chat: Record<string, unknown> }).chat, {
+    domain: "generalv3",
+    temperature: 0.4,
+    top_k: 2,
+    max_tokens: 128,
+  });
+  assert.deepEqual((xfNative.payload as { message: { text: unknown } }).message.text, [
+    { role: "user", content: "be helpful" },
+    { role: "assistant", content: "Okay" },
+    { role: "user", content: "hi spark" },
+  ]);
+  const spark35 = requestOpenAI2Xunfei(
+    { model: "SparkDesk-v3.5", messages: [{ role: "system", content: "keep" }] },
+    "appid",
+    "generalv3.5",
+  );
+  assert.deepEqual((spark35.payload as { message: { text: unknown } }).message.text, [{ role: "system", content: "keep" }]);
+  const authUrl = await buildXunfeiAuthUrl(xunfeiHostUrl("v1.1"), "apiKey", "apiSecret", "Wed, 10 Sep 2026 09:50:00 UTC");
+  assert.equal(authUrl.startsWith("wss://spark-api.xf-yun.com/v1.1/chat?"), true);
+  assert.match(authUrl, /authorization=/);
+  assert.match(authUrl, /date=Wed%2C\+10\+Sep\+2026\+09%3A50%3A00\+UTC/);
+  assert.match(authUrl, /host=spark-api\.xf-yun\.com/);
+
+  const xfCh = testChannel({ type: CHANNEL_TYPE_XUNFEI, key: "app|secret|key", models: "SparkDesk-v3.1" });
+  assert.equal(buildUpstream(xfCh, "chat", "/v1/chat/completions", "SparkDesk-v3.1", xunfei).url, "");
+  assert.equal("authorization" in buildUpstream(xfCh, "chat", "/v1/chat/completions", "SparkDesk-v3.1", xunfei).headers, false);
+
+  const submodel = convertOpenAIRequest(
+    { model: "sub-1", messages: [{ role: "user", content: "hi sub" }], stream_options: { include_usage: true } },
+    { channelType: CHANNEL_TYPE_SUBMODEL, originModelName: "sub-1", upstreamModelName: "sub-1" },
+  );
+  assert.deepEqual(submodel.stream_options, { include_usage: true });
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "sub-1", input: "hi" },
+        { channelType: CHANNEL_TYPE_SUBMODEL, originModelName: "sub-1", upstreamModelName: "sub-1", relayMode: "embeddings" },
+      ),
+    /submodel channel: endpoint not supported/,
+  );
+  const subCh = testChannel({ type: CHANNEL_TYPE_SUBMODEL, key: "sk-sub", models: "sub-1" });
+  assert.equal(buildUpstream(subCh, "chat", "/v1/chat/completions", "sub-1", submodel).url, "https://llm.submodel.ai/v1/chat/completions");
+  assert.equal(buildUpstream(subCh, "chat", "/v1/chat/completions", "sub-1", submodel).headers.authorization, "Bearer sk-sub");
+
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "black-forest-labs/flux-1.1-pro", messages: [{ role: "user", content: "hi" }] },
+        { channelType: CHANNEL_TYPE_REPLICATE, originModelName: "black-forest-labs/flux-1.1-pro", upstreamModelName: "black-forest-labs/flux-1.1-pro" },
+      ),
+    /replicate adaptor: ConvertOpenAIRequest is not implemented/,
+  );
+  const repImage = convertOpenAIRequest(
+    { model: "black-forest-labs/flux-1.1-pro", prompt: "a cat", size: "1024x1024", n: 2, quality: "hd" },
+    {
+      channelType: CHANNEL_TYPE_REPLICATE,
+      originModelName: "black-forest-labs/flux-1.1-pro",
+      upstreamModelName: "black-forest-labs/flux-1.1-pro",
+      relayMode: "images",
+    },
+  );
+  assert.deepEqual(repImage, { input: { prompt: "a cat", aspect_ratio: "1:1", num_outputs: 2, prompt_upsampling: true } });
+  assert.deepEqual(
+    convertReplicateImageRequest({ prompt: "wide", size: "1792x1024", extra_fields: { seed: 9 } }),
+    { input: { prompt: "wide", aspect_ratio: "16:9", seed: 9 } },
+  );
+  assert.deepEqual(mapOpenAISizeToFlux("1024x1792"), { aspect: "9:16", width: 0, height: 0 });
+  const repCh = testChannel({ type: CHANNEL_TYPE_REPLICATE, key: "r8_key", models: "black-forest-labs/flux-1.1-pro" });
+  const repUp = buildUpstream(repCh, "images", "/v1/images/generations", "black-forest-labs/flux-1.1-pro", repImage);
+  assert.equal(repUp.url, "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions");
+  assert.equal(repUp.headers.authorization, "Bearer r8_key");
+  assert.equal(repUp.headers.Prefer, "wait");
+
+  const newApi = convertOpenAIRequest(
+    { model: "gpt-4o-mini", messages: [{ role: "user", content: "hi new" }], stream_options: { include_usage: true } },
+    { channelType: CHANNEL_TYPE_NEW_API, originModelName: "gpt-4o-mini", upstreamModelName: "gpt-4o-mini" },
+  );
+  assert.deepEqual(newApi.stream_options, { include_usage: true });
+  const sub2 = convertOpenAIRequest(
+    { model: "gpt-4o-mini", messages: [{ role: "user", content: "hi sub2" }], stream_options: { include_usage: true } },
+    { channelType: CHANNEL_TYPE_SUB2API, originModelName: "gpt-4o-mini", upstreamModelName: "gpt-4o-mini" },
+  );
+  assert.deepEqual(sub2.stream_options, { include_usage: true });
+  const compact = convertOpenAIResponsesRequest(
+    { model: "gpt-4o-mini", input: [{ role: "user", content: "hi" }], stream_options: { include_usage: true } },
+    { channelType: CHANNEL_TYPE_SUB2API, originModelName: "gpt-4o-mini", upstreamModelName: "gpt-4o-mini" },
+  );
+  assert.deepEqual(compact.stream_options, { include_usage: true });
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "gpt-4o-mini", query: "q", documents: ["a"] },
+        { channelType: CHANNEL_TYPE_NEW_API, originModelName: "gpt-4o-mini", upstreamModelName: "gpt-4o-mini", relayMode: "rerank" },
+      ),
+    /endpoint not supported/,
+  );
+  const newCh = testChannel({ type: CHANNEL_TYPE_NEW_API, key: "sk-new", base_url: "https://newapi.example", models: "gpt-4o-mini" });
+  assert.equal(buildUpstream(newCh, "chat", "/v1/chat/completions", "gpt-4o-mini", newApi).url, "https://newapi.example/v1/chat/completions");
+  assert.equal(buildUpstream(newCh, "chat", "/v1/chat/completions", "gpt-4o-mini", newApi).headers.authorization, "Bearer sk-new");
+  const claudeUp = buildUpstream(newCh, "messages", "/v1/messages", "gpt-5.6-sol", { model: "gpt-5.6-sol" }, { "anthropic-version": "" }, "POST", {
+    relayFormat: "claude",
+  });
+  assert.equal(claudeUp.url, "https://newapi.example/v1/messages");
+  assert.equal(claudeUp.headers.authorization, "Bearer sk-new");
+  assert.equal(claudeUp.headers["x-api-key"], "sk-new");
+  assert.equal(claudeUp.headers["anthropic-version"], "2023-06-01");
+  const geminiUp = buildUpstream(newCh, "gemini", "/v1beta/models/gemini-2.0-flash:generateContent", "gemini-2.0-flash", { model: "gemini-2.0-flash" }, {}, "POST", {
+    relayFormat: "gemini",
+  });
+  assert.equal(geminiUp.headers.authorization, "Bearer sk-new");
+  assert.equal(geminiUp.headers["x-goog-api-key"], "sk-new");
+  const sub2Ch = testChannel({ type: CHANNEL_TYPE_SUB2API, key: "sk-sub2", base_url: "https://sub2api.example", models: "gpt-4o-mini" });
+  assert.equal(buildUpstream(sub2Ch, "alpha_search", "/v1/alpha/search", "gpt-4o-mini", { model: "gpt-4o-mini" }).url, "https://sub2api.example/v1/alpha/search");
+  assert.equal(
+    buildUpstream(sub2Ch, "responses", "/v1/responses/compact", "gpt-4o-mini", compact).url,
+    "https://sub2api.example/v1/responses/compact",
+  );
+  const claudeKept = convertClaudeRequest(
+    {
+      model: "gpt-5.6-sol",
+      max_tokens: 8192,
+      temperature: 0.2,
+      top_p: 0.99,
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "xhigh", provider_option: true },
+      messages: [{ role: "user", content: "hello" }],
+    },
+    { originModelName: "gpt-5.6-sol", upstreamModelName: "gpt-5.6-sol" },
+  );
+  assert.equal((claudeKept.thinking as { type: string }).type, "adaptive");
+  assert.equal((claudeKept.thinking as { display: string }).display, "summarized");
+  assert.deepEqual(claudeKept.output_config, { effort: "xhigh", provider_option: true });
+  assert.equal(claudeKept.temperature, 0.2);
+  assert.equal(claudeKept.top_p, 0.99);
+
+  const jimeng = convertOpenAIRequest(
+    { model: "doubao-seed", messages: [{ role: "user", content: "hi jimeng" }], stream_options: { include_usage: true } },
+    { channelType: CHANNEL_TYPE_JIMENG, originModelName: "jimeng_high_aes_general_v21_L", upstreamModelName: "jimeng_high_aes_general_v21_L" },
+  );
+  assert.deepEqual(jimeng.stream_options, { include_usage: true });
+  assert.equal(jimeng.model, "jimeng_high_aes_general_v21_L");
+  const jimengImage = convertJimengImageRequest({
+    model: "jimeng_high_aes_general_v21_L",
+    prompt: "a mountain",
+    extra_fields: { seed: 42, width: 512, height: 512 },
+  });
+  assert.equal(jimengImage.req_key, "jimeng_high_aes_general_v21_L");
+  assert.equal(jimengImage.prompt, "a mountain");
+  assert.equal(jimengImage.return_url, true);
+  assert.equal(jimengImage.seed, 42);
+  const jimengCh = testChannel({ type: CHANNEL_TYPE_JIMENG, key: "ak|sk", models: "jimeng_high_aes_general_v21_L" });
+  assert.equal(jimengRequestURL("https://visual.volcengineapi.com"), "https://visual.volcengineapi.com/?Action=CVProcess&Version=2022-08-31");
+  assert.equal(
+    buildUpstream(jimengCh, "images", "/v1/images/generations", "jimeng_high_aes_general_v21_L", jimengImage).url,
+    "https://visual.volcengineapi.com/?Action=CVProcess&Version=2022-08-31",
+  );
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const frozen = new Date(Date.UTC(2026, 8, 10, 9, 50, 0));
+  const signed = await applyJimengAuthorization(
+    headers,
+    "https://visual.volcengineapi.com/?Action=CVProcess&Version=2022-08-31",
+    "POST",
+    jimengImage,
+    "ak|sk",
+    frozen,
+  );
+  assert.equal(signed, JSON.stringify(jimengImage));
+  assert.equal(headers["X-Date"], "20260910T095000Z");
+  assert.match(headers.authorization, /^HMAC-SHA256 Credential=ak\/20260910\/cn-north-1\/cv\/request, SignedHeaders=content-type;host;x-content-sha256;x-date, Signature=/);
+  assert.equal("authorization" in buildUpstream(jimengCh, "chat", "/v1/chat/completions", "jimeng_high_aes_general_v21_L", jimeng).headers, false);
 });

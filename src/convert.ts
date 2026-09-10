@@ -9,7 +9,7 @@ import {
 import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind } from "./catalog.js";
-import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
@@ -29,6 +29,11 @@ import { convertMokaEmbeddingRequest } from "./moka-convert.js";
 import { convertJinaEmbeddingRequest, convertJinaOpenAIRequest } from "./jina-convert.js";
 import { convertSiliconFlowImageRequest, convertSiliconFlowOpenAIRequest } from "./siliconflow-convert.js";
 import { convertPalmOpenAIRequest } from "./palm-convert.js";
+import { convertXunfeiOpenAIRequest } from "./xunfei-convert.js";
+import { convertSubmodelOpenAIRequest, submodelUnsupportedEndpoint } from "./submodel-convert.js";
+import { convertReplicateImageRequest, convertReplicateOpenAIRequest } from "./replicate-convert.js";
+import { convertNewApiOpenAIRequest, convertNewApiResponsesRequest, newApiUnsupportedEndpoint } from "./newapi-convert.js";
+import { convertJimengImageRequest, convertJimengOpenAIRequest } from "./jimeng-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 
 export type ChatMessage = {
@@ -381,6 +386,11 @@ export {
   openaiFromSiliconFlowRerank,
 } from "./siliconflow-convert.js";
 export { convertPalmOpenAIRequest, openaiFromPalmResponse } from "./palm-convert.js";
+export { convertXunfeiOpenAIRequest, requestOpenAI2Xunfei } from "./xunfei-convert.js";
+export { convertSubmodelOpenAIRequest } from "./submodel-convert.js";
+export { convertReplicateImageRequest } from "./replicate-convert.js";
+export { convertNewApiOpenAIRequest } from "./newapi-convert.js";
+export { convertJimengImageRequest, convertJimengOpenAIRequest } from "./jimeng-convert.js";
 
 /** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
@@ -501,6 +511,34 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
   if (opts.channelType === CHANNEL_TYPE_PALM) {
     return convertPalmOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
   }
+  if (opts.channelType === CHANNEL_TYPE_XUNFEI) {
+    return convertXunfeiOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_SUBMODEL) {
+    if (opts.relayMode && opts.relayMode !== "chat") submodelUnsupportedEndpoint();
+    return convertSubmodelOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_REPLICATE) {
+    if (opts.relayMode === "images") {
+      return convertReplicateImageRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+    }
+    return convertReplicateOpenAIRequest();
+  }
+  if (opts.channelType === CHANNEL_TYPE_NEW_API || opts.channelType === CHANNEL_TYPE_SUB2API) {
+    if (
+      opts.relayMode === "rerank" ||
+      opts.relayMode === "audio_speech" ||
+      opts.relayMode === "audio_transcription" ||
+      opts.relayMode === "audio_translation"
+    ) {
+      newApiUnsupportedEndpoint();
+    }
+    return convertNewApiOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_JIMENG) {
+    if (opts.relayMode === "images") return convertJimengImageRequest(suffixed.body);
+    return convertJimengOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
   const kind = channelKind(opts.channelType);
   if (kind === "anthropic") {
     return convertOpenAIChatToClaude(suffixed.body, {
@@ -545,6 +583,13 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
 export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
   const settings = opts.settings || {};
   const suffixed = applyReasoningModelSuffix(body, opts.originModelName, opts.upstreamModelName, settings, "responses");
+  if (opts.channelType === CHANNEL_TYPE_SUBMODEL) submodelUnsupportedEndpoint();
+  if (opts.channelType === CHANNEL_TYPE_REPLICATE) throw new Error("replicate adaptor: ConvertOpenAIResponsesRequest is not implemented");
+  if (opts.channelType === CHANNEL_TYPE_XUNFEI) throw new Error("not implemented");
+  if (opts.channelType === CHANNEL_TYPE_JIMENG) throw new Error("not implemented");
+  if (opts.channelType === CHANNEL_TYPE_NEW_API || opts.channelType === CHANNEL_TYPE_SUB2API) {
+    return convertNewApiResponsesRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
   const converted = convertOpenAIResponsesAdaptorRequest(
     suffixed.body,
     opts.channelType,

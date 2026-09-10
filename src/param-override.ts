@@ -64,6 +64,8 @@ export type ParamOverrideRelayInfo = {
   affinityTemplate?: Record<string, unknown>;
   /** Original `relaycommon.RelayInfo.IsStream`. */
   isStream?: boolean;
+  /** Original `relaycommon.RelayInfo.RelayFormat` (NewAPI/Sub2API SetupRequestHeader). */
+  relayFormat?: "openai" | "claude" | "gemini";
 };
 
 type JsonType = 0 | 1 | 2 | 3 | 4 | 5;

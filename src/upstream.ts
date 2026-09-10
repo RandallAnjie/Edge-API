@@ -7,18 +7,23 @@ import {
   CHANNEL_TYPE_CLOUDFLARE,
   CHANNEL_TYPE_DEEPSEEK,
   CHANNEL_TYPE_GEMINI,
+  CHANNEL_TYPE_JIMENG,
   CHANNEL_TYPE_JINA,
   CHANNEL_TYPE_MINIMAX,
   CHANNEL_TYPE_MOKA,
   CHANNEL_TYPE_MOONSHOT,
+  CHANNEL_TYPE_NEW_API,
   CHANNEL_TYPE_OLLAMA,
   CHANNEL_TYPE_OPENROUTER,
   CHANNEL_TYPE_PALM,
   CHANNEL_TYPE_PERPLEXITY,
+  CHANNEL_TYPE_REPLICATE,
   CHANNEL_TYPE_SILICONFLOW,
+  CHANNEL_TYPE_SUB2API,
   CHANNEL_TYPE_TENCENT,
   CHANNEL_TYPE_VERTEX,
   CHANNEL_TYPE_VOLC,
+  CHANNEL_TYPE_XUNFEI,
   CHANNEL_TYPE_ZHIPU,
   CHANNEL_TYPE_ZHIPU_V4,
   CLAUDE_VERSION,
@@ -34,6 +39,10 @@ import { mokaRequestURL } from "./moka-convert.js";
 import { palmRequestURL } from "./palm-convert.js";
 import { siliconflowRequestURL } from "./siliconflow-convert.js";
 import { tencentNativeRequestURL, tencentTokenHubBase, tencentUsesNativeAdaptor } from "./tencent-convert.js";
+import { xunfeiRequestURL } from "./xunfei-convert.js";
+import { replicateRequestURL } from "./replicate-convert.js";
+import { applyNewApiHeaders, newApiRequestURL } from "./newapi-convert.js";
+import { jimengRequestURL } from "./jimeng-convert.js";
 import { perplexityRequestURL } from "./perplexity-convert.js";
 import { zhipuV3RequestURL, zhipuV4RequestURL } from "./zhipu-convert.js";
 import {
@@ -365,6 +374,60 @@ export function buildUpstream(
   if (channel.type === CHANNEL_TYPE_SILICONFLOW) {
     url = siliconflowRequestURL(base, mode, openaiPath(mode, requestPath));
     headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_XUNFEI) {
+    url = xunfeiRequestURL();
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_REPLICATE) {
+    if (!apiKey) throw new Error("replicate adaptor: api key is required");
+    url = replicateRequestURL(base, mode === "images" ? upstreamModel : "", requestPath);
+    headers.authorization = `Bearer ${apiKey}`;
+    headers.Prefer = "wait";
+    headers.Accept = headers.Accept || headers.accept || "application/json";
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_JIMENG) {
+    url = jimengRequestURL(base);
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_NEW_API || channel.type === CHANNEL_TYPE_SUB2API) {
+    url = newApiRequestURL(base, mode, openaiPath(mode, requestPath));
+    applyNewApiHeaders(
+      headers,
+      apiKey,
+      relayInfo.relayFormat || "openai",
+      extraHeaders["anthropic-version"] || "",
+    );
     payload = applyChannelParamOverride(channel, payload, headers, {
       ...relayInfo,
       originalModel: relayInfo.originalModel || model,

@@ -6,9 +6,11 @@ import {
   CHANNEL_TYPE_COZE,
   CHANNEL_TYPE_JINA,
   CHANNEL_TYPE_MOKA,
+  CHANNEL_TYPE_REPLICATE,
   CHANNEL_TYPE_SILICONFLOW,
   CHANNEL_TYPE_TENCENT,
   CHANNEL_TYPE_VOLC,
+  CHANNEL_TYPE_XUNFEI,
   CHANNEL_TYPE_ZHIPU,
   CHANNEL_AUTO_DISABLED,
   CHANNEL_ENABLED,
@@ -29,6 +31,7 @@ import {
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest } from "./baidu-convert.js";
 import { applyZhipuV3Authorization } from "./zhipu-convert.js";
 import { applyTencentTc3Authorization, tencentUsesNativeAdaptor } from "./tencent-convert.js";
+import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
 import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
@@ -467,7 +470,7 @@ function buildTestTarget(
       channelKey: pickChannelKey(channel.key),
       relayMode: "embeddings",
     });
-  } else if (kind === "image" && channel.type === CHANNEL_TYPE_SILICONFLOW) {
+  } else if (kind === "image" && (channel.type === CHANNEL_TYPE_SILICONFLOW || channel.type === CHANNEL_TYPE_REPLICATE)) {
     payload = convertOpenAIRequest(body as Record<string, unknown>, {
       channelType: channel.type,
       originModelName: originModel,
@@ -486,6 +489,8 @@ function buildTestTarget(
   }
   const extra: Record<string, string> = {};
   if (kind === "anthropic" || kindName === "anthropic") extra["anthropic-version"] = CLAUDE_VERSION;
+  if (kind === "anthropic") info.relayFormat = "claude";
+  else if (kind === "gemini") info.relayFormat = "gemini";
   return buildUpstream(channel, mode, requestPath, mappedModel, payload, extra, "POST", info);
 }
 
@@ -541,7 +546,13 @@ export async function testChannel(
     if (channel.type === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(pickChannelKey(channel.key))) {
       target.body = await applyTencentTc3Authorization(target.headers, target.body, pickChannelKey(channel.key));
     }
-    res = await fetchTarget(target);
+    if (channel.type === CHANNEL_TYPE_XUNFEI) {
+      parseXunfeiAuth(pickChannelKey(channel.key));
+      const body = target.body && typeof target.body === "object" && !Array.isArray(target.body) ? (target.body as Record<string, unknown>) : {};
+      res = await runXunfeiChat(body, pickChannelKey(channel.key), { stream: isStream });
+    } else {
+      res = await fetchTarget(target);
+    }
     if (channel.type === CHANNEL_TYPE_COZE && !isStream) {
       const completed = await completeCozeNonStreamChat(res, resolveBaseUrl(channel.type, channel.base_url), target.headers);
       res = completed.response;
