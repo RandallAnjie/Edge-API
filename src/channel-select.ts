@@ -7,6 +7,11 @@ import {
   resolveChannelAffinity,
   type ChannelAffinityResolution,
 } from "./channel-affinity.js";
+import {
+  channelSatisfiesFilters,
+  distributorChannelFilters,
+  type ChannelFilter,
+} from "./channel-constraint.js";
 import { requestAutoGroups } from "./dto.js";
 import { channelDisabledMessage, getChannelFailedMessage, invalidChannelIdMessage, noAvailableChannelMessage } from "./http.js";
 import type { Store } from "./store.js";
@@ -25,6 +30,7 @@ export type ChannelSelectParam = {
   token: TokenRow | null;
   crossGroupRetry: boolean;
   retryTimes: number;
+  filters?: ChannelFilter[];
 };
 
 export function newChannelSelectState(): ChannelSelectState {
@@ -50,8 +56,9 @@ export async function cacheGetRandomSatisfiedChannel(
   param: ChannelSelectParam,
   state: ChannelSelectState,
 ): Promise<{ channel: ChannelRow | null; selectGroup: string; error?: string }> {
+  const filters = param.filters || [];
   if (param.tokenGroup !== "auto") {
-    const channel = await store.getRandomSatisfiedChannel(param.tokenGroup, param.modelName, state.retry);
+    const channel = await store.getRandomSatisfiedChannel(param.tokenGroup, param.modelName, state.retry, filters);
     return { channel, selectGroup: param.tokenGroup };
   }
 
@@ -67,7 +74,7 @@ export async function cacheGetRandomSatisfiedChannel(
     const autoGroup = autoGroups[i];
     let priorityRetry = state.retry;
     if (i > startGroupIndex) priorityRetry = 0;
-    channel = await store.getRandomSatisfiedChannel(autoGroup, param.modelName, priorityRetry);
+    channel = await store.getRandomSatisfiedChannel(autoGroup, param.modelName, priorityRetry, filters);
     if (!channel) {
       state.autoGroupIndex = i + 1;
       state.retry = 0;
@@ -107,9 +114,12 @@ export async function selectDistributedChannel(opts: {
   requestPath: string;
   body: unknown;
   headers: Record<string, string>;
+  expectedTaskPluginKey?: string;
+  taskPluginChannelTypes?: number[];
 }): Promise<DistributeSelectResult> {
   const { store, env, req, auth, model, requestPath, body, headers } = opts;
   const retryTimes = await store.optionNum("RetryTimes", 0);
+  const filters = distributorChannelFilters(requestPath, opts.expectedTaskPluginKey || "", opts.taskPluginChannelTypes);
   const selectParam: ChannelSelectParam = {
     tokenGroup: auth.usingGroup,
     modelName: model,
@@ -117,6 +127,7 @@ export async function selectDistributedChannel(opts: {
     token: auth.token,
     crossGroupRetry: Boolean(Number(auth.token.cross_group_retry)),
     retryTimes,
+    filters,
   };
   const selectState = newChannelSelectState();
   const empty = {
@@ -144,6 +155,18 @@ export async function selectDistributedChannel(opts: {
         error: { status: 403, message: channelDisabledMessage(req), code: "channel_disabled" },
       };
     }
+    const pinFilter = channelSatisfiesFilters(pinned, model, filters);
+    if (!pinFilter.ok) {
+      return {
+        ...empty,
+        channel: null,
+        error: {
+          status: 400,
+          message: noAvailableChannelMessage(req, auth.usingGroup, model),
+          code: pinFilter.kind || "no_available_channel",
+        },
+      };
+    }
     return { ...empty, channel: pinned, pinned: true };
   }
 
@@ -164,7 +187,7 @@ export async function selectDistributedChannel(opts: {
       const autoGroups = await requestAutoGroups(store, auth.token, auth.user.group || "default");
       for (const g of autoGroups) {
         const preferred = await preferredAffinityChannel(store, g, model, affinity.preferredChannelId);
-        if (preferred) {
+        if (preferred && channelSatisfiesFilters(preferred, model, filters).ok) {
           first = preferred;
           usingGroup = g;
           usedAffinity = true;
@@ -173,7 +196,7 @@ export async function selectDistributedChannel(opts: {
       }
     } else {
       const preferred = await preferredAffinityChannel(store, auth.usingGroup, model, affinity.preferredChannelId);
-      if (preferred) {
+      if (preferred && channelSatisfiesFilters(preferred, model, filters).ok) {
         first = preferred;
         usedAffinity = true;
       }
@@ -208,6 +231,17 @@ export async function selectDistributedChannel(opts: {
       usingGroup,
       channel: null,
       error: { status: 503, message: noAvailableChannelMessage(req, showGroup, model), code: "no_available_channel" },
+    };
+  }
+  const selectedFilter = channelSatisfiesFilters(first, model, filters);
+  if (!selectedFilter.ok) {
+    const showGroup = usingGroup === "auto" ? "auto" : usingGroup;
+    return {
+      ...empty,
+      affinity,
+      usingGroup,
+      channel: null,
+      error: { status: 503, message: noAvailableChannelMessage(req, showGroup, model), code: "model_not_found" },
     };
   }
   return { channel: first, usingGroup, usedAffinity, pinned: false, affinity, selectState, selectParam };

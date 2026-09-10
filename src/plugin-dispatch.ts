@@ -1,18 +1,23 @@
 import { parseJson } from "./constants.js";
+import { extractPluginMeta } from "./dto.js";
 import type { Store } from "./store.js";
+import { pinnedTaskPluginChannelTypes } from "./channel-constraint.js";
 
 export async function matchPluginRoute(
   store: Store,
   method: string,
   path: string,
-): Promise<{ key: string; path: string } | null> {
-  const plugins = (await store.listTaskPlugins()) as { key: string; status: string; routes: string }[];
+): Promise<{ key: string; path: string; channelTypes: number[] } | null> {
+  const plugins = (await store.listTaskPlugins()) as { key: string; status: string; routes: string; source?: string }[];
   for (const p of plugins) {
     if (p.status !== "active" && p.status !== "enabled") continue;
     const routes = parseJson<{ method?: string; path?: string; type?: string }[]>(p.routes, []);
     for (const r of routes) {
       if ((r.method || "POST").toUpperCase() !== method.toUpperCase()) continue;
-      if (pathMatches(r.path || "", path)) return { key: p.key, path: r.path || path };
+      if (pathMatches(r.path || "", path)) {
+        const meta = extractPluginMeta(String(p.source || ""));
+        return { key: p.key, path: r.path || path, channelTypes: pinnedTaskPluginChannelTypes(meta.channelTypes) };
+      }
     }
   }
   return null;

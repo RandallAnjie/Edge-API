@@ -289,6 +289,8 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
         path,
         ctx,
         method: req.method,
+        expectedTaskPluginKey: plugin.key,
+        taskPluginChannelTypes: plugin.channelTypes,
       });
     }
     return relayNotFound(req.method, path);

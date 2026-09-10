@@ -169,3 +169,136 @@ test("original TokenAuth parseApiKeyParts keeps channel pin suffix", () => {
   assert.deepEqual(parsed.extra, ["42"]);
   assert.equal(parseApiKeyParts("sk-onlykey").extra.length, 0);
 });
+
+test("original ChannelSatisfiesFilters drops type-58 on unmatched path and type-61 without plugin identity", async () => {
+  resetSchemaFlag();
+  const e: Env = { DB: createMemoryD1() };
+  const setup = await json(
+    new Request("http://local/api/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12", confirmPassword: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(setup.body.success, true, String(setup.body.message));
+  const login = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12" }),
+    }),
+    e,
+  );
+  const token = (login.body.data as { access_token: string }).access_token;
+  const auth = { authorization: "Bearer " + token, "content-type": "application/json" };
+
+  const custom = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "responses-only",
+        type: 58,
+        key: "sk-custom",
+        models: "filter-model",
+        group: "default",
+        base_url: "https://custom.example.test",
+        settings: JSON.stringify({
+          advanced_custom: {
+            advanced_routes: [
+              { incoming_path: "/v1/responses", upstream_path: "/v1/responses", converter: "none", models: ["filter-model"] },
+            ],
+          },
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(custom.body.success, true, String(custom.body.message));
+
+  const pluginCh = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "plugin-only",
+        type: 61,
+        key: "plugin-key",
+        models: "filter-model",
+        group: "default",
+        setting: { task_plugin_key: "alpha" },
+      }),
+    }),
+    e,
+  );
+  assert.equal(pluginCh.body.success, true, String(pluginCh.body.message));
+
+  const tk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "filter-token", unlimited_quota: true, group: "default" }),
+    }),
+    e,
+  );
+  assert.equal(tk.body.success, true, String(tk.body.message));
+  const sk = (tk.body.data as { key: string }).key;
+
+  const unmatched = await json(
+    new Request("http://local/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+      body: JSON.stringify({ model: "filter-model", messages: [{ role: "user", content: "hi" }] }),
+    }),
+    e,
+  );
+  assert.equal(unmatched.res.status, 503);
+  assert.match(String((unmatched.body.error as { message?: string }).message || ""), /No available channel for model filter-model under group default/);
+
+  const openai = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "openai-filter",
+        type: 1,
+        key: "sk-openai",
+        models: "filter-model",
+        group: "default",
+        base_url: "https://openai.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(openai.body.success, true, String(openai.body.message));
+
+  const seen: string[] = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    seen.push(String(input));
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl-filter",
+        object: "chat.completion",
+        choices: [{ message: { role: "assistant", content: "ok" } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 3 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "filter-model", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 200, String(hit.body.error || hit.body.message));
+    assert.ok(seen.some((u) => u.startsWith("https://openai.example.test")), JSON.stringify(seen));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

@@ -68,6 +68,8 @@ export interface RelayRequest {
   rawContentType?: string;
   method?: string;
   requestPath?: string;
+  expectedTaskPluginKey?: string;
+  taskPluginChannelTypes?: number[];
 }
 
 function asObj(v: unknown): Record<string, unknown> {
@@ -326,6 +328,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     requestPath,
     body: opts.body,
     headers: requestHeadersFrom(opts.req),
+    expectedTaskPluginKey: opts.expectedTaskPluginKey,
+    taskPluginChannelTypes: opts.taskPluginChannelTypes,
   });
   if (selected.error) {
     return openaiError(selected.error.status, selected.error.message, selected.error.code);

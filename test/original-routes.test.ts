@@ -480,18 +480,31 @@ test("original JSON fields for status, models, deployments, performance, data, u
   assert.equal("username" in (JSON.parse("{}") as object), false);
 
   const catalog = await json(new Request("http://local/api/authz/catalog", { headers: auth }), e);
-  const cat = catalog.body.data as { resources: { resource: string }[]; roles: { key: string; built_in: boolean; superuser: boolean; grants: Record<string, Record<string, boolean>> }[] };
+  const cat = catalog.body.data as {
+    resources: { resource: string; label_key: string; actions: { action: string; label_key: string; description_key: string; default_roles?: string[] }[] }[];
+    roles: { key: string; name: string; built_in: boolean; superuser: boolean; grants: Record<string, Record<string, boolean>> }[];
+  };
   assert.ok(cat.resources.some((r) => r.resource === "channel"));
   assert.ok(cat.resources.some((r) => r.resource === "audit"));
   assert.ok(cat.resources.some((r) => r.resource === "task_plugin"));
+  const channelRes = cat.resources.find((r) => r.resource === "channel");
+  assert.equal(channelRes?.label_key, "Channel Management");
+  const readAct = channelRes?.actions.find((a) => a.action === "read");
+  assert.equal(readAct?.label_key, "Read channels");
+  assert.equal(readAct?.description_key, "View channel lists and details without secrets.");
+  assert.equal("default_roles" in (readAct || {}), false);
   const adminRole = cat.roles.find((r) => r.key === "admin");
+  assert.equal(adminRole?.name, "Admin");
   assert.equal(adminRole?.built_in, true);
   assert.equal(adminRole?.superuser, false);
   assert.equal(adminRole?.grants.channel.read, true);
   assert.equal(adminRole?.grants.channel.sensitive_write, false);
+  assert.equal(adminRole?.grants.task_plugin.bind, false);
   const rootRole = cat.roles.find((r) => r.key === "root");
+  assert.equal(rootRole?.name, "Root");
   assert.equal(rootRole?.superuser, true);
   assert.equal(rootRole?.grants.channel.sensitive_write, true);
+  assert.equal(rootRole?.grants.task_plugin.bind, true);
 
   const oauthState = await json(
     new Request("http://local/api/oauth/state", {
@@ -4202,6 +4215,17 @@ test("original FetchCodexChannelModels, advanced-custom fetch, GetPricing endpoi
     assert.ok(k in channel, "missing GetChannel field " + k);
   }
   assert.equal(channel.key, "");
+  assert.equal(channel.openai_organization, null);
+  assert.equal(channel.test_model, null);
+  assert.equal(channel.tag, null);
+  assert.equal(channel.setting, null);
+  assert.equal(channel.remark, null);
+  assert.equal(channel.model_mapping, null);
+  assert.equal(channel.param_override, null);
+  assert.equal(channel.base_url, "https://provider.example");
+  assert.equal(channel.status_code_mapping, "");
+  assert.ok(String(channel.settings).includes("advanced_custom"));
+  assert.ok(String(channel.header_override).includes("X-Extra"));
 });
 
 test("original TestChannel POSTs gin httptest chat/embeddings/responses bodies", async () => {

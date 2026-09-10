@@ -260,6 +260,12 @@ export function publicToken(t: TokenRow): Record<string, unknown> {
   };
 }
 
+/** Original Gin `*string` encoding: unset/empty pointer fields are JSON `null`. */
+export function ginStringPtr(v: string | null | undefined): string | null {
+  if (v == null || v === "") return null;
+  return v;
+}
+
 export function publicChannel(c: ChannelRow, includeKey = false): Record<string, unknown> {
   const parsedInfo = parseJson<Record<string, unknown> | null>(String(c.channel_info || ""), null);
   let info: Record<string, unknown> =
@@ -280,13 +286,12 @@ export function publicChannel(c: ChannelRow, includeKey = false): Record<string,
           multi_key_mode: "",
         };
   info = clearChannelInfoPublic(info);
-  const setting = c.setting || c.settings || "";
   return {
     id: c.id,
     type: c.type,
     key: includeKey ? c.key : "",
-    openai_organization: c.openai_organization || "",
-    test_model: c.test_model || "",
+    openai_organization: ginStringPtr(c.openai_organization),
+    test_model: ginStringPtr(c.test_model),
     status: c.status,
     name: c.name,
     weight: Number(c.weight || 0),
@@ -300,19 +305,19 @@ export function publicChannel(c: ChannelRow, includeKey = false): Record<string,
     models: c.models || "",
     group: c.group || "default",
     used_quota: c.used_quota || 0,
-    model_mapping: c.model_mapping || "",
+    model_mapping: ginStringPtr(c.model_mapping),
     status_code_mapping: c.status_code_mapping || "",
     priority: c.priority || 0,
     auto_ban: c.auto_ban == null ? 1 : c.auto_ban,
     other_info: c.other_info || "",
-    tag: c.tag || "",
-    setting,
-    param_override: c.param_override || "",
-    header_override: c.header_override || "",
-    remark: c.remark || "",
+    tag: ginStringPtr(c.tag),
+    setting: ginStringPtr(c.setting),
+    param_override: ginStringPtr(c.param_override),
+    header_override: ginStringPtr(c.header_override),
+    remark: ginStringPtr(c.remark),
     max_input_tokens: 0,
     channel_info: info,
-    settings: c.settings || "{}",
+    settings: c.settings || "",
   };
 }
 

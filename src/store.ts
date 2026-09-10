@@ -19,6 +19,11 @@ import { OPTION_ALIASES } from "./option-defaults.js";
 import { capabilities, parsePermissionOverrides } from "./authz.js";
 import { pickAbilityChannelId } from "./select.js";
 import { routingMatchModelName } from "./ratio-setting.js";
+import {
+  channelSatisfiesFilters,
+  identityFilterRequiresKey,
+  type ChannelFilter,
+} from "./channel-constraint.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
 import { normalizeBillingPreference } from "./subscription.js";
 import { MODEL_PRICING_OPTION_KEYS } from "./model-pricing.js";
@@ -431,6 +436,17 @@ export class Store {
     return this.db.prepare("SELECT * FROM channels WHERE id = ?").bind(id).first<ChannelRow>();
   }
 
+  async getChannelsByIds(ids: number[]): Promise<ChannelRow[]> {
+    if (!ids.length) return [];
+    const unique = [...new Set(ids)];
+    const ph = unique.map(() => "?").join(",");
+    const { results } = await this.db
+      .prepare(`SELECT * FROM channels WHERE id IN (${ph})`)
+      .bind(...unique)
+      .all<ChannelRow>();
+    return results;
+  }
+
   async insertChannel(c: Partial<ChannelRow>): Promise<number> {
     const r = await this.db
       .prepare(
@@ -705,12 +721,43 @@ export class Store {
     return results;
   }
 
-  async getRandomSatisfiedChannel(group: string, model: string, retry: number): Promise<ChannelRow | null> {
+  /** Original `model.filterAbilitiesByConstraints` + `GetChannel`. */
+  async filterAbilitiesByConstraints(
+    abilities: { channel_id: number; priority: number; weight: number }[],
+    modelName: string,
+    filters: ChannelFilter[],
+  ): Promise<{ channel_id: number; priority: number; weight: number }[]> {
+    if (!abilities.length) return [];
+    const ids: number[] = [];
+    const seen = new Set<number>();
+    for (const ability of abilities) {
+      if (seen.has(ability.channel_id)) continue;
+      seen.add(ability.channel_id);
+      ids.push(ability.channel_id);
+    }
+    let channels: ChannelRow[];
+    try {
+      channels = await this.getChannelsByIds(ids);
+    } catch {
+      if (identityFilterRequiresKey(filters)) return [];
+      return abilities;
+    }
+    const channelsById = new Map(channels.map((channel) => [channel.id, channel]));
+    return abilities.filter((ability) => channelSatisfiesFilters(channelsById.get(ability.channel_id) ?? null, modelName, filters).ok);
+  }
+
+  async getRandomSatisfiedChannel(
+    group: string,
+    model: string,
+    retry: number,
+    filters: ChannelFilter[] = [],
+  ): Promise<ChannelRow | null> {
     let abilities = await this.abilitiesFor(group, model);
     if (!abilities.length) {
       const normalized = routingMatchModelName(model);
       if (normalized && normalized !== model) abilities = await this.abilitiesFor(group, normalized);
     }
+    abilities = await this.filterAbilitiesByConstraints(abilities, model, filters);
     const id = pickAbilityChannelId(abilities, retry);
     if (!id) return null;
     return this.getChannel(id);
