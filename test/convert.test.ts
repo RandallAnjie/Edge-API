@@ -12,10 +12,12 @@ import {
   convertOpenAIResponsesRequest,
   convertClaudeRequest,
   convertOpenAIChatToClaude,
+  convertOllamaEmbeddingRequest,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_VERTEX } from "../src/constants.js";
+import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_VERTEX } from "../src/constants.js";
+import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
 import { isClientError } from "../src/reasoning.js";
@@ -899,4 +901,156 @@ test("original Vertex ConvertOpenAIRequest Claude wrap, Gemini id strip, imagen,
   assert.equal(imagenUsage(1).prompt, VERTEX_IMAGE_TOKENS);
   assert.equal(imagenUsage(1).completion, 0);
   assert.equal(imagenUsage(1).total, VERTEX_IMAGE_TOKENS);
+});
+
+test("original Ollama ConvertOpenAIRequest is /api/chat JSON not OpenAI chat completions", () => {
+  const chat = convertOpenAIRequest(
+    {
+      model: "llama3",
+      stream: false,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: "data:image/png;base64,YWE=" } }] },
+        {
+          role: "assistant",
+          content: "",
+          reasoning_content: "think",
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"Paris\"}" } }],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "15" },
+      ],
+      temperature: 0,
+      max_tokens: 32,
+      reasoning_effort: "high",
+      response_format: { type: "json_object" },
+      tools: [{ type: "function", function: { name: "get_weather", description: "weather", parameters: { type: "object" } } }],
+    },
+    { channelType: CHANNEL_TYPE_OLLAMA, originModelName: "llama3", upstreamModelName: "llama3" },
+  );
+  assert.equal(chat.model, "llama3");
+  assert.equal(chat.stream, false);
+  assert.equal("max_tokens" in chat, false);
+  assert.equal("messages" in chat, true);
+  assert.equal(chat.think, "high");
+  assert.equal(chat.format, "json");
+  assert.deepEqual(chat.options, { temperature: 0, num_predict: 32 });
+  const messages = chat.messages as Record<string, unknown>[];
+  assert.equal(messages[0].content, "hi");
+  assert.deepEqual(messages[0].images, ["YWE="]);
+  assert.equal(messages[1].thinking, "think");
+  const calls = messages[1].tool_calls as { function: { name: string; arguments: Record<string, unknown> } }[];
+  assert.equal(calls[0].function.name, "get_weather");
+  assert.deepEqual(calls[0].function.arguments, { city: "Paris" });
+  assert.equal(messages[2].tool_call_id, "call_1");
+  assert.equal(messages[2].tool_name, "get_weather");
+  const tools = chat.tools as { type: string; function: { name: string } }[];
+  assert.equal(tools[0].type, "function");
+  assert.equal(tools[0].function.name, "get_weather");
+
+  const none = convertOpenAIRequest(
+    { model: "llama3", messages: [{ role: "user", content: "hi" }], reasoning: { effort: "none" } },
+    { channelType: CHANNEL_TYPE_OLLAMA, originModelName: "llama3", upstreamModelName: "llama3" },
+  );
+  assert.equal(none.think, false);
+
+  let threw = false;
+  try {
+    convertOpenAIRequest(
+      { model: "llama3", messages: [{ role: "user", content: "hi" }], reasoning_effort: "xhigh" },
+      { channelType: CHANNEL_TYPE_OLLAMA, originModelName: "llama3", upstreamModelName: "llama3" },
+    );
+  } catch (err) {
+    threw = true;
+    assert.equal(String(err), 'Error: unsupported ollama reasoning effort "xhigh"');
+  }
+  assert.equal(threw, true);
+
+  const generate = convertOpenAIRequest(
+    { model: "llama3", prompt: "complete this", max_tokens: 8, temperature: 0.2, suffix: "!" },
+    { channelType: CHANNEL_TYPE_OLLAMA, originModelName: "llama3", upstreamModelName: "llama3", relayMode: "completions" },
+  );
+  assert.equal(generate.model, "llama3");
+  assert.equal(generate.prompt, "complete this");
+  assert.equal(generate.suffix, "!");
+  assert.equal(generate.stream, false);
+  assert.equal("messages" in generate, false);
+  assert.deepEqual(generate.options, { temperature: 0.2, num_predict: 8 });
+  assert.equal("think" in generate, false);
+
+  const embed = convertOllamaEmbeddingRequest(
+    { model: "llama3", input: "hello", dimensions: 3, temperature: 0.1 },
+    { upstreamModelName: "llama3" },
+  );
+  assert.equal(embed.input, "hello");
+  assert.equal(embed.dimensions, 3);
+  assert.deepEqual(embed.options, { temperature: 0.1, dimensions: 3 });
+
+  const ollama = testChannel({
+    type: CHANNEL_TYPE_OLLAMA,
+    key: "ollama-key",
+    base_url: "http://localhost:11434",
+    models: "llama3",
+  });
+  assert.equal(buildUpstream(ollama, "chat", "/v1/chat/completions", "llama3", chat).url, "http://localhost:11434/api/chat");
+  assert.equal(buildUpstream(ollama, "chat", "/v1/chat/completions", "llama3", chat).headers.authorization, "Bearer ollama-key");
+  assert.equal(buildUpstream(ollama, "completions", "/v1/completions", "llama3", generate).url, "http://localhost:11434/api/generate");
+  assert.equal(buildUpstream(ollama, "embeddings", "/v1/embeddings", "llama3", embed).url, "http://localhost:11434/api/embed");
+  assert.equal(
+    buildUpstream(ollama, "responses", "/v1/responses/compact", "llama3", { model: "llama3" }).url,
+    "http://localhost:11434/v1/responses/compact",
+  );
+
+  const compact = openaiFromOllamaChatResponse(
+    '{"model":"llama3.1","created_at":"2026-05-27T12:00:00Z","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_upstream","function":{"name":"get_weather","arguments":{"city":"Paris","days":0}}}]},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":7}',
+    "fallback-model",
+  );
+  assert.equal((compact.choices as { finish_reason: string }[])[0].finish_reason, "tool_calls");
+  assert.equal((compact.usage as { total_tokens: number }).total_tokens, 12);
+  const compactCalls = (compact.choices as { message: { tool_calls: { id: string; type: string; function: { name: string; arguments: string }; index?: number }[] } }[])[0]
+    .message.tool_calls;
+  assert.equal(compactCalls[0].id, "call_upstream");
+  assert.equal(compactCalls[0].type, "function");
+  assert.equal(compactCalls[0].function.name, "get_weather");
+  assert.equal("index" in compactCalls[0], false);
+  assert.deepEqual(JSON.parse(compactCalls[0].function.arguments), { city: "Paris", days: 0 });
+  assert.equal((compact.choices as { message: { content: unknown } }[])[0].message.content, null);
+
+  const pretty = openaiFromOllamaChatResponse(
+    `{
+  "model": "llama3.1",
+  "created_at": "2026-05-27T12:00:00Z",
+  "message": {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+      {
+        "function": {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Paris",
+            "days": 0
+          }
+        }
+      }
+    ]
+  },
+  "done": true,
+  "done_reason": "stop",
+  "prompt_eval_count": 5,
+  "eval_count": 7
+}`,
+    "fallback-model",
+  );
+  assert.equal((pretty.choices as { message: { tool_calls: { id: string }[] } }[])[0].message.tool_calls[0].id, "call_0");
+
+  const embedJson = openaiFromOllamaEmbedding(
+    { embeddings: [[0.1, 0.2]], prompt_eval_count: 4, model: "nomic" },
+    "llama3",
+  );
+  assert.equal(embedJson.object, "list");
+  assert.equal(embedJson.model, "llama3");
+  assert.deepEqual(embedJson.data, [{ index: 0, object: "embedding", embedding: [0.1, 0.2] }]);
+  assert.deepEqual(
+    { prompt_tokens: (embedJson.usage as { prompt_tokens: number }).prompt_tokens, completion_tokens: (embedJson.usage as { completion_tokens: number }).completion_tokens, total_tokens: (embedJson.usage as { total_tokens: number }).total_tokens },
+    { prompt_tokens: 4, completion_tokens: 0, total_tokens: 4 },
+  );
 });

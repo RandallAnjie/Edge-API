@@ -232,8 +232,13 @@ export function buildUpstream(
       break;
     }
     case "ollama": {
-      url = joinUrl(base, openaiPath(mode, requestPath));
-      if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+      if (mode === "embeddings") url = `${base}/api/embed`;
+      else if (mode === "responses") {
+        url = requestPath.includes("/v1/responses/compact") ? `${base}/v1/responses/compact` : `${base}/v1/responses`;
+      } else if (mode === "completions") url = `${base}/api/generate`;
+      else if (mode === "messages") url = `${base}/v1/messages`;
+      else url = `${base}/api/chat`;
+      headers.authorization = `Bearer ${apiKey}`;
       break;
     }
     case "cloudflare": {

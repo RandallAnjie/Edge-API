@@ -9,9 +9,10 @@ import {
 import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind } from "./catalog.js";
-import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX } from "./constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX } from "./constants.js";
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertVertexOpenAIRequest } from "./vertex-convert.js";
+import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 
 export type ChatMessage = {
@@ -311,10 +312,18 @@ export type ConvertOpenAIOpts = {
   originModelName: string;
   upstreamModelName: string;
   settings?: ReasoningHostSettings;
+  relayMode?: string;
 };
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
 export { convertGeminiRequest, convertOpenAIChatToGemini } from "./gemini-convert.js";
+export {
+  convertOllamaEmbeddingRequest,
+  convertOllamaGenerateRequest,
+  convertOllamaOpenAIRequest,
+  openaiFromOllamaChatResponse,
+  openaiFromOllamaEmbedding,
+} from "./ollama-convert.js";
 
 /** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
@@ -333,6 +342,12 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
       upstreamModelName: suffixed.upstreamModelName,
       settings,
     });
+  }
+  if (opts.channelType === CHANNEL_TYPE_OLLAMA) {
+    if (opts.relayMode === "completions") {
+      return convertOllamaGenerateRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+    }
+    return convertOllamaOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
   }
   const kind = channelKind(opts.channelType);
   if (kind === "anthropic") {

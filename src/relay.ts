@@ -1,9 +1,10 @@
-import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
+import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
   convertClaudeRequest,
   convertGeminiRequest,
+  convertOllamaEmbeddingRequest,
   convertOpenAIRequest,
   convertOpenAIResponsesRequest,
   estimatePromptTokens,
@@ -21,7 +22,9 @@ import {
 } from "./convert.js";
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
 import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
+import { compactUuid } from "./openai-usage.js";
 import { isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
+import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding, ollamaUpstreamToOpenAIChat } from "./ollama-convert.js";
 import { imagenUsage, openaiFromImagenResponse, removeFunctionCallIDs, vertexRequestMode, wrapVertexClaude } from "./vertex-convert.js";
 import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
@@ -195,6 +198,12 @@ function convertOutbound(
   if (client === "gemini" && kind === "gemini") {
     return convertGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
+  if (client === "openai" && channelType === CHANNEL_TYPE_OLLAMA && mode === "embeddings") {
+    return convertOllamaEmbeddingRequest(o, { upstreamModelName: upstream });
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_OLLAMA && mode === "completions") {
+    return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
+  }
   if (client === "openai" && mode === "responses") {
     o = convertOpenAIResponsesRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings });
     if (kind === "anthropic") {
@@ -220,7 +229,7 @@ function convertOutbound(
     return o;
   }
   if (client === "openai" && (mode === "chat" || Array.isArray(o.messages))) {
-    o = convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings });
+    o = convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
     if (kind === "anthropic" || kind === "gemini") return o;
     body = o;
   }
@@ -296,8 +305,16 @@ function convertInbound(
   client: ClientFormat,
   upstreamJson: Record<string, unknown>,
   model: string,
-  opts: { requestId?: string; created?: number; fallbackPromptTokens?: number; channelType?: number } = {},
+  opts: { requestId?: string; created?: number; fallbackPromptTokens?: number; channelType?: number; relayMode?: RelayMode; rawText?: string } = {},
 ): Record<string, unknown> {
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_OLLAMA) {
+    if (opts.relayMode === "embeddings") return openaiFromOllamaEmbedding(upstreamJson, model);
+    if (opts.relayMode === "responses") return upstreamJson;
+    return openaiFromOllamaChatResponse(opts.rawText ?? upstreamJson, model, {
+      id: opts.requestId ? compactUuid() : undefined,
+      created: opts.created,
+    });
+  }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_AWS) {
     if (isNovaModel(model)) {
       return openaiFromNovaResponse(upstreamJson, model, {
@@ -336,8 +353,12 @@ function openaiClientFromProvider(
   text: string,
   mapped: string,
   stream: boolean,
-  opts: { requestId: string; includeUsage?: boolean; fallbackPromptTokens?: number; channelType?: number },
+  opts: { requestId: string; includeUsage?: boolean; fallbackPromptTokens?: number; channelType?: number; relayMode?: RelayMode },
 ): { body: string; usageBody: Record<string, unknown> } {
+  if (opts.channelType === CHANNEL_TYPE_OLLAMA && opts.relayMode !== "responses" && opts.relayMode !== "embeddings") {
+    const out = ollamaUpstreamToOpenAIChat(text, mapped);
+    return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
+  }
   const vertexMode = opts.channelType === CHANNEL_TYPE_VERTEX ? vertexRequestMode(mapped) : null;
   const useClaude =
     kind === "anthropic" ||
@@ -717,21 +738,34 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     }
 
     const ct = res.headers.get("content-type") || "";
-    const isSSE = ct.includes("text/event-stream") || opts.stream;
+    let isSSE = ct.includes("text/event-stream") || opts.stream;
+    if (channel.type === CHANNEL_TYPE_OLLAMA) {
+      if (mode === "embeddings") isSSE = false;
+      else if (mode !== "responses") isSSE = Boolean(opts.stream);
+    }
     if (affinity) {
       ctx?.waitUntil(recordChannelAffinity(store, opts.env, affinity.cacheKeySuffix, channel.id, affinity.ttlSeconds));
     }
 
+    const ollamaResponsesPassthrough = channel.type === CHANNEL_TYPE_OLLAMA && mode === "responses";
     if (isSSE && res.body) {
-      if (kind !== "openai" && clientFormat === "openai") {
+      if (kind !== "openai" && clientFormat === "openai" && !ollamaResponsesPassthrough) {
         const text = await res.text();
         const includeUsage = Boolean(asObj(asObj(opts.body).stream_options).include_usage);
-        const converted = openaiClientFromProvider(kind, text, mapped, true, {
-          requestId: rid,
-          includeUsage,
-          fallbackPromptTokens: promptEst,
-          channelType: channel.type,
-        });
+        let converted: { body: string; usageBody: Record<string, unknown> };
+        try {
+          converted = openaiClientFromProvider(kind, text, mapped, true, {
+            requestId: rid,
+            includeUsage,
+            fallbackPromptTokens: promptEst,
+            channelType: channel.type,
+            relayMode: mode,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          return openaiError(500, message, "bad_response_body");
+        }
         const usage = usageFromOpenAI(converted.usageBody);
         extra.cachedTokens = usage.cachedTokens;
         extra.promptCacheHitTokens = usage.promptCacheHitTokens;
@@ -763,17 +797,34 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
     } catch {
-      await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, true, "binary/text", extra);
-      return new Response(text, {
-        status: 200,
-        headers: { "content-type": ct || "application/json", "x-oneapi-request-id": rid },
-      });
+      if (channel.type === CHANNEL_TYPE_OLLAMA && clientFormat === "openai" && mode !== "responses" && mode !== "embeddings") {
+        parsed = {};
+      } else {
+        if (channel.type === CHANNEL_TYPE_OLLAMA && mode === "embeddings") {
+          await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, "bad_response_body", extra);
+          return openaiError(500, "bad_response_body", "bad_response_body");
+        }
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, true, "binary/text", extra);
+        return new Response(text, {
+          status: 200,
+          headers: { "content-type": ct || "application/json", "x-oneapi-request-id": rid },
+        });
+      }
     }
-    const converted = convertInbound(kind, clientFormat, parsed, mapped, {
-      requestId: rid,
-      fallbackPromptTokens: promptEst,
-      channelType: channel.type,
-    });
+    let converted: Record<string, unknown>;
+    try {
+      converted = convertInbound(kind, clientFormat, parsed, mapped, {
+        requestId: rid,
+        fallbackPromptTokens: promptEst,
+        channelType: channel.type,
+        relayMode: mode,
+        rawText: text,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, message.slice(0, 2000), extra);
+      return openaiError(500, message, "bad_response_body");
+    }
     let usage = usageFromOpenAI(converted);
     if (mapped.startsWith("imagen") && Array.isArray(converted.data)) {
       usage = imagenUsage((converted.data as unknown[]).length);
