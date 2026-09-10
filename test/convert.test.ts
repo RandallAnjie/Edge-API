@@ -20,15 +20,20 @@ import {
   openaiFromDifyResponse,
   openaiFromZhipuResponse,
   convertMiniMaxImageRequest,
+  convertMistralOpenAIRequest,
+  convertMokaEmbeddingRequest,
+  convertSiliconFlowImageRequest,
+  convertJinaEmbeddingRequest,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
+import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
 import { isClientError } from "../src/reasoning.js";
 import { getZhipuToken, clearZhipuTokenCache } from "../src/zhipu-convert.js";
+import { applyTencentTc3Authorization, getTencentSign, tencentTokenHubBase, TENCENT_TOKENHUB_BASE } from "../src/tencent-convert.js";
 import { mapModel } from "../src/select.js";
 import { buildUpstream } from "../src/upstream.js";
 import type { ChannelRow } from "../src/types.js";
@@ -1583,5 +1588,258 @@ test("original Zhipu, ZhipuV4, Perplexity, Cloudflare, BaiduV2, and MiniMax Conv
   assert.equal(
     buildUpstream(mmCh, "audio_speech", "/v1/audio/speech", "speech-01", { model: "speech-01", input: "hi" }).url,
     "https://api.minimax.chat/v1/t2a_v2",
+  );
+});
+
+test("original Tencent, Mistral, Moka, Jina, SiliconFlow, and PaLM ConvertOpenAIRequest JSON and URLs", async () => {
+  const nativeKey = "1300000000|AKIDxxxxxxxx|secretxxxxxxxx";
+  const tencent = convertOpenAIRequest(
+    {
+      model: "hunyuan-lite",
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: [{ type: "text", text: "hi hunyuan" }] },
+      ],
+      stream: false,
+      temperature: 0.7,
+      top_p: 0.8,
+      stream_options: { include_usage: true },
+      max_tokens: 32,
+    },
+    {
+      channelType: CHANNEL_TYPE_TENCENT,
+      originModelName: "hunyuan-lite",
+      upstreamModelName: "hunyuan-lite",
+      channelKey: nativeKey,
+    },
+  );
+  assert.deepEqual(tencent, {
+    Model: "hunyuan-lite",
+    Messages: [
+      { Role: "system", Content: "sys" },
+      { Role: "user", Content: "hi hunyuan" },
+    ],
+    Stream: false,
+    TopP: 0.8,
+    Temperature: 0.7,
+  });
+  assert.equal("stream_options" in tencent, false);
+  assert.equal("max_tokens" in tencent, false);
+  assert.equal("model" in tencent, false);
+
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "hunyuan-lite", messages: [{ role: "user", content: "hi" }] },
+        { channelType: CHANNEL_TYPE_TENCENT, originModelName: "hunyuan-lite", upstreamModelName: "hunyuan-lite", channelKey: "only|two" },
+      ),
+    /invalid tencent config/,
+  );
+
+  const tokenHub = convertOpenAIRequest(
+    {
+      model: "hunyuan-lite",
+      messages: [{ role: "user", content: "hi tokenhub" }],
+      stream_options: { include_usage: true },
+    },
+    {
+      channelType: CHANNEL_TYPE_TENCENT,
+      originModelName: "hunyuan-lite",
+      upstreamModelName: "hunyuan-lite",
+      channelKey: "sk-tokenhub",
+    },
+  );
+  assert.equal(tokenHub.model, "hunyuan-lite");
+  assert.equal("stream_options" in tokenHub, false);
+  assert.deepEqual(tokenHub.messages, [{ role: "user", content: "hi tokenhub" }]);
+  assert.equal(tencentTokenHubBase(""), TENCENT_TOKENHUB_BASE);
+  assert.equal(tencentTokenHubBase("https://hunyuan.tencentcloudapi.com"), TENCENT_TOKENHUB_BASE);
+  assert.equal(tencentTokenHubBase("https://proxy.example.com"), "https://proxy.example.com");
+
+  const payload = JSON.stringify(tencent);
+  const signed = await getTencentSign(payload, "AKIDxxxxxxxx", "secretxxxxxxxx", 1_700_000_000);
+  assert.match(signed, /^TC3-HMAC-SHA256 Credential=AKIDxxxxxxxx\/2023-11-14\/hunyuan\/tc3_request, SignedHeaders=content-type;host;x-tc-action, Signature=[0-9a-f]{64}$/);
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const frozen = await applyTencentTc3Authorization(headers, tencent, nativeKey, 1_700_000_000);
+  assert.equal(frozen, payload);
+  assert.equal(headers.authorization, signed);
+  assert.equal(headers["X-TC-Action"], "ChatCompletions");
+  assert.equal(headers["X-TC-Version"], "2023-09-01");
+  assert.equal(headers["X-TC-Timestamp"], "1700000000");
+
+  const mistral = convertOpenAIRequest(
+    {
+      model: "mistral-small-latest",
+      messages: [
+        { role: "user", name: "alice", content: "hi mistral" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "toolu_long_id", type: "function", function: { name: "f", arguments: "{}" } }],
+        },
+        { role: "tool", tool_call_id: "toolu_long_id", content: "ok" },
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "https://img.example/a.png", detail: "high" } }],
+        },
+      ],
+      stream: true,
+      temperature: 0.2,
+      top_p: 0.9,
+      max_completion_tokens: 64,
+      stream_options: { include_usage: true },
+      tools: [{ type: "function", function: { name: "f" } }],
+      frequency_penalty: 0.4,
+    },
+    { channelType: CHANNEL_TYPE_MISTRAL, originModelName: "mistral-small-latest", upstreamModelName: "mistral-small-latest" },
+  );
+  assert.equal(mistral.model, "mistral-small-latest");
+  assert.equal(mistral.stream, true);
+  assert.equal(mistral.temperature, 0.2);
+  assert.equal(mistral.top_p, 0.9);
+  assert.equal(mistral.max_tokens, 64);
+  assert.equal("stream_options" in mistral, false);
+  assert.equal("frequency_penalty" in mistral, false);
+  const mistralMsgs = mistral.messages as Record<string, unknown>[];
+  assert.equal("name" in mistralMsgs[0], false);
+  assert.deepEqual(mistralMsgs[0].content, [{ type: "text", text: "hi mistral" }]);
+  assert.deepEqual(mistralMsgs[1].content, []);
+  const remapped = String((mistralMsgs[1].tool_calls as { id: string }[])[0].id);
+  assert.match(remapped, /^[a-zA-Z0-9]{9}$/);
+  assert.equal(mistralMsgs[2].tool_call_id, remapped);
+  assert.deepEqual(mistralMsgs[3].content, [{ type: "image_url", image_url: "https://img.example/a.png" }]);
+  const kept = convertMistralOpenAIRequest(
+    { model: "mistral-small-latest", messages: [{ role: "assistant", tool_calls: [{ id: "abc123XYZ", type: "function" }] }] },
+    { upstreamModelName: "mistral-small-latest" },
+  );
+  assert.equal((kept.messages as { tool_calls: { id: string }[] }[])[0].tool_calls[0].id, "abc123XYZ");
+
+  const moka = convertOpenAIRequest(
+    { model: "m3e-base", input: ["hello", 1, "world"], encoding_format: "float" },
+    { channelType: CHANNEL_TYPE_MOKA, originModelName: "m3e-base", upstreamModelName: "m3e-base", relayMode: "embeddings" },
+  );
+  assert.deepEqual(moka, { input: ["hello", "world"], model: "m3e-base" });
+  assert.deepEqual(convertMokaEmbeddingRequest({ model: "m3e-base", input: "solo" }), { input: ["solo"], model: "m3e-base" });
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "m3e-base", messages: [{ role: "user", content: "hi" }] },
+        { channelType: CHANNEL_TYPE_MOKA, originModelName: "m3e-base", upstreamModelName: "m3e-base" },
+      ),
+    /not implemented/,
+  );
+
+  const jinaEmbed = convertOpenAIRequest(
+    { model: "jina-clip-v1", input: ["hi"], encoding_format: "float", dimensions: 768 },
+    { channelType: CHANNEL_TYPE_JINA, originModelName: "jina-clip-v1", upstreamModelName: "jina-clip-v1", relayMode: "embeddings" },
+  );
+  assert.equal(jinaEmbed.model, "jina-clip-v1");
+  assert.equal("encoding_format" in jinaEmbed, false);
+  assert.equal(jinaEmbed.dimensions, 768);
+  assert.deepEqual(
+    convertJinaEmbeddingRequest({ model: "jina-clip-v1", input: ["hi"], encoding_format: "base64" }),
+    { model: "jina-clip-v1", input: ["hi"] },
+  );
+  const jinaChat = convertOpenAIRequest(
+    { model: "jina-clip-v1", messages: [{ role: "user", content: "hi" }], stream_options: { include_usage: true } },
+    { channelType: CHANNEL_TYPE_JINA, originModelName: "jina-clip-v1", upstreamModelName: "jina-clip-v1" },
+  );
+  assert.deepEqual(jinaChat.stream_options, { include_usage: true });
+
+  const sfFim = convertOpenAIRequest(
+    { model: "Qwen/Qwen2-7B-Instruct", prefix: "def ", suffix: ":", stream_options: { include_usage: true } },
+    { channelType: CHANNEL_TYPE_SILICONFLOW, originModelName: "Qwen/Qwen2-7B-Instruct", upstreamModelName: "Qwen/Qwen2-7B-Instruct" },
+  );
+  assert.deepEqual(sfFim.messages, [{ role: "user", content: "" }]);
+  assert.equal(sfFim.prefix, "def ");
+  assert.equal(sfFim.suffix, ":");
+  assert.deepEqual(sfFim.stream_options, { include_usage: true });
+  const sfChat = convertOpenAIRequest(
+    { model: "Qwen/Qwen2-7B-Instruct", messages: [{ role: "user", content: "hi sf" }], stream_options: { include_usage: true } },
+    { channelType: CHANNEL_TYPE_SILICONFLOW, originModelName: "Qwen/Qwen2-7B-Instruct", upstreamModelName: "Qwen/Qwen2-7B-Instruct" },
+  );
+  assert.deepEqual(sfChat.stream_options, { include_usage: true });
+  const sfImage = convertSiliconFlowImageRequest({
+    model: "black-forest-labs/FLUX.1-schnell",
+    prompt: "a cat",
+    size: "1024x1024",
+    n: 2,
+    extra: { negative_prompt: "blur", seed: 7 },
+  });
+  assert.equal(sfImage.model, "black-forest-labs/FLUX.1-schnell");
+  assert.equal(sfImage.prompt, "a cat");
+  assert.equal(sfImage.image_size, "1024x1024");
+  assert.equal(sfImage.batch_size, 2);
+  assert.equal(sfImage.negative_prompt, "blur");
+  assert.equal(sfImage.seed, 7);
+
+  const palm = convertOpenAIRequest(
+    {
+      model: "PaLM-2",
+      messages: [{ role: "user", content: "hi palm" }],
+      stream_options: { include_usage: true },
+      temperature: 0.5,
+    },
+    { channelType: CHANNEL_TYPE_PALM, originModelName: "PaLM-2", upstreamModelName: "PaLM-2" },
+  );
+  assert.equal(palm.model, "PaLM-2");
+  assert.deepEqual(palm.stream_options, { include_usage: true });
+  assert.deepEqual(palm.messages, [{ role: "user", content: "hi palm" }]);
+
+  const tencentCh = testChannel({ type: CHANNEL_TYPE_TENCENT, key: nativeKey, base_url: "", models: "hunyuan-lite" });
+  assert.equal(buildUpstream(tencentCh, "chat", "/v1/chat/completions", "hunyuan-lite", tencent).url, "https://hunyuan.tencentcloudapi.com/");
+  assert.equal("authorization" in buildUpstream(tencentCh, "chat", "/v1/chat/completions", "hunyuan-lite", tencent).headers, false);
+
+  const tokenHubCh = testChannel({ type: CHANNEL_TYPE_TENCENT, key: "sk-tokenhub", base_url: "", models: "hunyuan-lite" });
+  const tokenHubUp = buildUpstream(tokenHubCh, "chat", "/v1/chat/completions", "hunyuan-lite", tokenHub);
+  assert.equal(tokenHubUp.url, "https://tokenhub.tencentmaas.com/v1/chat/completions");
+  assert.equal(tokenHubUp.headers.authorization, "Bearer sk-tokenhub");
+  const customHub = testChannel({ type: CHANNEL_TYPE_TENCENT, key: "sk-tokenhub", base_url: "https://proxy.example.com", models: "hunyuan-lite" });
+  assert.equal(
+    buildUpstream(customHub, "chat", "/v1/chat/completions", "hunyuan-lite", tokenHub).url,
+    "https://proxy.example.com/v1/chat/completions",
+  );
+
+  const mistralCh = testChannel({ type: CHANNEL_TYPE_MISTRAL, key: "ms", base_url: "", models: "mistral-small-latest" });
+  assert.equal(
+    buildUpstream(mistralCh, "chat", "/v1/chat/completions", "mistral-small-latest", mistral).url,
+    "https://api.mistral.ai/v1/chat/completions",
+  );
+
+  const mokaCh = testChannel({ type: CHANNEL_TYPE_MOKA, key: "mk", base_url: "", models: "m3e-base" });
+  assert.equal(buildUpstream(mokaCh, "embeddings", "/v1/embeddings", "m3e-base", moka).url, "https://api.moka.ai/embeddings");
+  assert.equal(buildUpstream(mokaCh, "chat", "/v1/chat/completions", "other", { model: "other" }).url, "https://api.moka.ai/chat/");
+
+  const jinaCh = testChannel({ type: CHANNEL_TYPE_JINA, key: "jk", base_url: "", models: "jina-clip-v1" });
+  assert.equal(buildUpstream(jinaCh, "embeddings", "/v1/embeddings", "jina-clip-v1", jinaEmbed).url, "https://api.jina.ai/v1/embeddings");
+  assert.equal(buildUpstream(jinaCh, "rerank", "/v1/rerank", "jina-reranker-v2-base-multilingual", { model: "jina-reranker-v2-base-multilingual" }).url, "https://api.jina.ai/v1/rerank");
+  assert.throws(
+    () => buildUpstream(jinaCh, "chat", "/v1/chat/completions", "jina-clip-v1", jinaChat),
+    /invalid relay mode/,
+  );
+
+  const sfCh = testChannel({ type: CHANNEL_TYPE_SILICONFLOW, key: "sfk", base_url: "", models: "Qwen/Qwen2-7B-Instruct" });
+  assert.equal(
+    buildUpstream(sfCh, "chat", "/v1/chat/completions", "Qwen/Qwen2-7B-Instruct", sfChat).url,
+    "https://api.siliconflow.cn/v1/chat/completions",
+  );
+  assert.equal(
+    buildUpstream(sfCh, "rerank", "/v1/rerank", "BAAI/bge-reranker-v2-m3", { model: "BAAI/bge-reranker-v2-m3" }).url,
+    "https://api.siliconflow.cn/v1/rerank",
+  );
+  assert.equal(
+    buildUpstream(sfCh, "images", "/v1/images/generations", "black-forest-labs/FLUX.1-schnell", sfImage).url,
+    "https://api.siliconflow.cn/v1/images/generations",
+  );
+
+  const palmCh = testChannel({ type: CHANNEL_TYPE_PALM, key: "palm-key", base_url: "", models: "PaLM-2" });
+  const palmUp = buildUpstream(palmCh, "chat", "/v1/chat/completions", "PaLM-2", palm);
+  assert.equal(palmUp.url, "/v1beta2/models/chat-bison-001:generateMessage");
+  assert.equal(palmUp.headers["x-goog-api-key"], "palm-key");
+  assert.equal("authorization" in palmUp.headers, false);
+  const palmBase = testChannel({ type: CHANNEL_TYPE_PALM, key: "palm-key", base_url: "https://generativelanguage.googleapis.com", models: "PaLM-2" });
+  assert.equal(
+    buildUpstream(palmBase, "chat", "/v1/chat/completions", "PaLM-2", palm).url,
+    "https://generativelanguage.googleapis.com/v1beta2/models/chat-bison-001:generateMessage",
   );
 });

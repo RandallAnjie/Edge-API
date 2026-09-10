@@ -1,4 +1,4 @@
-import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
+import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_PALM, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
@@ -32,6 +32,11 @@ import { completeCozeNonStreamChat, openaiFromCozeDetailResponse, cozeUpstreamTo
 import { openaiFromDifyResponse, difyUpstreamToOpenAIChat } from "./dify-convert.js";
 import { applyZhipuV3Authorization, openaiFromZhipuResponse, zhipuUpstreamToOpenAIChat } from "./zhipu-convert.js";
 import { cloudflareUpstreamToOpenAIChat, openaiFromCloudflareResponse } from "./cloudflare-convert.js";
+import { applyTencentTc3Authorization, openaiFromTencentResponse, tencentUpstreamToOpenAIChat, tencentUsesNativeAdaptor } from "./tencent-convert.js";
+import { openaiFromMokaEmbedding } from "./moka-convert.js";
+import { openaiFromJinaRerank } from "./jina-convert.js";
+import { openaiFromSiliconFlowRerank } from "./siliconflow-convert.js";
+import { openaiFromPalmResponse, palmUpstreamToOpenAIChat } from "./palm-convert.js";
 import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import {
@@ -183,7 +188,7 @@ function convertOutbound(
   originModel = "",
   settings: ReasoningHostSettings = {},
   mode: RelayMode = "chat",
-  extras: { botId?: string; responseId?: string; cohereSafetySetting?: string } = {},
+  extras: { botId?: string; responseId?: string; cohereSafetySetting?: string; channelKey?: string } = {},
 ): unknown {
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
@@ -229,6 +234,36 @@ function convertOutbound(
   if (client === "openai" && channelType === CHANNEL_TYPE_MINIMAX && (mode === "images" || mode === "audio_speech")) {
     return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
   }
+  if (client === "openai" && channelType === CHANNEL_TYPE_MOKA && mode === "embeddings") {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+      channelKey: extras.channelKey,
+    });
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_JINA && (mode === "embeddings" || mode === "rerank")) {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+      channelKey: extras.channelKey,
+    });
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_SILICONFLOW && (mode === "images" || mode === "rerank")) {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+      channelKey: extras.channelKey,
+    });
+  }
   if (client === "openai" && mode === "responses") {
     o = convertOpenAIResponsesRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings });
     if (kind === "anthropic") {
@@ -263,6 +298,7 @@ function convertOutbound(
       botId: extras.botId,
       responseId: extras.responseId,
       cohereSafetySetting: extras.cohereSafetySetting,
+      channelKey: extras.channelKey,
     });
     if (kind === "anthropic" || kind === "gemini") return o;
     body = o;
@@ -347,6 +383,7 @@ function convertInbound(
     relayMode?: RelayMode;
     rawText?: string;
     cozeUsage?: CozeUsage;
+    channelKey?: string;
   } = {},
 ): Record<string, unknown> {
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_OLLAMA) {
@@ -389,6 +426,21 @@ function convertInbound(
       fallbackPromptTokens: opts.fallbackPromptTokens,
     });
   }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(opts.channelKey || "")) {
+    return openaiFromTencentResponse(upstreamJson, { fallbackPromptTokens: opts.fallbackPromptTokens });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_PALM) {
+    return openaiFromPalmResponse(upstreamJson, { fallbackPromptTokens: opts.fallbackPromptTokens });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_MOKA && opts.relayMode === "embeddings") {
+    return openaiFromMokaEmbedding(upstreamJson);
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_JINA && opts.relayMode === "rerank") {
+    return openaiFromJinaRerank(upstreamJson);
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_SILICONFLOW && opts.relayMode === "rerank") {
+    return openaiFromSiliconFlowRerank(upstreamJson);
+  }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_AWS) {
     if (isNovaModel(model)) {
       return openaiFromNovaResponse(upstreamJson, model, {
@@ -427,7 +479,7 @@ function openaiClientFromProvider(
   text: string,
   mapped: string,
   stream: boolean,
-  opts: { requestId: string; includeUsage?: boolean; fallbackPromptTokens?: number; channelType?: number; relayMode?: RelayMode },
+  opts: { requestId: string; includeUsage?: boolean; fallbackPromptTokens?: number; channelType?: number; relayMode?: RelayMode; channelKey?: string },
 ): { body: string; usageBody: Record<string, unknown> } {
   if (opts.channelType === CHANNEL_TYPE_OLLAMA && opts.relayMode !== "responses" && opts.relayMode !== "embeddings") {
     const out = ollamaUpstreamToOpenAIChat(text, mapped);
@@ -465,6 +517,17 @@ function openaiClientFromProvider(
       upstreamModelName: mapped,
       fallbackPromptTokens: opts.fallbackPromptTokens,
       includeUsage: opts.includeUsage,
+    });
+    return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
+  }
+  if (opts.channelType === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(opts.channelKey || "")) {
+    const out = tencentUpstreamToOpenAIChat(text, { fallbackPromptTokens: opts.fallbackPromptTokens });
+    return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
+  }
+  if (opts.channelType === CHANNEL_TYPE_PALM) {
+    const out = palmUpstreamToOpenAIChat(text, {
+      id: `chatcmpl-${opts.requestId}`,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
     });
     return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
   }
@@ -532,6 +595,8 @@ function openaiClientFromProvider(
     requestId: opts.requestId,
     fallbackPromptTokens: opts.fallbackPromptTokens,
     channelType: opts.channelType,
+    channelKey: opts.channelKey,
+    relayMode: opts.relayMode,
   });
   return { body: stream ? sseFromOpenAIChatCompletion(converted) : JSON.stringify(converted), usageBody: converted };
 }
@@ -728,6 +793,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode, {
             botId: channel.other || "",
             responseId: `chatcmpl-${rid}`,
+            channelKey: pickChannelKey(channel.key),
           });
       if (!opts.rawBody) {
         const convertedModel = asObj(outbound).model;
@@ -820,6 +886,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (channel.type === CHANNEL_TYPE_ZHIPU) {
         await applyZhipuV3Authorization(target.headers, pickChannelKey(channel.key));
       }
+      if (channel.type === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(pickChannelKey(channel.key))) {
+        target.body = await applyTencentTc3Authorization(target.headers, target.body, pickChannelKey(channel.key));
+      }
       res = await fetchUpstream(target);
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
@@ -890,13 +959,21 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     if (channel.type === CHANNEL_TYPE_CLOUDFLARE && mode !== "responses") {
       isSSE = Boolean(opts.stream);
     }
+    if (channel.type === CHANNEL_TYPE_PALM) {
+      isSSE = Boolean(opts.stream);
+    }
+    if (channel.type === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(pickChannelKey(channel.key))) {
+      isSSE = Boolean(opts.stream);
+    }
     if (affinity) {
       ctx?.waitUntil(recordChannelAffinity(store, opts.env, affinity.cacheKeySuffix, channel.id, affinity.ttlSeconds));
     }
 
     const ollamaResponsesPassthrough = channel.type === CHANNEL_TYPE_OLLAMA && mode === "responses";
     const openaiShapedInbound =
-      kind === "openai" ||
+      (kind === "openai" &&
+        channel.type !== CHANNEL_TYPE_PALM &&
+        !(channel.type === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(pickChannelKey(channel.key)))) ||
       channel.type === CHANNEL_TYPE_ZHIPU_V4 ||
       (channel.type === CHANNEL_TYPE_CLOUDFLARE && mode === "responses");
     if (isSSE && res.body) {
@@ -911,6 +988,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             fallbackPromptTokens: promptEst,
             channelType: channel.type,
             relayMode: mode,
+            channelKey: pickChannelKey(channel.key),
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -971,6 +1049,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         relayMode: mode,
         rawText: text,
         cozeUsage,
+        channelKey: pickChannelKey(channel.key),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

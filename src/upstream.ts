@@ -7,11 +7,16 @@ import {
   CHANNEL_TYPE_CLOUDFLARE,
   CHANNEL_TYPE_DEEPSEEK,
   CHANNEL_TYPE_GEMINI,
+  CHANNEL_TYPE_JINA,
   CHANNEL_TYPE_MINIMAX,
+  CHANNEL_TYPE_MOKA,
   CHANNEL_TYPE_MOONSHOT,
   CHANNEL_TYPE_OLLAMA,
   CHANNEL_TYPE_OPENROUTER,
+  CHANNEL_TYPE_PALM,
   CHANNEL_TYPE_PERPLEXITY,
+  CHANNEL_TYPE_SILICONFLOW,
+  CHANNEL_TYPE_TENCENT,
   CHANNEL_TYPE_VERTEX,
   CHANNEL_TYPE_VOLC,
   CHANNEL_TYPE_ZHIPU,
@@ -24,6 +29,11 @@ import { baiduWorkshopURL } from "./baidu-convert.js";
 import { applyBaiduV2Auth, baiduV2RequestURL } from "./baidu-v2-convert.js";
 import { cloudflareRequestURL } from "./cloudflare-convert.js";
 import { minimaxRequestURL } from "./minimax-convert.js";
+import { jinaRequestURL } from "./jina-convert.js";
+import { mokaRequestURL } from "./moka-convert.js";
+import { palmRequestURL } from "./palm-convert.js";
+import { siliconflowRequestURL } from "./siliconflow-convert.js";
+import { tencentNativeRequestURL, tencentTokenHubBase, tencentUsesNativeAdaptor } from "./tencent-convert.js";
 import { perplexityRequestURL } from "./perplexity-convert.js";
 import { zhipuV3RequestURL, zhipuV4RequestURL } from "./zhipu-convert.js";
 import {
@@ -289,6 +299,71 @@ export function buildUpstream(
 
   if (channel.type === CHANNEL_TYPE_MINIMAX) {
     url = minimaxRequestURL(base, mode);
+    headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_TENCENT) {
+    if (tencentUsesNativeAdaptor(apiKey)) {
+      url = tencentNativeRequestURL(base);
+    } else {
+      url = joinUrl(tencentTokenHubBase(channel.base_url || ""), openaiPath(mode, requestPath));
+      headers.authorization = `Bearer ${apiKey}`;
+    }
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_PALM) {
+    url = palmRequestURL(base);
+    headers["x-goog-api-key"] = apiKey;
+    delete headers.authorization;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_JINA) {
+    url = jinaRequestURL(base, mode);
+    headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_MOKA) {
+    url = mokaRequestURL(base, upstreamModel);
+    headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_SILICONFLOW) {
+    url = siliconflowRequestURL(base, mode, openaiPath(mode, requestPath));
     headers.authorization = `Bearer ${apiKey}`;
     payload = applyChannelParamOverride(channel, payload, headers, {
       ...relayInfo,

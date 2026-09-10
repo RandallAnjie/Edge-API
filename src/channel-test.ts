@@ -4,7 +4,10 @@ import {
   CHANNEL_TYPE_CODEX,
   CHANNEL_TYPE_COHERE,
   CHANNEL_TYPE_COZE,
+  CHANNEL_TYPE_JINA,
   CHANNEL_TYPE_MOKA,
+  CHANNEL_TYPE_SILICONFLOW,
+  CHANNEL_TYPE_TENCENT,
   CHANNEL_TYPE_VOLC,
   CHANNEL_TYPE_ZHIPU,
   CHANNEL_AUTO_DISABLED,
@@ -25,6 +28,7 @@ import {
 } from "./convert.js";
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest } from "./baidu-convert.js";
 import { applyZhipuV3Authorization } from "./zhipu-convert.js";
+import { applyTencentTc3Authorization, tencentUsesNativeAdaptor } from "./tencent-convert.js";
 import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
@@ -447,14 +451,38 @@ function buildTestTarget(
       originModelName: originModel,
       upstreamModelName: mappedModel,
       botId: channel.other || "",
+      channelKey: pickChannelKey(channel.key),
+      relayMode: mode,
     });
     if (payload && typeof payload === "object" && typeof (payload as { model?: unknown }).model === "string") {
       info.upstreamModel = String((payload as { model: string }).model);
     }
   } else if (kind === "embedding" && channel.type === CHANNEL_TYPE_BAIDU) {
     payload = convertBaiduEmbeddingRequest(body as Record<string, unknown>);
+  } else if (kind === "embedding" && (channel.type === CHANNEL_TYPE_MOKA || channel.type === CHANNEL_TYPE_JINA)) {
+    payload = convertOpenAIRequest(body as Record<string, unknown>, {
+      channelType: channel.type,
+      originModelName: originModel,
+      upstreamModelName: mappedModel,
+      channelKey: pickChannelKey(channel.key),
+      relayMode: "embeddings",
+    });
+  } else if (kind === "image" && channel.type === CHANNEL_TYPE_SILICONFLOW) {
+    payload = convertOpenAIRequest(body as Record<string, unknown>, {
+      channelType: channel.type,
+      originModelName: originModel,
+      upstreamModelName: mappedModel,
+      relayMode: "images",
+    });
   } else if (kind === "rerank" && channel.type === CHANNEL_TYPE_COHERE) {
     payload = convertCohereRerankRequest(body as Record<string, unknown>, { upstreamModelName: mappedModel });
+  } else if (kind === "rerank" && (channel.type === CHANNEL_TYPE_JINA || channel.type === CHANNEL_TYPE_SILICONFLOW)) {
+    payload = convertOpenAIRequest(body as Record<string, unknown>, {
+      channelType: channel.type,
+      originModelName: originModel,
+      upstreamModelName: mappedModel,
+      relayMode: "rerank",
+    });
   }
   const extra: Record<string, string> = {};
   if (kind === "anthropic" || kindName === "anthropic") extra["anthropic-version"] = CLAUDE_VERSION;
@@ -509,6 +537,9 @@ export async function testChannel(
     }
     if (channel.type === CHANNEL_TYPE_ZHIPU) {
       await applyZhipuV3Authorization(target.headers, pickChannelKey(channel.key));
+    }
+    if (channel.type === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(pickChannelKey(channel.key))) {
+      target.body = await applyTencentTc3Authorization(target.headers, target.body, pickChannelKey(channel.key));
     }
     res = await fetchTarget(target);
     if (channel.type === CHANNEL_TYPE_COZE && !isStream) {

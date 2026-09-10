@@ -9,7 +9,7 @@ import {
 import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind } from "./catalog.js";
-import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
@@ -23,6 +23,12 @@ import { convertPerplexityOpenAIRequest } from "./perplexity-convert.js";
 import { convertCloudflareCompletionsRequest, convertCloudflareOpenAIRequest } from "./cloudflare-convert.js";
 import { convertBaiduV2OpenAIRequest } from "./baidu-v2-convert.js";
 import { convertMiniMaxImageRequest, convertMiniMaxOpenAIRequest, convertMiniMaxTTSRequest } from "./minimax-convert.js";
+import { convertTencentOpenAIRequest, parseTencentConfig, tencentUsesNativeAdaptor } from "./tencent-convert.js";
+import { convertMistralOpenAIRequest } from "./mistral-convert.js";
+import { convertMokaEmbeddingRequest } from "./moka-convert.js";
+import { convertJinaEmbeddingRequest, convertJinaOpenAIRequest } from "./jina-convert.js";
+import { convertSiliconFlowImageRequest, convertSiliconFlowOpenAIRequest } from "./siliconflow-convert.js";
+import { convertPalmOpenAIRequest } from "./palm-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 
 export type ChatMessage = {
@@ -329,6 +335,8 @@ export type ConvertOpenAIOpts = {
   responseId?: string;
   /** Original `common.CohereSafetySetting`; default `NONE`. */
   cohereSafetySetting?: string;
+  /** Original `info.ApiKey` used by Tencent DispatchAdaptor (native TC3 vs TokenHub). */
+  channelKey?: string;
 };
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
@@ -358,6 +366,21 @@ export {
 } from "./cloudflare-convert.js";
 export { convertBaiduV2OpenAIRequest } from "./baidu-v2-convert.js";
 export { convertMiniMaxImageRequest, convertMiniMaxOpenAIRequest, convertMiniMaxTTSRequest } from "./minimax-convert.js";
+export {
+  convertTencentOpenAIRequest,
+  openaiFromTencentResponse,
+  parseTencentConfig,
+  tencentUsesNativeAdaptor,
+} from "./tencent-convert.js";
+export { convertMistralOpenAIRequest } from "./mistral-convert.js";
+export { convertMokaEmbeddingRequest, openaiFromMokaEmbedding } from "./moka-convert.js";
+export { convertJinaEmbeddingRequest, convertJinaOpenAIRequest, openaiFromJinaRerank } from "./jina-convert.js";
+export {
+  convertSiliconFlowImageRequest,
+  convertSiliconFlowOpenAIRequest,
+  openaiFromSiliconFlowRerank,
+} from "./siliconflow-convert.js";
+export { convertPalmOpenAIRequest, openaiFromPalmResponse } from "./palm-convert.js";
 
 /** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
@@ -451,6 +474,32 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
       return convertMiniMaxTTSRequest(suffixed.body, { originModelName: opts.originModelName });
     }
     return convertMiniMaxOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(opts.channelKey || "")) {
+    parseTencentConfig(opts.channelKey || "");
+    return convertTencentOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_MISTRAL) {
+    return convertMistralOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_MOKA) {
+    if (opts.relayMode === "embeddings") {
+      return convertMokaEmbeddingRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+    }
+    throw new Error("not implemented");
+  }
+  if (opts.channelType === CHANNEL_TYPE_JINA) {
+    if (opts.relayMode === "embeddings") {
+      return convertJinaEmbeddingRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+    }
+    return convertJinaOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_SILICONFLOW) {
+    if (opts.relayMode === "images") return convertSiliconFlowImageRequest(suffixed.body);
+    return convertSiliconFlowOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_PALM) {
+    return convertPalmOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
   }
   const kind = channelKind(opts.channelType);
   if (kind === "anthropic") {
