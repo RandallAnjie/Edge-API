@@ -1,3 +1,9 @@
+/** Original `ratio_setting.USD2RMB` — 1 USD = 7.3 RMB. */
+export const USD2RMB = 7.3;
+/** Original `ratio_setting.USD` — $0.002 = 1 ratio unit, so $1 = 500. */
+export const USD = 500;
+export const RMB = USD / USD2RMB;
+
 /** Original QuantumNous/new-api ratio_setting default maps (InitOptionMap / ResetModelRatio). */
 export const defaultModelRatio: Record<string, number> = {
   "gpt-4-gizmo-*": 15,

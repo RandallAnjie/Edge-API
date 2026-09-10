@@ -51,6 +51,7 @@ import { channelAffinityCacheStats, clearAffinityCacheAll, clearAffinityCacheByR
 import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
 import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
 import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
+import { fetchUpstreamRatios, validateFetchRequest } from "./ratio-sync.js";
 import {
   calcNextResetTime,
   calcPlanEndTime,
@@ -795,66 +796,46 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as {
-      channel_id?: number;
-      channel_ids?: number[];
-      upstreams?: { id?: number; name?: string; base_url?: string; endpoint?: string }[];
-      timeout?: number;
-    };
-    const upstreams: { id: number; name: string; base_url: string; endpoint: string }[] = [];
-    if (body.upstreams?.length) {
-      for (const ustr of body.upstreams) {
-        if (ustr.base_url?.startsWith("http")) {
-          upstreams.push({
-            id: Number(ustr.id || 0),
-            name: ustr.name || ustr.base_url || "",
-            base_url: ustr.base_url.replace(/\/$/, ""),
-            endpoint: ustr.endpoint || "/api/pricing",
-          });
-        }
-      }
-    } else {
-      const ids = body.channel_ids?.length ? body.channel_ids : body.channel_id ? [body.channel_id] : [];
+    let raw: unknown;
+    try {
+      raw = await readJson(c.req);
+    } catch {
+      return json(400, { success: false, message: "请求参数格式错误" });
+    }
+    let req;
+    try {
+      req = validateFetchRequest(raw);
+    } catch (err) {
+      const status = Number((err as { status?: number }).status || 400);
+      return json(status, { success: false, message: err instanceof Error ? err.message : "请求参数格式错误" });
+    }
+    const ids = [...(req.channel_ids || [])];
+    if (req.channel_id) ids.push(req.channel_id);
+    for (const ustr of req.upstreams || []) if (ustr.id) ids.push(Number(ustr.id));
+    const channels = [];
+    try {
       for (const id of ids) {
         const ch = await s.getChannel(Number(id));
-        if (ch?.base_url?.startsWith("http")) {
-          upstreams.push({ id: ch.id, name: ch.name, base_url: ch.base_url.replace(/\/$/, ""), endpoint: "/api/pricing" });
-        }
+        if (ch) channels.push(ch);
       }
+    } catch {
+      return json(500, { success: false, message: "查询渠道失败" });
     }
-    if (!upstreams.length) return apiFail("无有效上游渠道");
     const localData = {
-      model_ratio: parseJson<Record<string, number>>(await s.option("ModelRatio"), {}),
-      completion_ratio: parseJson<Record<string, number>>(await s.option("CompletionRatio"), {}),
-      model_price: parseJson<Record<string, number>>(await s.option("ModelPrice"), {}),
+      model_ratio: parseJson(await s.option("ModelRatio"), {}),
+      completion_ratio: parseJson(await s.option("CompletionRatio"), {}),
+      cache_ratio: parseJson(await s.option("CacheRatio"), {}),
+      create_cache_ratio: parseJson(await s.option("CreateCacheRatio"), {}),
+      image_ratio: parseJson(await s.option("ImageRatio"), {}),
+      audio_ratio: parseJson(await s.option("AudioRatio"), {}),
+      audio_completion_ratio: parseJson(await s.option("AudioCompletionRatio"), {}),
+      model_price: parseJson(await s.option("ModelPrice"), {}),
+      billing_mode: parseJson(await s.option("billing_setting.billing_mode"), {}),
+      billing_expr: parseJson(await s.option("billing_setting.billing_expr"), {}),
     };
-    const test_results: { name: string; status: string; error?: string }[] = [];
-    const differences: Record<string, Record<string, { current: unknown; upstreams: Record<string, unknown> }>> = {};
-    const prices: Record<string, { current: Record<string, unknown>; upstreams: Record<string, Record<string, unknown>> }> = {};
-    for (const ustr of upstreams) {
-      const uniqueName = ustr.id ? `${ustr.name}(${ustr.id})` : ustr.name;
-      try {
-        const res = await fetch(ustr.base_url + (ustr.endpoint.startsWith("/") ? ustr.endpoint : "/" + ustr.endpoint));
-        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-        if (!res.ok) {
-          test_results.push({ name: uniqueName, status: "error", error: `HTTP ${res.status}` });
-          continue;
-        }
-        test_results.push({ name: uniqueName, status: "success" });
-        const payload = (data.data && typeof data.data === "object" ? data.data : data) as Record<string, unknown>;
-        const ratios = (payload.model_ratio || payload.ModelRatio || {}) as Record<string, unknown>;
-        for (const [model, ratio] of Object.entries(ratios)) {
-          if (!differences[model]) differences[model] = {};
-          if (!differences[model].model_ratio) differences[model].model_ratio = { current: localData.model_ratio[model] ?? null, upstreams: {} };
-          differences[model].model_ratio.upstreams[uniqueName] = ratio;
-          if (!prices[model]) prices[model] = { current: { model_ratio: localData.model_ratio[model] ?? null, model_price: localData.model_price[model] ?? null }, upstreams: {} };
-          prices[model].upstreams[uniqueName] = { model_ratio: ratio };
-        }
-      } catch (e) {
-        test_results.push({ name: uniqueName, status: "error", error: e instanceof Error ? e.message : String(e) });
-      }
-    }
-    return apiOk({ differences, prices, test_results });
+    const result = await fetchUpstreamRatios({ req, channels, localData });
+    if (!result.ok) return json(result.status, { success: false, message: result.message });
+    return apiOk(result.data);
   });
 
   r.get("/api/plugin/task", async (c) => {

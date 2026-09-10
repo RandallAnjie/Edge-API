@@ -122,7 +122,9 @@ export class Store {
   }
 
   async getUserByEmail(email: string): Promise<UserRow | null> {
-    return this.db.prepare("SELECT * FROM users WHERE email = ?").bind(email).first<UserRow>();
+    const normalized = email.trim().toLowerCase();
+    if (!normalized) return null;
+    return this.db.prepare("SELECT * FROM users WHERE LOWER(email) = ?").bind(normalized).first<UserRow>();
   }
 
   async getUserByField(field: string, value: string): Promise<UserRow | null> {

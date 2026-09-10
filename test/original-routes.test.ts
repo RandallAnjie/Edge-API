@@ -225,6 +225,9 @@ test("original JSON fields for status, models, deployments, performance, data, u
   const deployList = await json(new Request("http://local/api/deployments/", { headers: auth }), e);
   assert.equal(deployList.body.success, false);
   assert.match(String(deployList.body.message), /io\.net model deployment is not enabled/);
+  const hardware = await json(new Request("http://local/api/deployments/hardware-types", { headers: auth }), e);
+  assert.equal(hardware.body.success, false);
+  assert.match(String(hardware.body.message), /io\.net model deployment is not enabled/);
 
   const perf = await json(new Request("http://local/api/performance/stats", { headers: auth }), e);
   const pd = perf.body.data as Record<string, unknown>;
@@ -241,6 +244,18 @@ test("original JSON fields for status, models, deployments, performance, data, u
   assert.equal(typeof space.used_percent, "number");
   const cfg = pd.config as Record<string, unknown>;
   assert.equal(typeof cfg.disk_cache_enabled, "boolean");
+  for (const k of [
+    "disk_cache_threshold_mb",
+    "disk_cache_max_size_mb",
+    "disk_cache_path",
+    "is_running_in_container",
+    "monitor_enabled",
+    "monitor_cpu_threshold",
+    "monitor_memory_threshold",
+    "monitor_disk_threshold",
+  ]) {
+    assert.ok(k in cfg, "missing performance config " + k);
+  }
 
   const inst = await json(new Request("http://local/api/system-info/instances", { headers: auth }), e);
   const nodes = inst.body.data as Record<string, unknown>[];
@@ -1174,6 +1189,28 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
   for (const k of ["alloc", "total_alloc", "sys", "num_gc", "num_goroutine"]) {
     assert.ok(k in mem, "missing memory_stats " + k);
   }
+  const diskInfo = pd.disk_cache_info as Record<string, unknown>;
+  for (const k of ["path", "exists", "file_count", "total_size"]) {
+    assert.ok(k in diskInfo, "missing disk_cache_info " + k);
+  }
+  const spaceInfo = pd.disk_space_info as Record<string, unknown>;
+  for (const k of ["total", "free", "used", "used_percent"]) {
+    assert.ok(k in spaceInfo, "missing disk_space_info " + k);
+  }
+  const cfg = pd.config as Record<string, unknown>;
+  for (const k of [
+    "disk_cache_enabled",
+    "disk_cache_threshold_mb",
+    "disk_cache_max_size_mb",
+    "disk_cache_path",
+    "is_running_in_container",
+    "monitor_enabled",
+    "monitor_cpu_threshold",
+    "monitor_memory_threshold",
+    "monitor_disk_threshold",
+  ]) {
+    assert.ok(k in cfg, "missing performance config " + k);
+  }
   const logs = await json(new Request("http://local/api/performance/logs", { headers: auth }), e);
   const lf = logs.body.data as Record<string, unknown>;
   assert.equal(lf.enabled, false);
@@ -1874,6 +1911,269 @@ test("original JSON fields: perf-metrics, rankings, quota data, model sync", asy
   );
   assert.equal(fetchBad.res.status, 400);
   assert.equal(fetchBad.body.message, "Invalid request");
+});
+
+test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch, logs, prefill JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const emptyFetch = await json(
+    new Request("http://local/api/ratio_sync/fetch", { method: "POST", headers: auth, body: "{}" }),
+    e,
+  );
+  assert.equal(emptyFetch.res.status, 200);
+  assert.equal(emptyFetch.body.success, false);
+  assert.equal(emptyFetch.body.message, "无有效上游渠道");
+  const badFetch = await json(
+    new Request("http://local/api/ratio_sync/fetch", { method: "POST", headers: auth, body: "{" }),
+    e,
+  );
+  assert.equal(badFetch.res.status, 400);
+  assert.equal(badFetch.body.message, "请求参数格式错误");
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("api.resend.com")) return new Response("{}", { status: 200 });
+    if (url.includes("/api/pricing")) {
+      return new Response(
+        JSON.stringify({ success: true, data: { model_ratio: { "gpt-sync": 2 }, completion_ratio: { "gpt-sync": 1 } } }),
+        { status: 200, statusText: "OK", headers: { "content-type": "application/json" } },
+      );
+    }
+    return origFetch(input as RequestInfo, undefined);
+  };
+  try {
+    const fetched = await json(
+      new Request("http://local/api/ratio_sync/fetch", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          upstreams: [{ id: 0, name: "upstream", base_url: "https://example.test", endpoint: "/api/pricing" }],
+          timeout: 5,
+        }),
+      }),
+      e,
+    );
+    assert.equal(fetched.body.success, true, String(fetched.body.message));
+    const data = fetched.body.data as {
+      differences: Record<string, Record<string, { current: unknown; upstreams: Record<string, unknown>; confidence: Record<string, boolean> }>>;
+      prices: Record<string, { current: Record<string, unknown>; upstreams: Record<string, Record<string, unknown>> }>;
+      test_results: { name: string; status: string; error?: string }[];
+    };
+    assert.ok(Array.isArray(data.test_results));
+    assert.equal(data.test_results[0].name, "upstream");
+    assert.equal(data.test_results[0].status, "success");
+    assert.ok(data.differences["gpt-sync"]);
+    assert.ok("model_ratio" in data.differences["gpt-sync"]);
+    assert.equal(typeof data.differences["gpt-sync"].model_ratio.confidence, "object");
+    assert.equal(data.differences["gpt-sync"].model_ratio.upstreams.upstream, 2);
+    assert.ok("current" in data.prices["gpt-sync"]);
+    assert.ok("upstreams" in data.prices["gpt-sync"]);
+
+    await json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ key: "ResendApiKey", value: "re_test" }),
+      }),
+      e,
+    );
+    const invalidEmail = await json(new Request("http://local/api/verification?email=not-an-email"), e);
+    assert.equal(invalidEmail.body.success, false);
+    assert.equal(invalidEmail.body.code, "EMAIL_ADDRESS_REJECTED");
+    assert.equal(invalidEmail.body.message, "Please enter a valid email address");
+    await e.DB.prepare("UPDATE users SET email = ? WHERE id = 1").bind("taken@example.com").run();
+    const taken = await json(new Request("http://local/api/verification?email=taken@example.com"), e);
+    assert.equal(taken.body.message, "邮箱地址已被占用");
+    const sent = await json(new Request("http://local/api/verification?email=new@example.com"), e);
+    assert.equal(sent.body.success, true, String(sent.body.message));
+    assert.equal(sent.body.message, "");
+
+    const resetMissing = await json(new Request("http://local/api/reset_password?email=nobody@example.com"), e);
+    assert.equal(resetMissing.body.success, true);
+    assert.equal(resetMissing.body.message, "");
+    const resetBad = await json(new Request("http://local/api/reset_password?email=not-an-email"), e);
+    assert.equal(resetBad.body.message, "无效的参数");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  const created = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "sync-ch",
+        type: 1,
+        key: "sk-a\nsk-b",
+        models: "gpt-4o-mini",
+        group: "default",
+        mode: "multi_to_single",
+        multi_key_mode: "random",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const chId = Number((created.body.data as { id?: number })?.id || 0);
+  assert.ok(chId);
+  const statusPut = await json(
+    new Request("http://local/api/channel/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: chId, name: "sync-ch", status: 2 }),
+    }),
+    e,
+  );
+  assert.equal(statusPut.body.success, false);
+  assert.equal(statusPut.body.message, "无效的参数");
+  const before = await json(new Request("http://local/api/channel/" + chId, { headers: auth }), e);
+  const beforeInfo = (before.body.data as { channel_info: { is_multi_key: boolean; multi_key_size: number } }).channel_info;
+  assert.equal(beforeInfo.is_multi_key, true);
+  const renamed = await json(
+    new Request("http://local/api/channel/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: chId, name: "sync-renamed" }),
+    }),
+    e,
+  );
+  assert.equal(renamed.body.success, true);
+  assert.equal(renamed.body.message, "");
+  const renamedData = renamed.body.data as { name: string; key: string; channel_info: Record<string, unknown> };
+  assert.equal(renamedData.name, "sync-renamed");
+  assert.equal(renamedData.key, "");
+  assert.equal(renamedData.channel_info.is_multi_key, true);
+  assert.equal("multi_key_disabled_reason" in renamedData.channel_info, false);
+  const appended = await json(
+    new Request("http://local/api/channel/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: chId, key: "sk-c", key_mode: "append" }),
+    }),
+    e,
+  );
+  assert.equal(appended.body.success, true, String(appended.body.message));
+  assert.equal((appended.body.data as { channel_info: { multi_key_size: number } }).channel_info.multi_key_size, 3);
+
+  await json(
+    new Request("http://local/api/user/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ username: "writeadmin", password: "password12", role: 10 }),
+    }),
+    e,
+  );
+  const adminLogin = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "writeadmin", password: "password12" }),
+    }),
+    e,
+  );
+  const adminAuth = {
+    authorization: "Bearer " + (adminLogin.body.data as { access_token: string }).access_token,
+    "content-type": "application/json",
+  };
+  const sensitive = await json(
+    new Request("http://local/api/channel/", {
+      method: "PUT",
+      headers: adminAuth,
+      body: JSON.stringify({ id: chId, key: "sk-new" }),
+    }),
+    e,
+  );
+  assert.equal(sensitive.body.success, false);
+  assert.equal(sensitive.body.message, "无权进行此操作，权限不足");
+
+  const proof = await passwordProof(e, auth, "access_token.generate");
+  const issued = await json(
+    new Request("http://local/api/user/token", {
+      method: "POST",
+      headers: { ...auth, "X-Security-Proof": proof.proof_token },
+    }),
+    e,
+  );
+  const pat = String(issued.body.data || "");
+  const patSessions = await json(
+    new Request("http://local/api/user/sessions", { headers: { authorization: "Bearer " + pat } }),
+    e,
+  );
+  assert.equal(patSessions.res.status, 403);
+  assert.equal(patSessions.body.code, "AUTH_SESSION_REQUIRED");
+  assert.equal(patSessions.body.message, "a dashboard login session is required");
+
+  const passkey = await json(new Request("http://local/api/user/passkey", { headers: auth }), e);
+  assert.equal((passkey.body.data as { enabled: boolean }).enabled, false);
+  assert.equal("last_used_at" in (passkey.body.data as object), false);
+
+  const tooMany = await json(
+    new Request("http://local/api/token/batch/keys", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ ids: Array.from({ length: 101 }, (_, i) => i + 1) }),
+    }),
+    e,
+  );
+  assert.equal(tooMany.body.message, "批量请求数量过多，最多 100 条");
+
+  const logStat = await json(new Request("http://local/api/log/stat", { headers: auth }), e);
+  const ls = logStat.body.data as { quota: number; rpm: number; tpm: number };
+  assert.equal(typeof ls.quota, "number");
+  assert.equal(typeof ls.rpm, "number");
+  assert.equal(typeof ls.tpm, "number");
+  const selfStat = await json(new Request("http://local/api/log/self/stat", { headers: auth }), e);
+  const ss = selfStat.body.data as { quota: number; rpm: number; tpm: number };
+  assert.equal(typeof ss.quota, "number");
+  assert.equal(typeof ss.rpm, "number");
+  assert.equal(typeof ss.tpm, "number");
+
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(
+    new Request("http://local/api/redemption/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "codes", quota: 100, count: 1 }),
+    }),
+    e,
+  );
+  const redemptions = await json(new Request("http://local/api/redemption/", { headers: auth }), e);
+  const page = redemptions.body.data as { items: Record<string, unknown>[]; total: number; page: number; page_size: number };
+  assert.equal(typeof page.total, "number");
+  assert.equal(typeof page.page, "number");
+  assert.equal(typeof page.page_size, "number");
+  assert.ok(page.items.length);
+  for (const k of ["id", "user_id", "key", "status", "name", "quota", "created_time", "redeemed_time"]) {
+    assert.ok(k in page.items[0], "missing Redemption field " + k);
+  }
+
+  const prefill = await json(
+    new Request("http://local/api/prefill_group/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "models", type: "model", items: ["gpt-4o"], description: "d" }),
+    }),
+    e,
+  );
+  assert.equal(prefill.body.success, true, String(prefill.body.message));
+  const groups = await json(new Request("http://local/api/prefill_group/", { headers: auth }), e);
+  assert.ok(Array.isArray(groups.body.data));
+  const g0 = (groups.body.data as Record<string, unknown>[])[0];
+  for (const k of ["id", "name", "type", "items", "description", "created_time", "updated_time"]) {
+    assert.ok(k in g0, "missing PrefillGroup field " + k);
+  }
+  assert.ok(Array.isArray(g0.items));
+
+  const auditBad = await json(new Request("http://local/api/audit/self?category=nope", { headers: auth }), e);
+  assert.equal(auditBad.body.message, "Invalid audit filters");
+
+  const syncCh = await json(new Request("http://local/api/ratio_sync/channels", { headers: auth }), e);
+  const channels = syncCh.body.data as { id: number; name: string }[];
+  assert.ok(channels.some((ch) => ch.id === -100 && ch.name === "官方倍率预设"));
+  assert.ok(channels.some((ch) => ch.id === -101 && ch.name === "models.dev 价格预设"));
 });
 
 

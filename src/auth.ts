@@ -538,6 +538,26 @@ export async function dashboardIdentity(c: Context<Env>, store: Store): Promise<
   };
 }
 
+/** Original `requireBrowserSession` — PAT identities have no sid. */
+export function authSessionRequired(): Response {
+  return json(403, {
+    success: false,
+    code: "AUTH_SESSION_REQUIRED",
+    message: "a dashboard login session is required",
+  });
+}
+
+export async function requireBrowserSession(
+  c: Context<Env>,
+  store: Store,
+): Promise<{ user: SessionUser; identity: AuthIdentity } | Response> {
+  const u = await requireUser(c, store);
+  if (u instanceof Response) return u;
+  const identity = await dashboardIdentity(c, store);
+  if (!identity) return authSessionRequired();
+  return { user: u, identity };
+}
+
 export async function requireProof(
   c: Context<Env>,
   store: Store,

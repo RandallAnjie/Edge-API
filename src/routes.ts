@@ -15,7 +15,15 @@ import {
 } from "./constants.js";
 import { canWithPolicies, permissionDeltas, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { CHANNEL_TYPES, defaultBaseUrl } from "./catalog.js";
-import { channelKeys, multiKeyInfoFromKeys, stringifyChannelInfo } from "./channel-info.js";
+import {
+  appendChannelKeys,
+  channelHasSensitiveChanges,
+  CHANNEL_READ_ONLY_FIELDS,
+  channelKeys,
+  multiKeyInfoFromKeys,
+  parseChannelInfo,
+  stringifyChannelInfo,
+} from "./channel-info.js";
 import {
   generateAffCode,
   generateRedemptionKey,
@@ -63,6 +71,51 @@ async function canTaskPluginBind(s: Store, u: { id: number }): Promise<boolean> 
   const userPolicies = await s.casbinPolicies(userSubject(user.id));
   const rolePolicies = roleKey ? await s.casbinPolicies(roleSubject(roleKey)) : [];
   return canWithPolicies(user, "task_plugin", "bind", userPolicies, rolePolicies);
+}
+
+async function canChannelSensitiveWrite(s: Store, u: { id: number }): Promise<boolean> {
+  const user = await s.getUserById(u.id);
+  if (!user) return false;
+  const roleKey = roleKeyForSystemRole(user.role);
+  const userPolicies = await s.casbinPolicies(userSubject(user.id));
+  const rolePolicies = roleKey ? await s.casbinPolicies(roleSubject(roleKey)) : [];
+  return canWithPolicies(user, "channel", "sensitive_write", userPolicies, rolePolicies);
+}
+
+function auditListFilter(c: C): Response | {
+  category: string;
+  token_ref: string;
+  exclude_token_ref: string;
+  request_id: string;
+  start_timestamp: number;
+  end_timestamp: number;
+  success?: boolean;
+  username: string;
+} {
+  const category = c.url.searchParams.get("category") || "";
+  const tokenRef = c.url.searchParams.get("token_ref") || "";
+  const exclude = c.url.searchParams.get("exclude_token_ref") || "";
+  if (category && !["login", "security", "operation", "access_token"].includes(category)) return apiFail("Invalid audit filters");
+  if ((tokenRef && !/^[0-9a-f]{64}$/.test(tokenRef)) || (exclude && !/^[0-9a-f]{64}$/.test(exclude))) {
+    return apiFail("Invalid audit filters");
+  }
+  const start = Number(c.url.searchParams.get("start_timestamp") || 0);
+  const end = Number(c.url.searchParams.get("end_timestamp") || 0);
+  if ((c.url.searchParams.get("start_timestamp") && start < 0) || (c.url.searchParams.get("end_timestamp") && end < 0) || (end > 0 && end < start)) {
+    return apiFail("Invalid audit time range");
+  }
+  const successRaw = c.url.searchParams.get("success") || "";
+  if (successRaw && successRaw !== "true" && successRaw !== "false") return apiFail("Invalid audit result");
+  return {
+    category,
+    token_ref: tokenRef,
+    exclude_token_ref: exclude,
+    request_id: c.url.searchParams.get("request_id") || "",
+    start_timestamp: start,
+    end_timestamp: end,
+    success: successRaw === "" ? undefined : successRaw === "true",
+    username: c.url.searchParams.get("username") || "",
+  };
 }
 
 export function adminRouter(): Router<Env> {
@@ -778,15 +831,48 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown>;
-    const ch = (body.channel || body) as Record<string, unknown>;
+    let body: Record<string, unknown>;
+    try {
+      body = (await readJson(c.req)) as Record<string, unknown>;
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+    const requestData = body;
+    const ch = ((body.channel && typeof body.channel === "object" ? body.channel : body) as Record<string, unknown>);
+    if ("status" in requestData || "status" in ch) return apiFail("无效的参数");
     const id = Number(ch.id);
     if (!id) return apiFail("无效的参数");
-    const patch: Record<string, unknown> = {};
+    const origin = await s.getChannel(id);
+    if (!origin) return apiFail("record not found");
+    if (Number(ch.type) === 61 && !(await canTaskPluginBind(s, u))) {
+      return apiFail("task plugin channels require the task_plugin.bind permission");
+    }
+    if (channelHasSensitiveChanges(ch, origin, requestData) && !(await canChannelSensitiveWrite(s, u))) {
+      return apiFail("无权进行此操作，权限不足");
+    }
+    const info = parseChannelInfo(String(origin.channel_info || ""));
+    const multiKeyMode = String(ch.multi_key_mode || "");
+    if (multiKeyMode) info.multi_key_mode = multiKeyMode;
+    let key = origin.key;
+    const keyMode = String(ch.key_mode || "");
+    if (keyMode === "append" && info.is_multi_key) {
+      key = appendChannelKeys(origin.key, String(ch.key || ""));
+    } else if (String(ch.key || "") !== "") {
+      key = String(ch.key);
+    }
+    if (info.is_multi_key) {
+      const keys = channelKeys(key);
+      info.multi_key_size = keys.length;
+      if (info.multi_key_status_list) {
+        for (const idx of Object.keys(info.multi_key_status_list)) {
+          if (Number(idx) >= info.multi_key_size) delete info.multi_key_status_list[idx];
+        }
+      }
+    }
+    const patch: Record<string, unknown> = { channel_info: stringifyChannelInfo(info) };
+    if (key !== origin.key) patch.key = key;
     for (const k of [
       "type",
-      "key",
-      "status",
       "name",
       "weight",
       "base_url",
@@ -805,10 +891,11 @@ export function adminRouter(): Router<Env> {
       "test_model",
       "setting",
       "other_info",
-      "channel_info",
-      "balance",
+      "status_code_mapping",
     ]) {
-      if (ch[k] != null) patch[k] = typeof ch[k] === "object" ? JSON.stringify(ch[k]) : ch[k];
+      if (k in ch && ch[k] != null && !CHANNEL_READ_ONLY_FIELDS.has(k)) {
+        patch[k] = typeof ch[k] === "object" ? JSON.stringify(ch[k]) : ch[k];
+      }
     }
     await s.updateChannel(id, patch);
     const updated = await s.getChannel(id);
@@ -1224,30 +1311,9 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
     if (q.page < 1 || q.page_size < 1 || q.page > 100000000) return apiFail("Invalid audit pagination");
-    const category = c.url.searchParams.get("category") || "";
-    const tokenRef = c.url.searchParams.get("token_ref") || "";
-    const exclude = c.url.searchParams.get("exclude_token_ref") || "";
-    if (category && !["login", "security", "operation", "access_token"].includes(category)) return apiFail("Invalid audit filters");
-    if ((tokenRef && !/^[0-9a-f]{64}$/.test(tokenRef)) || (exclude && !/^[0-9a-f]{64}$/.test(exclude))) {
-      return apiFail("Invalid audit filters");
-    }
-    const start = Number(c.url.searchParams.get("start_timestamp") || 0);
-    const end = Number(c.url.searchParams.get("end_timestamp") || 0);
-    if ((c.url.searchParams.get("start_timestamp") && start < 0) || (c.url.searchParams.get("end_timestamp") && end < 0) || (end > 0 && end < start)) {
-      return apiFail("Invalid audit time range");
-    }
-    const successRaw = c.url.searchParams.get("success") || "";
-    if (successRaw && successRaw !== "true" && successRaw !== "false") return apiFail("Invalid audit result");
-    const { items, total } = await s.listAudit(q.offset, q.page_size, {
-      username: c.url.searchParams.get("username") || "",
-      category,
-      token_ref: tokenRef,
-      exclude_token_ref: exclude,
-      request_id: c.url.searchParams.get("request_id") || "",
-      start_timestamp: start,
-      end_timestamp: end,
-      success: successRaw === "" ? undefined : successRaw === "true",
-    });
+    const filters = auditListFilter(c);
+    if (isResponse(filters)) return filters;
+    const { items, total } = await s.listAudit(q.offset, q.page_size, filters);
     return apiOk(pageData(items, total, q));
   });
 
@@ -1257,7 +1323,9 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
     if (q.page < 1 || q.page_size < 1 || q.page > 100000000) return apiFail("Invalid audit pagination");
-    const { items, total } = await s.listAudit(q.offset, q.page_size, { userId: u.id });
+    const filters = auditListFilter(c);
+    if (isResponse(filters)) return filters;
+    const { items, total } = await s.listAudit(q.offset, q.page_size, { ...filters, userId: u.id, username: "" });
     return apiOk(pageData(items, total, q));
   });
 

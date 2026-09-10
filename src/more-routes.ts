@@ -12,7 +12,7 @@ import {
   verifyBackupCode,
   verifyTotp,
 } from "./totp.js";
-import { mailConfigured, notifyAccountSecurityChange, sendMail, sixDigitCode } from "./mail.js";
+import { notifyAccountSecurityChange, sendMail, sixDigitCode, validateAccountEmail, normalizeEmail } from "./mail.js";
 import { newChallenge, rpFromRequest, verifyAssertion } from "./passkey.js";
 import {
   exchangeCustom,
@@ -49,12 +49,12 @@ import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
   authenticateTokenReadOnly,
-  currentSid,
   dashboardIdentity,
   issueSessionSafe,
   isResponse,
   readSession,
   requireAdmin,
+  requireBrowserSession,
   requireChannel,
   requireProof,
   requireRoot,
@@ -126,26 +126,49 @@ export function registerMore(r: Router<Env>): void {
 
   r.get("/api/verification", async (c) => {
     const s = store(c);
-    const email = (c.url.searchParams.get("email") || "").trim();
-    if (!email || !email.includes("@")) return apiFail("无效邮箱");
-    if (!(await mailConfigured(s))) return apiFail("邮件未配置");
+    const validated = await validateAccountEmail(s, c.url.searchParams.get("email") || "");
+    if (!validated.ok) return json(200, { success: false, code: validated.code, message: validated.message });
+    if (await s.getUserByEmail(validated.email)) return apiFail("邮箱地址已被占用");
     const code = sixDigitCode();
-    await s.insertEmailCode(email, code, "verify");
-    await sendMail(s, email, "Edge API 验证码", `<p>您的验证码是 <b>${code}</b>，10 分钟内有效。</p>`);
-    return apiOk(null, "验证码已发送");
+    await s.insertEmailCode(validated.email, code, "verify");
+    const systemName = (await s.option("SystemName")) || "New API";
+    const subject = `${systemName}邮箱验证邮件`;
+    const content =
+      `<p>您好，你正在进行${systemName}邮箱验证。</p>` +
+      `<p>您的验证码为: <strong>${code}</strong></p>` +
+      `<p>验证码 10 分钟内有效，如果不是本人操作，请忽略。</p>`;
+    try {
+      await sendMail(s, validated.email, subject, content);
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+    return apiOk(null, "");
   });
 
   r.get("/api/reset_password", async (c) => {
     const s = store(c);
-    const email = (c.url.searchParams.get("email") || "").trim();
-    if (!email) return apiFail("无效邮箱");
-    if (!(await mailConfigured(s))) return apiFail("邮件未配置");
+    const email = normalizeEmail(c.url.searchParams.get("email") || "");
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return apiFail("无效的参数");
     const user = await s.getUserByEmail(email);
-    if (!user) return apiFail("用户不存在");
-    const code = sixDigitCode();
-    await s.insertEmailCode(email, code, "reset");
-    await sendMail(s, email, "Edge API 重置密码", `<p>重置验证码 <b>${code}</b>，10 分钟内有效。</p>`);
-    return apiOk(null, "验证码已发送");
+    if (user) {
+      const code = randomHex(16);
+      await s.insertEmailCode(email, code, "reset");
+      const systemName = (await s.option("SystemName")) || "New API";
+      const server = (await s.option("ServerAddress")) || "";
+      const link = `${server}/user/reset?email=${encodeURIComponent(email)}&token=${code}`;
+      const subject = `${systemName}密码重置`;
+      const content =
+        `<p>您好，你正在进行${systemName}密码重置。</p>` +
+        `<p>点击 <a href='${link}'>此处</a> 进行密码重置。</p>` +
+        `<p>如果链接无法点击，请尝试点击下面的链接或将其复制到浏览器中打开：<br> ${link} </p>` +
+        `<p>重置链接 10 分钟内有效，如果不是本人操作，请忽略。</p>`;
+      try {
+        await sendMail(s, email, subject, content);
+      } catch {
+        /* original logs send errors and still returns success */
+      }
+    }
+    return apiOk(null, "");
   });
 
   r.post("/api/user/reset", async (c) => {
@@ -300,33 +323,30 @@ export function registerMore(r: Router<Env>): void {
 
   r.get("/api/user/sessions", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const sid = await currentSid(c, s);
-    return apiOk(sessionViews(await s.listSessions(u.id), sid));
+    const sess = await requireBrowserSession(c, s);
+    if (isResponse(sess)) return sess;
+    return apiOk(sessionViews(await s.listSessions(sess.user.id), sess.identity.sessionId));
   });
 
   r.delete("/api/user/sessions/:sid", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
+    const sess = await requireBrowserSession(c, s);
+    if (isResponse(sess)) return sess;
     const sid = (c.params.sid || "").trim();
     if (!sid) return json(400, { success: false, code: "AUTH_SESSION_ID_REQUIRED", message: "session id is required" });
-    const current = await currentSid(c, s);
     const existing = await s.getSession(sid);
-    if (!existing || existing.user_id !== u.id || existing.revoked) {
+    if (!existing || existing.user_id !== sess.user.id || existing.revoked) {
       return json(404, { success: false, code: "AUTH_SESSION_NOT_FOUND", message: "session not found" });
     }
-    await s.revokeSession(sid, u.id);
-    return apiOk({ revoked_sid: sid, current: sid === current });
+    await s.revokeSession(sid, sess.user.id);
+    return apiOk({ revoked_sid: sid, current: sid === sess.identity.sessionId });
   });
 
   r.post("/api/user/sessions/revoke-others", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const sid = await currentSid(c, s);
-    const count = await s.revokeOtherSessions(u.id, sid);
+    const sess = await requireBrowserSession(c, s);
+    if (isResponse(sess)) return sess;
+    const count = await s.revokeOtherSessions(sess.user.id, sess.identity.sessionId);
     return apiOk({ revoked_count: count });
   });
 
@@ -378,9 +398,10 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const keys = await s.listPasskeys(u.id);
     if (!keys.length) return apiOk({ enabled: false });
+    const last = Number(keys[0].last_used_at) || 0;
     return apiOk({
       enabled: true,
-      last_used_at: Number(keys[0].last_used_at) || null,
+      last_used_at: last ? new Date(last * 1000).toISOString().replace(/\.\d{3}Z$/, "Z") : null,
     });
   });
 
@@ -936,7 +957,7 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[] };
     if (!body.ids?.length) return apiFail("无效的参数");
-    if (body.ids.length > 100) return apiFail("批量数量过多");
+    if (body.ids.length > 100) return apiFail("批量请求数量过多，最多 100 条");
     const keys: Record<string, string> = {};
     for (const id of body.ids) {
       const t = await s.getTokenById(id, u.id);

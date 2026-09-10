@@ -161,7 +161,7 @@ export function publicToken(t: TokenRow): Record<string, unknown> {
 
 export function publicChannel(c: ChannelRow, includeKey = false): Record<string, unknown> {
   const parsedInfo = parseJson<Record<string, unknown> | null>(String(c.channel_info || ""), null);
-  const info =
+  let info: Record<string, unknown> =
     parsedInfo && typeof parsedInfo === "object"
       ? {
           is_multi_key: false,
@@ -178,6 +178,10 @@ export function publicChannel(c: ChannelRow, includeKey = false): Record<string,
           multi_key_polling_index: 0,
           multi_key_mode: "",
         };
+  if (info.is_multi_key) {
+    delete info.multi_key_disabled_reason;
+    delete info.multi_key_disabled_time;
+  }
   const setting = c.setting || c.settings || "";
   return {
     id: c.id,

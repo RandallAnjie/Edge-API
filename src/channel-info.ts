@@ -290,3 +290,115 @@ export function manageMultiKeys(ch: ChannelRow, request: MultiKeyManageRequest):
       return apiFail("不支持的操作");
   }
 }
+
+/** Original `channelSensitiveFields`. */
+export const CHANNEL_SENSITIVE_FIELDS = new Set([
+  "type",
+  "key",
+  "base_url",
+  "openai_organization",
+  "header_override",
+  "param_override",
+  "setting",
+  "other",
+  "settings",
+  "key_mode",
+]);
+
+/** Original `channelNonSensitiveFields`. */
+export const CHANNEL_NON_SENSITIVE_FIELDS = new Set([
+  "id",
+  "test_model",
+  "name",
+  "weight",
+  "models",
+  "group",
+  "model_mapping",
+  "status_code_mapping",
+  "priority",
+  "auto_ban",
+  "other_info",
+  "tag",
+  "remark",
+  "channel_info",
+  "multi_key_mode",
+]);
+
+/** Original `channelOperationalFields`. */
+export const CHANNEL_OPERATIONAL_FIELDS = new Set(["status"]);
+
+/** Original `channelReadOnlyFields`. */
+export const CHANNEL_READ_ONLY_FIELDS = new Set([
+  "created_time",
+  "test_time",
+  "response_time",
+  "balance",
+  "balance_updated_time",
+  "used_quota",
+]);
+
+function strEq(a: unknown, b: unknown): boolean {
+  return String(a ?? "") === String(b ?? "");
+}
+
+/** Original `channelHasSensitiveChanges`. */
+export function channelHasSensitiveChanges(
+  next: Record<string, unknown>,
+  origin: ChannelRow,
+  requestData: Record<string, unknown>,
+): boolean {
+  if ("type" in requestData && Number(next.type) !== Number(origin.type)) return true;
+  if ("key" in requestData && String(next.key || "") !== "" && String(next.key) !== String(origin.key)) return true;
+  if ("base_url" in requestData && !strEq(next.base_url, origin.base_url)) return true;
+  if ("openai_organization" in requestData && !strEq(next.openai_organization, origin.openai_organization)) return true;
+  if ("header_override" in requestData && !strEq(next.header_override, origin.header_override)) return true;
+  if ("param_override" in requestData && !strEq(next.param_override, origin.param_override)) return true;
+  if ("setting" in requestData && !strEq(next.setting, origin.setting || origin.settings)) return true;
+  if ("other" in requestData && !strEq(next.other, origin.other)) return true;
+  if ("settings" in requestData && !strEq(next.settings, origin.settings)) return true;
+  if ("key_mode" in requestData && next.key_mode != null) return true;
+  for (const field of Object.keys(requestData)) {
+    if (CHANNEL_SENSITIVE_FIELDS.has(field)) continue;
+    if (CHANNEL_NON_SENSITIVE_FIELDS.has(field)) continue;
+    if (CHANNEL_OPERATIONAL_FIELDS.has(field)) continue;
+    if (CHANNEL_READ_ONLY_FIELDS.has(field)) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Original `clearChannelInfo` — drop disabled-reason maps from public JSON. */
+export function clearChannelInfoPublic(info: Record<string, unknown>): Record<string, unknown> {
+  if (!info.is_multi_key) return info;
+  const { multi_key_disabled_reason: _r, multi_key_disabled_time: _t, ...rest } = info;
+  return rest;
+}
+
+/** Original UpdateChannel key_mode=append. */
+export function appendChannelKeys(existingKey: string, incomingKey: string): string {
+  let existingKeys: string[] = [];
+  const trimmed = existingKey.trim();
+  if (trimmed.startsWith("[")) {
+    try {
+      const arr = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(arr)) existingKeys = arr.map((v) => (typeof v === "string" ? v : JSON.stringify(v)));
+    } catch {
+      existingKeys = existingKey.replace(/^\n+|\n+$/g, "").split("\n");
+    }
+  } else {
+    existingKeys = existingKey.replace(/^\n+|\n+$/g, "").split("\n");
+  }
+  const newKeys = incomingKey.split("\n").map((k) => k.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  for (const key of existingKeys) {
+    const normalized = key.trim();
+    if (normalized) seen.add(normalized);
+  }
+  const deduped: string[] = [];
+  for (const key of newKeys) {
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(key);
+  }
+  return [...existingKeys, ...deduped].join("\n");
+}

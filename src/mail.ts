@@ -1,5 +1,42 @@
 import type { Store } from "./store.js";
 
+export const ERR_ACCOUNT_EMAIL_INVALID = "Please enter a valid email address";
+export const ERR_ACCOUNT_EMAIL_RESTRICTED =
+  "This email address is not allowed by the administrator's email policy.";
+
+/** Original `model.NormalizeEmail`. */
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/** Original `service.ValidateAccountEmail`. */
+export async function validateAccountEmail(
+  store: Store,
+  raw: string,
+): Promise<{ ok: true; email: string } | { ok: false; code: string; message: string }> {
+  const email = normalizeEmail(raw);
+  if (!email || email.length > 50 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return { ok: false, code: "EMAIL_ADDRESS_REJECTED", message: ERR_ACCOUNT_EMAIL_INVALID };
+  }
+  const parts = email.split("@");
+  if (parts.length !== 2) {
+    return { ok: false, code: "EMAIL_ADDRESS_REJECTED", message: ERR_ACCOUNT_EMAIL_INVALID };
+  }
+  if (await store.optionBool("EmailDomainRestrictionEnabled", false)) {
+    const allowed = (await store.option("EmailDomainWhitelist"))
+      .split(",")
+      .map((d) => d.trim().toLowerCase())
+      .filter(Boolean);
+    if (!allowed.includes(parts[1])) {
+      return { ok: false, code: "EMAIL_ADDRESS_REJECTED", message: ERR_ACCOUNT_EMAIL_RESTRICTED };
+    }
+  }
+  if ((await store.optionBool("EmailAliasRestrictionEnabled", false)) && /[+.]/.test(parts[0])) {
+    return { ok: false, code: "EMAIL_ADDRESS_REJECTED", message: ERR_ACCOUNT_EMAIL_RESTRICTED };
+  }
+  return { ok: true, email };
+}
+
 export async function mailConfigured(store: Store): Promise<boolean> {
   return Boolean(await store.option("ResendApiKey"));
 }
