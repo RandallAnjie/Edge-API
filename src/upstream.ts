@@ -11,6 +11,7 @@ import {
   parseJson,
 } from "./constants.js";
 import { CHANNEL_SPECIAL_BASES, channelKind, defaultBaseUrl, resolveBaseUrl } from "./catalog.js";
+import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import type { ChannelRow } from "./types.js";
 
@@ -99,6 +100,7 @@ export function buildUpstream(
   body: unknown,
   extraHeaders: Record<string, string> = {},
   method = "POST",
+  relayInfo: ParamOverrideRelayInfo = {},
 ): UpstreamTarget {
   const kind = channelKind(channel.type);
   const base = resolveBaseUrl(channel.type, channel.base_url);
@@ -214,14 +216,12 @@ export function buildUpstream(
     }
   }
 
-  const headerOverride = parseJson<Record<string, string>>(channel.header_override, {});
-  for (const [k, v] of Object.entries(headerOverride)) {
-    headers[k] = String(v).replace(/\{api_key\}/g, apiKey).replace(/\{model\}/g, upstreamModel);
-  }
-  const paramOverride = parseJson<Record<string, unknown>>(channel.param_override, {});
-  if (payloadIsObject(payload) && Object.keys(paramOverride).length) {
-    payload = { ...(payload as Record<string, unknown>), ...paramOverride };
-  }
+  payload = applyChannelParamOverride(channel, payload, headers, {
+    ...relayInfo,
+    originalModel: relayInfo.originalModel || model,
+    upstreamModel: relayInfo.upstreamModel || upstreamModel,
+    requestPath: relayInfo.requestPath || requestPath,
+  }, apiKey, upstreamModel);
 
   return { url, headers, body: payload, method };
 }

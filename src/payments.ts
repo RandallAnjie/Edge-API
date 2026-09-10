@@ -1,4 +1,4 @@
-import { nowSec, parseJson, randomHex } from "./constants.js";
+import { MAX_WALLET_QUOTA, nowSec, parseJson, randomHex } from "./constants.js";
 import { hmacSha256Hex, sha1Hex, timingSafeEqualStr } from "./crypto.js";
 import { apiFail, json, payErr, payOk, readJson } from "./http.js";
 import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
@@ -137,19 +137,88 @@ function paymentReturnPath(req: Request, suffix: string, serverAddress = ""): st
   return base + suffix;
 }
 
-function payMoney(amount: number, unitPrice: number): number {
-  return Math.round(amount * unitPrice * 100) / 100;
+export type PayAmountKind = "epay" | "stripe" | "waffo" | "waffo_pancake";
+
+async function quotaDisplayType(store: Store): Promise<string> {
+  return (await store.option("general_setting.quota_display_type")) || "USD";
 }
 
-export async function requestAmount(store: Store, body: { amount?: number; payment_method?: string }): Promise<Response> {
+async function topupGroupRatio(store: Store, group: string): Promise<number> {
+  const ratios = parseJson<Record<string, number>>(await store.option("TopupGroupRatio"), {
+    default: 1,
+    vip: 1,
+    svip: 1,
+  });
+  const ratio = ratios[group];
+  if (ratio == null || ratio === 0) return 1;
+  return ratio;
+}
+
+async function amountDiscount(store: Store, amount: number): Promise<number> {
+  const discounts = parseJson<Record<string, number>>(await store.option("AmountDiscount"), {});
+  const ds = discounts[String(amount)] ?? discounts[amount as unknown as string];
+  return ds > 0 ? ds : 1;
+}
+
+async function minTopup(store: Store, optionKey: string, fallback: number): Promise<number> {
+  let min = await store.optionNum(optionKey, fallback);
+  if ((await quotaDisplayType(store)) === "TOKENS") {
+    min = min * (await store.optionNum("QuotaPerUnit", 500000));
+  }
+  return min;
+}
+
+async function displayAmount(store: Store, amount: number): Promise<number> {
+  if ((await quotaDisplayType(store)) === "TOKENS") {
+    const qpu = await store.optionNum("QuotaPerUnit", 500000);
+    return qpu > 0 ? amount / qpu : amount;
+  }
+  return amount;
+}
+
+async function payMoneyFor(
+  store: Store,
+  amount: number,
+  group: string,
+  unitPrice: number,
+): Promise<number> {
+  const money = (await displayAmount(store, amount)) * unitPrice * (await topupGroupRatio(store, group)) * (await amountDiscount(store, amount));
+  return money;
+}
+
+async function rejectInvalidTopUpQuota(store: Store, userId: number, amount: number): Promise<Response | null> {
+  void userId;
+  const qpu = await store.optionNum("QuotaPerUnit", 500000);
+  if (qpu <= 0) return payErr("充值数量无效");
+  const maxAmount = Math.floor(MAX_WALLET_QUOTA / qpu);
+  if (maxAmount > 0 && amount > maxAmount) return payErr(`单笔充值数量不能大于 ${maxAmount}`);
+  return null;
+}
+
+export async function requestAmount(
+  store: Store,
+  user: { id: number; group: string },
+  body: { amount?: number },
+  kind: PayAmountKind,
+): Promise<Response> {
   const amount = Number(body.amount || 0);
-  const min = await store.optionNum("MinTopup", 1);
-  if (amount < min) return apiFail(`充值数量不能小于 ${min}`);
-  if (amount > 10000) return apiFail("充值数量不能大于 10000");
-  const method = body.payment_method || "stripe";
+  const minKey = kind === "stripe" ? "StripeMinTopUp" : kind === "waffo" ? "WaffoMinTopUp" : kind === "waffo_pancake" ? "WaffoPancakeMinTopUp" : "MinTopup";
+  const min = await minTopup(store, minKey, 1);
+  if (amount < min) return payErr(`充值数量不能小于 ${min}`);
+  if (kind === "stripe" && amount > 10000) return payErr("充值数量不能大于 10000");
+  const invalid = await rejectInvalidTopUpQuota(store, user.id, amount);
+  if (invalid) return invalid;
   const unit =
-    method === "stripe" ? await store.optionNum("StripeUnitPrice", 8) : await store.optionNum("Price", 7.3);
-  return json(200, { message: "success", data: String(payMoney(amount, unit)), success: true });
+    kind === "stripe"
+      ? await store.optionNum("StripeUnitPrice", 8)
+      : kind === "waffo"
+        ? await store.optionNum("WaffoUnitPrice", 8)
+        : kind === "waffo_pancake"
+          ? await store.optionNum("WaffoPancakeUnitPrice", 8)
+          : await store.optionNum("Price", 7.3);
+  const money = await payMoneyFor(store, amount, user.group, unit);
+  if (money <= 0.01) return payErr("充值金额过低");
+  return json(200, { message: "success", data: money.toFixed(2), success: true });
 }
 
 export async function requestStripePay(
@@ -165,9 +234,7 @@ export async function requestStripePay(
   if (amount > 10000) return json(200, { message: "充值数量不能大于 10000", data: 10, success: false });
   const secret = await stripeSecret(store);
   if (!secret.startsWith("sk_") && !secret.startsWith("rk_")) return payErr("拉起支付失败");
-  const unitPrice = await store.optionNum("StripeUnitPrice", 8);
-  const money = payMoney(amount, unitPrice);
-  if (money <= 0.01) return payErr("充值金额过低");
+  const money = amount * (await topupGroupRatio(store, user.group));
   const reference = `new-api-ref-${user.id}-${Date.now()}-${randomHex(2)}`;
   const trade = "ref_" + (await sha1Hex(reference));
   await store.insertTopup({
@@ -270,7 +337,10 @@ export async function requestEpay(
   const gateway = (await store.option("PayAddress")) || (await store.option("EpayUrl")) || "";
   if (!gateway || !pid || !key) return payErr("当前管理员未配置支付信息");
   const origin = new URL(req.url).origin;
-  const money = payMoney(amount, await store.optionNum("Price", 7.3));
+  const invalid = await rejectInvalidTopUpQuota(store, user.id, amount);
+  if (invalid) return invalid;
+  const money = await payMoneyFor(store, amount, user.group, await store.optionNum("Price", 7.3));
+  if (money < 0.01) return payErr("充值金额过低");
   const trade = "ep_" + randomHex(12);
   await store.insertTopup({
     user_id: user.id,
@@ -379,7 +449,9 @@ export async function requestWaffoPay(
   const amount = Number(body.amount || 0);
   const min = await store.optionNum("WaffoMinTopUp", await store.optionNum("MinTopup", 1));
   if (amount < min) return payErr(`充值数量不能小于 ${min}`);
-  const money = payMoney(amount, await store.optionNum("Price", 7.3));
+  const invalid = await rejectInvalidTopUpQuota(store, user.id, amount);
+  if (invalid) return invalid;
+  const money = await payMoneyFor(store, amount, user.group, await store.optionNum("WaffoUnitPrice", 8));
   if (money < 0.01) return payErr("充值金额过低");
   const trade = `WAFFO-${user.id}-${Date.now()}-${randomHex(3)}`;
   await store.insertTopup({
@@ -431,7 +503,10 @@ export async function requestWaffoPancakePay(
   const amount = Number(body.amount || 0);
   const min = await store.optionNum("WaffoPancakeMinTopUp", await store.optionNum("MinTopup", 1));
   if (amount < min) return payErr(`充值数量不能小于 ${min}`);
-  const money = payMoney(amount, await store.optionNum("Price", 7.3));
+  const invalid = await rejectInvalidTopUpQuota(store, user.id, amount);
+  if (invalid) return invalid;
+  const money = await payMoneyFor(store, amount, user.group, await store.optionNum("WaffoPancakeUnitPrice", 8));
+  if (money <= 0.01) return payErr("充值金额过低");
   const trade = `WAFFO_PANCAKE-${user.id}-${Date.now()}-${randomHex(3)}`;
   await store.insertTopup({
     user_id: user.id,

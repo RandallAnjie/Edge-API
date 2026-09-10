@@ -133,30 +133,42 @@ export class Store {
     return !!row;
   }
 
-  /** Original `controller.resolveChannelTestUserID` root lookup. */
+  /** Original GORM default scope excludes soft-deleted users. Unscoped uniqueness uses `includeDeleted`. */
   async getRootUser(): Promise<UserRow | null> {
-    return this.db.prepare("SELECT * FROM users WHERE role = 100 LIMIT 1").first<UserRow>();
+    return this.db.prepare("SELECT * FROM users WHERE role = 100 AND deleted_at = 0 LIMIT 1").first<UserRow>();
   }
 
-  async getUserById(id: number): Promise<UserRow | null> {
-    return this.db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+  async getUserById(id: number, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
+    const sql = opts?.includeDeleted
+      ? "SELECT * FROM users WHERE id = ?"
+      : "SELECT * FROM users WHERE id = ? AND deleted_at = 0";
+    return this.db.prepare(sql).bind(id).first<UserRow>();
   }
 
-  async getUserByUsername(username: string): Promise<UserRow | null> {
-    return this.db.prepare("SELECT * FROM users WHERE username = ?").bind(username).first<UserRow>();
+  async getUserByUsername(username: string, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
+    const sql = opts?.includeDeleted
+      ? "SELECT * FROM users WHERE username = ?"
+      : "SELECT * FROM users WHERE username = ? AND deleted_at = 0";
+    return this.db.prepare(sql).bind(username).first<UserRow>();
   }
 
-  async getUserByGithub(githubId: string): Promise<UserRow | null> {
-    return this.db.prepare("SELECT * FROM users WHERE github_id = ?").bind(githubId).first<UserRow>();
+  async getUserByGithub(githubId: string, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
+    const sql = opts?.includeDeleted
+      ? "SELECT * FROM users WHERE github_id = ?"
+      : "SELECT * FROM users WHERE github_id = ? AND deleted_at = 0";
+    return this.db.prepare(sql).bind(githubId).first<UserRow>();
   }
 
-  async getUserByEmail(email: string): Promise<UserRow | null> {
+  async getUserByEmail(email: string, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
     const normalized = email.trim().toLowerCase();
     if (!normalized) return null;
-    return this.db.prepare("SELECT * FROM users WHERE LOWER(email) = ?").bind(normalized).first<UserRow>();
+    const sql = opts?.includeDeleted
+      ? "SELECT * FROM users WHERE LOWER(email) = ?"
+      : "SELECT * FROM users WHERE LOWER(email) = ? AND deleted_at = 0";
+    return this.db.prepare(sql).bind(normalized).first<UserRow>();
   }
 
-  async getUserByField(field: string, value: string): Promise<UserRow | null> {
+  async getUserByField(field: string, value: string, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
     const allowed = new Set([
       "github_id",
       "discord_id",
@@ -168,11 +180,17 @@ export class Store {
       "email",
     ]);
     if (!allowed.has(field)) return null;
-    return this.db.prepare(`SELECT * FROM users WHERE ${field} = ?`).bind(value).first<UserRow>();
+    const sql = opts?.includeDeleted
+      ? `SELECT * FROM users WHERE ${field} = ?`
+      : `SELECT * FROM users WHERE ${field} = ? AND deleted_at = 0`;
+    return this.db.prepare(sql).bind(value).first<UserRow>();
   }
 
-  async getUserByAff(code: string): Promise<UserRow | null> {
-    return this.db.prepare("SELECT * FROM users WHERE aff_code = ?").bind(code).first<UserRow>();
+  async getUserByAff(code: string, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
+    const sql = opts?.includeDeleted
+      ? "SELECT * FROM users WHERE aff_code = ?"
+      : "SELECT * FROM users WHERE aff_code = ? AND deleted_at = 0";
+    return this.db.prepare(sql).bind(code).first<UserRow>();
   }
 
   async insertUser(u: Partial<UserRow>): Promise<number> {
@@ -217,6 +235,13 @@ export class Store {
     await this.db.prepare(`UPDATE users SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
   }
 
+  /** Original `model.User.Delete` / `DeleteUserForSession` (GORM soft delete). */
+  async softDeleteUser(id: number): Promise<void> {
+    await this.db.prepare("UPDATE users SET deleted_at = ? WHERE id = ? AND deleted_at = 0").bind(nowSec(), id).run();
+    await this.bumpAuthVersion(id);
+  }
+
+  /** Original `model.HardDeleteUserById`. */
   async deleteUser(id: number): Promise<void> {
     await this.db.prepare("DELETE FROM api_tokens WHERE user_id = ?").bind(id).run();
     await this.db.prepare("DELETE FROM users WHERE id = ?").bind(id).run();
@@ -264,8 +289,10 @@ export class Store {
       where += " AND role = ?";
       binds.push(opts.role);
     }
-    if (opts.status != null) {
-      where += " AND status = ?";
+    if (opts.status === -1) {
+      where += " AND deleted_at != 0";
+    } else if (opts.status != null) {
+      where += " AND deleted_at = 0 AND status = ?";
       binds.push(opts.status);
     }
     const sortCols: Record<string, string> = {
@@ -3011,6 +3038,7 @@ export function publicUser(u: UserRow): Record<string, unknown> {
     totp_enabled: Number(u.totp_enabled) === 1,
     email_verified: Number(u.email_verified) === 1,
     has_access_token: Boolean(u.access_token),
+    DeletedAt: Number(u.deleted_at || 0) ? new Date(Number(u.deleted_at) * 1000).toISOString() : null,
   };
 }
 

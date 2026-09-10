@@ -144,7 +144,7 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const validated = await validateAccountEmail(s, c.url.searchParams.get("email") || "");
     if (!validated.ok) return json(200, { success: false, code: validated.code, message: validated.message });
-    if (await s.getUserByEmail(validated.email)) return apiFail("邮箱地址已被占用");
+    if (await s.getUserByEmail(validated.email, { includeDeleted: true })) return apiFail("邮箱地址已被占用");
     const code = sixDigitCode();
     await s.insertEmailCode(validated.email, code, "verify");
     const systemName = (await s.option("SystemName")) || "New API";
@@ -376,7 +376,7 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     if (u.role >= ROLE_ROOT) return apiFail("不能删除超级管理员账户");
-    await s.deleteUser(u.id);
+    await s.softDeleteUser(u.id);
     return apiOk({});
   });
 

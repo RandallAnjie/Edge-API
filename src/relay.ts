@@ -15,7 +15,8 @@ import {
   usageFromOpenAI,
   type ChatMessage,
 } from "./convert.js";
-import { clientIp, openaiError } from "./http.js";
+import { clientIp, openaiError, relayErrorHandler } from "./http.js";
+import { applyChannelParamOverride, asParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
 import { pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
@@ -148,9 +149,17 @@ function buildChannelRelayTarget(
   extraHeaders: Record<string, string>,
   method: string,
   stream: boolean,
+  relayInfo: ParamOverrideRelayInfo = {},
 ): UpstreamTarget {
+  const info: ParamOverrideRelayInfo = {
+    ...relayInfo,
+    originalModel: relayInfo.originalModel || model,
+    requestPath: relayInfo.requestPath || path,
+  };
   if (channel.type === CHANNEL_TYPE_CODEX) {
-    return buildCodexRelayTarget(channel, mode, path, model, body, stream);
+    const target = buildCodexRelayTarget(channel, mode, path, model, body, stream);
+    target.body = applyChannelParamOverride(channel, target.body, target.headers, info, pickChannelKey(channel.key), model);
+    return target;
   }
   if (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
     const incoming = path.split("?")[0];
@@ -164,9 +173,10 @@ function buildChannelRelayTarget(
     ) {
       target.headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
     }
+    target.body = applyChannelParamOverride(channel, target.body, target.headers, { ...info, upstreamModel: mapped }, pickChannelKey(channel.key), mapped);
     return target;
   }
-  return buildUpstream(channel, mode, path, model, body, extraHeaders, method);
+  return buildUpstream(channel, mode, path, model, body, extraHeaders, method, info);
 }
 
 function convertInbound(
@@ -283,6 +293,17 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     const kind = channelKind(channel.type);
     const mapped = applyModelMapping(channel, model);
     const outbound = opts.rawBody ? opts.body : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped);
+    const relayInfo: ParamOverrideRelayInfo = {
+      requestHeaders: requestHeadersFrom(opts.req),
+      userId: auth.user.id,
+      userGroup: auth.user.group,
+      tokenGroup: auth.token.group,
+      usingGroup: auth.usingGroup,
+      originalModel: model,
+      upstreamModel: mapped,
+      requestPath: path,
+      retryIndex: retry,
+    };
     let target: UpstreamTarget;
     try {
       target = buildChannelRelayTarget(
@@ -296,8 +317,16 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         },
         opts.method || opts.req.method || "POST",
         opts.stream,
+        relayInfo,
       );
     } catch (err) {
+      const ret = asParamOverrideReturnError(err);
+      if (ret) {
+        if (ret.skipRetry || lastAttempt) return openaiError(ret.statusCode, ret.message, ret.code, ret.type);
+        lastErr = ret.message;
+        lastStatus = ret.statusCode;
+        continue;
+      }
       lastErr = err instanceof Error ? err.message : String(err);
       lastStatus = 400;
       continue;
@@ -306,6 +335,22 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       target.body = opts.rawBody;
       if (opts.rawContentType) target.headers["content-type"] = opts.rawContentType;
       else delete target.headers["content-type"];
+      if (typeof opts.rawBody === "string" && (opts.rawContentType || "").includes("json")) {
+        try {
+          target.body = applyChannelParamOverride(channel, opts.rawBody, target.headers, relayInfo, pickChannelKey(channel.key), mapped);
+        } catch (err) {
+          const ret = asParamOverrideReturnError(err);
+          if (ret) {
+            if (ret.skipRetry || lastAttempt) return openaiError(ret.statusCode, ret.message, ret.code, ret.type);
+            lastErr = ret.message;
+            lastStatus = ret.statusCode;
+            continue;
+          }
+          lastErr = err instanceof Error ? err.message : String(err);
+          lastStatus = 400;
+          continue;
+        }
+      }
     }
     const started = Date.now();
     let res: Response;
@@ -336,15 +381,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       await settle(store, auth, channel, model, promptEst, 0, useTime, opts.stream, ip, rid, false, lastErr.slice(0, 2000), extra);
       if (res.status >= 500 && autoDisable) await store.autoDisableChannel(channel.id);
       if (!lastAttempt && retryable(res.status)) continue;
-      try {
-        const parsed = JSON.parse(text) as unknown;
-        return new Response(JSON.stringify(parsed), {
-          status: res.status,
-          headers: { "content-type": "application/json; charset=utf-8", "x-oneapi-request-id": rid },
-        });
-      } catch {
-        return openaiError(res.status, text.slice(0, 500) || "上游错误");
-      }
+      const errRes = relayErrorHandler(res.status, text, String(channel.status_code_mapping || ""));
+      const headers = new Headers(errRes.headers);
+      headers.set("x-oneapi-request-id", rid);
+      return new Response(errRes.body, { status: errRes.status, headers });
     }
 
     const ct = res.headers.get("content-type") || "";

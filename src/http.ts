@@ -127,6 +127,51 @@ export function openaiError(
   });
 }
 
+/** Original `service.RelayErrorHandler` + `ResetStatusCode`. */
+export function relayErrorHandler(status: number, bodyText: string, statusCodeMapping = ""): Response {
+  let message = `bad response status code ${status}`;
+  let type = "bad_response_status_code";
+  let code: unknown = "bad_response_status_code";
+  let param = "";
+  try {
+    const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+    const errField = parsed.error;
+    if (errField && typeof errField === "object") {
+      const err = errField as Record<string, unknown>;
+      if (typeof err.message === "string" && err.message) {
+        message = err.message;
+        if (typeof err.type === "string" && err.type) type = err.type;
+        if (err.code != null && err.code !== "") code = err.code;
+        if (typeof err.param === "string") param = err.param;
+      }
+    } else {
+      if (typeof errField === "string" && errField) message = errField;
+      else {
+        const extracted = [parsed.message, parsed.msg, parsed.err, parsed.error_msg, parsed.detail].find(
+          (v) => typeof v === "string" && v,
+        ) as string | undefined;
+        if (extracted) message = extracted;
+      }
+    }
+  } catch {
+    /* non-JSON body: original InitOpenAIError + "bad response status code N" */
+  }
+  let mapped = status;
+  if (statusCodeMapping && statusCodeMapping !== "{}") {
+    try {
+      const mapping = JSON.parse(statusCodeMapping) as Record<string, unknown>;
+      const mappedVal = mapping[String(status)];
+      if (mappedVal != null) {
+        const n = typeof mappedVal === "number" ? mappedVal : Number(mappedVal);
+        if (Number.isInteger(n) && n >= 100 && n <= 599) mapped = n;
+      }
+    } catch {
+      /* invalid mapping */
+    }
+  }
+  return json(mapped, { error: { message, type, param, code } });
+}
+
 /** Original `controller.respondPluginProtocolError`. */
 export function pluginProtocolError(status: number, code: string, message: string): Response {
   return json(status, { error: { message, type: "new_api_error", code } });

@@ -12,6 +12,7 @@ import {
   supportedEndpointTypesForModel,
   advancedCustomConfigFromSettings,
 } from "../src/channel-validate.js";
+import { relayErrorHandler } from "../src/http.js";
 import type { ChannelRow, Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -1121,9 +1122,10 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
   assert.equal(page.page, 1);
   assert.equal(typeof page.total, "number");
   assert.equal(typeof page.page_size, "number");
-  for (const k of ["id", "username", "created_at", "last_login_at", "remark", "setting", "aff_code", "quota", "github_id", "linux_do_id", "wechat_id", "stripe_customer"]) {
+  for (const k of ["id", "username", "created_at", "last_login_at", "remark", "setting", "aff_code", "quota", "github_id", "linux_do_id", "wechat_id", "stripe_customer", "DeletedAt"]) {
     assert.ok(k in page.items[0], "missing GetAllUsers field " + k);
   }
+  assert.equal(page.items[0].DeletedAt, null);
 
   const createUser = await json(
     new Request("http://local/api/user/", {
@@ -3921,7 +3923,7 @@ test("original FetchCodexChannelModels, advanced-custom fetch, GetPricing endpoi
 
     const users = await json(new Request("http://local/api/user/", { headers: auth }), e);
     const userPage = users.body.data as { items: Record<string, unknown>[] };
-    for (const k of ["id", "username", "display_name", "role", "status", "email", "quota", "used_quota", "request_count", "group", "remark", "created_at", "last_login_at"]) {
+    for (const k of ["id", "username", "display_name", "role", "status", "email", "quota", "used_quota", "request_count", "group", "remark", "created_at", "last_login_at", "DeletedAt"]) {
       assert.ok(k in userPage.items[0], "missing GetAllUsers field " + k);
     }
 
@@ -4361,6 +4363,32 @@ test("original TestChannel POSTs gin httptest chat/embeddings/responses bodies",
     assert.equal((chatHit.body as { max_tokens?: number }).max_tokens, 16);
     assert.match(String(chatHit.headers.authorization || ""), /Bearer sk-test/i);
 
+    seen.length = 0;
+    const overrideCreated = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          name: "test-override",
+          type: 1,
+          key: "sk-ov",
+          models: "openai/gpt-4o-mini",
+          group: "default",
+          base_url: "https://api.example.test",
+          param_override: JSON.stringify({ operations: [{ path: "model", mode: "trim_prefix", value: "openai/" }] }),
+        }),
+      }),
+      e,
+    );
+    assert.equal(overrideCreated.body.success, true, String(overrideCreated.body.message));
+    const overrideRow = ((await json(new Request("http://local/api/channel/", { headers: auth }), e)).body.data as { items: { id: number; name: string }[] }).items.find((c) => c.name === "test-override");
+    assert.ok(overrideRow);
+    const overrideTest = await json(new Request("http://local/api/channel/test/" + overrideRow.id + "?model=openai/gpt-4o-mini", { headers: auth }), e);
+    assert.equal(overrideTest.body.success, true, String(overrideTest.body.message));
+    const overrideHit = seen.find((s) => s.url === "https://api.example.test/v1/chat/completions");
+    assert.ok(overrideHit);
+    assert.equal((overrideHit.body as { model?: string }).model, "gpt-4o-mini");
+
     const got = await json(new Request("http://local/api/channel/" + openaiRow.id, { headers: auth }), e);
     assert.ok(Number((got.body.data as { test_time: number }).test_time) > 0);
     assert.ok(Number((got.body.data as { response_time: number }).response_time) >= 0);
@@ -4486,6 +4514,237 @@ test("original TestChannel POSTs gin httptest chat/embeddings/responses bodies",
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+test("original user soft-delete, amount envelopes, billing expr, RelayErrorHandler JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const users = await json(new Request("http://local/api/user/?p=1&page_size=20", { headers: auth }), e);
+  const live = ((users.body.data as { items: { username: string; DeletedAt: unknown }[] }).items || []).find((u) => u.username === "root");
+  assert.ok(live);
+  assert.equal(live.DeletedAt, null);
+
+  const created = await json(
+    new Request("http://local/api/user/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ username: "softdeluser", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const found = await json(new Request("http://local/api/user/search?keyword=softdeluser", { headers: auth }), e);
+  const soft = ((found.body.data as { items: { id: number; username: string }[] }).items || []).find((u) => u.username === "softdeluser");
+  assert.ok(soft);
+
+  const managed = await json(
+    new Request("http://local/api/user/manage", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ id: soft.id, action: "delete" }),
+    }),
+    e,
+  );
+  assert.equal(managed.body.success, true, String(managed.body.message));
+
+  const deletedSearch = await json(new Request("http://local/api/user/search?keyword=softdeluser&status=-1", { headers: auth }), e);
+  const deletedRow = ((deletedSearch.body.data as { items: { username: string; DeletedAt: unknown }[] }).items || []).find((u) => u.username === "softdeluser");
+  assert.ok(deletedRow);
+  assert.equal(typeof deletedRow.DeletedAt, "string");
+  assert.match(String(deletedRow.DeletedAt), /T/);
+
+  const scoped = await json(new Request("http://local/api/user/" + soft.id, { headers: auth }), e);
+  assert.equal(scoped.body.success, false);
+  assert.equal(scoped.body.message, "用户不存在");
+
+  const unscoped = await json(new Request("http://local/api/user/?p=1&page_size=50", { headers: auth }), e);
+  assert.ok(((unscoped.body.data as { items: { username: string }[] }).items || []).some((u) => u.username === "softdeluser"));
+
+  const loginDeleted = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "softdeluser", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(loginDeleted.body.success, false);
+  assert.equal(loginDeleted.body.message, "用户名或密码错误，或用户已被封禁");
+
+  const registerDeleted = await json(
+    new Request("http://local/api/user/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "softdeluser", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(registerDeleted.body.success, false);
+  assert.equal(registerDeleted.body.message, "用户名已存在，或已注销");
+
+  const hardCreated = await json(
+    new Request("http://local/api/user/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ username: "harddeluser", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(hardCreated.body.success, true, String(hardCreated.body.message));
+  const hardFound = await json(new Request("http://local/api/user/search?keyword=harddeluser", { headers: auth }), e);
+  const hard = ((hardFound.body.data as { items: { id: number; username: string }[] }).items || []).find((u) => u.username === "harddeluser");
+  assert.ok(hard);
+  const hardDeleted = await json(new Request("http://local/api/user/" + hard.id, { method: "DELETE", headers: auth }), e);
+  assert.equal(hardDeleted.body.success, true, String(hardDeleted.body.message));
+  const gone = await json(new Request("http://local/api/user/search?keyword=harddeluser&status=-1", { headers: auth }), e);
+  assert.equal(((gone.body.data as { items: { username: string }[] }).items || []).some((u) => u.username === "harddeluser"), false);
+  const unscopedGone = await json(new Request("http://local/api/user/?p=1&page_size=50", { headers: auth }), e);
+  assert.equal(((unscopedGone.body.data as { items: { username: string }[] }).items || []).some((u) => u.username === "harddeluser"), false);
+
+  const tooSmall = await json(
+    new Request("http://local/api/user/amount", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ amount: 0 }),
+    }),
+    e,
+  );
+  assert.equal(tooSmall.body.message, "error");
+  assert.equal(tooSmall.body.data, "充值数量不能小于 1");
+  assert.equal(tooSmall.body.success, false);
+
+  const epayAmount = await json(
+    new Request("http://local/api/user/amount", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ amount: 10 }),
+    }),
+    e,
+  );
+  assert.equal(epayAmount.body.message, "success");
+  assert.equal(epayAmount.body.data, "73.00");
+
+  const stripeCap = await json(
+    new Request("http://local/api/user/stripe/amount", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ amount: 10001 }),
+    }),
+    e,
+  );
+  assert.equal(stripeCap.body.message, "error");
+  assert.equal(stripeCap.body.data, "充值数量不能大于 10000");
+
+  const epayNoCap = await json(
+    new Request("http://local/api/user/amount", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ amount: 10001 }),
+    }),
+    e,
+  );
+  assert.equal(epayNoCap.body.message, "success");
+  assert.equal(typeof epayNoCap.body.data, "string");
+  assert.match(String(epayNoCap.body.data), /^\d+\.\d{2}$/);
+
+  const stripeAmount = await json(
+    new Request("http://local/api/user/stripe/amount", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ amount: 10 }),
+    }),
+    e,
+  );
+  assert.equal(stripeAmount.body.message, "success");
+  assert.equal(stripeAmount.body.data, "80.00");
+
+  const pricing = await json(new Request("http://local/api/option/model_pricing", { headers: auth }), e);
+  const emptyVersion = (pricing.body.data as { empty_version: string }).empty_version;
+  const badExpr = await json(
+    new Request("http://local/api/option/model_pricing", {
+      method: "PATCH",
+      headers: auth,
+      body: JSON.stringify({
+        changes: [
+          {
+            model_name: "expr-test",
+            expected_version: emptyVersion,
+            pricing: {
+              "billing_setting.billing_mode": "tiered_expr",
+              "billing_setting.billing_expr": "p *",
+            },
+          },
+        ],
+      }),
+    }),
+    e,
+  );
+  assert.equal(badExpr.body.success, false);
+  assert.match(String(badExpr.body.message), /^model expr-test: expr compile error:/);
+
+  const usageKey = await json(
+    new Request("http://local/api/option/model_pricing", {
+      method: "PATCH",
+      headers: auth,
+      body: JSON.stringify({
+        changes: [
+          {
+            model_name: "expr-test",
+            expected_version: emptyVersion,
+            pricing: {
+              "billing_setting.billing_mode": "tiered_expr",
+              "billing_setting.billing_expr": 'u("seconds")',
+            },
+          },
+        ],
+      }),
+    }),
+    e,
+  );
+  assert.equal(usageKey.body.success, false);
+  assert.equal(
+    usageKey.body.message,
+    "model expr-test: expression references usage keys [seconds] but the model has no task plugin usage schema",
+  );
+
+  const okExpr = await json(
+    new Request("http://local/api/option/model_pricing", {
+      method: "PATCH",
+      headers: auth,
+      body: JSON.stringify({
+        changes: [
+          {
+            model_name: "expr-test",
+            expected_version: emptyVersion,
+            pricing: {
+              "billing_setting.billing_mode": "tiered_expr",
+              "billing_setting.billing_expr": 'tier("base", p * 2 + c * 8)',
+            },
+          },
+        ],
+      }),
+    }),
+    e,
+  );
+  assert.equal(okExpr.body.success, true, String(okExpr.body.message));
+  assert.deepEqual((okExpr.body.data as { updated_models: string[] }).updated_models, ["expr-test"]);
+
+  const badStatus = relayErrorHandler(502, "not-json");
+  const badJson = JSON.parse(await badStatus.text()) as { error: { message: string; type: string; code: unknown; param: string } };
+  assert.equal(badStatus.status, 502);
+  assert.equal(badJson.error.message, "bad response status code 502");
+  assert.equal(badJson.error.type, "bad_response_status_code");
+  assert.equal(badJson.error.code, "bad_response_status_code");
+  assert.equal(badJson.error.param, "");
+
+  const mapped = relayErrorHandler(403, JSON.stringify({ error: { message: "nope", type: "auth", code: "denied" } }), JSON.stringify({ "403": 404 }));
+  const mappedJson = JSON.parse(await mapped.text()) as { error: { message: string; type: string; code: unknown } };
+  assert.equal(mapped.status, 404);
+  assert.equal(mappedJson.error.message, "nope");
+  assert.equal(mappedJson.error.type, "auth");
+  assert.equal(mappedJson.error.code, "denied");
 });
 
 

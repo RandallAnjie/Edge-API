@@ -1658,7 +1658,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return requestAmount(s, (await readJson(c.req)) as { amount?: number; payment_method?: string });
+    return requestAmount(s, u, (await readJson(c.req)) as { amount?: number }, "epay");
   });
   r.post("/api/user/pay", async (c) => payUser(c, "epay"));
   r.post("/api/user/stripe/pay", async (c) => payUser(c, "stripe"));
@@ -1666,7 +1666,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return requestAmount(s, { ...(await readJson(c.req)) as object, payment_method: "stripe" });
+    return requestAmount(s, u, (await readJson(c.req)) as { amount?: number }, "stripe");
   });
   r.post("/api/user/creem/pay", async (c) => payUser(c, "creem"));
   r.post("/api/user/waffo/pay", async (c) => payUser(c, "waffo"));
@@ -1674,13 +1674,13 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return requestAmount(s, (await readJson(c.req)) as { amount?: number });
+    return requestAmount(s, u, (await readJson(c.req)) as { amount?: number }, "waffo");
   });
   r.post("/api/user/waffo-pancake/amount", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return requestAmount(s, (await readJson(c.req)) as { amount?: number });
+    return requestAmount(s, u, (await readJson(c.req)) as { amount?: number }, "waffo_pancake");
   });
   r.post("/api/user/waffo-pancake/pay", async (c) => payUser(c, "waffo_pancake"));
   r.post("/api/user/epay/notify", (c) => handleEpayNotify(store(c), c.req, c.url));

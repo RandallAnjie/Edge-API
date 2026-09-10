@@ -1,4 +1,5 @@
 import { getBuiltinBillingExpr } from "./billing-setting.js";
+import { smokeTestExpr } from "./billing-expr.js";
 import { parseJson } from "./constants.js";
 import { bytesToHex, sha256Bytes } from "./crypto.js";
 import { formatMatchingModelName, getCompletionRatioInfo } from "./ratio-setting.js";
@@ -138,6 +139,8 @@ function validatePricing(name: string, values: PricingValues): string | null {
     }
     if (key === "billing_setting.billing_expr") {
       if (typeof value !== "string" || !value.trim()) return "billing expression is required";
+      const err = smokeTestExpr(value);
+      if (err) return `model ${name}: ${err.message}`;
       continue;
     }
     if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {

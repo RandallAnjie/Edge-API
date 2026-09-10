@@ -166,7 +166,7 @@ export async function loginOrBindOAuth(
       }
       await store.upsertUserOAuthBinding(existingUser.id, profile.provider_id, profile.id);
     } else {
-      const taken = await store.getUserByField(profile.field, profile.id);
+      const taken = await store.getUserByField(profile.field, profile.id, { includeDeleted: true });
       if (taken && taken.id !== existingUser.id) return apiFail("该 OAuth 账号已被绑定");
       await store.updateUser(existingUser.id, { [profile.field]: profile.id });
     }
@@ -182,7 +182,9 @@ export async function loginOrBindOAuth(
   if (!user) {
     if (profile.field === "telegram_id") return apiFail("该 Telegram 账号尚未绑定");
     if (!(await store.optionBool("RegisterEnabled", true))) return apiFail("管理员关闭了新用户注册");
-    const exists = await store.getUserByUsername(profile.username);
+    const bound = await store.getUserByField(profile.field, profile.id, { includeDeleted: true });
+    if (bound) return apiFail("该 OAuth 账号已被绑定");
+    const exists = await store.getUserByUsername(profile.username, { includeDeleted: true });
     const finalName = exists ? `${profile.field.slice(0, 2)}_${profile.id}`.slice(0, 20) : profile.username;
     const id = await store.insertUser({
       username: finalName,

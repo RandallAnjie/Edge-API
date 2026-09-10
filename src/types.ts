@@ -92,6 +92,8 @@ export interface UserRow {
   auth_version?: number;
   admin_permissions?: string;
   remark?: string;
+  /** Original GORM `DeletedAt`; 0 means not deleted. */
+  deleted_at?: number;
 }
 
 export interface LoginSessionRow {

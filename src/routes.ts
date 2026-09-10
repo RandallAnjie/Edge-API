@@ -368,9 +368,9 @@ export function adminRouter(): Router<Env> {
       const { normalizeEmail } = await import("./mail.js");
       email = normalizeEmail(body.email);
       if (!(await s.consumeEmailCode(email, body.verification_code, "verify"))) return apiFail("验证码错误或已过期");
-      if (await s.getUserByEmail(email)) return apiFail("邮箱地址已被占用");
+      if (await s.getUserByEmail(email, { includeDeleted: true })) return apiFail("邮箱地址已被占用");
     }
-    if (await s.getUserByUsername(username)) return apiFail("用户名已存在，或已注销");
+    if (await s.getUserByUsername(username, { includeDeleted: true })) return apiFail("用户名已存在，或已注销");
     let inviter = 0;
     if (body.aff_code) {
       const inv = await s.getUserByAff(body.aff_code);
@@ -603,7 +603,7 @@ export function adminRouter(): Router<Env> {
     const body = (await readJson(c.req)) as Partial<UserRow> & { password?: string };
     const username = String(body.username || "").trim();
     if (!username || !body.password) return apiFail("无效的参数");
-    if (await s.getUserByUsername(username)) return apiFail("用户已存在");
+    if (await s.getUserByUsername(username, { includeDeleted: true })) return apiFail("用户已存在");
     const role = Number(body.role || ROLE_USER);
     if (role >= u.role) return apiFail("无法创建权限大于等于自己的用户");
     await s.insertUser({
@@ -661,7 +661,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { id?: number; action?: string; quota?: number; value?: number; mode?: string };
     if (!body.id || !body.action) return apiFail("无效的参数");
-    const target = await s.getUserById(body.id);
+    const target = await s.getUserById(body.id, { includeDeleted: true });
     if (!target) return apiFail("用户不存在");
     if (!canManageTargetRole(u.role, target.role)) return apiFail("无权更新同权限等级或更高权限等级的用户信息");
     if (body.action === "add_quota") {
@@ -684,7 +684,7 @@ export function adminRouter(): Router<Env> {
         break;
       case "delete":
         if (target.role === ROLE_ROOT) return apiFail("不能删除超级管理员账户");
-        await s.deleteUser(target.id);
+        await s.softDeleteUser(target.id);
         await s.audit(u.id, u.username, "user.manage", `${body.action} user ${target.username}`, clientIp(c.req));
         return apiOk(null);
       case "promote":

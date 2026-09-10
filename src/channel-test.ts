@@ -21,13 +21,8 @@ import {
 } from "./convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
 import { computeQuota, quotaRatios } from "./quota.js";
-import {
-  applyFetchModelsHeaderOverrides,
-  applyModelMapping,
-  buildUpstream,
-  type RelayMode,
-  type UpstreamTarget,
-} from "./upstream.js";
+import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
+import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
 import { buildAdvancedCustomRelayTarget } from "./channel-validate.js";
 import { buildCodexRelayTarget } from "./codex-models.js";
 import { pickChannelKey } from "./select.js";
@@ -274,20 +269,6 @@ function convertAdvancedCustomOpenAIChat(converter: string, body: Record<string,
   }
 }
 
-function applyOverrides(channel: ChannelRow, headers: Record<string, string>, apiKey: string, model: string): void {
-  applyFetchModelsHeaderOverrides(channel, apiKey, headers);
-  const override = channel.header_override;
-  if (!override) return;
-  try {
-    const map = JSON.parse(override) as Record<string, string>;
-    for (const [k, v] of Object.entries(map)) {
-      headers[k] = String(v).replace(/\{api_key\}/g, apiKey).replace(/\{model\}/g, model);
-    }
-  } catch {
-    /* ignore invalid JSON */
-  }
-}
-
 async function fetchTarget(target: UpstreamTarget): Promise<Response> {
   const init: RequestInit = { method: target.method, headers: target.headers };
   if (target.method !== "GET" && target.method !== "HEAD" && target.body != null) {
@@ -412,7 +393,15 @@ function buildTestTarget(
   body: unknown,
   isStream: boolean,
   kind: TestRequestKind,
+  relayInfo: ParamOverrideRelayInfo,
 ): UpstreamTarget {
+  const info: ParamOverrideRelayInfo = {
+    ...relayInfo,
+    originalModel: originModel,
+    upstreamModel: mappedModel,
+    requestPath,
+    isChannelTest: true,
+  };
   if (channel.type === CHANNEL_TYPE_CODEX) {
     if (kind === "chat") throw new Error("codex channel: /v1/chat/completions endpoint not supported");
     if (kind === "embedding") throw new Error("codex channel: /v1/embeddings endpoint not supported");
@@ -420,7 +409,9 @@ function buildTestTarget(
     if (kind === "image") throw new Error("codex channel: endpoint not supported");
     if (kind === "anthropic") throw new Error("codex channel: /v1/messages endpoint not supported");
     if (kind === "gemini") throw new Error("codex channel: endpoint not supported");
-    return buildCodexRelayTarget(channel, mode, requestPath, mappedModel, body, isStream);
+    const target = buildCodexRelayTarget(channel, mode, requestPath, mappedModel, body, isStream);
+    target.body = applyChannelParamOverride(channel, target.body, target.headers, info, pickChannelKey(channel.key), mappedModel);
+    return target;
   }
   if (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
     const target = buildAdvancedCustomRelayTarget(channel, requestPath, originModel, mappedModel, body, isStream);
@@ -429,13 +420,13 @@ function buildTestTarget(
     } else if (target.converter !== "none") {
       throw new Error(`converter ${JSON.stringify(target.converter)} does not support ${requestPath} requests`);
     }
-    applyOverrides(channel, target.headers, pickChannelKey(channel.key), mappedModel);
     if (
       target.converter === "openai_chat_completions_to_anthropic_messages" ||
       (target.converter === "none" && requestPath === "/v1/messages")
     ) {
       target.headers["anthropic-version"] = CLAUDE_VERSION;
     }
+    target.body = applyChannelParamOverride(channel, target.body, target.headers, info, pickChannelKey(channel.key), mappedModel);
     return target;
   }
 
@@ -448,9 +439,7 @@ function buildTestTarget(
   }
   const extra: Record<string, string> = {};
   if (kind === "anthropic" || kindName === "anthropic") extra["anthropic-version"] = CLAUDE_VERSION;
-  const target = buildUpstream(channel, mode, requestPath, mappedModel, payload, extra, "POST");
-  applyOverrides(channel, target.headers, pickChannelKey(channel.key), mappedModel);
-  return target;
+  return buildUpstream(channel, mode, requestPath, mappedModel, payload, extra, "POST", info);
 }
 
 /** Original `controller.testChannel` / `controller.TestChannel`. Failures return `time: 0`. */
@@ -478,7 +467,15 @@ export async function testChannel(
   const built = buildTestRequest(originModel, endpointType, isStream);
   let target: UpstreamTarget;
   try {
-    target = buildTestTarget(channel, mode, requestPath, originModel, mappedModel, built.body, isStream, built.kind);
+    target = buildTestTarget(channel, mode, requestPath, originModel, mappedModel, built.body, isStream, built.kind, {
+      userId: opts.userId,
+      userGroup: opts.group,
+      usingGroup: opts.group,
+      originalModel: originModel,
+      upstreamModel: mappedModel,
+      requestPath,
+      isChannelTest: true,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const code = message.includes("invalid api type") || message.includes("compaction") ? "invalid_api_type" : "convert_request_failed";
