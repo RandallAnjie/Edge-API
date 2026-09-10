@@ -1,5 +1,5 @@
 import { DEFAULT_GROUP_RATIO, parseJson } from "./constants.js";
-import { getCompletionRatio } from "./ratio-setting.js";
+import { getCompletionRatio, getModelRatioFromMap } from "./ratio-setting.js";
 import type { Store } from "./store.js";
 
 export async function quotaRatios(
@@ -11,7 +11,7 @@ export async function quotaRatios(
   const completionRatio = parseJson<Record<string, number>>(await store.option("CompletionRatio"), {});
   const groupRatio = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
   return {
-    modelRatio: modelRatio[model] ?? 1,
+    modelRatio: getModelRatioFromMap(model, modelRatio).ratio,
     completionRatio: getCompletionRatio(model, completionRatio),
     groupRatio: groupRatio[group] ?? groupRatio.default ?? 1,
   };

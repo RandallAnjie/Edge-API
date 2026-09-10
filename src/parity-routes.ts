@@ -50,7 +50,7 @@ import {
 } from "./auth.js";
 import { Store } from "./store.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
-import { enrichModelMeta, extractPluginMeta, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView } from "./dto.js";
+import { enrichModelMeta, extractPluginMeta, listAdminModels, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView } from "./dto.js";
 import { channelAffinityCacheStats, clearAffinityCacheAll, clearAffinityCacheByRule, emptyAffinityUsageStats } from "./channel-affinity.js";
 import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
 import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
@@ -144,6 +144,50 @@ async function vendorOperationPreview(s: Store, operation: VendorOp): Promise<Re
   }
   const version = await md5Hex(JSON.stringify({ action, sources: sources.map((v) => v.id), models: modelsOut.map((m) => m.id), target: target?.id ?? 0 }));
   return { action, sources, target, models: modelsOut, version };
+}
+
+function originalPageInfo(url: URL): { page: number; pageSize: number } {
+  const p = url.searchParams.get("p");
+  let page = p != null && /^-?\d+$/.test(p) ? Number(p) : 0;
+  let pageSize = 0;
+  const size = url.searchParams.get("page_size");
+  if (size != null && /^-?\d+$/.test(size)) pageSize = Number(size);
+  if (page < 1) {
+    if (p != null && /^-?\d+$/.test(p) && Number(p) !== 0) page = Number(p);
+    else page = 1;
+  }
+  if (pageSize === 0) {
+    const fallback = url.searchParams.get("ps") || url.searchParams.get("size");
+    if (fallback && /^-?\d+$/.test(fallback)) pageSize = Number(fallback);
+    if (pageSize === 0) pageSize = 10;
+  }
+  if (pageSize > 100) pageSize = 100;
+  return { page, pageSize };
+}
+
+async function serveModelsMeta(c: C, keyword: string, vendor: string): Promise<Response> {
+  const s = store(c);
+  const u = await requireAdmin(c, s);
+  if (isResponse(u)) return u;
+  const squareState = c.url.searchParams.get("square_state") || "";
+  if (squareState && !["visible", "unavailable", "hidden", "partial"].includes(squareState)) {
+    return json(400, { success: false, message: "Invalid model square state" });
+  }
+  const q = originalPageInfo(c.url);
+  if (squareState && (q.page < 1 || q.pageSize < 1)) {
+    return json(400, { success: false, message: "Invalid pagination" });
+  }
+  const listed = await listAdminModels(s, {
+    keyword,
+    vendor,
+    status: c.url.searchParams.get("status") || "",
+    syncOfficial: c.url.searchParams.get("sync_official") || "",
+    includeChannelModels: c.url.searchParams.get("include_channel_models") === "true",
+    squareState,
+    page: q.page,
+    pageSize: q.pageSize,
+  });
+  return apiOk(pageData(listed.items, listed.total, { page: q.page, page_size: q.pageSize, offset: 0 }, { vendor_counts: listed.vendor_counts }));
 }
 
 function store(c: C): Store {
@@ -1351,40 +1395,10 @@ export function registerParity(r: Router<Env>): void {
     }
   });
 
-  r.get("/api/models/", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    const q = pageQuery(c.url);
-    const keyword = c.url.searchParams.get("keyword") || "";
-    const squareState = c.url.searchParams.get("square_state") || "";
-    if (squareState && !["visible", "unavailable", "hidden", "partial"].includes(squareState)) {
-      return json(400, { success: false, message: "Invalid model square state" });
-    }
-    if (squareState && (q.page < 1 || q.page_size < 1)) {
-      return json(400, { success: false, message: "Invalid pagination" });
-    }
-    const items = (keyword ? await s.searchModelMeta(keyword) : await s.listModelMeta()) as Record<string, unknown>[];
-    let enriched = await enrichModelMeta(s, items);
-    if (squareState) {
-      enriched = enriched.filter((m) => m.square_state === squareState);
-    }
-    const vendor_counts = await s.vendorModelCounts();
-    const pageItems = squareState
-      ? enriched.slice((q.page - 1) * q.page_size, (q.page - 1) * q.page_size + q.page_size)
-      : enriched.slice(q.offset, q.offset + q.page_size);
-    return apiOk(pageData(pageItems, squareState ? enriched.length : items.length, q, { vendor_counts }));
-  });
-  r.get("/api/models/search", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    const q = pageQuery(c.url);
-    const items = (await s.searchModelMeta(c.url.searchParams.get("keyword") || "")) as Record<string, unknown>[];
-    const vendor_counts = await s.vendorModelCounts();
-    const enriched = await enrichModelMeta(s, items);
-    return apiOk(pageData(enriched.slice(q.offset, q.offset + q.page_size), items.length, q, { vendor_counts }));
-  });
+  r.get("/api/models/", async (c) => serveModelsMeta(c, "", ""));
+  r.get("/api/models/search", async (c) =>
+    serveModelsMeta(c, c.url.searchParams.get("keyword") || "", c.url.searchParams.get("vendor") || ""),
+  );
   r.get("/api/models/missing", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);

@@ -3286,4 +3286,232 @@ test("original GetOptions billing, models delete, and redemption PUT JSON", asyn
   assert.ok(expiredItems.some((item) => item.id === red.id));
 });
 
+test("original GetPricing omitempty ratios and models matched_models JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const emptyName = await json(
+    new Request("http://local/api/models/", { method: "POST", headers: auth, body: JSON.stringify({ model_name: "" }) }),
+    e,
+  );
+  assert.equal(emptyName.body.success, false);
+  assert.equal(emptyName.body.message, "模型名称不能为空");
+
+  const createdExact = await json(
+    new Request("http://local/api/models/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_name: "listing-exact", status: 1, sync_official: 1 }),
+    }),
+    e,
+  );
+  assert.equal(createdExact.body.success, true, String(createdExact.body.message));
+  assert.equal((createdExact.body.data as { has_metadata: boolean; name_rule: number }).has_metadata, true);
+  assert.equal((createdExact.body.data as { name_rule: number }).name_rule, 0);
+
+  const dup = await json(
+    new Request("http://local/api/models/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_name: "listing-exact", status: 1 }),
+    }),
+    e,
+  );
+  assert.equal(dup.body.success, false);
+  assert.equal(dup.body.message, "模型名称已存在");
+
+  const badRule = await json(
+    new Request("http://local/api/models/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_name: "bad-rule", name_rule: 4, status: 1 }),
+    }),
+    e,
+  );
+  assert.equal(badRule.body.success, false);
+  assert.equal(badRule.body.message, "invalid metadata matching rule");
+
+  await json(
+    new Request("http://local/api/models/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_name: "listing-catalog", status: 1 }),
+    }),
+    e,
+  );
+  const prefix = await json(
+    new Request("http://local/api/models/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_name: "listing-rule-", name_rule: 1, status: 1 }),
+    }),
+    e,
+  );
+  assert.equal(prefix.body.success, true, String(prefix.body.message));
+  assert.equal((prefix.body.data as { name_rule: number }).name_rule, 1);
+  const prefixId = Number((prefix.body.data as { id: number }).id);
+
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        mode: "single",
+        channel: {
+          name: "Listing active",
+          type: 1,
+          key: "sk-listing-active",
+          models: "listing-exact, listing-new,listing-rule-child,listing-new, ,",
+          group: "default",
+        },
+      }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        mode: "single",
+        channel: {
+          name: "Listing inactive",
+          type: 1,
+          key: "sk-listing-inactive",
+          models: "listing-new,listing-disabled",
+          group: "default",
+        },
+      }),
+    }),
+    e,
+  );
+  const chSearch = await json(new Request("http://local/api/channel/search?keyword=Listing inactive", { headers: auth }), e);
+  const inactive = (chSearch.body.data as { items: { id: number; name: string }[] }).items.find((c) => c.name === "Listing inactive");
+  assert.ok(inactive);
+  await json(
+    new Request("http://local/api/channel/" + inactive!.id + "/status", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ status: 2 }),
+    }),
+    e,
+  );
+
+  const listed = await json(
+    new Request("http://local/api/models/search?include_channel_models=true&keyword=listing-", { headers: auth }),
+    e,
+  );
+  assert.equal(listed.body.success, true, String(listed.body.message));
+  const items = (listed.body.data as { items: Record<string, unknown>[]; total: number }).items;
+  assert.equal((listed.body.data as { total: number }).total, 6);
+  assert.deepEqual(
+    items.map((m) => m.model_name),
+    ["listing-rule-", "listing-catalog", "listing-exact", "listing-disabled", "listing-new", "listing-rule-child"],
+  );
+  const byName = Object.fromEntries(items.map((m) => [String(m.model_name), m]));
+  assert.equal(byName["listing-exact"].has_metadata, true);
+  assert.equal(byName["listing-new"].has_metadata, false);
+  assert.equal(byName["listing-new"].id, 0);
+  assert.equal(byName["listing-new"].configured_channel_count, 2);
+  assert.equal(byName["listing-disabled"].configured_channel_count, 1);
+  assert.equal(byName["listing-disabled"].bound_channels, undefined);
+  assert.equal(byName["listing-catalog"].configured_channel_count, 0);
+  assert.deepEqual(byName["listing-rule-"].matched_models, ["listing-rule-child"]);
+  assert.equal(byName["listing-rule-"].matched_count, 1);
+
+  const page2 = await json(
+    new Request("http://local/api/models/search?include_channel_models=true&keyword=listing-&p=2&page_size=2", {
+      headers: auth,
+    }),
+    e,
+  );
+  assert.equal((page2.body.data as { total: number }).total, 6);
+  assert.deepEqual(
+    ((page2.body.data as { items: { model_name: string }[] }).items).map((m) => m.model_name),
+    ["listing-exact", "listing-disabled"],
+  );
+
+  const enabledOnly = await json(
+    new Request("http://local/api/models/search?include_channel_models=true&keyword=listing-&status=enabled", {
+      headers: auth,
+    }),
+    e,
+  );
+  assert.equal((enabledOnly.body.data as { total: number }).total, 3);
+  assert.deepEqual(
+    ((enabledOnly.body.data as { items: { model_name: string }[] }).items).map((m) => m.model_name),
+    ["listing-rule-", "listing-catalog", "listing-exact"],
+  );
+
+  const badSquare = await json(new Request("http://local/api/models/?square_state=unknown", { headers: auth }), e);
+  assert.equal(badSquare.res.status, 400);
+  assert.equal(badSquare.body.message, "Invalid model square state");
+
+  const badPage = await json(
+    new Request("http://local/api/models/search?square_state=visible&p=-1", { headers: auth }),
+    e,
+  );
+  assert.equal(badPage.res.status, 400);
+  assert.equal(badPage.body.message, "Invalid pagination");
+
+  const detail = await json(new Request("http://local/api/models/" + prefixId, { headers: auth }), e);
+  assert.equal(detail.body.success, true);
+  assert.deepEqual((detail.body.data as { matched_models: string[] }).matched_models, ["listing-rule-child"]);
+  assert.equal((detail.body.data as { matched_count: number }).matched_count, 1);
+  assert.ok(["visible", "partial", "unavailable", "hidden"].includes(String((detail.body.data as { square_state: string }).square_state)));
+
+  await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        source:
+          'const meta = { apiVersion: 1, key: "usage-task", name: "usage-task", version: "1.0.0", author: { name: "test" }, models: ["usage-task"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" }, usageSchema: { clips: { type: "number", unit: "count" } }, usageExamples: [{ label: "one", facts: { clips: 1 } }] };',
+      }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        mode: "single",
+        channel: {
+          name: "pricing-ch",
+          type: 1,
+          key: "sk-pricing",
+          models: "gpt-4o-mini,gpt-4o-audio-preview,gpt-image-1,gpt-6-astra,parity-unmapped-ratio,usage-task",
+          group: "default",
+        },
+      }),
+    }),
+    e,
+  );
+
+  const pricing = await json(new Request("http://local/api/pricing", { headers: auth }), e);
+  assert.equal(pricing.body.success, true);
+  assert.equal(pricing.body.pricing_version, "a42d372ccf0b5dd13ecf71203521f9d2");
+  const rows = pricing.body.data as Record<string, unknown>[];
+  assert.equal(rows[0].pricing_version, "5a90f2b86c08bd983a9a2e6d66c255f4eaef9c4bc934386d2b6ae84ef0ff1f1f");
+  const byModel = Object.fromEntries(rows.map((m) => [String(m.model_name), m]));
+  assert.equal(byModel["gpt-4o-mini"].cache_ratio, 0.5);
+  assert.equal(byModel["gpt-4o-mini"].quota_type, 0);
+  assert.equal(byModel["gpt-4o-mini"].model_ratio, 0.075);
+  assert.equal("create_cache_ratio" in byModel["gpt-4o-mini"], false);
+  assert.equal(byModel["gpt-4o-audio-preview"].audio_ratio, 16);
+  assert.equal(byModel["gpt-image-1"].image_ratio, 2);
+  assert.equal(byModel["gpt-6-astra"].billing_mode, "tiered_expr");
+  assert.equal(
+    byModel["gpt-6-astra"].billing_expr,
+    'len <= 272000 ? tier("standard", p * 10 + c * 50 + cr * 1 + cc * 12.5) : tier("long_context", p * 20 + c * 75 + cr * 2 + cc * 25)',
+  );
+  assert.equal(byModel["parity-unmapped-ratio"].model_ratio, 37.5);
+  assert.equal(byModel["parity-unmapped-ratio"].quota_type, 0);
+  assert.equal((byModel["usage-task"].billing_usage_schema as { clips: { type: string } }).clips.type, "number");
+  assert.equal((byModel["usage-task"].billing_usage_examples as { label: string }[])[0].label, "one");
+});
+
+
 

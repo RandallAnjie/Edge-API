@@ -169,3 +169,68 @@ export function getModelPriceFromMap(
   if (mapHas(map, name)) return { price: map[name], configured: true };
   return { price: -1, configured: false };
 }
+
+/**
+ * Original `ratio_setting.GetModelRatio`.
+ * Missing names return 37.5; `configured` is SelfUseModeEnabled in that case.
+ */
+export function getModelRatioFromMap(
+  name: string,
+  modelRatioMap: Record<string, unknown> | Record<string, number> = {},
+  selfUseModeEnabled = false,
+): { ratio: number; configured: boolean; name: string } {
+  const map = numberMap(modelRatioMap);
+  name = formatMatchingModelName(name);
+  if (mapHas(map, name)) return { ratio: map[name], configured: true, name };
+  return { ratio: 37.5, configured: selfUseModeEnabled, name };
+}
+
+function exactMapRatio(
+  name: string,
+  ratioMap: Record<string, unknown> | Record<string, number> | undefined,
+  missing: number,
+): { ratio: number; configured: boolean } {
+  const map = numberMap(ratioMap);
+  if (mapHas(map, name)) return { ratio: map[name], configured: true };
+  return { ratio: missing, configured: false };
+}
+
+/** Original `ratio_setting.GetCacheRatio` — lookup is exact, not FormatMatchingModelName. */
+export function getCacheRatioFromMap(
+  name: string,
+  cacheRatioMap: Record<string, unknown> | Record<string, number> = {},
+): { ratio: number; configured: boolean } {
+  return exactMapRatio(name, cacheRatioMap, 1);
+}
+
+/** Original `ratio_setting.GetCreateCacheRatio`. */
+export function getCreateCacheRatioFromMap(
+  name: string,
+  createCacheRatioMap: Record<string, unknown> | Record<string, number> = {},
+): { ratio: number; configured: boolean } {
+  return exactMapRatio(name, createCacheRatioMap, 1.25);
+}
+
+/** Original `ratio_setting.GetImageRatio`. */
+export function getImageRatioFromMap(
+  name: string,
+  imageRatioMap: Record<string, unknown> | Record<string, number> = {},
+): { ratio: number; configured: boolean } {
+  return exactMapRatio(name, imageRatioMap, 1);
+}
+
+/** Original `ratio_setting.ContainsAudioRatio` / `GetAudioRatio`. */
+export function getAudioRatioFromMap(
+  name: string,
+  audioRatioMap: Record<string, unknown> | Record<string, number> = {},
+): { ratio: number; configured: boolean } {
+  return exactMapRatio(formatMatchingModelName(name), audioRatioMap, 1);
+}
+
+/** Original `ratio_setting.ContainsAudioCompletionRatio` / `GetAudioCompletionRatio`. */
+export function getAudioCompletionRatioFromMap(
+  name: string,
+  audioCompletionRatioMap: Record<string, unknown> | Record<string, number> = {},
+): { ratio: number; configured: boolean } {
+  return exactMapRatio(formatMatchingModelName(name), audioCompletionRatioMap, 1);
+}

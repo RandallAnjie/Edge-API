@@ -57,8 +57,11 @@ export const REDEMPTION_USED = 3;
 /** Original `common.MaxWalletQuota` — JavaScript-safe 2^53-1. */
 export const MAX_WALLET_QUOTA = Number.MAX_SAFE_INTEGER;
 
-/** Original `model.NameRuleExact`. */
+/** Original `model.NameRuleExact` / Prefix / Contains / Suffix. */
 export const NAME_RULE_EXACT = 0;
+export const NAME_RULE_PREFIX = 1;
+export const NAME_RULE_CONTAINS = 2;
+export const NAME_RULE_SUFFIX = 3;
 
 export const LOG_UNKNOWN = 0;
 export const LOG_TOPUP = 1;

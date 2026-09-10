@@ -28,7 +28,7 @@ import {
   verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
-import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption } from "./dto.js";
+import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues } from "./dto.js";
 import { billingCopies } from "./billing-setting.js";
 import { DEFAULT_MODEL_RATIO_JSON } from "./ratio-defaults.js";
 import { getModelPricingSnapshot, ModelPricingError, updateModelPricing, type ModelPricingChange } from "./model-pricing.js";
@@ -1408,9 +1408,32 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { model_name?: string; description?: string; vendor_id?: number };
-    if (!body.model_name) return apiFail("无效的参数");
-    return apiOk({ id: await s.insertModelMeta(body.model_name, body.description, Number(body.vendor_id || 0)) });
+    const body = (await readJson(c.req)) as Record<string, unknown> & { model_name?: string };
+    const modelName = String(body.model_name || "").trim();
+    if (!modelName) return apiFail("模型名称不能为空");
+    const status = body.status == null ? 0 : Number(body.status);
+    const name_rule = Number(body.name_rule || 0);
+    const invalid = validateMetadataValues({ endpoints: String(body.endpoints || ""), status, name_rule });
+    if (invalid) return apiFail(invalid);
+    if (await s.isModelNameDuplicated(0, modelName)) return apiFail("模型名称已存在");
+    const vendorId = Number(body.vendor_id || 0);
+    if (vendorId < 0) return apiFail("select a saved vendor");
+    if (vendorId > 0 && !(await s.getVendor(vendorId))) return apiFail("vendor does not exist");
+    const id = await s.insertModelMeta(modelName, String(body.description || ""), vendorId);
+    const t = nowSec();
+    await s.updateModelMeta(id, {
+      description: String(body.description || ""),
+      icon: String(body.icon || ""),
+      tags: String(body.tags || ""),
+      vendor_id: vendorId,
+      endpoints: String(body.endpoints || ""),
+      status,
+      sync_official: body.sync_official == null ? 0 : Number(body.sync_official),
+      name_rule,
+      updated_time: t,
+    });
+    const item = await s.getModelMeta(id);
+    return apiOk(item ? publicModelMeta(item) : { id });
   });
 
   r.put("/api/models/", async (c) => {
@@ -1418,9 +1441,41 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number };
-    if (!body.id) return apiFail("无效的参数");
-    await s.updateModelMeta(body.id, body);
-    return apiOk(null);
+    if (!body.id) return apiFail("缺少模型 ID");
+    const existing = await s.getModelMeta(body.id);
+    if (!existing) return apiFail("不存在");
+    if (c.url.searchParams.get("status_only") === "true") {
+      const status = Number(body.status);
+      if (status !== 0 && status !== 1) return apiFail("invalid catalog visibility");
+      await s.updateModelMeta(body.id, { status, updated_time: nowSec() });
+      const item = await s.getModelMeta(body.id);
+      return apiOk(item ? publicModelMeta({ ...item, status }) : null);
+    }
+    const modelName = String(body.model_name || "").trim();
+    if (!modelName) return apiFail("模型名称不能为空");
+    const status = Number(body.status || 0);
+    const name_rule = Number(body.name_rule || 0);
+    const endpoints = String(body.endpoints ?? existing.endpoints ?? "");
+    const invalid = validateMetadataValues({ endpoints, status, name_rule });
+    if (invalid) return apiFail(invalid);
+    if (await s.isModelNameDuplicated(body.id, modelName)) return apiFail("模型名称已存在");
+    const vendorId = Number(body.vendor_id || 0);
+    if (vendorId < 0) return apiFail("select a saved vendor");
+    if (vendorId > 0 && !(await s.getVendor(vendorId))) return apiFail("vendor does not exist");
+    await s.updateModelMeta(body.id, {
+      model_name: modelName,
+      description: String(body.description || ""),
+      icon: String(body.icon || ""),
+      tags: String(body.tags || ""),
+      vendor_id: vendorId,
+      endpoints: String(body.endpoints ?? existing.endpoints ?? ""),
+      status,
+      sync_official: body.sync_official == null ? Number(existing.sync_official || 0) : Number(body.sync_official),
+      name_rule,
+      updated_time: nowSec(),
+    });
+    const item = await s.getModelMeta(body.id);
+    return apiOk(item ? publicModelMeta(item) : null);
   });
 
   r.delete("/api/models/:id", async (c) => {

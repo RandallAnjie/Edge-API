@@ -581,6 +581,40 @@ export class Store {
     return results;
   }
 
+  /** All channels including disabled — original `GetConfiguredModelChannels`. */
+  async allChannels(): Promise<ChannelRow[]> {
+    const { results } = await this.db.prepare("SELECT * FROM channels").all<ChannelRow>();
+    return results;
+  }
+
+  /** Original abilities JOIN enabled channels — `GetModelConnections`. */
+  async listEnabledModelConnections(): Promise<
+    { model: string; group: string; channel_id: number; channel_name: string; channel_type: number }[]
+  > {
+    const { results } = await this.db
+      .prepare(
+        `SELECT abilities.model as model, abilities."group" as "group", abilities.channel_id as channel_id,
+                channels.name as channel_name, channels.type as channel_type
+         FROM abilities
+         JOIN channels ON abilities.channel_id = channels.id
+         WHERE abilities.enabled = 1 AND channels.status = 1
+         ORDER BY abilities.model, abilities.channel_id`,
+      )
+      .all<{ model: string; group: string; channel_id: number; channel_name: string; channel_type: number }>();
+    if (results.length) return results;
+    const channels = await this.enabledChannels();
+    const out: { model: string; group: string; channel_id: number; channel_name: string; channel_type: number }[] = [];
+    for (const ch of channels) {
+      const groups = csv(ch.group || "default");
+      for (const model of csv(ch.models)) {
+        for (const group of groups) {
+          out.push({ model, group, channel_id: ch.id, channel_name: ch.name, channel_type: ch.type });
+        }
+      }
+    }
+    return out;
+  }
+
   async abilitiesFor(group: string, model: string): Promise<{ channel_id: number; priority: number; weight: number }[]> {
     const { results } = await this.db
       .prepare(
@@ -596,11 +630,6 @@ export class Store {
     const id = pickAbilityChannelId(abilities, retry);
     if (!id) return null;
     return this.getChannel(id);
-  }
-
-  async allChannels(): Promise<ChannelRow[]> {
-    const { results } = await this.db.prepare("SELECT * FROM channels").all<ChannelRow>();
-    return results;
   }
 
   async taskPluginUsage(key: string): Promise<{ channel_count: number; in_flight_count: number; channels: { id: number; name: string }[] }> {
@@ -2418,20 +2447,45 @@ export class Store {
     const t = nowSec();
     const r = await this.db
       .prepare(
-        "INSERT INTO model_meta (model_name, description, vendor_id, created_at, created_time, updated_time, status, sync_official, name_rule) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0)",
+        "INSERT INTO model_meta (model_name, description, vendor_id, icon, tags, endpoints, created_at, created_time, updated_time, status, sync_official, name_rule) VALUES (?, ?, ?, '', '', '', ?, ?, ?, 1, 1, 0)",
       )
       .bind(model_name, description, vendor_id, t, t, t)
       .run();
     return Number(r.meta.last_row_id || 0);
   }
 
+  async isModelNameDuplicated(id: number, name: string): Promise<boolean> {
+    if (!name) return false;
+    const row = await this.db
+      .prepare("SELECT id FROM model_meta WHERE model_name = ? AND id <> ?")
+      .bind(name, id)
+      .first<{ id: number }>();
+    return Boolean(row);
+  }
+
   async updateModelMeta(id: number, patch: Record<string, unknown>): Promise<void> {
+    const allowed = new Set([
+      "model_name",
+      "description",
+      "icon",
+      "tags",
+      "vendor_id",
+      "endpoints",
+      "status",
+      "sync_official",
+      "name_rule",
+      "updated_time",
+      "created_time",
+      "created_at",
+    ]);
     const cols: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
+      if (!allowed.has(k) || v === undefined) continue;
       cols.push(`${k} = ?`);
       vals.push(v);
     }
+    if (!cols.length) return;
     vals.push(id);
     await this.db.prepare(`UPDATE model_meta SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
   }
@@ -2445,11 +2499,49 @@ export class Store {
   }
 
   async searchModelMeta(keyword: string): Promise<unknown[]> {
+    return this.searchModels({ keyword });
+  }
+
+  /** Original `model.SearchModels` — `ORDER BY id DESC`. */
+  async searchModels(opts: {
+    keyword?: string;
+    vendor?: string;
+    status?: number | null;
+    syncOfficial?: number | null;
+  }): Promise<Record<string, unknown>[]> {
+    const where: string[] = ["1=1"];
+    const binds: unknown[] = [];
+    const keyword = (opts.keyword || "").trim();
+    if (keyword) {
+      where.push("(model_meta.model_name LIKE ? OR model_meta.description LIKE ? OR model_meta.tags LIKE ?)");
+      const q = `%${keyword}%`;
+      binds.push(q, q, q);
+    }
+    const vendor = opts.vendor ?? "";
+    let join = "";
+    if (vendor !== "") {
+      if (/^-?\d+$/.test(vendor)) {
+        where.push("model_meta.vendor_id = ?");
+        binds.push(Number(vendor));
+      } else {
+        join = "JOIN vendors ON vendors.id = model_meta.vendor_id";
+        where.push("vendors.name LIKE ?");
+        binds.push(`%${vendor}%`);
+      }
+    }
+    if (opts.status != null) {
+      where.push("model_meta.status = ?");
+      binds.push(opts.status);
+    }
+    if (opts.syncOfficial != null) {
+      where.push("model_meta.sync_official = ?");
+      binds.push(opts.syncOfficial);
+    }
     const { results } = await this.db
-      .prepare("SELECT * FROM model_meta WHERE model_name LIKE ? OR description LIKE ? ORDER BY id")
-      .bind(`%${keyword}%`, `%${keyword}%`)
+      .prepare(`SELECT model_meta.* FROM model_meta ${join} WHERE ${where.join(" AND ")} ORDER BY model_meta.id DESC`)
+      .bind(...binds)
       .all();
-    return results;
+    return results as Record<string, unknown>[];
   }
 
   async deleteModelMetaBatch(ids: number[]): Promise<number> {

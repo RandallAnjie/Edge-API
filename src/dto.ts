@@ -1,9 +1,27 @@
-import { billingCopies } from "./billing-setting.js";
+import { billingCopies, getBillingExpr, getBillingMode } from "./billing-setting.js";
 import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_CREATED } from "./channel-models.js";
 import { clearChannelInfoPublic } from "./channel-info.js";
-import { DEFAULT_GROUP_RATIO, csv, parseJson } from "./constants.js";
-import { hmacSha256Raw, maskKey, md5Hex } from "./crypto.js";
-import { getCompletionRatioInfo } from "./ratio-setting.js";
+import {
+  DEFAULT_GROUP_RATIO,
+  NAME_RULE_CONTAINS,
+  NAME_RULE_EXACT,
+  NAME_RULE_PREFIX,
+  NAME_RULE_SUFFIX,
+  csv,
+  parseJson,
+} from "./constants.js";
+import { hmacSha256Raw, maskKey } from "./crypto.js";
+import {
+  getAudioCompletionRatioFromMap,
+  getAudioRatioFromMap,
+  getCacheRatioFromMap,
+  getCompletionRatio,
+  getCompletionRatioInfo,
+  getCreateCacheRatioFromMap,
+  getImageRatioFromMap,
+  getModelPriceFromMap,
+  getModelRatioFromMap,
+} from "./ratio-setting.js";
 import type { Store } from "./store.js";
 import type { ChannelRow, LogRow, RedemptionRow, TokenRow, UserRow } from "./types.js";
 
@@ -21,6 +39,11 @@ export const DEFAULT_PAY_METHODS: Record<string, string>[] = [
 export const DEFAULT_AMOUNT_OPTIONS = [10, 20, 50, 100, 200, 500];
 
 export const COMPLIANCE_TERMS_VERSION = "v1";
+
+/** Original first `Pricing.pricing_version` in `updatePricing`. */
+export const PRICING_ITEM_VERSION = "5a90f2b86c08bd983a9a2e6d66c255f4eaef9c4bc934386d2b6ae84ef0ff1f1f";
+/** Original `controller.GetPricing` envelope `pricing_version`. */
+export const PRICING_ENVELOPE_VERSION = "a42d372ccf0b5dd13ecf71203521f9d2";
 
 export const DEFAULT_ENDPOINT_INFO: Record<string, { path: string; method: string }> = {
   openai: { path: "/v1/chat/completions", method: "POST" },
@@ -237,6 +260,46 @@ export function publicTopup(row: Record<string, unknown>): Record<string, unknow
   };
 }
 
+function appendPricingEndpoint(endpoints: string[], endpoint: string): string[] {
+  if (!endpoint || endpoints.includes(endpoint)) return endpoints;
+  return [...endpoints, endpoint];
+}
+
+function overlayCustomEndpoints(
+  raw: string,
+  endpoints: string[],
+  supported: Record<string, { path: string; method: string }>,
+): string[] {
+  if (!String(raw || "").trim()) return endpoints;
+  const parsed = parseJson<unknown>(raw, null);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return endpoints;
+  let next = endpoints;
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value === "string") {
+      next = appendPricingEndpoint(next, key);
+      supported[key] = { path: value, method: "POST" };
+    } else if (value && typeof value === "object") {
+      const obj = value as { path?: string; method?: string };
+      next = appendPricingEndpoint(next, key);
+      supported[key] = { path: String(obj.path || ""), method: String(obj.method || "POST").toUpperCase() };
+    }
+  }
+  return next;
+}
+
+async function pluginUsageByModel(store: Store): Promise<Map<string, Record<string, unknown>>> {
+  const out = new Map<string, Record<string, unknown>>();
+  for (const row of (await store.listTaskPlugins()) as Record<string, unknown>[]) {
+    const extracted = extractPluginMeta(String(row.source || ""));
+    const models = Array.isArray(extracted.models) ? extracted.models : [];
+    for (const name of models) {
+      const key = String(name);
+      if (key && !out.has(key)) out.set(key, extracted);
+    }
+  }
+  return out;
+}
+
 export async function buildPricing(
   store: Store,
   userGroup = "",
@@ -249,87 +312,126 @@ export async function buildPricing(
   auto_groups: string[];
   pricing_version: string;
 }> {
-  const models = await store.enabledModels(userGroup || "default");
-  const channels = await store.enabledChannels();
+  const connections = await store.listEnabledModelConnections();
   const modelRatio = parseJson<Record<string, number>>(await store.option("ModelRatio"), {});
   const completionRatio = parseJson<Record<string, number>>(await store.option("CompletionRatio"), {});
   const modelPrice = parseJson<Record<string, number>>(await store.option("ModelPrice"), {});
-  const meta = (await store.listModelMeta()) as {
-    model_name?: string;
-    description?: string;
-    icon?: string;
-    tags?: string;
-    vendor_id?: number;
-    status?: number;
-  }[];
-  const metaByName = new Map(meta.map((m) => [String(m.model_name), m]));
+  const cacheRatio = parseJson<Record<string, number>>(await store.option("CacheRatio"), {});
+  const createCacheRatio = parseJson<Record<string, number>>(await store.option("CreateCacheRatio"), {});
+  const imageRatio = parseJson<Record<string, number>>(await store.option("ImageRatio"), {});
+  const audioRatio = parseJson<Record<string, number>>(await store.option("AudioRatio"), {});
+  const audioCompletionRatio = parseJson<Record<string, number>>(await store.option("AudioCompletionRatio"), {});
+  const billingMode = parseJson<Record<string, string>>(await store.option("billing_setting.billing_mode"), {});
+  const billingExpr = parseJson<Record<string, string>>(await store.option("billing_setting.billing_expr"), {});
+  const allMeta = (await store.listModelMeta()) as Record<string, unknown>[];
   const vendors = (await store.listVendors()) as { id: number; name: string; description?: string; icon?: string }[];
   const usable = await userUsableGroups(store, userGroup);
   const groupsByModel = new Map<string, Set<string>>();
   const typesByModel = new Map<string, string[]>();
-  for (const ch of channels) {
-    const chGroups = String(ch.group || "default")
-      .split(",")
-      .map((g) => g.trim())
-      .filter(Boolean);
-    for (const name of String(ch.models || "")
-      .split(",")
-      .map((m) => m.trim())
-      .filter(Boolean)) {
-      if (!groupsByModel.has(name)) groupsByModel.set(name, new Set());
-      for (const g of chGroups) groupsByModel.get(name)!.add(g);
-      const existing = typesByModel.get(name) || [];
-      for (const et of endpointTypesForChannel(ch.type, name)) {
-        if (!existing.includes(et)) existing.push(et);
-      }
-      typesByModel.set(name, existing);
+  for (const conn of connections) {
+    const name = String(conn.model || "");
+    if (!name) continue;
+    if (!groupsByModel.has(name)) groupsByModel.set(name, new Set());
+    groupsByModel.get(name)!.add(conn.group || "default");
+    let existing = typesByModel.get(name) || [];
+    for (const et of endpointTypesForChannel(conn.channel_type, name)) {
+      existing = appendPricingEndpoint(existing, et);
     }
+    typesByModel.set(name, existing);
   }
-  const names = models.length ? models : [...groupsByModel.keys()];
-  const pricing: Record<string, unknown>[] = [];
+  const names = [...groupsByModel.keys()];
+  const metaMap = resolveModelMetadata(allMeta, names);
+  const pluginByModel = await pluginUsageByModel(store);
   const supported: Record<string, { path: string; method: string }> = {};
   for (const name of names) {
-    const enable_groups = [...(groupsByModel.get(name) || new Set(["default"]))];
-    if (!enable_groups.includes("all") && !enable_groups.some((g) => usable[g] != null)) continue;
-    const m = metaByName.get(name);
-    if (m && m.status != null && Number(m.status) !== 1) continue;
-    const endpoints = typesByModel.get(name) || endpointTypesForChannel(1, name);
+    let endpoints = typesByModel.get(name) || [];
+    const meta = metaMap.get(name);
+    if (meta) endpoints = overlayCustomEndpoints(String(meta.endpoints || ""), endpoints, supported);
+    typesByModel.set(name, endpoints);
     for (const et of endpoints) {
       if (DEFAULT_ENDPOINT_INFO[et] && !supported[et]) supported[et] = DEFAULT_ENDPOINT_INFO[et];
     }
-    const priced = modelPrice[name];
+  }
+  const pricing: Record<string, unknown>[] = [];
+  for (const name of names) {
+    const enable_groups = [...(groupsByModel.get(name) || new Set())];
+    const meta = metaMap.get(name);
+    if (meta && Number(meta.status ?? 1) !== 1) continue;
+    const endpoints = typesByModel.get(name) || [];
+    const priced = getModelPriceFromMap(name, modelPrice);
     const item: Record<string, unknown> = {
       model_name: name,
-      description: m?.description || "",
-      icon: m?.icon || "",
-      tags: m?.tags || "",
-      vendor_id: m?.vendor_id || 0,
-      quota_type: priced != null ? 1 : 0,
-      model_ratio: priced != null ? 0 : (modelRatio[name] ?? 1),
-      model_price: priced != null ? priced : 0,
+      quota_type: priced.configured ? 1 : 0,
+      model_ratio: priced.configured ? 0 : getModelRatioFromMap(name, modelRatio).ratio,
+      model_price: priced.configured ? priced.price : 0,
       owner_by: "",
-      completion_ratio: completionRatio[name] ?? 1,
+      completion_ratio: priced.configured ? 0 : getCompletionRatio(name, completionRatio),
       enable_groups,
       supported_endpoint_types: endpoints,
     };
+    const description = String(meta?.description || "");
+    const icon = String(meta?.icon || "");
+    const tags = String(meta?.tags || "");
+    const vendorId = Number(meta?.vendor_id || 0);
+    if (description) item.description = description;
+    if (icon) item.icon = icon;
+    if (tags) item.tags = tags;
+    if (vendorId) item.vendor_id = vendorId;
+    const cache = getCacheRatioFromMap(name, cacheRatio);
+    if (cache.configured) item.cache_ratio = cache.ratio;
+    const createCache = getCreateCacheRatioFromMap(name, createCacheRatio);
+    if (createCache.configured) item.create_cache_ratio = createCache.ratio;
+    const image = getImageRatioFromMap(name, imageRatio);
+    if (image.configured) item.image_ratio = image.ratio;
+    const audio = getAudioRatioFromMap(name, audioRatio);
+    if (audio.configured) item.audio_ratio = audio.ratio;
+    const audioCompletion = getAudioCompletionRatioFromMap(name, audioCompletionRatio);
+    if (audioCompletion.configured) item.audio_completion_ratio = audioCompletion.ratio;
+    let billingModel = name;
+    let mode = getBillingMode(billingModel, billingMode, modelRatio, modelPrice);
+    if (mode !== "tiered_expr") {
+      const plugin = pluginByModel.get(name);
+      const declared = Array.isArray(plugin?.models) ? String(plugin!.models[0] || "") : "";
+      if (declared && declared !== name) {
+        billingModel = declared;
+        mode = getBillingMode(billingModel, billingMode, modelRatio, modelPrice);
+      }
+    }
+    if (mode === "tiered_expr") {
+      const expr = getBillingExpr(billingModel, billingMode, billingExpr, modelRatio, modelPrice);
+      if (expr && expr.trim()) {
+        item.billing_mode = mode;
+        item.billing_expr = expr;
+      }
+    }
+    const plugin = pluginByModel.get(name);
+    const usageSchema = plugin?.usageSchema;
+    if (usageSchema && typeof usageSchema === "object" && Object.keys(usageSchema as object).length) {
+      item.billing_usage_schema = usageSchema;
+      const examples = plugin?.usageExamples;
+      if (Array.isArray(examples) && examples.length) item.billing_usage_examples = examples;
+    }
     pricing.push(item);
   }
+  if (pricing[0]) pricing[0].pricing_version = PRICING_ITEM_VERSION;
+  const filtered = pricing.filter((item) => {
+    const groups = item.enable_groups as string[];
+    return groups.includes("all") || groups.some((g) => usable[g] != null);
+  });
   const vendorList = vendors.map((v) => ({
     id: v.id,
     name: v.name,
     description: v.description || "",
     icon: v.icon || "",
   }));
-  const version = await md5Hex(JSON.stringify({ models: names, modelRatio, completionRatio, modelPrice }));
-  if (pricing[0]) pricing[0].pricing_version = version;
   return {
-    data: pricing,
+    data: filtered,
     vendors: vendorList,
     group_ratio: await groupRatioMap(store, userGroup),
     usable_group: usable,
     supported_endpoint: Object.keys(supported).length ? supported : { ...DEFAULT_ENDPOINT_INFO },
     auto_groups: await userAutoGroups(store, userGroup),
-    pricing_version: version,
+    pricing_version: PRICING_ENVELOPE_VERSION,
   };
 }
 
@@ -458,6 +560,138 @@ export function formatLogOtherJSON(value: string, visibility: LogVisibility): st
   return changed ? JSON.stringify(out) : value;
 }
 
+/** Original `model.MatchesName`. */
+export function matchesName(rule: number, modelName: string, name: string): boolean {
+  switch (rule) {
+    case NAME_RULE_PREFIX:
+      return name.startsWith(modelName);
+    case NAME_RULE_SUFFIX:
+      return name.endsWith(modelName);
+    case NAME_RULE_CONTAINS:
+      return name.includes(modelName);
+    default:
+      return name === modelName;
+  }
+}
+
+/** Original `model.resolveModelMetadata`. */
+export function resolveModelMetadata(
+  records: Record<string, unknown>[],
+  names: string[],
+): Map<string, Record<string, unknown>> {
+  const resolved = new Map<string, Record<string, unknown>>();
+  for (const record of records) {
+    if (Number(record.name_rule || 0) === NAME_RULE_EXACT) {
+      resolved.set(String(record.model_name || ""), record);
+    }
+  }
+  for (const rule of [NAME_RULE_PREFIX, NAME_RULE_SUFFIX, NAME_RULE_CONTAINS]) {
+    for (const record of records) {
+      if (Number(record.name_rule || 0) !== rule) continue;
+      const modelName = String(record.model_name || "");
+      for (const name of names) {
+        if (!resolved.has(name) && matchesName(rule, modelName, name)) resolved.set(name, record);
+      }
+    }
+  }
+  return resolved;
+}
+
+/** Original `parseModelStatusFilter`. */
+export function parseModelStatusFilter(status: string): { value: number; ok: boolean } {
+  switch (String(status || "").trim().toLowerCase()) {
+    case "":
+    case "all":
+      return { value: 0, ok: false };
+    case "enabled":
+    case "1":
+      return { value: 1, ok: true };
+    case "disabled":
+    case "0":
+      return { value: 0, ok: true };
+    default: {
+      if (!/^-?\d+$/.test(status)) return { value: 0, ok: false };
+      return { value: Number(status), ok: true };
+    }
+  }
+}
+
+/** Original `parseModelSyncFilter`. */
+export function parseModelSyncFilter(syncOfficial: string): { value: number; ok: boolean } {
+  switch (String(syncOfficial || "").trim().toLowerCase()) {
+    case "":
+    case "all":
+      return { value: 0, ok: false };
+    case "yes":
+    case "1":
+      return { value: 1, ok: true };
+    case "no":
+    case "0":
+      return { value: 0, ok: true };
+    default: {
+      if (!/^-?\d+$/.test(syncOfficial)) return { value: 0, ok: false };
+      return { value: Number(syncOfficial), ok: true };
+    }
+  }
+}
+
+/** Original `model.ValidateMetadataValues` / `ValidateModelEndpoints`. */
+export function validateMetadataValues(values: { endpoints?: string; status?: number; name_rule?: number }): string | null {
+  const nameRule = Number(values.name_rule || 0);
+  if (nameRule < NAME_RULE_EXACT || nameRule > NAME_RULE_SUFFIX) return "invalid metadata matching rule";
+  const status = Number(values.status || 0);
+  if (status !== 0 && status !== 1) return "invalid catalog visibility";
+  return validateModelEndpoints(String(values.endpoints || ""));
+}
+
+export function validateModelEndpoints(raw: string): string | null {
+  if (!String(raw || "").trim()) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch (err) {
+    return `invalid endpoints: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (Array.isArray(value)) {
+    for (const endpoint of value) {
+      if (typeof endpoint !== "string" || !endpoint.trim()) return "endpoint types must be non-empty strings";
+    }
+    return null;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, endpoint] of Object.entries(value as Record<string, unknown>)) {
+      if (!key.trim()) return "endpoint type is required";
+      if (typeof endpoint === "string") {
+        if (!endpoint.startsWith("/")) return "endpoint paths must start with /";
+      } else if (endpoint && typeof endpoint === "object") {
+        const path = String((endpoint as { path?: string }).path || "");
+        if (!path.startsWith("/")) return "endpoint paths must start with /";
+        if ("method" in (endpoint as object)) {
+          const method = (endpoint as { method?: string }).method;
+          if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(String(method))) {
+            return "invalid endpoint HTTP method";
+          }
+        }
+      } else {
+        return "endpoint configuration must be a path or object";
+      }
+    }
+    return null;
+  }
+  return "endpoints must be a JSON object or array";
+}
+
+function uniqueCsv(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of csv(raw)) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
 export function publicModelMeta(
   row: Record<string, unknown>,
   extra: {
@@ -466,63 +700,215 @@ export function publicModelMeta(
     quota_types?: number[];
     configured_channel_count?: number;
     square_state?: string;
+    matched_models?: string[];
+    matched_count?: number;
+    supported_endpoints?: string[];
   } = {},
 ): Record<string, unknown> {
+  const hasMetadata = Number(row.id || 0) > 0;
   const endpointsRaw = String(row.endpoints || "");
-  const supported = parseJson<string[]>(endpointsRaw, []);
+  const fromJson = parseJson<unknown>(endpointsRaw, null);
+  const supportedFromRow = Array.isArray(fromJson) ? fromJson.filter((x) => typeof x === "string") : [];
+  const supported = extra.supported_endpoints?.length ? extra.supported_endpoints : supportedFromRow;
   const created = Number(row.created_time || row.created_at || 0);
-  return {
-    id: row.id,
+  const out: Record<string, unknown> = {
+    id: Number(row.id || 0),
     model_name: row.model_name,
     description: row.description || "",
     icon: row.icon || "",
     tags: row.tags || "",
     vendor_id: Number(row.vendor_id || 0),
     endpoints: endpointsRaw,
-    supported_endpoints: supported.length ? supported : undefined,
-    status: row.status == null ? 1 : Number(row.status),
-    sync_official: row.sync_official == null ? 1 : Number(row.sync_official),
+    status: row.status == null ? (hasMetadata ? 1 : 0) : Number(row.status),
+    sync_official: row.sync_official == null ? (hasMetadata ? 1 : 0) : Number(row.sync_official),
     created_time: created,
     updated_time: Number(row.updated_time || created),
     name_rule: Number(row.name_rule || 0),
-    has_metadata: true,
-    configured_channel_count: extra.configured_channel_count ?? extra.bound_channels?.length ?? 0,
-    square_state: extra.square_state || (extra.configured_channel_count ? "visible" : "hidden"),
-    bound_channels: extra.bound_channels,
-    enable_groups: extra.enable_groups,
-    quota_types: extra.quota_types,
+    has_metadata: hasMetadata,
+    configured_channel_count: extra.configured_channel_count ?? 0,
+    square_state: extra.square_state || "unavailable",
   };
+  if (supported.length) out.supported_endpoints = supported;
+  if (extra.bound_channels?.length) out.bound_channels = extra.bound_channels;
+  if (extra.enable_groups?.length) out.enable_groups = extra.enable_groups;
+  if (extra.quota_types?.length) out.quota_types = extra.quota_types;
+  if (extra.matched_models?.length) {
+    out.matched_models = extra.matched_models;
+    out.matched_count = extra.matched_count ?? extra.matched_models.length;
+  }
+  return out;
+}
+
+async function configuredModelChannels(store: Store): Promise<Map<string, number[]>> {
+  const configured = new Map<string, number[]>();
+  for (const ch of await store.allChannels()) {
+    for (const name of uniqueCsv(ch.models || "")) {
+      const ids = configured.get(name) || [];
+      ids.push(ch.id);
+      configured.set(name, ids);
+    }
+  }
+  return configured;
+}
+
+function fillModelSquareStates(
+  rows: Record<string, unknown>[],
+  allMeta: Record<string, unknown>[],
+  configured: Map<string, number[]>,
+  available: Set<string>,
+): Map<string, string> {
+  const nameSet = new Set<string>(configured.keys());
+  for (const row of rows) {
+    if (Number(row.name_rule || 0) === NAME_RULE_EXACT) nameSet.add(String(row.model_name || ""));
+  }
+  const names = [...nameSet];
+  const resolved = resolveModelMetadata(allMeta, names);
+  const states = new Map<string, string>();
+  for (const name of names) {
+    let state = "unavailable";
+    const policy = resolved.get(name);
+    if (policy && Number(policy.status ?? 1) !== 1) state = "hidden";
+    else if (available.has(name)) state = "visible";
+    states.set(name, state);
+  }
+  const square = new Map<string, string>();
+  for (const row of rows) {
+    const modelName = String(row.model_name || "");
+    const rule = Number(row.name_rule || 0);
+    if (rule === NAME_RULE_EXACT) {
+      square.set(modelName, states.get(modelName) || "unavailable");
+      continue;
+    }
+    let total = 0;
+    let visible = 0;
+    let hidden = 0;
+    for (const name of configured.keys()) {
+      if (!matchesName(rule, modelName, name)) continue;
+      total += 1;
+      const st = states.get(name);
+      if (st === "visible") visible += 1;
+      else if (st === "hidden") hidden += 1;
+    }
+    let result = "unavailable";
+    if (total === 0) {
+      if (Number(row.status ?? 1) !== 1) result = "hidden";
+    } else if (hidden === total) result = "hidden";
+    else if (visible === total) result = "visible";
+    else if (visible > 0) result = "partial";
+    square.set(modelName, result);
+  }
+  return square;
 }
 
 export async function enrichModelMeta(store: Store, rows: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
-  const channels = await store.enabledChannels();
-  const byModel = new Map<string, { name: string; type: number; groups: Set<string> }[]>();
-  for (const ch of channels) {
-    const groups = String(ch.group || "default")
-      .split(",")
-      .map((g) => g.trim())
-      .filter(Boolean);
-    for (const name of csv(ch.models || "")) {
-      if (!byModel.has(name)) byModel.set(name, []);
-      byModel.get(name)!.push({ name: ch.name, type: ch.type, groups: new Set(groups) });
+  if (!rows.length) return [];
+  const configured = await configuredModelChannels(store);
+  const connections = await store.listEnabledModelConnections();
+  const allMeta = (await store.listModelMeta()) as Record<string, unknown>[];
+  const available = new Set(connections.map((c) => c.model));
+  const square = fillModelSquareStates(rows, allMeta, configured, available);
+  const modelPrice = parseJson<Record<string, number>>(await store.option("ModelPrice"), {});
+  const quotaByModel = new Map<string, number>();
+  for (const name of available) {
+    quotaByModel.set(name, getModelPriceFromMap(name, modelPrice).configured ? 1 : 0);
+  }
+  const endpointsByModel = new Map<string, string[]>();
+  for (const conn of connections) {
+    let existing = endpointsByModel.get(conn.model) || [];
+    for (const et of endpointTypesForChannel(conn.channel_type, conn.model)) {
+      existing = appendPricingEndpoint(existing, et);
     }
+    endpointsByModel.set(conn.model, existing);
   }
   return rows.map((row) => {
     const modelName = String(row.model_name || "");
-    const bound = byModel.get(modelName) || [];
-    const enable_groups = [...new Set(bound.flatMap((b) => [...b.groups]))];
-    const configured = bound.length;
-    let square_state = "hidden";
-    if (configured > 0) square_state = "visible";
-    if (Number(row.status) === 0) square_state = "hidden";
+    const rule = Number(row.name_rule || 0);
+    const channelIDs = new Set<number>();
+    for (const [name, ids] of configured) {
+      if (matchesName(rule, modelName, name)) {
+        for (const id of ids) channelIDs.add(id);
+      }
+    }
+    const channels = new Map<number, { name: string; type: number }>();
+    const groups = new Set<string>();
+    const names = new Set<string>();
+    const endpoints = new Set<string>();
+    const quotas = new Set<number>();
+    for (const conn of connections) {
+      if (!matchesName(rule, modelName, conn.model)) continue;
+      names.add(conn.model);
+      groups.add(conn.group);
+      channels.set(conn.channel_id, { name: conn.channel_name, type: conn.channel_type });
+      for (const et of endpointsByModel.get(conn.model) || []) endpoints.add(et);
+      if (quotaByModel.has(conn.model)) quotas.add(quotaByModel.get(conn.model)!);
+    }
+    const bound_channels = [...channels.values()].sort((a, b) => (a.name === b.name ? a.type - b.type : a.name.localeCompare(b.name)));
+    const enable_groups = [...groups].sort();
+    const supported_endpoints = [...endpoints].sort();
+    const quota_types = [...quotas].sort((a, b) => a - b);
+    const matched_models = rule === NAME_RULE_EXACT ? undefined : [...names].sort();
     return publicModelMeta(row, {
-      bound_channels: bound.map((b) => ({ name: b.name, type: b.type })),
+      bound_channels,
       enable_groups,
-      quota_types: [0],
-      configured_channel_count: configured,
-      square_state,
+      quota_types,
+      configured_channel_count: channelIDs.size,
+      square_state: square.get(modelName) || "unavailable",
+      matched_models,
+      matched_count: matched_models?.length,
+      supported_endpoints,
     });
   });
+}
+
+/** Original `controller.listModelsMeta` including `SearchModelsWithChannels`. */
+export async function listAdminModels(
+  store: Store,
+  opts: {
+    keyword?: string;
+    vendor?: string;
+    status?: string;
+    syncOfficial?: string;
+    includeChannelModels?: boolean;
+    squareState?: string;
+    page: number;
+    pageSize: number;
+  },
+): Promise<{ items: Record<string, unknown>[]; total: number; vendor_counts: Record<string, number> }> {
+  const statusFilter = parseModelStatusFilter(opts.status || "");
+  const syncFilter = parseModelSyncFilter(opts.syncOfficial || "");
+  const records = await store.searchModels({
+    keyword: opts.keyword || "",
+    vendor: opts.vendor || "",
+    status: statusFilter.ok ? statusFilter.value : null,
+    syncOfficial: syncFilter.ok ? syncFilter.value : null,
+  });
+  if (
+    opts.includeChannelModels &&
+    !statusFilter.ok &&
+    !syncFilter.ok &&
+    (opts.vendor === "" || opts.vendor === "0" || opts.vendor == null)
+  ) {
+    const configured = await configuredModelChannels(store);
+    const exactNames = new Set(
+      ((await store.listModelMeta()) as Record<string, unknown>[])
+        .filter((m) => Number(m.name_rule || 0) === NAME_RULE_EXACT)
+        .map((m) => String(m.model_name || "")),
+    );
+    for (const name of exactNames) configured.delete(name);
+    const keyword = (opts.keyword || "").toLowerCase();
+    const extras = [...configured.keys()]
+      .filter((name) => !keyword || name.toLowerCase().includes(keyword))
+      .sort();
+    for (const name of extras) records.push({ model_name: name, name_rule: NAME_RULE_EXACT });
+  }
+  let enriched = await enrichModelMeta(store, records);
+  if (opts.squareState) {
+    enriched = enriched.filter((m) => m.square_state === opts.squareState);
+  }
+  const total = enriched.length;
+  const start = Math.max(0, (opts.page - 1) * opts.pageSize);
+  const items = opts.pageSize < 0 ? enriched : enriched.slice(start, start + opts.pageSize);
+  return { items, total, vendor_counts: await store.vendorModelCounts() };
 }
 
 export function consumeLogOther(opts: {
