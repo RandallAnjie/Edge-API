@@ -16,7 +16,7 @@ import {
 import { canWithPolicies, capabilitiesFromStore, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import {
   deriveNextRefreshSecret,
-  extractRequestApiKey,
+  extractRequestApiKeyParts,
   parseApiKey,
   hashRefreshSecret,
   randomCharsKey,
@@ -36,9 +36,13 @@ import {
   sessionCookie,
   sessionHintCookie,
   openaiError,
+  invalidChannelIdMessage,
+  SPECIFIC_CHANNEL_VERSION,
 } from "./http.js";
 import { ipAllowed } from "./select.js";
 import { Store, permissionsFor, publicUser } from "./store.js";
+import { containsGroupRatio, userUsableGroups } from "./dto.js";
+import { tokenModelLimitAllows } from "./ratio-setting.js";
 import type { AuthToken, Env, LoginSessionRow, SessionUser, TokenRow, UserRow } from "./types.js";
 import type { Context } from "./router.js";
 import { requireSecurityProof, type AuthIdentity, type VerificationOperation } from "./security.js";
@@ -487,7 +491,8 @@ export async function authenticateTokenReadOnly(
 }
 
 export async function authenticateApiToken(c: Context<Env>, store: Store): Promise<AuthToken | Response> {
-  const key = extractRequestApiKey(c.req, c.url);
+  const parsed = extractRequestApiKeyParts(c.req, c.url);
+  const key = parsed.key;
   if (!key) return openaiError(401, "未提供令牌", "invalid_api_key");
   const token = await store.getTokenByKey(key);
   if (!token) return openaiError(401, "令牌无效", "invalid_api_key");
@@ -499,15 +504,40 @@ export async function authenticateApiToken(c: Context<Env>, store: Store): Promi
   if (!user || user.status !== USER_ENABLED) return openaiError(403, "用户已被封禁", "user_disabled");
   const ip = c.req.headers.get("cf-connecting-ip") || c.req.headers.get("x-real-ip") || "";
   if (!ipAllowed(token.allow_ips, ip)) return openaiError(403, "您的 IP 不在令牌允许访问的列表中", "access_denied");
-  const usingGroup = token.group || user.group || "default";
-  return { token, user, usingGroup };
+  const userGroup = user.group || "default";
+  let usingGroup = userGroup;
+  const tokenGroup = String(token.group || "");
+  if (tokenGroup) {
+    const usable = await userUsableGroups(store, userGroup);
+    if (usable[tokenGroup] == null) {
+      return openaiError(403, `无权访问 ${tokenGroup} 分组`, "access_denied");
+    }
+    if (tokenGroup !== "auto" && !(await containsGroupRatio(store, tokenGroup))) {
+      return openaiError(403, `分组 ${tokenGroup} 已被弃用`, "access_denied");
+    }
+    usingGroup = tokenGroup;
+  }
+  let pinnedChannelId: number | undefined;
+  if (parsed.extra.length) {
+    if (user.role < ROLE_ADMIN) {
+      return openaiError(403, "普通用户不支持指定渠道", "access_denied", "new_api_error", {
+        specific_channel_version: SPECIFIC_CHANNEL_VERSION,
+      });
+    }
+    const rawId = parsed.extra[0];
+    if (!/^-?\d+$/.test(rawId)) {
+      return openaiError(400, invalidChannelIdMessage(c.req), "invalid_channel_id");
+    }
+    pinnedChannelId = Number(rawId);
+  }
+  return { token, user, usingGroup, pinnedChannelId };
 }
 
 export function tokenAllowsModel(token: TokenRow, model: string): boolean {
   if (!token.model_limits_enabled) return true;
-  const allowed = csv(token.model_limits);
-  if (allowed.length === 0) return true;
-  return allowed.includes(model);
+  const limit: Record<string, boolean> = {};
+  for (const m of csv(token.model_limits)) limit[m] = true;
+  return tokenModelLimitAllows(limit, model);
 }
 
 export async function rateLimit(env: Env, tokenId: number): Promise<boolean> {

@@ -192,12 +192,24 @@ export function openaiFromGeminiResponse(upstream: Record<string, unknown>, mode
   };
 }
 
-export function usageFromOpenAI(body: Record<string, unknown> | null): { prompt: number; completion: number } {
-  if (!body) return { prompt: 0, completion: 0 };
+export function usageFromOpenAI(body: Record<string, unknown> | null): {
+  prompt: number;
+  completion: number;
+  total: number;
+  cachedTokens: number;
+  promptCacheHitTokens: number;
+} {
+  if (!body) return { prompt: 0, completion: 0, total: 0, cachedTokens: 0, promptCacheHitTokens: 0 };
   const usage = (body.usage || {}) as Record<string, unknown>;
+  const promptDetails = (usage.prompt_tokens_details || usage.input_tokens_details || {}) as Record<string, unknown>;
+  const prompt = Number(usage.prompt_tokens || usage.input_tokens || 0);
+  const completion = Number(usage.completion_tokens || usage.output_tokens || 0);
   return {
-    prompt: Number(usage.prompt_tokens || usage.input_tokens || 0),
-    completion: Number(usage.completion_tokens || usage.output_tokens || 0),
+    prompt,
+    completion,
+    total: Number(usage.total_tokens || prompt + completion),
+    cachedTokens: Number(promptDetails.cached_tokens || 0),
+    promptCacheHitTokens: Number(usage.prompt_cache_hit_tokens || 0),
   };
 }
 

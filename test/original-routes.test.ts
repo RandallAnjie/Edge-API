@@ -4383,6 +4383,8 @@ test("original TestChannel POSTs gin httptest chat/embeddings/responses bodies",
     assert.equal(overrideCreated.body.success, true, String(overrideCreated.body.message));
     const overrideRow = ((await json(new Request("http://local/api/channel/", { headers: auth }), e)).body.data as { items: { id: number; name: string }[] }).items.find((c) => c.name === "test-override");
     assert.ok(overrideRow);
+    const overrideGot = await json(new Request("http://local/api/channel/" + overrideRow.id, { headers: auth }), e);
+    assert.match(String((overrideGot.body.data as { param_override?: string }).param_override || ""), /trim_prefix/);
     const overrideTest = await json(new Request("http://local/api/channel/test/" + overrideRow.id + "?model=openai/gpt-4o-mini", { headers: auth }), e);
     assert.equal(overrideTest.body.success, true, String(overrideTest.body.message));
     const overrideHit = seen.find((s) => s.url === "https://api.example.test/v1/chat/completions");
@@ -4395,10 +4397,12 @@ test("original TestChannel POSTs gin httptest chat/embeddings/responses bodies",
 
     const logs = await json(new Request("http://local/api/log/?type=2&token_name=" + encodeURIComponent("模型测试"), { headers: auth }), e);
     const items = (logs.body.data as { items: { token_name?: string; content?: string; model_name?: string }[] }).items || [];
-    const testLog = items.find((l) => l.token_name === "模型测试");
+    const testLog = items.find((l) => l.token_name === "模型测试" && l.model_name === "gpt-4o-mini");
     assert.ok(testLog, "TestChannel must RecordConsumeLog with token_name 模型测试");
     assert.equal(testLog.content, "模型测试");
     assert.equal(testLog.model_name, "gpt-4o-mini");
+    const overrideLog = items.find((l) => l.token_name === "模型测试" && l.model_name === "openai/gpt-4o-mini");
+    assert.ok(overrideLog, "TestChannel RecordConsumeLog uses OriginModelName before param_override");
 
     seen.length = 0;
     const gpt6Test = await json(
@@ -4745,7 +4749,579 @@ test("original user soft-delete, amount envelopes, billing expr, RelayErrorHandl
   assert.equal(mappedJson.error.message, "nope");
   assert.equal(mappedJson.error.type, "auth");
   assert.equal(mappedJson.error.code, "denied");
+
+  const emptyBatch = await json(new Request("http://local/api/channel/batch", { method: "POST", headers: auth, body: JSON.stringify({ ids: [] }) }), e);
+  assert.equal(emptyBatch.body.success, false);
+  assert.equal(emptyBatch.body.message, "参数错误");
+
+  const tk = await json(new Request("http://local/api/token/", { method: "POST", headers: auth, body: JSON.stringify({ name: "affinity", unlimited_quota: true }) }), e);
+  assert.equal(tk.body.success, true, String(tk.body.message));
+  const sk = (tk.body.data as { key: string }).key;
+  const affCh = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "affinity-openai",
+        type: 1,
+        key: "sk-aff",
+        models: "gpt-5",
+        group: "default",
+        base_url: "https://api.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(affCh.body.success, true, String(affCh.body.message));
+  const seenAff: { url: string; headers: Record<string, string> }[] = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers: Record<string, string> = {};
+    const raw = init?.headers;
+    if (raw && typeof raw === "object" && !(raw instanceof Headers)) {
+      for (const [k, v] of Object.entries(raw as Record<string, string>)) headers[k.toLowerCase()] = v;
+    } else if (raw instanceof Headers) {
+      raw.forEach((v, k) => {
+        headers[k.toLowerCase()] = v;
+      });
+    }
+    seenAff.push({ url: String(input), headers });
+    return new Response(
+      JSON.stringify({
+        id: "resp_aff",
+        object: "response",
+        output: [],
+        usage: { input_tokens: 2, output_tokens: 1 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const affRelay = await json(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json", originator: "codex_cli_rs" },
+        body: JSON.stringify({ model: "gpt-5", input: [{ role: "user", content: "hi" }], prompt_cache_key: "sess-aff" }),
+      }),
+      e,
+    );
+    assert.equal(affRelay.res.status, 200, String(affRelay.body.error || affRelay.body.message));
+    const hit = seenAff.find((s) => s.url.includes("/v1/responses"));
+    assert.ok(hit, JSON.stringify(seenAff.map((s) => s.url)));
+    assert.equal(hit.headers.originator, "codex_cli_rs");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });
+
+test("original auto-group selection, playground group, affinity TTL/usage cache, and AuthBundle cookies", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth, login } = await boot(e);
+  const loginData = login.body.data as Record<string, unknown>;
+  assert.equal(loginData.token_type, "Bearer");
+  assert.equal(typeof loginData.access_token, "string");
+  assert.equal(typeof loginData.access_expires_at, "number");
+  const sess = loginData.session as Record<string, unknown>;
+  for (const k of ["sid", "current", "login_method", "ip", "user_agent", "created_at", "last_active_at", "expires_at"]) {
+    assert.ok(k in sess, "missing AuthBundle.session " + k);
+  }
+  assert.equal(sess.current, true);
+  assert.equal(sess.login_method, "password");
+  const setCookie = login.res.headers.getSetCookie?.() || [];
+  const cookieJoined = setCookie.length ? setCookie.join("\n") : login.res.headers.get("set-cookie") || "";
+  assert.match(cookieJoined, /session=/);
+  assert.match(cookieJoined, /new_api_refresh=/);
+  assert.match(cookieJoined, /new_api_has_session=/);
+
+  const status = await json(new Request("http://local/api/status"), e);
+  const st = status.body.data as Record<string, unknown>;
+  for (const k of [
+    "wechat_login",
+    "telegram_oauth",
+    "telegram_oauth_configured",
+    "password_login_encryption_enabled",
+    "oidc_enabled",
+    "oidc_client_id",
+    "passkey_login",
+    "checkin_enabled",
+    "user_agreement_enabled",
+    "privacy_policy_enabled",
+  ]) {
+    assert.ok(k in st, "missing GetStatus field " + k);
+  }
+
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({
+        key: "UserUsableGroups",
+        value: JSON.stringify({ default: "默认分组", vip: "vip分组", auto: "自动分组" }),
+      }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "AutoGroups", value: "[]" }),
+    }),
+    e,
+  );
+
+  const vipCh = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "vip-auto",
+        type: 1,
+        key: "sk-vip-auto",
+        models: "auto-select-model",
+        group: "vip",
+        base_url: "https://vip.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(vipCh.body.success, true, String(vipCh.body.message));
+  const vipId = Number((vipCh.body.data as { id: number }).id);
+
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "default-auto",
+        type: 1,
+        key: "sk-default-auto",
+        models: "auto-select-model",
+        group: "default",
+        base_url: "https://default.example.test",
+      }),
+    }),
+    e,
+  );
+
+  const tk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "auto-groups",
+        unlimited_quota: true,
+        group: "auto",
+        auto_groups: ["vip", "default"],
+      }),
+    }),
+    e,
+  );
+  assert.equal(tk.body.success, true, String(tk.body.message));
+  const sk = (tk.body.data as { key: string }).key;
+
+  const seen: { url: string }[] = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    seen.push({ url: String(input) });
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl-auto",
+        object: "chat.completion",
+        choices: [{ message: { role: "assistant", content: "ok" } }],
+        usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const autoRelay = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "auto-select-model", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(autoRelay.res.status, 200, String(autoRelay.body.error || autoRelay.body.message));
+    assert.ok(seen.some((s) => s.url.startsWith("https://vip.example.test")), JSON.stringify(seen.map((s) => s.url)));
+
+    const deniedPg = await json(
+      new Request("http://local/pg/chat/completions", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          model: "auto-select-model",
+          group: "missing-group",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(deniedPg.res.status, 403);
+    assert.equal((deniedPg.body.error as { message: string }).message, "No permission to access this group");
+
+    seen.length = 0;
+    const pg = await json(
+      new Request("http://local/pg/chat/completions", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          model: "auto-select-model",
+          group: "vip",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(pg.res.status, 200, String(pg.body.error || pg.body.message));
+    assert.ok(seen.some((s) => s.url.startsWith("https://vip.example.test")), JSON.stringify(seen.map((s) => s.url)));
+
+    const missing = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "no-such-model-xyz", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(missing.res.status, 503);
+    assert.match(String((missing.body.error as { message: string }).message), /No available channel for model no-such-model-xyz under group/);
+    assert.match(String((missing.body.error as { message: string }).message), /\(distributor\)/);
+
+    const realtime = await json(
+      new Request("http://local/v1/realtime?model=auto-select-model", {
+        headers: { authorization: "Bearer " + sk },
+      }),
+      e,
+    );
+    assert.equal(realtime.res.status, 426, String(realtime.body.error || realtime.body.message));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  const logs = await json(new Request("http://local/api/log/?model_name=auto-select-model", { headers: auth }), e);
+  const items = ((logs.body.data as { items?: Record<string, unknown>[] })?.items || logs.body.data) as Record<string, unknown>[];
+  const autoLog = (Array.isArray(items) ? items : []).find((l) => l.model_name === "auto-select-model");
+  assert.ok(autoLog, "expected consume log for auto-select-model");
+  if (vipId) assert.equal(autoLog.channel, vipId);
+
+  const affTk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "aff-usage", unlimited_quota: true }),
+    }),
+    e,
+  );
+  const affSk = (affTk.body.data as { key: string }).key;
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "aff-usage-openai",
+        type: 1,
+        key: "sk-aff-usage",
+        models: "gpt-5",
+        group: "default",
+        base_url: "https://aff-usage.example.test",
+      }),
+    }),
+    e,
+  );
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        id: "resp_usage",
+        object: "response",
+        output: [],
+        usage: {
+          input_tokens: 8,
+          output_tokens: 3,
+          input_tokens_details: { cached_tokens: 4 },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  try {
+    const affRelay = await json(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { authorization: "Bearer " + affSk, "content-type": "application/json", originator: "codex_cli_rs" },
+        body: JSON.stringify({ model: "gpt-5", input: [{ role: "user", content: "hi" }], prompt_cache_key: "sess-usage" }),
+      }),
+      e,
+    );
+    assert.equal(affRelay.res.status, 200, String(affRelay.body.error || affRelay.body.message));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  const { sha1Hex } = await import("../src/crypto.js");
+  const fp = (await sha1Hex("sess-usage")).slice(0, 8);
+  const usageCache = await json(
+    new Request(
+      "http://local/api/log/channel_affinity_usage_cache?rule_name=" +
+        encodeURIComponent("codex cli trace") +
+        "&using_group=default&key_fp=" +
+        fp,
+      { headers: auth },
+    ),
+    e,
+  );
+  const uc = usageCache.body.data as Record<string, unknown>;
+  assert.equal(uc.rule_name, "codex cli trace");
+  assert.equal(uc.using_group, "default");
+  assert.equal(uc.key_fp, fp);
+  assert.equal(uc.total, 1);
+  assert.equal(uc.hit, 1);
+  assert.equal(uc.cached_tokens, 4);
+  assert.equal(uc.cached_token_rate_mode, "cached_over_prompt");
+
+  const affLogs = await json(new Request("http://local/api/log/?model_name=gpt-5", { headers: auth }), e);
+  const affItems = ((affLogs.body.data as { items?: Record<string, unknown>[] })?.items || affLogs.body.data) as Record<
+    string,
+    unknown
+  >[];
+  const affLog = (Array.isArray(affItems) ? affItems : []).find((l) => l.model_name === "gpt-5");
+  assert.ok(affLog);
+  const other = JSON.parse(String(affLog.other || "{}")) as { admin_info?: { channel_affinity?: Record<string, unknown> } };
+  assert.equal(typeof other.admin_info, "object");
+
+  const invalidKey = await json(new Request("http://local/api/channel/abc/key", { method: "POST", headers: auth }), e);
+  assert.equal(invalidKey.res.status, 400);
+  assert.equal(invalidKey.body.code, "SECURITY_CONTEXT_INVALID");
+});
+
+test("original TokenAuth group checks, admin channel pin, and token model limits", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const ghostTk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "ghost-group", unlimited_quota: true, group: "ghost" }),
+    }),
+    e,
+  );
+  assert.equal(ghostTk.body.success, true, String(ghostTk.body.message));
+  const ghostSk = (ghostTk.body.data as { key: string }).key;
+  const ghostRelay = await json(
+    new Request("http://local/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer " + ghostSk, "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+    }),
+    e,
+  );
+  assert.equal(ghostRelay.res.status, 403);
+  assert.equal((ghostRelay.body.error as { message: string }).message, "无权访问 ghost 分组");
+
+  const defCh = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "pin-default",
+        type: 1,
+        key: "sk-pin-default",
+        models: "pin-model",
+        group: "default",
+        base_url: "https://pin-default.example.test",
+      }),
+    }),
+    e,
+  );
+  const vipCh = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "pin-vip",
+        type: 1,
+        key: "sk-pin-vip",
+        models: "pin-model",
+        group: "vip",
+        base_url: "https://pin-vip.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(defCh.body.success, true, String(defCh.body.message));
+  assert.equal(vipCh.body.success, true, String(vipCh.body.message));
+  const vipId = Number((vipCh.body.data as { id: number }).id);
+  const pinTk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "pin-token", unlimited_quota: true }),
+    }),
+    e,
+  );
+  const pinSk = (pinTk.body.data as { key: string }).key;
+  const seen: string[] = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    seen.push(String(input));
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl-pin",
+        object: "chat.completion",
+        choices: [{ message: { role: "assistant", content: "ok" } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 3 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const pinned = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + pinSk + "-" + vipId, "content-type": "application/json" },
+        body: JSON.stringify({ model: "pin-model", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(pinned.res.status, 200, String(pinned.body.error || pinned.body.message));
+    assert.ok(seen.some((u) => u.startsWith("https://pin-vip.example.test")), JSON.stringify(seen));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  await json(
+    new Request("http://local/api/user/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ username: "pinuser", password: "password12", display_name: "pinuser" }),
+    }),
+    e,
+  );
+  const userLogin = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "pinuser", password: "password12" }),
+    }),
+    e,
+  );
+  const userAuth = {
+    authorization: "Bearer " + (userLogin.body.data as { access_token: string }).access_token,
+    "content-type": "application/json",
+  };
+  const userTk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: userAuth,
+      body: JSON.stringify({ name: "user-pin", unlimited_quota: true }),
+    }),
+    e,
+  );
+  const userSk = (userTk.body.data as { key: string }).key;
+  const deniedPin = await json(
+    new Request("http://local/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer " + userSk + "-" + vipId, "content-type": "application/json" },
+      body: JSON.stringify({ model: "pin-model", messages: [{ role: "user", content: "hi" }] }),
+    }),
+    e,
+  );
+  assert.equal(deniedPin.res.status, 403);
+  assert.equal((deniedPin.body.error as { message: string }).message, "普通用户不支持指定渠道");
+  assert.equal(deniedPin.res.headers.get("specific_channel_version"), "701e3ae1dc3f7975556d354e0675168d004891c8");
+
+  const limitedTk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "limits",
+        unlimited_quota: true,
+        model_limits_enabled: true,
+        model_limits: "claude-3-7-sonnet",
+      }),
+    }),
+    e,
+  );
+  const limitedSk = (limitedTk.body.data as { key: string }).key;
+  const forbidden = await json(
+    new Request("http://local/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer " + limitedSk, "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+    }),
+    e,
+  );
+  assert.equal(forbidden.res.status, 403);
+  assert.equal((forbidden.body.error as { message: string }).message, "This token has no access to model gpt-4o-mini");
+
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "claude-base",
+        type: 1,
+        key: "sk-claude-base",
+        models: "claude-3-7-sonnet",
+        group: "default",
+        base_url: "https://claude-base.example.test",
+      }),
+    }),
+    e,
+  );
+  seen.length = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    seen.push(String(input));
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl-alias",
+        object: "chat.completion",
+        choices: [{ message: { role: "assistant", content: "ok" } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 3 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const alias = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + limitedSk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-3-7-sonnet-thinking", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(alias.res.status, 200, String(alias.body.error || alias.body.message));
+    assert.ok(seen.some((u) => u.startsWith("https://claude-base.example.test")), JSON.stringify(seen));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  const emptyLimits = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "empty-limits", unlimited_quota: true, model_limits_enabled: true, model_limits: "" }),
+    }),
+    e,
+  );
+  const emptySk = (emptyLimits.body.data as { key: string }).key;
+  const none = await json(
+    new Request("http://local/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer " + emptySk, "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+    }),
+    e,
+  );
+  assert.equal(none.res.status, 403);
+  assert.equal((none.body.error as { message: string }).message, "This token has no access to model gpt-4o-mini");
+});
+
 
 
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyParamOverride, asParamOverrideReturnError } from "../src/param-override.js";
+import { applyChannelParamOverride, applyParamOverride, asParamOverrideReturnError, parseParamOverrideMap } from "../src/param-override.js";
+import type { ChannelRow } from "../src/types.js";
 
 function roundTrip(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value));
@@ -110,6 +111,24 @@ test("original ApplyParamOverride trim/set/delete/wildcard/return_error", () => 
     assert.equal(ret.skipRetry, true);
     assert.equal(ret.message, "forced bad request by param override");
   }
+
+  assert.deepEqual(
+    parseParamOverrideMap(JSON.stringify({ operations: [{ path: "model", mode: "trim_prefix", value: "openai/" }] })),
+    { operations: [{ path: "model", mode: "trim_prefix", value: "openai/" }] },
+  );
+
+  const headers: Record<string, string> = {};
+  const channel = {
+    name: "test-override",
+    param_override: JSON.stringify({ operations: [{ path: "model", mode: "trim_prefix", value: "openai/" }] }),
+    header_override: "",
+  } as ChannelRow;
+  const overridden = applyChannelParamOverride(channel, { model: "openai/gpt-4o-mini", max_tokens: 16 }, headers, {
+    originalModel: "openai/gpt-4o-mini",
+    upstreamModel: "openai/gpt-4o-mini",
+    isChannelTest: true,
+  });
+  assert.equal((overridden as { model?: string }).model, "gpt-4o-mini");
 
   const skipped = applyParamOverride(
     { model: "gemini-2.5-pro" },

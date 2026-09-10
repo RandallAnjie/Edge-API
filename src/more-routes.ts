@@ -1021,7 +1021,8 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { ids?: number[] };
-    const n = await s.deleteChannelsBatch(body.ids || []);
+    if (!body.ids?.length) return apiFail("参数错误");
+    const n = await s.deleteChannelsBatch(body.ids);
     return apiOk(n);
   });
 

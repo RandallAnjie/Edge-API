@@ -151,11 +151,70 @@ export async function groupRatioMap(store: Store, userGroup = ""): Promise<Recor
   return out;
 }
 
+/** Original `ratio_setting.ContainsGroupRatio`. */
+export async function containsGroupRatio(store: Store, groupName: string): Promise<boolean> {
+  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
+  return ratios[groupName] != null;
+}
+
+/** Original `service.IsUserSelectableGroup`. */
+export async function isUserSelectableGroup(store: Store, userGroup: string, groupName: string): Promise<boolean> {
+  if (!groupName || groupName === "auto") return false;
+  const usable = await userUsableGroups(store, userGroup);
+  if (usable[groupName] == null) return false;
+  return containsGroupRatio(store, groupName);
+}
+
+/** Original `service.GroupInUserUsableGroups`. */
+export async function groupInUserUsableGroups(store: Store, userGroup: string, groupName: string): Promise<boolean> {
+  const usable = await userUsableGroups(store, userGroup);
+  return usable[groupName] != null;
+}
+
 export async function userAutoGroups(store: Store, userGroup = ""): Promise<string[]> {
   const auto = parseJson<string[]>(await store.option("AutoGroups"), ["default"]);
-  const usable = await userUsableGroups(store, userGroup);
-  const ratios = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
-  return auto.filter((g) => g && g !== "auto" && usable[g] != null && ratios[g] != null);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const g of auto) {
+    if (seen.has(g) || !(await isUserSelectableGroup(store, userGroup, g))) continue;
+    seen.add(g);
+    out.push(g);
+  }
+  return out;
+}
+
+/** Original `service.FilterUserTokenAutoGroups`. */
+export async function filterUserTokenAutoGroups(store: Store, userGroup: string, groups: string[]): Promise<string[]> {
+  const maxCount = await store.optionNum("MaxTokenAutoGroups", 5);
+  const filtered: string[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    if (!(await isUserSelectableGroup(store, userGroup, group))) continue;
+    if (seen.has(group)) continue;
+    seen.add(group);
+    filtered.push(group);
+    if (filtered.length === maxCount) break;
+  }
+  return filtered;
+}
+
+/** Original `service.GetRequestAutoGroups`. Empty stored `[]` inherits the global Auto list; malformed JSON fails closed. */
+export async function requestAutoGroups(
+  store: Store,
+  token: { auto_groups?: string } | null | undefined,
+  userGroup: string,
+): Promise<string[]> {
+  const raw = String(token?.auto_groups || "").trim();
+  if (!raw) return userAutoGroups(store, userGroup);
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const groups = parsed.map((g) => String(g));
+    if (!groups.length) return userAutoGroups(store, userGroup);
+    return filterUserTokenAutoGroups(store, userGroup, groups);
+  } catch {
+    return [];
+  }
 }
 
 export async function userGroupRatio(store: Store, userGroup = "", group: string): Promise<number> {
@@ -941,6 +1000,7 @@ export function consumeLogOther(opts: {
   isMultiKey?: boolean;
   multiKeyIndex?: number;
   billingSource?: string;
+  channelAffinity?: Record<string, unknown>;
 }): string {
   const other: Record<string, unknown> = {
     group_ratio: opts.groupRatio,
@@ -960,6 +1020,7 @@ export function consumeLogOther(opts: {
     admin.is_multi_key = true;
     if (opts.multiKeyIndex != null) admin.multi_key_index = opts.multiKeyIndex;
   }
+  if (opts.channelAffinity) admin.channel_affinity = opts.channelAffinity;
   if (!opts.ok) admin.reject_reason = "upstream_error";
   other.admin_info = admin;
   return JSON.stringify(other);

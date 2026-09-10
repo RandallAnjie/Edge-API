@@ -15,8 +15,16 @@ import {
   usageFromOpenAI,
   type ChatMessage,
 } from "./convert.js";
-import { clientIp, openaiError, relayErrorHandler } from "./http.js";
+import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
+import {
+  cachedTokenRateModeByClientFormat,
+  channelAffinityLogInfo,
+  observeChannelAffinityUsageCache,
+  recordChannelAffinity,
+  type ChannelAffinityResolution,
+} from "./channel-affinity.js";
+import { cacheGetRandomSatisfiedChannel, increaseChannelSelectRetry, selectDistributedChannel } from "./channel-select.js";
 import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
 import { pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
@@ -31,11 +39,14 @@ import {
   consumeLogOther,
   extractPluginMeta,
   geminiModel,
+  groupInUserUsableGroups,
   modelNotFoundError,
   openAIModel,
   openaiModelList,
   ownerForChannelType,
+  requestAutoGroups,
 } from "./dto.js";
+import { tokenAllowsModel } from "./auth.js";
 import { ADAPTOR_MODELS } from "./channel-models.js";
 
 export type ClientFormat = "openai" | "anthropic" | "gemini";
@@ -56,6 +67,7 @@ export interface RelayRequest {
   rawBody?: ArrayBuffer;
   rawContentType?: string;
   method?: string;
+  requestPath?: string;
 }
 
 function asObj(v: unknown): Record<string, unknown> {
@@ -203,7 +215,16 @@ async function settle(
   requestId: string,
   ok: boolean,
   content: string,
-  extra: { upstreamRequestId?: string; requestPath?: string } = {},
+  extra: {
+    upstreamRequestId?: string;
+    requestPath?: string;
+    channelAffinity?: Record<string, unknown>;
+    env?: Env;
+    affinity?: ChannelAffinityResolution;
+    clientFormat?: string;
+    cachedTokens?: number;
+    promptCacheHitTokens?: number;
+  } = {},
 ): Promise<void> {
   const quota = await computeQuota(store, model, auth.usingGroup, prompt, completion);
   if (ok && quota > 0) {
@@ -245,8 +266,25 @@ async function settle(
       ok,
       requestPath: extra.requestPath,
       isMultiKey: parseChannelInfo(String(channel.channel_info || "")).is_multi_key,
+      channelAffinity: extra.channelAffinity,
     }),
   });
+  if (ok && extra.affinity && extra.env) {
+    await observeChannelAffinityUsageCache(
+      store,
+      extra.env,
+      extra.affinity,
+      auth.usingGroup,
+      {
+        promptTokens: prompt,
+        completionTokens: completion,
+        totalTokens: prompt + completion,
+        cachedTokens: extra.cachedTokens || 0,
+        promptCacheHitTokens: extra.promptCacheHitTokens || 0,
+      },
+      cachedTokenRateModeByClientFormat(extra.clientFormat || "openai"),
+    );
+  }
   await recordRelayPerf(store, {
     model,
     group: auth.usingGroup,
@@ -258,14 +296,51 @@ async function settle(
 }
 
 export async function relay(opts: RelayRequest): Promise<Response> {
-  const { store, auth, mode, clientFormat, path, ctx } = opts;
+  const { store, mode, clientFormat, path, ctx } = opts;
+  const auth = opts.auth;
   let model = opts.model;
   if (!model) return openaiError(400, "未提供模型名称", "model_not_found");
-  if (!tokenAllows(auth, model)) return openaiError(403, `令牌无权访问模型 ${model}`, "model_not_allowed");
+  if (!tokenAllowsModel(auth.token, model)) {
+    return openaiError(403, tokenModelForbiddenMessage(opts.req, model), "model_not_allowed");
+  }
 
-  const retryTimes = Math.max(1, await store.optionNum("RetryTimes", 0));
-  const first = await store.getRandomSatisfiedChannel(auth.usingGroup, model, 0);
-  if (!first) return openaiError(503, `没有可用渠道（模型 ${model}）`, "no_available_channel");
+  if (opts.playground) {
+    const pgGroup = String(asObj(opts.body).group || "");
+    if (pgGroup) {
+      const allowed = await groupInUserUsableGroups(store, auth.user.group || "default", pgGroup);
+      if (!allowed && pgGroup !== auth.usingGroup) {
+        return openaiError(403, groupAccessDeniedMessage(opts.req), "access_denied");
+      }
+      auth.usingGroup = pgGroup;
+    }
+    auth.token = { ...auth.token, name: `playground-${auth.usingGroup}`, group: auth.usingGroup };
+  }
+
+  const requestPath = opts.requestPath || path;
+  const selected = await selectDistributedChannel({
+    store,
+    env: opts.env,
+    req: opts.req,
+    auth,
+    model,
+    requestPath,
+    body: opts.body,
+    headers: requestHeadersFrom(opts.req),
+  });
+  if (selected.error) {
+    return openaiError(selected.error.status, selected.error.message, selected.error.code);
+  }
+  auth.usingGroup = selected.usingGroup;
+  const first = selected.channel;
+  const usedAffinityChannel = selected.usedAffinity;
+  const usedPin = selected.pinned;
+  const affinity = selected.affinity;
+  const selectParam = selected.selectParam;
+  const selectState = selected.selectState;
+  if (!first) {
+    const showGroup = auth.usingGroup === "auto" ? "auto" : auth.usingGroup;
+    return openaiError(503, noAvailableChannelMessage(opts.req, showGroup, model), "no_available_channel");
+  }
 
   const autoDisable = await store.optionBool("AutomaticDisableChannelEnabled", false);
   const ip = clientIp(opts.req);
@@ -286,10 +361,22 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   let lastErr = "所有渠道均失败";
   let lastStatus = 502;
 
-  for (let retry = 0; retry < retryTimes; retry++) {
-    const channel = retry === 0 ? first : await store.getRandomSatisfiedChannel(auth.usingGroup, model, retry);
+  const retryTimes = selectParam.retryTimes;
+
+  for (let retry = 0; retry <= retryTimes; retry++) {
+    let channel: ChannelRow | null;
+    if (retry === 0) channel = first;
+    else if (usedPin) break;
+    else {
+      increaseChannelSelectRetry(selectState);
+      const next = await cacheGetRandomSatisfiedChannel(store, selectParam, selectState);
+      channel = next.channel;
+      if (next.selectGroup && next.selectGroup !== "auto") auth.usingGroup = next.selectGroup;
+    }
     if (!channel) break;
-    const lastAttempt = retry === retryTimes - 1;
+    const skipAffinityRetry = usedPin || (usedAffinityChannel && Boolean(affinity?.skipRetryOnFailure));
+    const lastAttempt = retry === retryTimes || skipAffinityRetry;
+    const affinityLog = usedAffinityChannel && affinity ? channelAffinityLogInfo(affinity, auth.usingGroup, channel.id) : undefined;
     const kind = channelKind(channel.type);
     const mapped = applyModelMapping(channel, model);
     const outbound = opts.rawBody ? opts.body : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped);
@@ -301,8 +388,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       usingGroup: auth.usingGroup,
       originalModel: model,
       upstreamModel: mapped,
-      requestPath: path,
+      requestPath,
       retryIndex: retry,
+      affinityTemplate: affinity?.template,
     };
     let target: UpstreamTarget;
     try {
@@ -360,12 +448,19 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       lastErr = err instanceof Error ? err.message : String(err);
       lastStatus = 502;
       if (autoDisable) await store.autoDisableChannel(channel.id);
+      if (skipAffinityRetry) break;
       continue;
     }
     const useTime = Math.max(0, Math.round((Date.now() - started) / 1000));
     const extra = {
       upstreamRequestId: res.headers.get("x-oneapi-request-id") || res.headers.get("x-request-id") || "",
-      requestPath: path,
+      requestPath,
+      channelAffinity: affinityLog,
+      env: opts.env,
+      affinity: affinity || undefined,
+      clientFormat,
+      cachedTokens: 0,
+      promptCacheHitTokens: 0,
     };
 
     if (!res.ok && retryable(res.status) && !lastAttempt) {
@@ -389,6 +484,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
 
     const ct = res.headers.get("content-type") || "";
     const isSSE = ct.includes("text/event-stream") || opts.stream;
+    if (affinity) {
+      ctx?.waitUntil(recordChannelAffinity(store, opts.env, affinity.cacheKeySuffix, channel.id, affinity.ttlSeconds));
+    }
 
     if (isSSE && res.body) {
       if (kind !== "openai" && clientFormat === "openai") {
@@ -440,6 +538,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     }
     const converted = convertInbound(kind, clientFormat, parsed, model);
     const usage = usageFromOpenAI(converted);
+    extra.cachedTokens = usage.cachedTokens;
+    extra.promptCacheHitTokens = usage.promptCacheHitTokens;
     await settle(
       store,
       auth,
@@ -462,16 +562,6 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   }
 
   return openaiError(lastStatus, lastErr.slice(0, 800), "channel_error");
-}
-
-function tokenAllows(auth: AuthToken, model: string): boolean {
-  if (!auth.token.model_limits_enabled) return true;
-  const allowed = (auth.token.model_limits || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (!allowed.length) return true;
-  return allowed.includes(model);
 }
 
 async function parseStreamAndSettle(
@@ -522,7 +612,13 @@ async function parseStreamAndSettle(
 }
 
 export async function listModelsForAuth(store: Store, auth: AuthToken, format: ClientFormat): Promise<Response> {
-  const names = (await store.enabledModels(auth.usingGroup)).filter((id) => tokenAllows(auth, id));
+  const groups =
+    auth.usingGroup === "auto"
+      ? await requestAutoGroups(store, auth.token, auth.user.group || "default")
+      : [auth.usingGroup];
+  const names = (await store.enabledModelsForGroups(groups.length ? groups : [auth.usingGroup])).filter((id) =>
+    tokenAllowsModel(auth.token, id),
+  );
   const channels = await store.enabledChannels();
   const ownerByModel = new Map<string, string>();
   for (const ch of channels) {
@@ -560,7 +656,11 @@ export async function listModelsForAuth(store: Store, auth: AuthToken, format: C
 
 export async function retrieveModel(store: Store, auth: AuthToken, model: string, format: ClientFormat = "openai"): Promise<Response> {
   const staticHit = ADAPTOR_MODELS.find((m) => m.id === model);
-  const enabled = (await store.enabledModels(auth.usingGroup)).includes(model);
+  const groups =
+    auth.usingGroup === "auto"
+      ? await requestAutoGroups(store, auth.token, auth.user.group || "default")
+      : [auth.usingGroup];
+  const enabled = (await store.enabledModelsForGroups(groups.length ? groups : [auth.usingGroup])).includes(model);
   if (!staticHit && !enabled) {
     return new Response(JSON.stringify(modelNotFoundError(model)), {
       status: 200,
@@ -654,6 +754,7 @@ export async function playgroundRelay(
     body,
     stream: Boolean(o.stream),
     path: "/v1/chat/completions",
+    requestPath: "/pg/chat/completions",
     ctx,
     playground: true,
   });

@@ -223,6 +223,8 @@ export interface AuthToken {
   token: TokenRow;
   user: UserRow;
   usingGroup: string;
+  /** Original TokenAuth `sk-<key>-<channelId>` admin pin (`PinSourceToken`). */
+  pinnedChannelId?: number;
 }
 
 export interface PageQuery {

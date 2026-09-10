@@ -2,7 +2,7 @@ import { runChannelTestTask } from "./channel-test.js";
 import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
-import { apiFail, openaiError, pluginProtocolError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, videoProxyError, withCors } from "./http.js";
+import { apiFail, noAvailableChannelMessage, openaiError, pluginProtocolError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, videoProxyError, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -14,6 +14,8 @@ import {
   detectModel,
   detectStream,
 } from "./relay.js";
+import { selectDistributedChannel } from "./channel-select.js";
+import { requestHeadersFrom } from "./param-override.js";
 import type { ClientFormat } from "./relay.js";
 import type { RelayMode } from "./upstream.js";
 import { extractGeminiModelAction } from "./convert.js";
@@ -175,13 +177,25 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   }
 
   if (path === "/v1/realtime") {
+    const model = url.searchParams.get("model") || "gpt-4o-realtime-preview";
+    const selected = await selectDistributedChannel({
+      store,
+      env,
+      req,
+      auth,
+      model,
+      requestPath: path,
+      body: null,
+      headers: requestHeadersFrom(req),
+    });
+    if (selected.error) return openaiError(selected.error.status, selected.error.message, selected.error.code);
+    if (!selected.channel) {
+      return openaiError(503, noAvailableChannelMessage(req, selected.usingGroup, model), "no_available_channel");
+    }
     if ((req.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
       return openaiError(426, "Realtime 需要 WebSocket Upgrade", "upgrade_required");
     }
-    const model = url.searchParams.get("model") || "gpt-4o-realtime-preview";
-    const channel = await store.getRandomSatisfiedChannel(auth.usingGroup, model, 0);
-    if (!channel) return openaiError(503, `没有可用渠道（模型 ${model}）`, "no_available_channel");
-    return proxyRealtime(req, channel, model);
+    return proxyRealtime(req, selected.channel, model);
   }
 
   if (req.method === "GET" && path.startsWith("/v1/video/generations/")) {

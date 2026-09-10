@@ -1,6 +1,6 @@
 /** Original `relay/common.ApplyParamOverride` + header override context. */
 
-import { parseJson } from "./constants.js";
+import { mergeChannelOverride } from "./channel-affinity.js";
 import type { ChannelRow } from "./types.js";
 
 export const PARAM_OVERRIDE_REQUEST_HEADERS = "request_headers";
@@ -61,6 +61,7 @@ export type ParamOverrideRelayInfo = {
   requestPath?: string;
   isChannelTest?: boolean;
   retryIndex?: number;
+  affinityTemplate?: Record<string, unknown>;
 };
 
 type JsonType = 0 | 1 | 2 | 3 | 4 | 5;
@@ -1032,6 +1033,29 @@ function substituteHeaderValue(value: string, apiKey: string, model: string): st
   return value.replace(/\{api_key\}/g, apiKey).replace(/\{model\}/g, model);
 }
 
+/** Original `model.Channel.GetParamOverride` — JSON text, already-parsed object, or double-encoded JSON. */
+export function parseParamOverrideMap(raw: unknown): Record<string, unknown> {
+  if (raw == null || raw === "") return {};
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  let text = "";
+  if (typeof raw === "string") text = raw;
+  else if (raw instanceof Uint8Array) text = new TextDecoder().decode(raw);
+  else text = String(raw);
+  text = text.trim();
+  if (!text) return {};
+  try {
+    let parsed: unknown = JSON.parse(text);
+    if (typeof parsed === "string") {
+      const inner = parsed.trim();
+      if (inner.startsWith("{") || inner.startsWith("[")) parsed = JSON.parse(inner);
+    }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
 /** Apply original param_override operations and header_override onto an outbound target. */
 export function applyChannelParamOverride(
   channel: ChannelRow,
@@ -1041,12 +1065,15 @@ export function applyChannelParamOverride(
   apiKey = "",
   model = "",
 ): unknown {
-  const rawHeader = parseJson<Record<string, unknown>>(channel.header_override, {});
+  const rawHeader = parseParamOverrideMap(channel.header_override);
   const seeded: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(rawHeader)) {
     seeded[k] = substituteHeaderValue(String(v ?? ""), apiKey, model || String(info.upstreamModel || info.originalModel || ""));
   }
-  const paramOverride = parseJson<Record<string, unknown>>(channel.param_override, {});
+  let paramOverride = parseParamOverrideMap(channel.param_override);
+  if (info.affinityTemplate && Object.keys(info.affinityTemplate).length) {
+    paramOverride = mergeChannelOverride(paramOverride, info.affinityTemplate);
+  }
   const ctx = buildParamOverrideContext(
     { ...info, upstreamModel: info.upstreamModel || model, originalModel: info.originalModel || model, requestPath: info.requestPath },
     seeded,

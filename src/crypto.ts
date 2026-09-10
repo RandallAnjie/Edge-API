@@ -92,22 +92,26 @@ export async function verifySession(token: string, secret: string): Promise<Sess
   }
 }
 
-/** new-api TokenAuth: strip sk-, take segment before first extra hyphen group. */
-export function parseApiKey(raw: string): string {
+/** Original TokenAuth: strip sk-, split on `-`; parts[0] is the key, parts[1] may pin a channel. */
+export function parseApiKeyParts(raw: string): { key: string; extra: string[] } {
   let key = raw.trim();
   if (key.toLowerCase().startsWith("bearer ")) key = key.slice(7).trim();
   if (key.startsWith("sk-")) key = key.slice(3);
   const parts = key.split("-");
-  return parts[0] || "";
+  return { key: parts[0] || "", extra: parts.slice(1) };
 }
 
-export function extractRequestApiKey(req: Request, url: URL): string {
+export function parseApiKey(raw: string): string {
+  return parseApiKeyParts(raw).key;
+}
+
+export function extractRequestApiKeyParts(req: Request, url: URL): { key: string; extra: string[] } {
   const proto = req.headers.get("sec-websocket-protocol") || "";
   if (proto) {
     for (const part of proto.split(",")) {
       const p = part.trim();
       if (p.startsWith("openai-insecure-api-key.")) {
-        return parseApiKey(p.slice("openai-insecure-api-key.".length));
+        return parseApiKeyParts(p.slice("openai-insecure-api-key.".length));
       }
     }
   }
@@ -116,12 +120,16 @@ export function extractRequestApiKey(req: Request, url: URL): string {
   const q = url.searchParams.get("key");
   const mj = req.headers.get("mj-api-secret");
   const auth = req.headers.get("authorization") || "";
-  if (auth) return parseApiKey(auth);
-  if (xApi) return parseApiKey(xApi);
-  if (goog) return parseApiKey(goog);
-  if (q) return parseApiKey(q);
-  if (mj) return parseApiKey(mj);
-  return "";
+  if (auth) return parseApiKeyParts(auth);
+  if (xApi) return parseApiKeyParts(xApi);
+  if (goog) return parseApiKeyParts(goog);
+  if (q) return parseApiKeyParts(q);
+  if (mj) return parseApiKeyParts(mj);
+  return { key: "", extra: [] };
+}
+
+export function extractRequestApiKey(req: Request, url: URL): string {
+  return extractRequestApiKeyParts(req, url).key;
 }
 
 export function maskKey(key: string): string {

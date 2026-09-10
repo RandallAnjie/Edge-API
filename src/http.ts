@@ -55,6 +55,52 @@ export function i18nPair(req: Request, zh: string, en: string): string {
   return en;
 }
 
+/** Original `i18n.MsgDistributorNoAvailableChannel`. */
+export function noAvailableChannelMessage(req: Request, group: string, model: string): string {
+  return i18nPair(
+    req,
+    `分组 ${group} 下模型 ${model} 无可用渠道（distributor）`,
+    `No available channel for model ${model} under group ${group} (distributor)`,
+  );
+}
+
+/** Original `i18n.MsgDistributorGetChannelFailed`. */
+export function getChannelFailedMessage(req: Request, group: string, model: string, error: string): string {
+  return i18nPair(
+    req,
+    `获取分组 ${group} 下模型 ${model} 的可用渠道失败（distributor）：${error}`,
+    `Failed to get available channel for model ${model} under group ${group} (distributor): ${error}`,
+  );
+}
+
+/** Original `i18n.MsgDistributorGroupAccessDenied`. */
+export function groupAccessDeniedMessage(req: Request): string {
+  return i18nPair(req, "无权访问该分组", "No permission to access this group");
+}
+
+/** Original `i18n.MsgDistributorTokenNoModelAccess`. */
+export function tokenNoModelAccessMessage(req: Request): string {
+  return i18nPair(req, "该令牌无权访问任何模型", "This token has no access to any models");
+}
+
+/** Original `i18n.MsgDistributorTokenModelForbidden`. */
+export function tokenModelForbiddenMessage(req: Request, model: string): string {
+  return i18nPair(req, `该令牌无权访问模型 ${model}`, `This token has no access to model ${model}`);
+}
+
+/** Original `i18n.MsgDistributorInvalidChannelId`. */
+export function invalidChannelIdMessage(req: Request): string {
+  return i18nPair(req, "无效的渠道 Id", "Invalid channel ID");
+}
+
+/** Original `i18n.MsgDistributorChannelDisabled`. */
+export function channelDisabledMessage(req: Request): string {
+  return i18nPair(req, "该渠道已被禁用", "This channel has been disabled");
+}
+
+/** Original TokenAuth `specific_channel_version` header when a non-admin pins a channel. */
+export const SPECIFIC_CHANNEL_VERSION = "701e3ae1dc3f7975556d354e0675168d004891c8";
+
 /** Original `controller.paymentReturnPath`. */
 export function paymentReturnPath(serverAddress: string, suffix: string): string {
   return serverAddress.replace(/\/+$/, "") + suffix;
@@ -121,10 +167,15 @@ export function openaiError(
   message: string,
   code = "new_api_error",
   type = "new_api_error",
+  extra?: HeadersInit,
 ): Response {
-  return json(status, {
-    error: { message, type, param: "", code },
-  });
+  return json(
+    status,
+    {
+      error: { message, type, param: "", code },
+    },
+    extra,
+  );
 }
 
 /** Original `service.RelayErrorHandler` + `ResetStatusCode`. */

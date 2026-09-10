@@ -51,7 +51,7 @@ import {
 import { Store } from "./store.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
 import { enrichModelMeta, extractPluginMeta, listAdminModels, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView } from "./dto.js";
-import { channelAffinityCacheStats, clearAffinityCacheAll, clearAffinityCacheByRule, emptyAffinityUsageStats } from "./channel-affinity.js";
+import { channelAffinityCacheStats, clearAffinityCacheAll, clearAffinityCacheByRule, getChannelAffinityUsageCacheStats } from "./channel-affinity.js";
 import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
 import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
 import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
@@ -1224,7 +1224,7 @@ export function registerParity(r: Router<Env>): void {
     const keyFp = (c.url.searchParams.get("key_fp") || "").trim();
     if (!ruleName) return json(400, { success: false, message: "missing param: rule_name" });
     if (!keyFp) return json(400, { success: false, message: "missing param: key_fp" });
-    return apiOk(emptyAffinityUsageStats(ruleName, usingGroup, keyFp));
+    return apiOk(await getChannelAffinityUsageCacheStats(s, c.env, ruleName, usingGroup, keyFp));
   });
 
   r.post("/api/system-task/log-cleanup", async (c) => {

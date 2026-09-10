@@ -18,6 +18,7 @@ import {
 import { OPTION_ALIASES } from "./option-defaults.js";
 import { capabilities, parsePermissionOverrides } from "./authz.js";
 import { pickAbilityChannelId } from "./select.js";
+import { routingMatchModelName } from "./ratio-setting.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
 import { normalizeBillingPreference } from "./subscription.js";
 import { MODEL_PRICING_OPTION_KEYS } from "./model-pricing.js";
@@ -705,7 +706,11 @@ export class Store {
   }
 
   async getRandomSatisfiedChannel(group: string, model: string, retry: number): Promise<ChannelRow | null> {
-    const abilities = await this.abilitiesFor(group, model);
+    let abilities = await this.abilitiesFor(group, model);
+    if (!abilities.length) {
+      const normalized = routingMatchModelName(model);
+      if (normalized && normalized !== model) abilities = await this.abilitiesFor(group, normalized);
+    }
     const id = pickAbilityChannelId(abilities, retry);
     if (!id) return null;
     return this.getChannel(id);
