@@ -1095,7 +1095,7 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
   assert.equal(page.page, 1);
   assert.equal(typeof page.total, "number");
   assert.equal(typeof page.page_size, "number");
-  for (const k of ["id", "username", "created_at", "last_login_at", "remark", "setting", "aff_code", "quota"]) {
+  for (const k of ["id", "username", "created_at", "last_login_at", "remark", "setting", "aff_code", "quota", "github_id", "linux_do_id", "wechat_id", "stripe_customer"]) {
     assert.ok(k in page.items[0], "missing GetAllUsers field " + k);
   }
 
@@ -2174,6 +2174,274 @@ test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch,
   const channels = syncCh.body.data as { id: number; name: string }[];
   assert.ok(channels.some((ch) => ch.id === -100 && ch.name === "官方倍率预设"));
   assert.ok(channels.some((ch) => ch.id === -101 && ch.name === "models.dev 价格预设"));
+});
+
+test("original ResetPassword, Register, CustomOAuth, GetUser JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const self = await json(new Request("http://local/api/user/self", { headers: auth }), e);
+  const rootId = Number((self.body.data as { id: number }).id);
+  const setEmail = await json(
+    new Request("http://local/api/user/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: rootId, email: "root@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(setEmail.body.success, true, String(setEmail.body.message));
+
+  const resetMail = await json(new Request("http://local/api/reset_password?email=root@example.com"), e);
+  assert.equal(resetMail.body.success, true);
+  assert.equal(resetMail.body.message, "");
+  const codeRow = await e.DB.prepare("SELECT code FROM email_codes WHERE email = ? AND type = 'reset' AND used = 0")
+    .bind("root@example.com")
+    .first<{ code: string }>();
+  assert.ok(codeRow?.code);
+  assert.equal(codeRow.code.length, 32);
+
+  const missingToken = await json(
+    new Request("http://local/api/user/reset", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "root@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(missingToken.body.success, false);
+  assert.equal(missingToken.body.message, "无效的参数");
+
+  const badToken = await json(
+    new Request("http://local/api/user/reset", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "root@example.com", token: "deadbeef" }),
+    }),
+    e,
+  );
+  assert.equal(badToken.body.success, false);
+  assert.equal(badToken.body.message, "重置链接非法或已过期");
+
+  const reset = await json(
+    new Request("http://local/api/user/reset", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "root@example.com", token: codeRow.code }),
+    }),
+    e,
+  );
+  assert.equal(reset.body.success, true, String(reset.body.message));
+  assert.equal(reset.body.message, "");
+  const generated = String(reset.body.data);
+  assert.equal(generated.length, 12);
+  assert.match(generated, /^[0-9a-f]+$/);
+
+  const relogin = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: generated }),
+    }),
+    e,
+  );
+  assert.equal(relogin.body.success, true, String(relogin.body.message));
+  const newAuth = {
+    authorization: "Bearer " + (relogin.body.data as { access_token: string }).access_token,
+    "content-type": "application/json",
+  };
+
+  const registered = await json(
+    new Request("http://local/api/user/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "newuser", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(registered.body.success, true, String(registered.body.message));
+  assert.equal(registered.body.message, "");
+  assert.equal(registered.body.data, null);
+  const dup = await json(
+    new Request("http://local/api/user/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "newuser", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(dup.body.success, false);
+  assert.equal(dup.body.message, "用户名已存在，或已注销");
+  const userLogin = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "newuser", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(userLogin.body.success, true, String(userLogin.body.message));
+  assert.equal(typeof (userLogin.body.data as { access_token: string }).access_token, "string");
+
+  const oauthBody = {
+    name: "GitHub Enterprise",
+    slug: "github-enterprise",
+    icon: "github",
+    enabled: true,
+    client_id: "cid",
+    client_secret: "csecret",
+    authorization_endpoint: "https://ghe.example/login/oauth/authorize",
+    token_endpoint: "https://ghe.example/login/oauth/access_token",
+    user_info_endpoint: "https://ghe.example/api/v3/user",
+    scopes: "user:email",
+    user_id_field: "id",
+    username_field: "login",
+    display_name_field: "name",
+    email_field: "email",
+    well_known: "",
+    auth_style: 1,
+    access_policy: "",
+    access_denied_message: "",
+  };
+  const createdOAuth = await json(
+    new Request("http://local/api/custom-oauth-provider/", {
+      method: "POST",
+      headers: newAuth,
+      body: JSON.stringify(oauthBody),
+    }),
+    e,
+  );
+  assert.equal(createdOAuth.body.success, true, String(createdOAuth.body.message));
+  assert.equal(createdOAuth.body.message, "创建成功");
+  const provider = createdOAuth.body.data as Record<string, unknown>;
+  for (const k of [
+    "id",
+    "name",
+    "slug",
+    "icon",
+    "enabled",
+    "client_id",
+    "authorization_endpoint",
+    "token_endpoint",
+    "user_info_endpoint",
+    "scopes",
+    "user_id_field",
+    "username_field",
+    "display_name_field",
+    "email_field",
+    "well_known",
+    "auth_style",
+    "access_policy",
+    "access_denied_message",
+  ]) {
+    assert.ok(k in provider, "missing CustomOAuthProvider field " + k);
+  }
+  assert.equal(provider.enabled, true);
+  assert.equal(provider.authorization_endpoint, oauthBody.authorization_endpoint);
+  assert.equal("client_secret" in provider, false);
+
+  const listed = await json(new Request("http://local/api/custom-oauth-provider/", { headers: newAuth }), e);
+  const list = listed.body.data as Record<string, unknown>[];
+  assert.equal(list[0].slug, "github-enterprise");
+  assert.equal(list[0].enabled, true);
+
+  const got = await json(new Request("http://local/api/custom-oauth-provider/" + provider.id, { headers: newAuth }), e);
+  assert.equal(got.body.success, true);
+  assert.equal((got.body.data as { slug: string }).slug, "github-enterprise");
+  assert.equal("client_secret" in (got.body.data as object), false);
+
+  const badId = await json(new Request("http://local/api/custom-oauth-provider/abc", { headers: newAuth }), e);
+  assert.equal(badId.body.message, "无效的 ID");
+  const missing = await json(new Request("http://local/api/custom-oauth-provider/999", { headers: newAuth }), e);
+  assert.equal(missing.body.message, "未找到该 OAuth 提供商");
+
+  const taken = await json(
+    new Request("http://local/api/custom-oauth-provider/", {
+      method: "POST",
+      headers: newAuth,
+      body: JSON.stringify({ ...oauthBody, name: "Other" }),
+    }),
+    e,
+  );
+  assert.equal(taken.body.message, "该 Slug 已被使用");
+  const builtin = await json(
+    new Request("http://local/api/custom-oauth-provider/", {
+      method: "POST",
+      headers: newAuth,
+      body: JSON.stringify({ ...oauthBody, slug: "github" }),
+    }),
+    e,
+  );
+  assert.equal(builtin.body.message, "该 Slug 与内置 OAuth 提供商冲突");
+
+  const discoveryEmpty = await json(
+    new Request("http://local/api/custom-oauth-provider/discovery", {
+      method: "POST",
+      headers: newAuth,
+      body: JSON.stringify({}),
+    }),
+    e,
+  );
+  assert.equal(discoveryEmpty.body.message, "请先填写 Discovery URL 或 Issuer URL");
+  const discoveryBad = await json(
+    new Request("http://local/api/custom-oauth-provider/discovery", {
+      method: "POST",
+      headers: newAuth,
+      body: JSON.stringify({ well_known_url: "ftp://example.com" }),
+    }),
+    e,
+  );
+  assert.equal(discoveryBad.body.message, "Discovery URL 无效，仅支持 http/https");
+
+  const status = await json(new Request("http://local/api/status"), e);
+  const customs = (status.body.data as { custom_oauth_providers: Record<string, unknown>[] }).custom_oauth_providers;
+  assert.ok(Array.isArray(customs));
+  assert.equal(customs[0].slug, "github-enterprise");
+  assert.equal(customs[0].authorization_endpoint, oauthBody.authorization_endpoint);
+  assert.equal(customs[0].client_id, "cid");
+
+  const adminCreate = await json(
+    new Request("http://local/api/user/", {
+      method: "POST",
+      headers: newAuth,
+      body: JSON.stringify({ username: "siteadmin", password: "password12", role: 10 }),
+    }),
+    e,
+  );
+  assert.equal(adminCreate.body.success, true, String(adminCreate.body.message));
+  const adminLogin = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "siteadmin", password: "password12" }),
+    }),
+    e,
+  );
+  const adminAuth = {
+    authorization: "Bearer " + (adminLogin.body.data as { access_token: string }).access_token,
+    "content-type": "application/json",
+  };
+  const forbidden = await json(new Request("http://local/api/user/" + rootId, { headers: adminAuth }), e);
+  assert.equal(forbidden.body.success, false);
+  assert.equal(forbidden.body.message, "无权获取同级或更高等级用户的信息");
+
+  const searched = await json(new Request("http://local/api/user/search?keyword=siteadmin", { headers: newAuth }), e);
+  const adminRow = ((searched.body.data as { items: { id: number; username: string }[] }).items || []).find(
+    (u) => u.username === "siteadmin",
+  );
+  assert.ok(adminRow);
+  const getAdmin = await json(new Request("http://local/api/user/" + adminRow.id, { headers: newAuth }), e);
+  const adminData = getAdmin.body.data as { admin_permissions?: unknown; permissions?: { admin_permissions?: unknown } };
+  assert.ok(adminData.admin_permissions, "GetUser must include top-level admin_permissions");
+  assert.ok(adminData.permissions?.admin_permissions);
+
+  const del = await json(
+    new Request("http://local/api/custom-oauth-provider/" + provider.id, { method: "DELETE", headers: newAuth }),
+    e,
+  );
+  assert.equal(del.body.success, true);
+  assert.equal(del.body.message, "删除成功");
 });
 
 

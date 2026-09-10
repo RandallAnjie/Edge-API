@@ -23,6 +23,7 @@ import {
   wechatIdFromCode,
 } from "./oauth.js";
 import { bytesToHex, sha256Bytes, md5Hex } from "./crypto.js";
+import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-oauth.js";
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { apiFail, apiOk, json, pageData, pageQuery, parseUnixQuery, readJson, taskArtifactError } from "./http.js";
@@ -715,20 +716,18 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { url?: string };
-    if (!body.url) return apiFail("缺少 url");
-    const res = await fetch(body.url);
-    if (!res.ok) return apiFail("discovery 请求失败");
-    return apiOk(await res.json());
+    return fetchCustomOAuthDiscovery((await readJson(c.req)) as { well_known_url?: string; issuer_url?: string; url?: string });
   });
 
   r.get("/api/custom-oauth-provider/:id", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const p = await s.getOAuthProvider(c.params.id);
-    if (!p) return apiFail("不存在");
-    return apiOk({ ...p, client_secret: "" });
+    const id = Number(c.params.id);
+    if (!Number.isInteger(id)) return apiFail("无效的 ID");
+    const p = await s.getOAuthProvider(id);
+    if (!p) return apiFail("未找到该 OAuth 提供商");
+    return apiOk(publicCustomOAuthProvider(p));
   });
 
   r.get("/api/performance/stats", async (c) => {

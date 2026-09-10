@@ -377,3 +377,51 @@ export async function md5Hex(message: string): Promise<string> {
     return await hmacSha256Hex("md5-fallback", message);
   }
 }
+
+function pemToDer(pem: string): Uint8Array {
+  const b64 = pem
+    .replace(/-----BEGIN [^-]+-----/, "")
+    .replace(/-----END [^-]+-----/, "")
+    .replace(/\s/g, "");
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** Original `common.DecryptPassword` (RSA-OAEP SHA-256, plus v2 AES-GCM wrap). */
+export async function decryptPassword(
+  ciphertextBase64: string,
+  keyId: string,
+  privateKeyPem: string,
+  activeKeyId: string,
+): Promise<string | null> {
+  if (!privateKeyPem || !keyId || keyId !== activeKeyId) return null;
+  try {
+    const der = pemToDer(privateKeyPem);
+    const key = await crypto.subtle.importKey("pkcs8", der as BufferSource, { name: "RSA-OAEP", hash: "SHA-256" }, false, [
+      "decrypt",
+    ]);
+    if (ciphertextBase64.startsWith("v2.")) {
+      const parts = ciphertextBase64.split(".");
+      if (parts.length !== 4) return null;
+      const wrappedKey = Uint8Array.from(atob(parts[1]), (c) => c.charCodeAt(0));
+      const nonce = Uint8Array.from(atob(parts[2]), (c) => c.charCodeAt(0));
+      const ciphertext = Uint8Array.from(atob(parts[3]), (c) => c.charCodeAt(0));
+      if (nonce.length !== 12) return null;
+      const wrapped = await crypto.subtle.decrypt({ name: "RSA-OAEP", label: new TextEncoder().encode("password-v2") }, key, wrappedKey);
+      const aesKey = await crypto.subtle.importKey("raw", wrapped, "AES-GCM", false, ["decrypt"]);
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: nonce, additionalData: new TextEncoder().encode(`password-v2:${keyId}`) },
+        aesKey,
+        ciphertext,
+      );
+      return new TextDecoder().decode(plain);
+    }
+    const ciphertext = Uint8Array.from(atob(ciphertextBase64), (c) => c.charCodeAt(0));
+    const plain = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, key, ciphertext);
+    return new TextDecoder().decode(plain);
+  } catch {
+    return null;
+  }
+}

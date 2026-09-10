@@ -3,6 +3,7 @@ import {
   nowSec,
   parseJson,
   randomHex,
+  generateVerificationCode,
 } from "./constants.js";
 import {
   generateBackupCodes,
@@ -43,6 +44,12 @@ import {
   wrapUserSubscription,
 } from "./subscription.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
+import {
+  createCustomOAuthProvider,
+  deleteCustomOAuthProvider,
+  publicCustomOAuthProvider,
+  updateCustomOAuthProvider,
+} from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { apiFail, apiFailCode, apiOk, clientIp, json, pageData, pageQuery, readJson, serveRevalidatedJSON } from "./http.js";
 import type { Context } from "./router.js";
@@ -151,7 +158,7 @@ export function registerMore(r: Router<Env>): void {
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return apiFail("无效的参数");
     const user = await s.getUserByEmail(email);
     if (user) {
-      const code = randomHex(16);
+      const code = generateVerificationCode(0);
       await s.insertEmailCode(email, code, "reset");
       const systemName = (await s.option("SystemName")) || "New API";
       const server = (await s.option("ServerAddress")) || "";
@@ -173,16 +180,19 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/user/reset", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as { email?: string; code?: string; password?: string };
-    if (!body.email || !body.code || !body.password) return apiFail("无效的参数");
-    if (body.password.length < 8) return apiFail("密码长度必须在 8 到 128 之间");
-    if (!(await s.consumeEmailCode(body.email, body.code, "reset"))) return apiFail("验证码无效或已过期");
-    const user = await s.getUserByEmail(body.email);
-    if (!user) return apiFail("用户不存在");
+    const body = (await readJson(c.req)) as { email?: string; token?: string; code?: string };
+    const email = normalizeEmail(body.email || "");
+    const token = (body.token || body.code || "").trim();
+    if (!email || !token) return apiFail("无效的参数");
+    if (!(await s.verifyEmailCode(email, token, "reset"))) return apiFail("重置链接非法或已过期");
+    const user = await s.getUserByEmail(email);
+    if (!user) return apiFail("重置链接非法或已过期");
+    const password = generateVerificationCode(12);
     const { hashPassword } = await import("./crypto.js");
-    await s.updateUser(user.id, { password: await hashPassword(body.password) });
+    await s.updateUser(user.id, { password: await hashPassword(password) });
     await s.bumpAuthVersion(user.id);
-    return apiOk(null, "密码已重置");
+    await s.consumeEmailCode(email, token, "reset");
+    return apiOk(password, "");
   });
 
   r.post("/api/user/login/2fa", async (c) => {
@@ -913,9 +923,11 @@ export function registerMore(r: Router<Env>): void {
         return apiFail("请使用 /api/oauth/wechat");
       }
       const custom = await s.getOAuthProvider(provider);
-      if (!custom || !Number(custom.enabled)) return apiFail("未知的 OAuth 提供商");
+      if (!custom) return json(400, { success: false, message: "未知的 OAuth 提供商" });
       if (!code) return apiFail("无效的授权码");
-      return finish(await exchangeCustom(custom, code, redirect));
+      const server = ((await s.option("ServerAddress")) || origin).replace(/\/+$/, "");
+      const customRedirect = `${server}/oauth/${provider}`;
+      return finish(await exchangeCustom(custom, code, customRedirect));
     } catch (e) {
       return apiFail(e instanceof Error ? e.message : String(e));
     }
@@ -1486,32 +1498,28 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const items = (await s.listOAuthProviders()) as Record<string, unknown>[];
-    return apiOk(items.map((p) => ({ ...p, client_secret: "" })));
+    return apiOk(items.map(publicCustomOAuthProvider));
   });
 
   r.post("/api/custom-oauth-provider/", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown>;
-    if (!body.slug) return apiFail("缺少 slug");
-    return apiOk({ id: await s.insertOAuthProvider(body) });
+    return createCustomOAuthProvider(s, (await readJson(c.req)) as Record<string, unknown>);
   });
 
   r.put("/api/custom-oauth-provider/:id", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    await s.updateOAuthProvider(Number(c.params.id), (await readJson(c.req)) as Record<string, unknown>);
-    return apiOk(null);
+    return updateCustomOAuthProvider(s, Number(c.params.id), (await readJson(c.req)) as Record<string, unknown>);
   });
 
   r.delete("/api/custom-oauth-provider/:id", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    await s.deleteOAuthProvider(Number(c.params.id));
-    return apiOk(null);
+    return deleteCustomOAuthProvider(s, Number(c.params.id));
   });
 
   r.get("/api/option/model_pricing", async (c) => {

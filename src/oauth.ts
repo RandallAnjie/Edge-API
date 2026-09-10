@@ -148,41 +148,7 @@ export async function exchangeOidc(opts: {
   };
 }
 
-export async function exchangeCustom(
-  provider: Record<string, unknown>,
-  code: string,
-  redirect: string,
-): Promise<OAuthProfile> {
-  const body = new URLSearchParams({
-    client_id: String(provider.client_id || ""),
-    client_secret: String(provider.client_secret || ""),
-    grant_type: "authorization_code",
-    code,
-    redirect_uri: redirect,
-  });
-  const tokenRes = await fetch(String(provider.token_url), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body,
-  });
-  const tokenJson = (await tokenRes.json()) as { access_token?: string };
-  if (!tokenJson.access_token) throw new Error("OAuth 授权失败");
-  const userRes = await fetch(String(provider.user_info_url), {
-    headers: { authorization: `Bearer ${tokenJson.access_token}` },
-  });
-  const u = (await userRes.json()) as Record<string, unknown>;
-  const id = String(u.id || u.sub || u.user_id || "");
-  if (!id) throw new Error("无法读取 OAuth 用户");
-  return {
-    id,
-    username: String(u.username || u.login || u.preferred_username || `oauth_${id}`).slice(0, 20),
-    display_name: String(u.name || u.display_name || u.username || id),
-    email: typeof u.email === "string" ? u.email : undefined,
-    field: "oidc_id",
-    slug: String(provider.slug || ""),
-    provider_id: Number(provider.id) || 0,
-  };
-}
+export { exchangeCustom } from "./custom-oauth.js";
 
 export async function loginOrBindOAuth(
   store: Store,

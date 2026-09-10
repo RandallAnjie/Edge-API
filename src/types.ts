@@ -48,6 +48,7 @@ export interface Env {
   R2?: R2Bucket;
   SESSION_SECRET?: string;
   SYSTEM_NAME?: string;
+  GENERATE_DEFAULT_TOKEN?: string;
 }
 
 export interface ExecutionContextLike {

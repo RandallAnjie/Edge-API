@@ -1538,6 +1538,14 @@ export class Store {
       .run();
   }
 
+  async verifyEmailCode(email: string, code: string, type: string): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT id FROM email_codes WHERE email = ? AND code = ? AND type = ? AND used = 0 AND expires_at >= ? ORDER BY id DESC LIMIT 1")
+      .bind(email, code, type, nowSec())
+      .first<{ id: number }>();
+    return Boolean(row);
+  }
+
   async consumeEmailCode(email: string, code: string, type: string): Promise<boolean> {
     const row = await this.db
       .prepare("SELECT id FROM email_codes WHERE email = ? AND code = ? AND type = ? AND used = 0 AND expires_at >= ? ORDER BY id DESC LIMIT 1")
@@ -2177,9 +2185,18 @@ export class Store {
   }
 
   async insertOAuthProvider(p: Record<string, unknown>): Promise<number> {
+    const t = nowSec();
+    const authorization = String(p.authorization_endpoint || p.auth_url || "");
+    const token = String(p.token_endpoint || p.token_url || "");
+    const userInfo = String(p.user_info_endpoint || p.user_info_url || "");
     const r = await this.db
       .prepare(
-        "INSERT INTO oauth_providers (name, slug, icon, client_id, client_secret, auth_url, token_url, user_info_url, scopes, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        `INSERT INTO oauth_providers (
+          name, slug, icon, client_id, client_secret, auth_url, token_url, user_info_url,
+          authorization_endpoint, token_endpoint, user_info_endpoint, scopes,
+          user_id_field, username_field, display_name_field, email_field, well_known,
+          auth_style, access_policy, access_denied_message, enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         p.name ?? "",
@@ -2187,26 +2204,85 @@ export class Store {
         p.icon ?? "",
         p.client_id ?? "",
         p.client_secret ?? "",
-        p.auth_url ?? "",
-        p.token_url ?? "",
-        p.user_info_url ?? "",
+        authorization,
+        token,
+        userInfo,
+        authorization,
+        token,
+        userInfo,
         p.scopes ?? "",
-        p.enabled == null ? 1 : Number(p.enabled),
-        nowSec(),
+        p.user_id_field || "sub",
+        p.username_field || "preferred_username",
+        p.display_name_field || "name",
+        p.email_field || "email",
+        p.well_known ?? "",
+        Number(p.auth_style || 0),
+        p.access_policy ?? "",
+        p.access_denied_message ?? "",
+        p.enabled == null ? 0 : Number(p.enabled),
+        t,
+        t,
       )
       .run();
     return Number(r.meta.last_row_id || 0);
   }
 
   async updateOAuthProvider(id: number, patch: Record<string, unknown>): Promise<void> {
+    const allowed = new Set([
+      "name",
+      "slug",
+      "icon",
+      "client_id",
+      "client_secret",
+      "auth_url",
+      "token_url",
+      "user_info_url",
+      "authorization_endpoint",
+      "token_endpoint",
+      "user_info_endpoint",
+      "scopes",
+      "user_id_field",
+      "username_field",
+      "display_name_field",
+      "email_field",
+      "well_known",
+      "auth_style",
+      "access_policy",
+      "access_denied_message",
+      "enabled",
+      "updated_at",
+    ]);
     const cols: string[] = [];
     const vals: unknown[] = [];
     for (const [k, v] of Object.entries(patch)) {
+      if (!allowed.has(k)) continue;
+      if (k === "client_secret" && (v == null || v === "")) continue;
       cols.push(`${k} = ?`);
-      vals.push(v);
+      vals.push(k === "enabled" ? Number(v) : v);
+    }
+    if (!cols.length) return;
+    if (!cols.includes("updated_at = ?")) {
+      cols.push("updated_at = ?");
+      vals.push(nowSec());
     }
     vals.push(id);
     await this.db.prepare(`UPDATE oauth_providers SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async isOAuthSlugTaken(slug: string, exceptId = 0): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT id FROM oauth_providers WHERE slug = ? AND id != ?")
+      .bind(slug, exceptId)
+      .first<{ id: number }>();
+    return Boolean(row);
+  }
+
+  async countOAuthBindings(providerId: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) as c FROM user_oauth_bindings WHERE provider_id = ?")
+      .bind(providerId)
+      .first<{ c: number }>();
+    return Number(row?.c || 0);
   }
 
   async deleteOAuthProvider(id: number): Promise<void> {

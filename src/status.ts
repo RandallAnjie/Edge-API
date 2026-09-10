@@ -1,4 +1,5 @@
 import { START_TIME, VERSION, DEFAULT_HEADER_NAV_MODULES, DEFAULT_SIDEBAR_MODULES_ADMIN, parseJson } from "./constants.js";
+import { publicCustomOAuthStatus } from "./custom-oauth.js";
 import type { Store } from "./store.js";
 import type { Env } from "./types.js";
 
@@ -108,15 +109,7 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
   if (announcementsEnabled) data.announcements = parseJson(await store.option("Announcements"), []);
   if (faqEnabled) data.faq = parseJson(await store.option("FAQ"), []);
   if (customProviders.length) {
-    data.custom_oauth_providers = customProviders.map((p) => ({
-      id: p.id,
-      name: p.name,
-      slug: p.slug,
-      icon: p.icon || "",
-      client_id: p.client_id,
-      authorization_endpoint: p.auth_url,
-      scopes: p.scopes,
-    }));
+    data.custom_oauth_providers = customProviders.map((p) => publicCustomOAuthStatus(p));
   }
   return data;
 }

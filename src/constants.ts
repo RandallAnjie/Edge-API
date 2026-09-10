@@ -345,6 +345,13 @@ export function randomHex(bytes: number): string {
   return [...buf].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** Original `common.GenerateVerificationCode`. */
+export function generateVerificationCode(length = 0): string {
+  const code = crypto.randomUUID().replace(/-/g, "");
+  if (!length) return code;
+  return code.slice(0, length);
+}
+
 export function requestId(): string {
   return crypto.randomUUID();
 }

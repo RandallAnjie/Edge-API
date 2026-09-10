@@ -10,6 +10,7 @@ import {
   USER_DISABLED,
   USER_ENABLED,
   VERSION,
+  DEFAULT_TOKEN_QUOTA,
   nowSec,
   parseGoBool,
 } from "./constants.js";
@@ -31,6 +32,7 @@ import {
   displayTokenKey,
   hashPassword,
   verifyPassword,
+  decryptPassword,
 } from "./crypto.js";
 import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, json, pageData, pageQuery, parseUnixQuery, readJson, serveRevalidatedJSON } from "./http.js";
 import type { Context } from "./router.js";
@@ -190,12 +192,30 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/user/login", async (c) => {
     const s = store(c);
-    if (!(await s.optionBool("PasswordLoginEnabled", true))) return apiFail("密码登录已禁用");
-    const body = (await readJson(c.req)) as { username?: string; password?: string };
-    if (!body.username || !body.password) return apiFail("无效的参数");
+    if (!(await s.optionBool("PasswordLoginEnabled", true))) return apiFail("管理员关闭了密码登录");
+    const body = (await readJson(c.req)) as {
+      username?: string;
+      password?: string;
+      password_encrypted?: string;
+      encryption_key_id?: string;
+    };
+    let password = body.password || "";
+    if (await s.optionBool("PasswordLoginEncryptionEnabled", false)) {
+      if (!body.password_encrypted || !body.encryption_key_id) return apiFail("无效的参数");
+      const decrypted = await decryptPassword(
+        body.password_encrypted,
+        body.encryption_key_id,
+        await s.option("PasswordEncryptionPrivateKey"),
+        await s.option("PasswordEncryptionKid"),
+      );
+      if (!decrypted) return apiFail("用户名或密码错误，或用户已被封禁");
+      password = decrypted;
+    }
+    if (!body.username || !password) return apiFail("无效的参数");
     const user = await s.getUserByUsername(body.username);
-    if (!user || !(await verifyPassword(body.password, user.password))) return apiFail("用户名或密码错误");
-    if (user.status !== USER_ENABLED) return apiFail("用户已被封禁");
+    if (!user || !(await verifyPassword(password, user.password)) || user.status !== USER_ENABLED) {
+      return apiFail("用户名或密码错误，或用户已被封禁");
+    }
     const passkeys = (await s.listPasskeys(user.id)).length > 0;
     const totp = Number(user.totp_enabled) === 1;
     if (totp || passkeys) {
@@ -262,8 +282,10 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/user/register", async (c) => {
     const s = store(c);
-    if (!(await s.optionBool("RegisterEnabled", true))) return apiFail("注册已禁用");
-    if (!(await s.optionBool("PasswordRegisterEnabled", true))) return apiFail("密码注册已禁用");
+    if (!(await s.optionBool("RegisterEnabled", true))) return apiFail("管理员关闭了新用户注册");
+    if (!(await s.optionBool("PasswordRegisterEnabled", true))) {
+      return apiFail("管理员关闭了通过密码进行注册，请使用第三方账户验证的形式进行注册");
+    }
     const body = (await readJson(c.req)) as {
       username?: string;
       password?: string;
@@ -274,13 +296,19 @@ export function adminRouter(): Router<Env> {
     };
     const username = (body.username || "").trim();
     const password = body.password || "";
-    if (username.length < 1 || username.length > 20) return apiFail("用户名长度不合法");
+    if (!username) return apiFail("无效的参数");
+    if (username.length > 20) return apiFail("无效的参数");
     if (password.length < 8 || password.length > 128) return apiFail("密码长度必须在 8 到 128 之间");
-    if (await s.getUserByUsername(username)) return apiFail("用户已存在");
-    if (await s.optionBool("EmailVerificationEnabled", false)) {
-      if (!body.email || !body.verification_code) return apiFail("请填写邮箱验证码");
-      if (!(await s.consumeEmailCode(body.email, body.verification_code, "verify"))) return apiFail("验证码无效或已过期");
+    const emailVerification = await s.optionBool("EmailVerificationEnabled", false);
+    let email = "";
+    if (emailVerification) {
+      if (!body.email || !body.verification_code) return apiFail("管理员开启了邮箱验证，请输入邮箱地址和验证码");
+      const { normalizeEmail } = await import("./mail.js");
+      email = normalizeEmail(body.email);
+      if (!(await s.consumeEmailCode(email, body.verification_code, "verify"))) return apiFail("验证码错误或已过期");
+      if (await s.getUserByEmail(email)) return apiFail("邮箱地址已被占用");
     }
+    if (await s.getUserByUsername(username)) return apiFail("用户名已存在，或已注销");
     let inviter = 0;
     if (body.aff_code) {
       const inv = await s.getUserByAff(body.aff_code);
@@ -290,14 +318,14 @@ export function adminRouter(): Router<Env> {
     const id = await s.insertUser({
       username,
       password: await hashPassword(password),
-      display_name: body.display_name || username,
+      display_name: username,
       role: ROLE_USER,
       quota,
-      email: body.email || "",
+      email,
       aff_code: generateAffCode(),
       inviter_id: inviter,
     });
-    if (body.email) await s.updateUser(id, { email: body.email, email_verified: 1 });
+    if (email) await s.updateUser(id, { email, email_verified: 1 });
     if (inviter) {
       const bonus = await s.optionNum("QuotaForInviter", 0);
       const invitee = await s.optionNum("QuotaForInvitee", 0);
@@ -312,10 +340,18 @@ export function adminRouter(): Router<Env> {
         });
       }
     }
-    const user = await s.getUserById(id);
-    const issued = await issueSessionSafe(s, c.env, user!, c.req, "password");
-    if (issued instanceof Response) return issued;
-    return sessionResponse(issued);
+    if (c.env.GENERATE_DEFAULT_TOKEN === "true" || (await s.optionBool("GenerateDefaultToken", false))) {
+      await s.insertToken({
+        user_id: id,
+        key: generateTokenKey(),
+        name: `${username}的初始令牌`,
+        expired_time: -1,
+        remain_quota: DEFAULT_TOKEN_QUOTA,
+        unlimited_quota: 1,
+        group: (await s.optionBool("DefaultUseAutoGroup", false)) ? "auto" : "",
+      });
+    }
+    return apiOk(null, "");
   });
 
   r.get("/api/user/self", async (c) => {
@@ -469,9 +505,13 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const user = await s.getUserById(Number(c.params.id));
+    const id = Number(c.params.id);
+    if (!Number.isInteger(id)) return apiFail(`strconv.Atoi: parsing "${c.params.id}": invalid syntax`);
+    const user = await s.getUserById(id);
     if (!user) return apiFail("用户不存在");
-    return apiOk(publicUser(user));
+    if (u.role !== ROLE_ROOT && u.role <= user.role) return apiFail("无权获取同级或更高等级用户的信息");
+    const data = await publicSelf(s, user);
+    return apiOk({ ...data, admin_permissions: (data.permissions as { admin_permissions?: unknown }).admin_permissions });
   });
 
   r.slash("POST", "/api/user/", async (c) => {
