@@ -13,7 +13,7 @@ import {
 } from "./constants.js";
 import { channelKind, channelTypeName } from "./catalog.js";
 import {
-  applyOpenAIChatCompatibility,
+  convertOpenAIRequest,
   isOpenAIReasoningOModel,
   openaiChatToResponses,
   openaiToAnthropic,
@@ -433,7 +433,14 @@ function buildTestTarget(
   let payload = body;
   const kindName = channelKind(channel.type);
   if (kind === "chat") {
-    payload = applyOpenAIChatCompatibility(body as Record<string, unknown>, mappedModel, channel.type);
+    payload = convertOpenAIRequest(body as Record<string, unknown>, {
+      channelType: channel.type,
+      originModelName: originModel,
+      upstreamModelName: mappedModel,
+    });
+    if (payload && typeof payload === "object" && typeof (payload as { model?: unknown }).model === "string") {
+      info.upstreamModel = String((payload as { model: string }).model);
+    }
     if (kindName === "anthropic") payload = openaiToAnthropic(payload as Record<string, unknown>);
     if (kindName === "gemini") payload = openaiToGemini(payload as Record<string, unknown>);
   }

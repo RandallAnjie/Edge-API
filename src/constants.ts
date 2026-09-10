@@ -44,6 +44,7 @@ export const CHANNEL_TYPE_AZURE = 3;
 export const CHANNEL_TYPE_OLLAMA = 4;
 export const CHANNEL_TYPE_ANTHROPIC = 14;
 export const CHANNEL_TYPE_ALI = 17;
+export const CHANNEL_TYPE_OPENROUTER = 20;
 export const CHANNEL_TYPE_GEMINI = 24;
 export const CHANNEL_TYPE_MOONSHOT = 25;
 export const CHANNEL_TYPE_ZHIPU_V4 = 26;

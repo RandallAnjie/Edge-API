@@ -1,20 +1,15 @@
-import { nowSec, parseJson } from "./constants.js";
+import { nowSec, parseJson, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_TASK_PLUGIN } from "./constants.js";
 import { defaultBaseUrl } from "./catalog.js";
 import { apiFail, json } from "./http.js";
 import type { Store } from "./store.js";
 import type { ChannelRow } from "./types.js";
 
-const CHANNEL_TYPE_OPENAI = 1;
-const CHANNEL_TYPE_AZURE = 3;
 const CHANNEL_TYPE_CUSTOM = 8;
 const CHANNEL_TYPE_AIPROXY = 10;
 const CHANNEL_TYPE_API2GPT = 12;
 const CHANNEL_TYPE_AIGC2D = 13;
-const CHANNEL_TYPE_OPENROUTER = 20;
-const CHANNEL_TYPE_MOONSHOT = 25;
 const CHANNEL_TYPE_SILICONFLOW = 40;
 const CHANNEL_TYPE_DEEPSEEK = 43;
-const CHANNEL_TYPE_TASK_PLUGIN = 61;
 
 export type ChannelBalanceResult = { balance: number } | { raw_response: string };
 

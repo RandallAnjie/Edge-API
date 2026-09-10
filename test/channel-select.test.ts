@@ -158,9 +158,10 @@ test("original tokenModelLimitAllows accepts exact, wildcard, and routing-normal
   assert.equal(tokenModelLimitAllows(wildcard, "gemini-2.5-flash-thinking-8192"), true);
 
   const fullOnly = { "opaque@sha256:deadbeef": true };
-  assert.equal(tokenModelLimitAllows(fullOnly, "opaque@sha256:deadbeef"), true);
+  const sha256 = { thinkingModelBlacklist: ["re:.*@sha256:.*"] };
+  assert.equal(tokenModelLimitAllows(fullOnly, "opaque@sha256:deadbeef", sha256), true);
   const opaqueBase = { opaque: true };
-  assert.equal(tokenModelLimitAllows(opaqueBase, "opaque@sha256:deadbeef"), false);
+  assert.equal(tokenModelLimitAllows(opaqueBase, "opaque@sha256:deadbeef", sha256), false);
 });
 
 test("original TokenAuth parseApiKeyParts keeps channel pin suffix", () => {

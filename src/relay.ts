@@ -2,7 +2,8 @@ import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEM
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
-  applyOpenAIChatCompatibility,
+  convertOpenAIRequest,
+  convertOpenAIResponsesRequest,
   estimatePromptTokens,
   extractGeminiModelAction,
   geminiToOpenAIChat,
@@ -16,7 +17,13 @@ import {
   type ChatMessage,
 } from "./convert.js";
 import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
-import { applyChannelParamOverride, asParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
+import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
+import {
+  DEFAULT_EFFORT_TAIL_MODEL_IDS,
+  DEFAULT_THINKING_MODEL_BLACKLIST,
+  ReasoningClientError,
+  type ReasoningHostSettings,
+} from "./reasoning.js";
 import {
   cachedTokenRateModeByClientFormat,
   channelAffinityLogInfo,
@@ -121,16 +128,45 @@ async function fetchUpstream(target: ReturnType<typeof buildUpstream>, timeoutMs
   return fetch(target.url, init);
 }
 
+async function reasoningSettingsFromStore(store: Store): Promise<ReasoningHostSettings> {
+  return {
+    thinkingModelBlacklist: parseJson(await store.option("global.thinking_model_blacklist"), DEFAULT_THINKING_MODEL_BLACKLIST),
+    effortTailModelIDs: parseJson(await store.option("global.effort_tail_model_ids"), DEFAULT_EFFORT_TAIL_MODEL_IDS),
+    claudeThinkingAdapterEnabled: (await store.option("claude.thinking_adapter_enabled")) !== "false",
+    geminiThinkingAdapterEnabled: (await store.option("gemini.thinking_adapter_enabled")) === "true",
+  };
+}
+
+function convertRequestFailed(err: unknown): ParamOverrideReturnError {
+  if (err instanceof ParamOverrideReturnError) return err;
+  const message = err instanceof Error ? err.message : String(err);
+  if (err instanceof ReasoningClientError) {
+    return new ParamOverrideReturnError(message, 400, "convert_request_failed", "new_api_error", true);
+  }
+  if (message === "model_mapping_contains_cycle" || message === "unmarshal_model_mapping_failed") {
+    return new ParamOverrideReturnError(message, 400, "channel:model_mapped_error", "new_api_error", true);
+  }
+  return new ParamOverrideReturnError(message, 500, "convert_request_failed", "new_api_error", true);
+}
+
 function convertOutbound(
   kind: ReturnType<typeof channelKind>,
   client: ClientFormat,
   body: unknown,
   channelType = 0,
   mappedModel = "",
+  originModel = "",
+  settings: ReasoningHostSettings = {},
+  mode: RelayMode = "chat",
 ): unknown {
   let o = asObj(body);
-  if (client === "openai" && Array.isArray(o.messages)) {
-    o = applyOpenAIChatCompatibility(o, mappedModel || String(o.model || ""), channelType);
+  const origin = originModel || String(o.model || "");
+  const upstream = mappedModel || String(o.model || "");
+  if (client === "openai" && mode === "responses") {
+    o = convertOpenAIResponsesRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings });
+    body = o;
+  } else if (client === "openai" && (mode === "chat" || Array.isArray(o.messages))) {
+    o = convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings });
     body = o;
   }
   if (kind === "anthropic" && client === "openai") return openaiToAnthropic(o);
@@ -376,6 +412,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   let lastStatus = 502;
 
   const retryTimes = selectParam.retryTimes;
+  const convertSettings = await reasoningSettingsFromStore(store);
 
   for (let retry = 0; retry <= retryTimes; retry++) {
     let channel: ChannelRow | null;
@@ -393,8 +430,22 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     const lastAttempt = retry === retryTimes || skipFurtherRetry;
     const affinityLog = usedAffinityChannel && affinity ? channelAffinityLogInfo(affinity, auth.usingGroup, channel.id) : undefined;
     const kind = channelKind(channel.type);
-    const mapped = applyModelMapping(channel, model);
-    const outbound = opts.rawBody ? opts.body : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped);
+    let mapped = model;
+    let outbound: unknown = opts.body;
+    try {
+      mapped = applyModelMapping(channel, model);
+      outbound = opts.rawBody ? opts.body : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode);
+      if (!opts.rawBody) {
+        const convertedModel = asObj(outbound).model;
+        if (typeof convertedModel === "string" && convertedModel) mapped = convertedModel;
+      }
+    } catch (err) {
+      const ret = convertRequestFailed(err);
+      if (ret.skipRetry || lastAttempt) return openaiError(ret.statusCode, ret.message, ret.code, ret.type);
+      lastErr = ret.message;
+      lastStatus = ret.statusCode;
+      continue;
+    }
     const relayInfo: ParamOverrideRelayInfo = {
       requestHeaders: requestHeadersFrom(opts.req),
       userId: auth.user.id,

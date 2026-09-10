@@ -5,6 +5,7 @@ import {
   CHANNEL_TYPE_GEMINI,
   CHANNEL_TYPE_MOONSHOT,
   CHANNEL_TYPE_OLLAMA,
+  CHANNEL_TYPE_OPENROUTER,
   CHANNEL_TYPE_VOLC,
   CHANNEL_TYPE_ZHIPU_V4,
   CLAUDE_VERSION,
@@ -105,7 +106,7 @@ export function buildUpstream(
   const kind = channelKind(channel.type);
   const base = resolveBaseUrl(channel.type, channel.base_url);
   const apiKey = pickChannelKey(channel.key);
-  const upstreamModel = applyModelMapping(channel, model);
+  const upstreamModel = relayInfo.upstreamModel || applyModelMapping(channel, model);
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...extraHeaders,
@@ -213,6 +214,10 @@ export function buildUpstream(
       url = joinUrl(base, openaiPath(mode, requestPath));
       headers.authorization = `Bearer ${apiKey}`;
       if (channel.openai_organization) headers["openai-organization"] = channel.openai_organization;
+      if (channel.type === CHANNEL_TYPE_OPENROUTER) {
+        if (!headers["HTTP-Referer"] && !headers["http-referer"]) headers["HTTP-Referer"] = "https://www.newapi.ai";
+        if (!headers["X-OpenRouter-Title"] && !headers["x-openrouter-title"]) headers["X-OpenRouter-Title"] = "New API";
+      }
     }
   }
 

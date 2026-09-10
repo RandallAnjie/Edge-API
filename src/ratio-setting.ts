@@ -1,4 +1,4 @@
-/** Original `ratio_setting.FormatMatchingModelName` / `GetCompletionRatioInfo`. */
+import { baseModelName } from "./reasoning.js";
 
 export type CompletionRatioInfo = { ratio: number; locked: boolean };
 
@@ -22,35 +22,23 @@ export function formatMatchingModelName(name: string): string {
 }
 
 /** Original `reasoning.BaseModelName` for token-limit / ability fallback matching. */
-export function baseModelName(modelName: string): string {
-  if (!modelName) return modelName;
-  const at = modelName.indexOf("@");
-  let base = modelName;
-  if (at >= 0) {
-    const tail = modelName.slice(at + 1);
-    if (/^sha256:/i.test(tail)) return modelName;
-    base = modelName.slice(0, at);
-  }
-  const slash = base.lastIndexOf("/");
-  const prefix = slash >= 0 ? base.slice(0, slash + 1) : "";
-  const bare = slash >= 0 ? base.slice(slash + 1) : base;
-  if (bare.startsWith("claude-") && bare.endsWith("-thinking")) {
-    return prefix + bare.slice(0, -"-thinking".length);
-  }
-  return base;
-}
+export { baseModelName } from "./reasoning.js";
 
 /** Original `ratio_setting.RoutingMatchModelName`. */
-export function routingMatchModelName(name: string): string {
-  return formatMatchingModelName(baseModelName(name));
+export function routingMatchModelName(name: string, settings?: import("./reasoning.js").ReasoningHostSettings): string {
+  return formatMatchingModelName(baseModelName(name, settings));
 }
 
 /** Original `middleware.tokenModelLimitAllows`. */
-export function tokenModelLimitAllows(limit: Record<string, boolean>, model: string): boolean {
+export function tokenModelLimitAllows(
+  limit: Record<string, boolean>,
+  model: string,
+  settings?: import("./reasoning.js").ReasoningHostSettings,
+): boolean {
   if (limit[model]) return true;
   const formatted = formatMatchingModelName(model);
   if (limit[formatted]) return true;
-  return Boolean(limit[routingMatchModelName(model)]);
+  return Boolean(limit[routingMatchModelName(model, settings)]);
 }
 
 function numberMap(map: Record<string, unknown> | Record<string, number> | undefined): Record<string, number> {

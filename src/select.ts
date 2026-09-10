@@ -1,5 +1,6 @@
 import type { ChannelRow } from "./types.js";
 import { csv } from "./constants.js";
+import { baseModelName } from "./reasoning.js";
 
 export function channelSupportsModel(channel: Pick<ChannelRow, "models">, model: string): boolean {
   const models = csv(channel.models);
@@ -91,14 +92,34 @@ export function orderChannels(
   return ordered;
 }
 
+/** Original `helper.ModelMappedHelper` (chain + BaseModelName fallback + cycle detection). */
 export function mapModel(mappingJson: string, model: string): string {
-  if (!mappingJson) return model;
+  if (!mappingJson || mappingJson === "{}") return model;
+  let map: Record<string, string>;
   try {
-    const map = JSON.parse(mappingJson) as Record<string, string>;
-    return map[model] || model;
+    map = JSON.parse(mappingJson) as Record<string, string>;
   } catch {
-    return model;
+    throw new Error("unmarshal_model_mapping_failed");
   }
+  if (!map || typeof map !== "object") return model;
+  let current = model;
+  const visited = new Set<string>([current]);
+  for (;;) {
+    let mapped = map[current];
+    const base = baseModelName(current);
+    if ((!mapped || mapped === "") && base !== current) mapped = map[base];
+    if (mapped) {
+      if (visited.has(mapped)) {
+        if (mapped === current) return current === model ? model : current;
+        throw new Error("model_mapping_contains_cycle");
+      }
+      visited.add(mapped);
+      current = mapped;
+    } else {
+      break;
+    }
+  }
+  return current;
 }
 
 export function pickChannelKey(key: string, random: () => number = Math.random): string {

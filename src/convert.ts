@@ -1,3 +1,13 @@
+import {
+  applyReasoningModelSuffix,
+  convertAliOpenAIRequest,
+  convertMoonshotOpenAIRequest,
+  convertOpenAIAdaptorReasoning,
+  convertOpenAIResponsesAdaptorRequest,
+  type ReasoningHostSettings,
+} from "./reasoning.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN } from "./constants.js";
+
 export type ChatMessage = {
   role?: string;
   content?: unknown;
@@ -299,9 +309,6 @@ export function getOpenAIChatCapabilities(modelName: string, reasoningEffort = "
   return capabilities;
 }
 
-const CHANNEL_TYPE_OPENAI = 1;
-const CHANNEL_TYPE_AZURE = 3;
-
 /** Original `openai.Adaptor.ConvertOpenAIRequest` chat compatibility (token limit + sampling + developer role + stream_options). */
 export function applyOpenAIChatCompatibility(
   body: Record<string, unknown>,
@@ -334,6 +341,55 @@ export function applyOpenAIChatCompatibility(
     }
   }
   return out;
+}
+
+export type ConvertOpenAIOpts = {
+  channelType: number;
+  originModelName: string;
+  upstreamModelName: string;
+  settings?: ReasoningHostSettings;
+};
+
+/** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
+export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
+  const settings = opts.settings || {};
+  const suffixed = applyReasoningModelSuffix(body, opts.originModelName, opts.upstreamModelName, settings, "chat");
+  if (opts.channelType === CHANNEL_TYPE_MOONSHOT) {
+    return convertMoonshotOpenAIRequest(suffixed.body, suffixed.upstreamModelName);
+  }
+  if (opts.channelType === CHANNEL_TYPE_ALI) {
+    return convertAliOpenAIRequest(suffixed.body, suffixed.upstreamModelName);
+  }
+  if (
+    opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM ||
+    opts.channelType === CHANNEL_TYPE_CODEX ||
+    opts.channelType === CHANNEL_TYPE_TASK_PLUGIN
+  ) {
+    const out = suffixed.body;
+    out.model = suffixed.upstreamModelName;
+    return out;
+  }
+  const converted = convertOpenAIAdaptorReasoning(
+    suffixed.body,
+    opts.channelType,
+    opts.originModelName,
+    suffixed.upstreamModelName,
+    settings,
+  );
+  return applyOpenAIChatCompatibility(converted.body, converted.upstreamModelName, opts.channelType, converted.reasoningEffort);
+}
+
+/** Original `helper.ApplyReasoningModelSuffix` + `openai.Adaptor.ConvertOpenAIResponsesRequest`. */
+export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
+  const settings = opts.settings || {};
+  const suffixed = applyReasoningModelSuffix(body, opts.originModelName, opts.upstreamModelName, settings, "responses");
+  const converted = convertOpenAIResponsesAdaptorRequest(
+    suffixed.body,
+    opts.channelType,
+    opts.originModelName,
+    settings,
+  );
+  return converted.body;
 }
 
 /** Original `relayconvert` OpenAI chat → Responses request used by advanced-custom converters. */
