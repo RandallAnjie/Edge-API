@@ -157,6 +157,7 @@ const ORIGINAL_API: { method: string; path: string }[] = [
   { method: "POST", path: "/api/channel/upstream_updates/detect_all" },
   { method: "POST", path: "/api/channel/upstream_updates/apply" },
   { method: "POST", path: "/api/channel/upstream_updates/apply_all" },
+  { method: "POST", path: "/api/models/delete" },
 ];
 
 test("original Gin API surfaces are registered (not 404)", async () => {
@@ -2160,7 +2161,7 @@ test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch,
   assert.equal(typeof page.page, "number");
   assert.equal(typeof page.page_size, "number");
   assert.ok(page.items.length);
-  for (const k of ["id", "user_id", "key", "status", "name", "quota", "created_time", "redeemed_time"]) {
+  for (const k of ["id", "user_id", "key", "status", "name", "quota", "created_time", "redeemed_time", "used_user_id", "expired_time"]) {
     assert.ok(k in page.items[0], "missing Redemption field " + k);
   }
 
@@ -3105,6 +3106,184 @@ test("original upstream model updates, token i18n, and EditTag JSON", async () =
     e,
   );
   assert.equal(badHeader.body.message, "请求头覆盖必须是合法的 JSON 格式");
+});
+
+test("original GetOptions billing, models delete, and redemption PUT JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const opts = await json(new Request("http://local/api/option/", { headers: auth }), e);
+  const rows = opts.body.data as { key: string; value: string }[];
+  const byKey = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  const meta = JSON.parse(byKey.CompletionRatioMeta) as Record<string, { ratio: number; locked: boolean }>;
+  assert.equal(meta["gpt-4o-2024-05-13"].locked, true);
+  assert.equal(meta["gpt-4o-2024-05-13"].ratio, 3);
+  assert.equal(meta["gpt-5"].locked, true);
+  assert.equal(meta["gpt-5"].ratio, 8);
+  assert.equal(meta["gpt-4-all"].locked, false);
+  assert.equal(meta["gpt-4-all"].ratio, 2);
+  const modes = JSON.parse(byKey["billing_setting.billing_mode"]) as Record<string, string>;
+  const exprs = JSON.parse(byKey["billing_setting.billing_expr"]) as Record<string, string>;
+  assert.equal(modes["gpt-6-astra"], "tiered_expr");
+  assert.equal(
+    exprs["gpt-6-astra"],
+    'len <= 272000 ? tier("standard", p * 10 + c * 50 + cr * 1 + cc * 12.5) : tier("long_context", p * 20 + c * 75 + cr * 2 + cc * 25)',
+  );
+
+  const createdA = await json(
+    new Request("http://local/api/models/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_name: "delete-me-a" }),
+    }),
+    e,
+  );
+  const createdB = await json(
+    new Request("http://local/api/models/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_name: "delete-me-b" }),
+    }),
+    e,
+  );
+  const idA = Number((createdA.body.data as { id: number }).id);
+  const idB = Number((createdB.body.data as { id: number }).id);
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        mode: "single",
+        channel: {
+          name: "delete-models-ch",
+          type: 1,
+          key: "sk-delete-models",
+          models: "delete-me-a,keep-me",
+          group: "default",
+        },
+      }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "ModelPrice", value: JSON.stringify({ "delete-me-a": 0.04, "keep-price": 1 }) }),
+    }),
+    e,
+  );
+
+  const emptyDelete = await json(
+    new Request("http://local/api/models/delete", { method: "POST", headers: auth, body: "{}" }),
+    e,
+  );
+  assert.equal(emptyDelete.body.success, false);
+  assert.equal(emptyDelete.body.message, "select between 1 and 1000 models");
+
+  const badFlag = await json(
+    new Request("http://local/api/models/" + idA + "?remove_from_channels=yes", { method: "DELETE", headers: auth }),
+    e,
+  );
+  assert.equal(badFlag.body.success, false);
+  assert.match(String(badFlag.body.message), /strconv.ParseBool/);
+
+  const deleted = await json(
+    new Request("http://local/api/models/" + idA + "?remove_from_channels=true&remove_pricing=true", {
+      method: "DELETE",
+      headers: auth,
+    }),
+    e,
+  );
+  assert.equal(deleted.body.success, true, String(deleted.body.message));
+  assert.deepEqual(deleted.body.data, { deleted_count: 1, updated_channels: 1 });
+
+  const channels = await json(new Request("http://local/api/channel/search?keyword=delete-models-ch", { headers: auth }), e);
+  const ch = (channels.body.data as { items: { models: string }[] }).items[0];
+  assert.equal(ch.models, "keep-me");
+  const priceAfter = await json(new Request("http://local/api/option/", { headers: auth }), e);
+  const priceMap = JSON.parse(
+    (priceAfter.body.data as { key: string; value: string }[]).find((row) => row.key === "ModelPrice")!.value,
+  ) as Record<string, number>;
+  assert.equal("delete-me-a" in priceMap, false);
+  assert.equal(priceMap["keep-price"], 1);
+
+  const batch = await json(
+    new Request("http://local/api/models/delete", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_ids: [idB], remove_from_channels: false, remove_pricing: false }),
+    }),
+    e,
+  );
+  assert.equal(batch.body.success, true, String(batch.body.message));
+  assert.deepEqual(batch.body.data, { deleted_count: 1, updated_channels: 0 });
+
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  const future = Math.floor(Date.now() / 1000) + 3600;
+  const createdCode = await json(
+    new Request("http://local/api/redemption/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "gift", quota: 500, count: 1, expired_time: future }),
+    }),
+    e,
+  );
+  assert.equal(createdCode.body.success, true, String(createdCode.body.message));
+  const listed = await json(new Request("http://local/api/redemption/", { headers: auth }), e);
+  const red = (listed.body.data as { items: Record<string, unknown>[] }).items[0];
+  assert.equal(red.expired_time, future);
+  assert.equal(red.used_user_id, 0);
+
+  const later = future + 60;
+  const updated = await json(
+    new Request("http://local/api/redemption/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: red.id, name: "gift2", quota: 800, expired_time: later }),
+    }),
+    e,
+  );
+  assert.equal(updated.body.success, true, String(updated.body.message));
+  const data = updated.body.data as Record<string, unknown>;
+  assert.equal(data.id, red.id);
+  assert.equal(data.name, "gift2");
+  assert.equal(data.quota, 800);
+  assert.equal(data.expired_time, later);
+  assert.equal(data.status, 1);
+  assert.equal(data.used_user_id, 0);
+
+  const statusOnly = await json(
+    new Request("http://local/api/redemption/?status_only=true", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: red.id, status: 2 }),
+    }),
+    e,
+  );
+  assert.equal(statusOnly.body.success, true, String(statusOnly.body.message));
+  assert.equal((statusOnly.body.data as { status: number; name: string; quota: number }).status, 2);
+  assert.equal((statusOnly.body.data as { name: string }).name, "gift2");
+  assert.equal((statusOnly.body.data as { quota: number }).quota, 800);
+
+  const pastExpire = await json(
+    new Request("http://local/api/redemption/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: red.id, name: "gift2", quota: 800, expired_time: 1 }),
+    }),
+    e,
+  );
+  assert.equal(pastExpire.body.success, false);
+  assert.equal(pastExpire.body.message, "Expiration time cannot be earlier than current time");
+
+  await e.DB.prepare("UPDATE redemptions SET status = 1, expired_time = ? WHERE id = ?")
+    .bind(Math.floor(Date.now() / 1000) - 10, red.id)
+    .run();
+  const expiredSearch = await json(new Request("http://local/api/redemption/search?status=expired", { headers: auth }), e);
+  const expiredItems = (expiredSearch.body.data as { items: { id: number }[] }).items;
+  assert.ok(expiredItems.some((item) => item.id === red.id));
 });
 
 

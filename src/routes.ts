@@ -13,6 +13,7 @@ import {
   VERSION,
   DEFAULT_GROUP_RATIO,
   DEFAULT_TOKEN_QUOTA,
+  MAX_WALLET_QUOTA,
   canManageTargetRole,
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   CHANNEL_TYPE_TASK_PLUGIN,
@@ -68,7 +69,7 @@ import {
   sessionResponse,
 } from "./auth.js";
 import { Store, publicUser, stripChannelKey } from "./store.js";
-import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, publicUserLogs, dashboardListModels, channelListModels, publicOptions, publicQuotaData, manageUserView, publicMj, publicChannel } from "./dto.js";
+import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, publicUserLogs, dashboardListModels, channelListModels, publicOptions, publicQuotaData, manageUserView, publicMj, publicChannel, publicRedemption } from "./dto.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
@@ -1347,7 +1348,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
     const { items, total } = await s.listRedemptions(q.offset, q.page_size);
-    return apiOk(pageData(items, total, q));
+    return apiOk(pageData(items.map(publicRedemption), total, q));
   });
 
   r.get("/api/redemption/:id", async (c) => {
@@ -1356,7 +1357,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const item = await s.getRedemption(Number(c.params.id));
     if (!item) return apiFail("兑换码不存在");
-    return apiOk(item);
+    return apiOk(publicRedemption(item));
   });
 
   r.slash("POST", "/api/redemption/", async (c) => {
@@ -1373,6 +1374,11 @@ export function adminRouter(): Router<Env> {
     if (count > 100) return apiFail("一次兑换码批量生成的个数不能大于 100");
     const quota = Number(body.quota || 0);
     if (quota <= 0) return apiFail("redemption quota must be positive");
+    if (quota > MAX_WALLET_QUOTA) return apiFail(`wallet quota exceeds ${MAX_WALLET_QUOTA}`);
+    const expiredTime = Number(body.expired_time || 0);
+    if (expiredTime !== 0 && expiredTime < nowSec()) {
+      return apiFail(i18nPair(c.req, "过期时间不能早于当前时间", "Expiration time cannot be earlier than current time"));
+    }
     const keys: string[] = [];
     for (let i = 0; i < Math.min(100, count); i++) {
       const key = generateRedemptionKey();
@@ -1381,7 +1387,7 @@ export function adminRouter(): Router<Env> {
         key,
         quota,
         user_id: u.id,
-        expired_time: Number(body.expired_time || 0),
+        expired_time: expiredTime,
       });
       keys.push(key);
     }
@@ -1392,14 +1398,33 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { id?: number; name?: string; quota?: number; status?: number };
-    if (!body.id) return apiFail("无效的参数");
+    const statusOnly = c.url.searchParams.get("status_only") || "";
+    let body: { id?: number; name?: string; quota?: number; status?: number; expired_time?: number };
+    try {
+      body = (await readJson(c.req)) as { id?: number; name?: string; quota?: number; status?: number; expired_time?: number };
+    } catch {
+      return apiFail("无效的参数");
+    }
+    if (!body.id) return apiFail("id 为空！");
+    const clean = await s.getRedemption(body.id);
+    if (!clean) return apiFail("record not found");
     const patch: Record<string, unknown> = {};
-    if (body.name != null) patch.name = body.name;
-    if (body.quota != null) patch.quota = body.quota;
-    if (body.status != null) patch.status = body.status;
-    await s.updateRedemption(body.id, patch);
-    return apiOk(null);
+    if (statusOnly === "") {
+      const quota = Number(body.quota ?? 0);
+      if (quota <= 0) return apiFail("redemption quota must be positive");
+      if (quota > MAX_WALLET_QUOTA) return apiFail(`wallet quota exceeds ${MAX_WALLET_QUOTA}`);
+      const expiredTime = Number(body.expired_time ?? 0);
+      if (expiredTime !== 0 && expiredTime < nowSec()) {
+        return apiFail(i18nPair(c.req, "过期时间不能早于当前时间", "Expiration time cannot be earlier than current time"));
+      }
+      patch.name = body.name ?? clean.name;
+      patch.quota = quota;
+      patch.expired_time = expiredTime;
+    }
+    if (statusOnly !== "") patch.status = body.status;
+    if (Object.keys(patch).length) await s.updateRedemption(body.id, patch);
+    const updated = await s.getRedemption(body.id);
+    return apiOk(updated ? publicRedemption(updated) : null);
   });
 
   r.slash("DELETE", "/api/redemption/:id/", async (c) => {

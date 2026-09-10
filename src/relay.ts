@@ -16,6 +16,7 @@ import {
 import { clientIp, openaiError } from "./http.js";
 import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
 import { pickChannelKey } from "./select.js";
+import { parseChannelInfo } from "./channel-info.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
 import { applyModelMapping, buildUpstream, joinUrl, modelsUrl, type RelayMode } from "./upstream.js";
@@ -176,6 +177,7 @@ async function settle(
       channelType: channel.type,
       ok,
       requestPath: extra.requestPath,
+      isMultiKey: parseChannelInfo(String(channel.channel_info || "")).is_multi_key,
     }),
   });
   await recordRelayPerf(store, {

@@ -26,6 +26,28 @@ export function strconvAtoi(raw: string): { ok: true; n: number } | { ok: false;
   return { ok: false, message: `strconv.Atoi: parsing "${raw}": invalid syntax` };
 }
 
+/** Original `strconv.ParseBool` error string from `common.ApiError`. */
+export function strconvParseBool(raw: string): { ok: true; v: boolean } | { ok: false; message: string } {
+  switch (raw) {
+    case "1":
+    case "t":
+    case "T":
+    case "TRUE":
+    case "true":
+    case "True":
+      return { ok: true, v: true };
+    case "0":
+    case "f":
+    case "F":
+    case "FALSE":
+    case "false":
+    case "False":
+      return { ok: true, v: false };
+    default:
+      return { ok: false, message: `strconv.ParseBool: parsing "${raw}": invalid syntax` };
+  }
+}
+
 /** Original `i18n.T` with DefaultLang English. */
 export function i18nPair(req: Request, zh: string, en: string): string {
   const lang = (req.headers.get("accept-language") || "").toLowerCase();

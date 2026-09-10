@@ -1,9 +1,11 @@
+import { billingCopies } from "./billing-setting.js";
 import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_CREATED } from "./channel-models.js";
 import { clearChannelInfoPublic } from "./channel-info.js";
 import { DEFAULT_GROUP_RATIO, csv, parseJson } from "./constants.js";
 import { hmacSha256Raw, maskKey, md5Hex } from "./crypto.js";
+import { getCompletionRatioInfo } from "./ratio-setting.js";
 import type { Store } from "./store.js";
-import type { ChannelRow, LogRow, TokenRow, UserRow } from "./types.js";
+import type { ChannelRow, LogRow, RedemptionRow, TokenRow, UserRow } from "./types.js";
 
 export const DEFAULT_USABLE_GROUPS: Record<string, string> = {
   default: "默认分组",
@@ -534,22 +536,47 @@ export function consumeLogOther(opts: {
   channelType: number;
   ok: boolean;
   requestPath?: string;
+  isMultiKey?: boolean;
+  multiKeyIndex?: number;
+  billingSource?: string;
 }): string {
   const other: Record<string, unknown> = {
     group_ratio: opts.groupRatio,
     model_ratio: opts.modelRatio,
     completion_ratio: opts.completionRatio,
     group: opts.group,
+    billing_source: opts.billingSource || "wallet",
   };
   if (opts.requestPath) other.request_path = opts.requestPath;
-  other.admin_info = {
-    use_channel: [opts.channelId],
+  const admin: Record<string, unknown> = {
+    use_channel: [String(opts.channelId)],
     channel_id: opts.channelId,
     channel_name: opts.channelName,
     channel_type: opts.channelType,
   };
-  if (!opts.ok) other.admin_info = { ...(other.admin_info as object), reject_reason: "upstream_error" };
+  if (opts.isMultiKey) {
+    admin.is_multi_key = true;
+    if (opts.multiKeyIndex != null) admin.multi_key_index = opts.multiKeyIndex;
+  }
+  if (!opts.ok) admin.reject_reason = "upstream_error";
+  other.admin_info = admin;
   return JSON.stringify(other);
+}
+
+/** Original `model.Redemption` JSON. */
+export function publicRedemption(row: RedemptionRow | Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: Number(row.id || 0),
+    user_id: Number(row.user_id || 0),
+    key: String(row.key || ""),
+    status: Number(row.status || 0),
+    name: String(row.name || ""),
+    quota: Number(row.quota || 0),
+    created_time: Number(row.created_time || 0),
+    redeemed_time: Number(row.redeemed_time || 0),
+    used_user_id: Number(row.used_user_id || 0),
+    expired_time: Number(row.expired_time || 0),
+  };
 }
 
 export function publicLog(row: LogRow, role = 1): Record<string, unknown> {
@@ -657,16 +684,27 @@ export function isSensitiveOptionKey(key: string): boolean {
   return /Token$|Secret$|Key$|secret$|api_key$/i.test(key);
 }
 
+const COMPLETION_RATIO_META_OPTION_KEYS = [
+  "ModelPrice",
+  "ModelRatio",
+  "CompletionRatio",
+  "CacheRatio",
+  "CreateCacheRatio",
+  "ImageRatio",
+  "AudioRatio",
+  "AudioCompletionRatio",
+];
+
 export function publicOptions(options: { key: string; value: string }[]): { key: string; value: string }[] {
   const optionValues: Record<string, string> = {};
+  const all: Record<string, string> = {};
   const out: { key: string; value: string }[] = [];
   for (const row of options) {
+    all[row.key] = row.value;
     if (row.key === "theme.frontend" || row.key === "billing_setting.billing_mode" || row.key === "billing_setting.billing_expr") continue;
     if (isSensitiveOptionKey(row.key)) continue;
     out.push({ key: row.key, value: row.value });
-    if (["ModelPrice", "ModelRatio", "CompletionRatio", "CacheRatio", "CreateCacheRatio", "ImageRatio", "AudioRatio", "AudioCompletionRatio"].includes(row.key)) {
-      optionValues[row.key] = row.value;
-    }
+    if (COMPLETION_RATIO_META_OPTION_KEYS.includes(row.key)) optionValues[row.key] = row.value;
   }
   const names = new Set<string>();
   for (const raw of Object.values(optionValues)) {
@@ -675,9 +713,15 @@ export function publicOptions(options: { key: string; value: string }[]): { key:
   }
   const completion = parseJson<Record<string, number>>(optionValues.CompletionRatio || "{}", {});
   const meta: Record<string, { ratio: number; locked: boolean }> = {};
-  for (const name of names) meta[name] = { ratio: completion[name] ?? 1, locked: false };
-  out.push({ key: "billing_setting.billing_mode", value: "{}" });
-  out.push({ key: "billing_setting.billing_expr", value: "{}" });
+  for (const name of names) meta[name] = getCompletionRatioInfo(name, completion);
+  const billing = billingCopies({
+    billingMode: parseJson(all["billing_setting.billing_mode"] || "{}", {}),
+    billingExpr: parseJson(all["billing_setting.billing_expr"] || "{}", {}),
+    modelRatio: parseJson(all.ModelRatio || "{}", {}),
+    modelPrice: parseJson(all.ModelPrice || "{}", {}),
+  });
+  out.push({ key: "billing_setting.billing_mode", value: JSON.stringify(billing.billing_mode) });
+  out.push({ key: "billing_setting.billing_expr", value: JSON.stringify(billing.billing_expr) });
   out.push({ key: "CompletionRatioMeta", value: JSON.stringify(meta) });
   return out;
 }
@@ -1067,11 +1111,12 @@ export function publicTask(row: Record<string, unknown>, fillUser: boolean, view
     const plugin = execution?.task_plugin;
     const root: Record<string, unknown> = {};
     if (plugin?.key) {
+      const runtime = plugin as { api_version?: number; generation?: number };
       root.task_plugin = {
         key: plugin.key,
         version: plugin.version || "",
-        api_version: 1,
-        generation: 0,
+        api_version: Number(runtime.api_version ?? 1),
+        generation: Number(runtime.generation ?? 0),
       };
     }
     if (priv.upstream_task_id) root.upstream_task_id = priv.upstream_task_id;
@@ -1119,6 +1164,13 @@ export function openaiVideoView(row: Record<string, unknown>): Record<string, un
   if (status === "SUCCESS") {
     const completed = Number(row.finish_time || 0) || Number(row.updated_at || 0);
     if (completed) out.completed_at = completed;
+  }
+  const dataRaw = row.data;
+  const data =
+    typeof dataRaw === "string" ? parseJson<Record<string, unknown>>(dataRaw, {}) : ((dataRaw as Record<string, unknown> | undefined) ?? {});
+  for (const key of ["seconds", "size", "remixed_from_video_id", "metadata", "expires_at", "error"] as const) {
+    const value = properties[key] ?? data[key];
+    if (value != null && value !== "") out[key] = value;
   }
   return out;
 }

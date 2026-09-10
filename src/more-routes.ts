@@ -28,7 +28,8 @@ import {
   verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
-import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicTopup, publicVendor, publicPrefill, publicTask } from "./dto.js";
+import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption } from "./dto.js";
+import { billingCopies } from "./billing-setting.js";
 import { DEFAULT_MODEL_RATIO_JSON } from "./ratio-defaults.js";
 import { getModelPricingSnapshot, ModelPricingError, updateModelPricing, type ModelPricingChange } from "./model-pricing.js";
 import { buildRankingsSnapshot } from "./rankings.js";
@@ -51,7 +52,7 @@ import {
   updateCustomOAuthProvider,
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
-import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON, strconvAtoi } from "./http.js";
+import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -117,15 +118,23 @@ export function registerMore(r: Router<Env>): void {
   r.get("/api/ratio_config", async (c) => {
     const s = store(c);
     if (!(await s.optionBool("ExposeRatioEnabled", false))) return json(403, { success: false, message: "倍率配置接口未启用" });
+    const modelRatio = parseJson(await s.option("ModelRatio"), {});
+    const modelPrice = parseJson(await s.option("ModelPrice"), {});
+    const billing = billingCopies({
+      billingMode: parseJson(await s.option("billing_setting.billing_mode"), {}),
+      billingExpr: parseJson(await s.option("billing_setting.billing_expr"), {}),
+      modelRatio,
+      modelPrice,
+    });
     return apiOk(
       exposedRatioConfig({
-        model_ratio: parseJson(await s.option("ModelRatio"), {}),
+        model_ratio: modelRatio,
         completion_ratio: parseJson(await s.option("CompletionRatio"), {}),
         cache_ratio: parseJson(await s.option("CacheRatio"), {}),
         create_cache_ratio: parseJson(await s.option("CreateCacheRatio"), {}),
-        model_price: parseJson(await s.option("ModelPrice"), {}),
-        billing_mode: parseJson(await s.option("billing_setting.billing_mode"), {}),
-        billing_expr: parseJson(await s.option("billing_setting.billing_expr"), {}),
+        model_price: modelPrice,
+        billing_mode: billing.billing_mode,
+        billing_expr: billing.billing_expr,
       }),
     );
   });
@@ -1047,7 +1056,7 @@ export function registerMore(r: Router<Env>): void {
       c.url.searchParams.get("keyword") || "",
       c.url.searchParams.get("status") || "",
     );
-    return apiOk(pageData(items, total, q));
+    return apiOk(pageData(items.map(publicRedemption), total, q));
   });
 
   r.post("/api/redemption/batch", async (c) => {
@@ -1418,8 +1427,33 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.deleteModelMeta(Number(c.params.id));
-    return apiOk(null);
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiFail(id.message);
+    const fromChannels = strconvParseBool(c.url.searchParams.get("remove_from_channels") ?? "false");
+    if (!fromChannels.ok) return apiFail(fromChannels.message);
+    const fromPricing = strconvParseBool(c.url.searchParams.get("remove_pricing") ?? "false");
+    if (!fromPricing.ok) return apiFail(fromPricing.message);
+    if (fromPricing.v && u.role !== ROLE_ROOT) {
+      return json(403, { success: false, message: "Model pricing is managed by a super administrator." });
+    }
+    try {
+      const result = await s.deleteModelMetadata([id.n], fromChannels.v, fromPricing.v);
+      await s.audit(u.id, u.username, "model.delete", `delete model ${id.n}`, clientIp(c.req), {
+        action: "model.delete",
+        actor_role: u.role,
+        method: "DELETE",
+        route: "/api/models/:id",
+        other: JSON.stringify({
+          model_ids: [id.n],
+          remove_from_channels: fromChannels.v,
+          remove_pricing: fromPricing.v,
+          updated_channels: result.updated_channels,
+        }),
+      });
+      return apiOk(result);
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/task", async (c) => {

@@ -1,5 +1,7 @@
+import { getBuiltinBillingExpr } from "./billing-setting.js";
 import { parseJson } from "./constants.js";
 import { bytesToHex, sha256Bytes } from "./crypto.js";
+import { formatMatchingModelName, getCompletionRatioInfo } from "./ratio-setting.js";
 import type { Store } from "./store.js";
 
 /** Original `model.modelPricingOptionKeys`. */
@@ -72,11 +74,28 @@ function configuredFor(values: Record<string, Record<string, unknown>>, name: st
 
 function effectiveFor(values: Record<string, Record<string, unknown>>, name: string, selfUse: boolean): PricingValues {
   const result = configuredFor(values, name);
-  const mode = result["billing_setting.billing_mode"];
-  if (mode === "tiered_expr") return result;
+  const alias = formatMatchingModelName(name);
+  for (const key of MODEL_PRICING_OPTION_KEYS.slice(0, 8)) {
+    if (Object.prototype.hasOwnProperty.call(values[key], alias)) result[key] = values[key][alias];
+  }
+  let mode = result["billing_setting.billing_mode"];
+  if (!mode) {
+    const hasPrice = result.ModelPrice !== undefined;
+    const hasRatio = result.ModelRatio !== undefined;
+    if (getBuiltinBillingExpr(name) && !hasPrice && !hasRatio) mode = "tiered_expr";
+  }
+  if (mode === "tiered_expr") {
+    result["billing_setting.billing_mode"] = mode;
+    if (result["billing_setting.billing_expr"] == null) {
+      const expression = getBuiltinBillingExpr(name);
+      if (expression) result["billing_setting.billing_expr"] = expression;
+    }
+    return result;
+  }
   if (result.ModelPrice !== undefined) return result;
   if (result.ModelRatio === undefined && selfUse) result.ModelRatio = 37.5;
-  if (result.CompletionRatio === undefined) result.CompletionRatio = 1;
+  const completion = getCompletionRatioInfo(name, values.CompletionRatio as Record<string, number>);
+  if (result.CompletionRatio === undefined || completion.locked) result.CompletionRatio = completion.ratio;
   return result;
 }
 

@@ -1,4 +1,5 @@
-import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, GO_ZERO_TIME, START_TIME, VERSION, csv, nowSec, parseJson, randomHex } from "./constants.js";
+import { billingCopies } from "./billing-setting.js";
+import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, GO_ZERO_TIME, ROLE_ROOT, START_TIME, VERSION, csv, nowSec, parseJson, randomHex } from "./constants.js";
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { httpStats, performanceStats, resetMetrics } from "./metrics.js";
 import {
@@ -29,7 +30,7 @@ import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-o
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
-import { apiFail, apiOk, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, paymentReturnPath, strconvAtoi, taskArtifactError } from "./http.js";
+import { apiFail, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, paymentReturnPath, strconvAtoi, taskArtifactError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -965,17 +966,25 @@ export function registerParity(r: Router<Env>): void {
     } catch {
       return json(500, { success: false, message: "查询渠道失败" });
     }
+    const modelRatio = parseJson(await s.option("ModelRatio"), {});
+    const modelPrice = parseJson(await s.option("ModelPrice"), {});
+    const billing = billingCopies({
+      billingMode: parseJson(await s.option("billing_setting.billing_mode"), {}),
+      billingExpr: parseJson(await s.option("billing_setting.billing_expr"), {}),
+      modelRatio,
+      modelPrice,
+    });
     const localData = {
-      model_ratio: parseJson(await s.option("ModelRatio"), {}),
+      model_ratio: modelRatio,
       completion_ratio: parseJson(await s.option("CompletionRatio"), {}),
       cache_ratio: parseJson(await s.option("CacheRatio"), {}),
       create_cache_ratio: parseJson(await s.option("CreateCacheRatio"), {}),
       image_ratio: parseJson(await s.option("ImageRatio"), {}),
       audio_ratio: parseJson(await s.option("AudioRatio"), {}),
       audio_completion_ratio: parseJson(await s.option("AudioCompletionRatio"), {}),
-      model_price: parseJson(await s.option("ModelPrice"), {}),
-      billing_mode: parseJson(await s.option("billing_setting.billing_mode"), {}),
-      billing_expr: parseJson(await s.option("billing_setting.billing_expr"), {}),
+      model_price: modelPrice,
+      billing_mode: billing.billing_mode,
+      billing_expr: billing.billing_expr,
     };
     const result = await fetchUpstreamRatios({ req, channels, localData });
     if (!result.ok) return json(result.status, { success: false, message: result.message });
@@ -1412,8 +1421,33 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { ids?: number[] };
-    return apiOk({ count: await s.deleteModelMetaBatch(body.ids || []) });
+    let body: { model_ids?: number[]; ids?: number[]; remove_from_channels?: boolean; remove_pricing?: boolean };
+    try {
+      body = (await readJson(c.req)) as { model_ids?: number[]; ids?: number[]; remove_from_channels?: boolean; remove_pricing?: boolean };
+    } catch {
+      return apiFail("无效的参数");
+    }
+    if (body.remove_pricing && u.role !== ROLE_ROOT) {
+      return json(403, { success: false, message: "Model pricing is managed by a super administrator." });
+    }
+    try {
+      const result = await s.deleteModelMetadata(body.model_ids || body.ids || [], Boolean(body.remove_from_channels), Boolean(body.remove_pricing));
+      await s.audit(u.id, u.username, "model.delete_batch", `delete models`, clientIp(c.req), {
+        action: "model.delete_batch",
+        actor_role: u.role,
+        method: "POST",
+        route: "/api/models/delete",
+        other: JSON.stringify({
+          model_ids: body.model_ids || body.ids || [],
+          remove_from_channels: Boolean(body.remove_from_channels),
+          remove_pricing: Boolean(body.remove_pricing),
+          updated_channels: result.updated_channels,
+        }),
+      });
+      return apiOk(result);
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
   r.get("/api/models/:id", async (c) => {
     const s = store(c);

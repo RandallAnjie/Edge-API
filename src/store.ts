@@ -4,6 +4,10 @@ import {
   DEFAULT_GROUP_RATIO,
   DEFAULT_OPTIONS,
   LOG_CONSUME,
+  NAME_RULE_EXACT,
+  REDEMPTION_DISABLED,
+  REDEMPTION_ENABLED,
+  REDEMPTION_USED,
   TOKEN_ENABLED,
   USER_ENABLED,
   csv,
@@ -16,6 +20,7 @@ import { capabilities, parsePermissionOverrides } from "./authz.js";
 import { pickAbilityChannelId } from "./select.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
 import { normalizeBillingPreference } from "./subscription.js";
+import { MODEL_PRICING_OPTION_KEYS } from "./model-pricing.js";
 import type {
   ChannelRow,
   D1Database,
@@ -960,13 +965,26 @@ export class Store {
     let where = "1=1";
     const binds: unknown[] = [];
     if (keyword) {
-      where += " AND (name LIKE ? OR key LIKE ?)";
-      const q = `%${keyword}%`;
-      binds.push(q, q);
+      if (/^-?\d+$/.test(keyword)) {
+        where += " AND (id = ? OR name LIKE ?)";
+        binds.push(Number(keyword), `${keyword}%`);
+      } else {
+        where += " AND name LIKE ?";
+        binds.push(`${keyword}%`);
+      }
     }
     if (status) {
-      where += " AND status = ?";
-      binds.push(Number(status));
+      const now = nowSec();
+      if (status === "expired") {
+        where += " AND status = ? AND expired_time != 0 AND expired_time < ?";
+        binds.push(REDEMPTION_ENABLED, now);
+      } else if (status === String(REDEMPTION_ENABLED)) {
+        where += " AND status = ? AND (expired_time = 0 OR expired_time >= ?)";
+        binds.push(REDEMPTION_ENABLED, now);
+      } else if (status === String(REDEMPTION_DISABLED) || status === String(REDEMPTION_USED)) {
+        where += " AND status = ?";
+        binds.push(Number(status));
+      }
     }
     const totalRow = await this.db
       .prepare(`SELECT COUNT(*) as c FROM redemptions WHERE ${where}`)
@@ -989,7 +1007,12 @@ export class Store {
   }
 
   async deleteInvalidRedemptions(): Promise<number> {
-    const r = await this.db.prepare("DELETE FROM redemptions WHERE status != 1").run();
+    const r = await this.db
+      .prepare(
+        "DELETE FROM redemptions WHERE status IN (?, ?) OR (status = ? AND expired_time != 0 AND expired_time < ?)",
+      )
+      .bind(REDEMPTION_USED, REDEMPTION_DISABLED, REDEMPTION_ENABLED, nowSec())
+      .run();
     return Number(r.meta.changes || 0);
   }
 
@@ -2414,7 +2437,7 @@ export class Store {
   }
 
   async deleteModelMeta(id: number): Promise<void> {
-    await this.db.prepare("DELETE FROM model_meta WHERE id = ?").bind(id).run();
+    await this.deleteModelMetadata([id], false, false);
   }
 
   async getModelMeta(id: number): Promise<Record<string, unknown> | null> {
@@ -2430,10 +2453,65 @@ export class Store {
   }
 
   async deleteModelMetaBatch(ids: number[]): Promise<number> {
-    if (!ids.length) return 0;
-    const ph = ids.map(() => "?").join(",");
-    const r = await this.db.prepare(`DELETE FROM model_meta WHERE id IN (${ph})`).bind(...ids).run();
-    return Number(r.meta.changes || 0);
+    return (await this.deleteModelMetadata(ids, false, false)).deleted_count;
+  }
+
+  /** Original `model.DeleteModelMetadata`. */
+  async deleteModelMetadata(
+    ids: number[],
+    removeFromChannels: boolean,
+    removePricing: boolean,
+  ): Promise<{ deleted_count: number; updated_channels: number }> {
+    const result = { deleted_count: 0, updated_channels: 0 };
+    if (!ids.length || ids.length > 1000) throw new Error("select between 1 and 1000 models");
+    const selected = new Set<number>();
+    for (const id of ids) {
+      if (id <= 0) throw new Error("invalid model ID");
+      selected.add(id);
+    }
+    const modelIDs = [...selected].sort((a, b) => a - b);
+    const records: Record<string, unknown>[] = [];
+    for (const id of modelIDs) {
+      const row = await this.getModelMeta(id);
+      if (!row) throw new Error("selected models changed; reload before deleting");
+      records.push(row);
+    }
+    const names = new Set<string>();
+    for (const record of records) {
+      if (removeFromChannels && Number(record.name_rule || 0) !== NAME_RULE_EXACT) {
+        throw new Error("only exact-match models can be removed from channels");
+      }
+      names.add(String(record.model_name || ""));
+    }
+    if (removeFromChannels) {
+      const { results } = await this.db
+        .prepare(`SELECT id, models FROM channels ORDER BY id`)
+        .all<{ id: number; models: string }>();
+      for (const channel of results) {
+        const models = csv(channel.models);
+        const remaining = models.filter((name) => !names.has(name.trim()));
+        if (remaining.length === models.length) continue;
+        await this.updateChannel(channel.id, { models: remaining.join(",") });
+        result.updated_channels += 1;
+      }
+    }
+    if (removePricing) {
+      for (const key of MODEL_PRICING_OPTION_KEYS) {
+        const map = parseJson<Record<string, unknown>>(await this.option(key), {});
+        let changed = false;
+        for (const name of names) {
+          if (Object.prototype.hasOwnProperty.call(map, name)) {
+            delete map[name];
+            changed = true;
+          }
+        }
+        if (changed) await this.setOption(key, JSON.stringify(map));
+      }
+    }
+    const ph = modelIDs.map(() => "?").join(",");
+    await this.db.prepare(`DELETE FROM model_meta WHERE id IN (${ph})`).bind(...modelIDs).run();
+    result.deleted_count = records.length;
+    return result;
   }
 
   async listTaskPlugins(): Promise<unknown[]> {
