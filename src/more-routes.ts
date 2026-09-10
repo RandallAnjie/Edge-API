@@ -51,7 +51,7 @@ import {
   updateCustomOAuthProvider,
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
-import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON } from "./http.js";
+import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON, strconvAtoi } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -1029,8 +1029,10 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const ch = await s.getChannel(Number(c.params.id));
-    if (!ch) return apiFail("渠道不存在");
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiFail(id.message);
+    const ch = await s.getChannel(id.n);
+    if (!ch) return apiFail("record not found");
     return updateOneChannelBalance(s, ch);
   });
 

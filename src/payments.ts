@@ -506,9 +506,71 @@ export async function handleCreemWebhook(store: Store, req: Request): Promise<Re
   if (event.eventType === "checkout.completed") {
     if (event.object?.order?.status && event.object.order.status !== "paid") return new Response(null, { status: 200 });
     const trade = String(event.object?.request_id || "");
-    if (trade) await completePendingTopup(store, trade);
+    if (!trade) return new Response(null, { status: 400 });
+    await completePendingTopup(store, trade);
   }
   return new Response(null, { status: 200 });
+}
+
+export async function handleWaffoWebhook(store: Store, req: Request): Promise<Response> {
+  if (!(await paymentEnabled(store, "waffo"))) return new Response(null, { status: 403 });
+  const raw = await req.text();
+  const signature = req.headers.get("X-SIGNATURE") || req.headers.get("x-signature") || "";
+  if (!signature) return new Response(null, { status: 400 });
+  const event = parseJson<{
+    eventType?: string;
+    result?: { merchantOrderID?: string; merchantOrderId?: string; orderStatus?: string };
+    merchantOrderId?: string;
+  }>(raw, {});
+  const trade = String(event.result?.merchantOrderID || event.result?.merchantOrderId || event.merchantOrderId || "");
+  if (trade) await completePendingTopup(store, trade);
+  return new Response(JSON.stringify({ code: "SUCCESS" }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+export async function handleWaffoPancakeWebhook(store: Store, req: Request, envParam: string): Promise<Response> {
+  if (!(await paymentEnabled(store, "waffo_pancake"))) {
+    return new Response("webhook disabled", { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  const expectedEnv = String(envParam || "").trim();
+  if (expectedEnv !== "test" && expectedEnv !== "prod") {
+    return new Response("unknown env", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  let raw = "";
+  try {
+    raw = await req.text();
+  } catch {
+    return new Response("bad request", { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  const signature = req.headers.get("X-Waffo-Signature") || "";
+  if (!signature) {
+    return new Response("invalid signature", { status: 401, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  const event = parseJson<{
+    mode?: string;
+    event_type?: string;
+    eventType?: string;
+    type?: string;
+    data?: { order_id?: string; orderId?: string; orderMerchantExternalId?: string; order_merchant_external_id?: string };
+  }>(raw, {});
+  const mode = String(event.mode || "").trim();
+  if (mode && mode.toLowerCase() !== expectedEnv) {
+    return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  const eventType = String(event.event_type || event.eventType || event.type || "").toLowerCase();
+  if (eventType === "order.completed" || eventType === "order_completed") {
+    const trade = String(
+      event.data?.order_merchant_external_id ||
+        event.data?.orderMerchantExternalId ||
+        event.data?.order_id ||
+        event.data?.orderId ||
+        "",
+    );
+    if (trade) await completePendingTopup(store, trade);
+  }
+  return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
 export async function completePendingTopup(store: Store, tradeNo: string): Promise<boolean> {

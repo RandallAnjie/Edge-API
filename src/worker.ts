@@ -1,6 +1,7 @@
+import { runChannelTestTask } from "./channel-test.js";
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
-import { apiFail, openaiError, readJson, relayNotImplemented, taskArtifactError, videoProxyError, withCors } from "./http.js";
+import { apiFail, openaiError, pluginProtocolError, readJson, relayNotImplemented, taskArtifactError, videoProxyError, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -186,10 +187,8 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   }
 
   if (req.method === "GET" && path.startsWith("/v1/responses/")) {
-    const responseId = decodeURIComponent(path.slice("/v1/responses/".length));
-    const local = await store.getTaskByTid(responseId);
-    if (local) return new Response(JSON.stringify(local), { headers: { "content-type": "application/json" } });
-    return relayJson(req, env, store, auth, "responses", path, { id: responseId }, ctx, "GET");
+    const responseId = decodeURIComponent(path.slice("/v1/responses/".length).split("/")[0] || "");
+    return pluginProtocolError(404, "not_found", `No response found with id '${responseId}'.`);
   }
 
   if ((req.method === "GET" || req.method === "HEAD") && path.startsWith("/v1/tasks/")) {
@@ -582,6 +581,21 @@ export default {
         await env.DB.prepare("DELETE FROM audit_logs WHERE created_at < ?").bind(cutoff).run();
         const store = new Store(env.DB);
         await store.cleanupExpired(nowSec());
+        const task = await store.currentSystemTask("channel_test");
+        if (task && String(task.status) === "pending") {
+          const id = String(task.id || task.task_id || "");
+          await store.updateSystemTask(id, { status: "running" });
+          try {
+            const payload = typeof task.payload === "string" ? JSON.parse(String(task.payload || "{}")) : (task.payload as { mode?: string } | null);
+            const summary = await runChannelTestTask(store, String(payload?.mode || "scheduled_all"));
+            await store.updateSystemTask(id, { status: "succeeded", result: JSON.stringify(summary) });
+          } catch (err) {
+            await store.updateSystemTask(id, {
+              status: "failed",
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
       })(),
     );
   },

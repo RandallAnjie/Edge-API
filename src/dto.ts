@@ -1,4 +1,5 @@
 import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_CREATED } from "./channel-models.js";
+import { clearChannelInfoPublic } from "./channel-info.js";
 import { DEFAULT_GROUP_RATIO, csv, parseJson } from "./constants.js";
 import { hmacSha256Raw, maskKey, md5Hex } from "./crypto.js";
 import type { Store } from "./store.js";
@@ -178,10 +179,7 @@ export function publicChannel(c: ChannelRow, includeKey = false): Record<string,
           multi_key_polling_index: 0,
           multi_key_mode: "",
         };
-  if (info.is_multi_key) {
-    delete info.multi_key_disabled_reason;
-    delete info.multi_key_disabled_time;
-  }
+  info = clearChannelInfoPublic(info);
   const setting = c.setting || c.settings || "";
   return {
     id: c.id,

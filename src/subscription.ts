@@ -213,16 +213,36 @@ export function decodePluginIcon(icon: string): { mediaType: string; body: Uint8
   }
 }
 
-export function parseCodexOAuthKey(key: string): { access_token: string; account_id: string; refresh_token: string } | null {
+export function parseCodexOAuthKey(key: string): {
+  access_token: string;
+  account_id: string;
+  refresh_token: string;
+  email: string;
+  last_refresh: string;
+  expired: string;
+  type: string;
+} | null {
   const trimmed = String(key || "").trim();
   if (!trimmed) return null;
   const parsed = parseJson<Record<string, unknown>>(trimmed, {});
-  if (parsed && (parsed.access_token || parsed.accessToken)) {
+  if (parsed && (parsed.access_token || parsed.accessToken || parsed.refresh_token || parsed.refreshToken)) {
     return {
       access_token: String(parsed.access_token || parsed.accessToken || ""),
       account_id: String(parsed.account_id || parsed.accountId || parsed.chatgpt_account_id || ""),
       refresh_token: String(parsed.refresh_token || parsed.refreshToken || ""),
+      email: String(parsed.email || ""),
+      last_refresh: String(parsed.last_refresh || parsed.lastRefresh || ""),
+      expired: String(parsed.expired || parsed.expires_at || parsed.expiresAt || ""),
+      type: String(parsed.type || "codex"),
     };
   }
-  return { access_token: trimmed, account_id: "", refresh_token: "" };
+  return {
+    access_token: trimmed,
+    account_id: "",
+    refresh_token: "",
+    email: "",
+    last_refresh: "",
+    expired: "",
+    type: "codex",
+  };
 }

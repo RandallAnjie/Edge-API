@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
+import { Store } from "../src/store.js";
+import { runChannelTestTask, selectChannelsForAutomaticTest } from "../src/channel-test.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -147,6 +149,10 @@ const ORIGINAL_API: { method: string; path: string }[] = [
   { method: "GET", path: "/v1/videos/task_missing" },
   { method: "GET", path: "/api/subscription/epay/return" },
   { method: "GET", path: "/api/oauth/github" },
+  { method: "GET", path: "/v1/responses/resp_missing" },
+  { method: "POST", path: "/api/waffo-pancake/webhook/test" },
+  { method: "POST", path: "/api/waffo/webhook" },
+  { method: "GET", path: "/api/channel/ollama/version/1" },
 ];
 
 test("original Gin API surfaces are registered (not 404)", async () => {
@@ -2489,6 +2495,25 @@ test("original TestChannel, UpdateSelf, video, OAuth, and subscription return JS
   assert.equal(cdata.task_id, queued.task_id);
   assert.equal(cdata.type, "channel_test");
 
+  const store = new Store(e.DB);
+  const skippedManual = selectChannelsForAutomaticTest(
+    [
+      { id: 1, status: 2, auto_ban: 1, type: 1 } as never,
+      { id: 2, status: 1, auto_ban: 1, type: 1 } as never,
+    ],
+    "scheduled_all",
+  );
+  assert.equal(skippedManual.length, 1);
+  assert.equal(skippedManual[0].id, 2);
+  const summary = await runChannelTestTask(store, "scheduled_all");
+  assert.equal(typeof summary.tested, "number");
+  assert.equal(typeof summary.succeeded, "number");
+  assert.equal(typeof summary.failed, "number");
+  assert.equal(typeof summary.disabled, "number");
+  assert.equal(typeof summary.enabled, "number");
+  assert.ok(summary.tested >= 1);
+  assert.ok(summary.failed >= 1);
+
   const sidebar = await json(
     new Request("http://local/api/user/self", {
       method: "PUT",
@@ -2576,6 +2601,37 @@ test("original TestChannel, UpdateSelf, video, OAuth, and subscription return JS
 
   const delUser = await json(new Request("http://local/api/user/abc", { method: "DELETE", headers: auth }), e);
   assert.equal(delUser.body.message, 'strconv.Atoi: parsing "abc": invalid syntax');
+
+  const missingChannel = await json(new Request("http://local/api/channel/999999", { headers: auth }), e);
+  assert.equal(missingChannel.body.message, "record not found");
+  const missingBalance = await json(new Request("http://local/api/channel/update_balance/999999", { headers: auth }), e);
+  assert.equal(missingBalance.body.message, "record not found");
+
+  const codexId = await json(new Request("http://local/api/channel/abc/codex/refresh", { method: "POST", headers: auth }), e);
+  assert.equal(codexId.body.message, 'invalid channel id: strconv.Atoi: parsing "abc": invalid syntax');
+  const ollamaId = await json(new Request("http://local/api/channel/ollama/version/abc", { headers: auth }), e);
+  assert.equal(ollamaId.res.status, 400);
+  assert.equal(ollamaId.body.message, "Invalid channel id");
+  const ollamaMissing = await json(new Request("http://local/api/channel/ollama/version/999999", { headers: auth }), e);
+  assert.equal(ollamaMissing.res.status, 404);
+  assert.equal(ollamaMissing.body.message, "Channel not found");
+
+  const respRetrieve = await json(new Request("http://local/v1/responses/resp_missing", { headers: { authorization: "Bearer " + sk } }), e);
+  assert.equal(respRetrieve.res.status, 404);
+  assert.equal((respRetrieve.body.error as { type: string; code: string; message: string }).type, "new_api_error");
+  assert.equal((respRetrieve.body.error as { code: string }).code, "not_found");
+  assert.equal((respRetrieve.body.error as { message: string }).message, "No response found with id 'resp_missing'.");
+
+  const pancake = await json(new Request("http://local/api/waffo-pancake/webhook/test", { method: "POST" }), e);
+  assert.equal(pancake.res.status, 403);
+  assert.equal(pancake.text, "webhook disabled");
+  const pancakeEnv = await json(
+    new Request("http://local/api/waffo-pancake/webhook/staging", { method: "POST" }),
+    e,
+  );
+  assert.equal(pancakeEnv.res.status, 403);
+  const waffoHook = await json(new Request("http://local/api/waffo/webhook", { method: "POST" }), e);
+  assert.equal(waffoHook.res.status, 403);
 });
 
 

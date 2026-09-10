@@ -105,6 +105,11 @@ export function openaiError(
   });
 }
 
+/** Original `controller.respondPluginProtocolError`. */
+export function pluginProtocolError(status: number, code: string, message: string): Response {
+  return json(status, { error: { message, type: "new_api_error", code } });
+}
+
 /** Original `controller.RelayNotImplemented`. */
 export function relayNotImplemented(): Response {
   return json(501, {

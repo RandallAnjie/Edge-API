@@ -37,7 +37,7 @@ import {
   verifyPassword,
   decryptPassword,
 } from "./crypto.js";
-import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, json, pageData, pageQuery, parseUnixQuery, readJson, serveRevalidatedJSON, strconvAtoi } from "./http.js";
+import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, serveRevalidatedJSON, strconvAtoi } from "./http.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -829,7 +829,7 @@ export function adminRouter(): Router<Env> {
     const id = strconvAtoi(c.params.id);
     if (!id.ok) return apiFail(id.message);
     const ch = await s.getChannel(id.n);
-    if (!ch) return apiFail("渠道不存在");
+    if (!ch) return apiFail("record not found");
     return apiOk(stripChannelKey(ch));
   });
 
@@ -844,7 +844,7 @@ export function adminRouter(): Router<Env> {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const ch = await s.getChannel(channelId);
-    if (!ch) return apiFail("渠道不存在");
+    if (!ch) return apiFail(i18nPair(c.req, "渠道不存在", "Channel does not exist"));
     await s.audit(u.id, u.username, "channel.key_view", `view channel key ${ch.name}`, clientIp(c.req));
     return apiOk({ key: ch.key }, "获取成功");
   });
