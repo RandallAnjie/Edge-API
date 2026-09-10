@@ -1,4 +1,4 @@
-import { csv, LOG_CONSUME, LOG_ERROR, parseBool } from "./constants.js";
+import { csv, LOG_CONSUME, LOG_ERROR, parseBool, UNSUPPORTED_CHANNEL_TEST_TYPES } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
@@ -19,7 +19,7 @@ import { pickChannelKey } from "./select.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
 import { applyModelMapping, buildUpstream, joinUrl, modelsUrl, type RelayMode } from "./upstream.js";
-import { channelKind, resolveBaseUrl } from "./catalog.js";
+import { channelKind, channelTypeName, resolveBaseUrl } from "./catalog.js";
 import {
   anthropicModel,
   consumeLogOther,
@@ -470,18 +470,27 @@ export async function retrieveModel(store: Store, auth: AuthToken, model: string
   });
 }
 
-export async function testChannel(store: Store, channel: ChannelRow): Promise<{ success: boolean; message: string; time: number }> {
+/** Original `controller.TestChannel` JSON: `{success, message, time}` with `time` in seconds. */
+export async function testChannel(
+  store: Store,
+  channel: ChannelRow,
+  _opts: { model?: string; endpointType?: string; stream?: boolean } = {},
+): Promise<{ success: boolean; message: string; time: number; error_code?: string }> {
+  if (UNSUPPORTED_CHANNEL_TEST_TYPES.has(channel.type)) {
+    return { success: false, message: `${channelTypeName(channel.type)} channel test is not supported`, time: 0 };
+  }
   const started = Date.now();
   const target = modelsUrl(channel);
   try {
     const res = await fetchUpstream(target);
-    const time = Date.now() - started;
+    const milliseconds = Date.now() - started;
     const text = await res.text();
+    const time = milliseconds / 1000;
     if (!res.ok) return { success: false, message: text.slice(0, 500) || res.statusText, time };
-    await store.updateChannel(channel.id, { test_time: Math.floor(Date.now() / 1000), response_time: time });
-    return { success: true, message: "测试成功", time };
+    await store.updateChannel(channel.id, { test_time: Math.floor(Date.now() / 1000), response_time: milliseconds });
+    return { success: true, message: "", time };
   } catch (e) {
-    return { success: false, message: e instanceof Error ? e.message : String(e), time: Date.now() - started };
+    return { success: false, message: e instanceof Error ? e.message : String(e), time: 0 };
   }
 }
 

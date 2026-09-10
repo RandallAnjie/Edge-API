@@ -18,6 +18,14 @@ export const ROLE_USER = 1;
 export const ROLE_ADMIN = 10;
 export const ROLE_ROOT = 100;
 
+/** Original `controller.canManageTargetRole`. */
+export function canManageTargetRole(myRole: number, targetRole: number): boolean {
+  return myRole === ROLE_ROOT || myRole > targetRole;
+}
+
+/** Original `controller.testChannel` unsupported types. */
+export const UNSUPPORTED_CHANNEL_TEST_TYPES = new Set([2, 5, 36, 50, 51, 52, 54, 61]);
+
 export const USER_ENABLED = 1;
 export const USER_DISABLED = 2;
 

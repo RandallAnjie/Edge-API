@@ -19,7 +19,7 @@ import { ensureSchema } from "./schema.js";
 import { Store } from "./store.js";
 import { hit } from "./metrics.js";
 import { matchPluginRoute } from "./plugin-dispatch.js";
-import { taskArtifactsView, taskFetchView } from "./dto.js";
+import { taskArtifactsView, taskFetchView, openaiVideoView, taskResultURL } from "./dto.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
 
 /** Original `/:mode/mj` relay group. `/api/mj` is dashboard GetAllMidjourney, not relay. */
@@ -168,35 +168,21 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   }
 
   if (req.method === "GET" && path.startsWith("/v1/video/generations/")) {
-    const taskId = decodeURIComponent(path.slice("/v1/video/generations/".length));
-    const local = await store.getTaskByTid(taskId);
-    if (local) {
-      return new Response(JSON.stringify(local), { headers: { "content-type": "application/json" } });
-    }
-    return relayJson(req, env, store, auth, "video", path, { id: taskId }, ctx, "GET");
+    const rest = path.slice("/v1/video/generations/".length);
+    const [taskIdRaw, ...tail] = rest.split("/").filter(Boolean);
+    const taskId = decodeURIComponent(taskIdRaw || "");
+    if (!taskId) return videoProxyError(400, "invalid_request_error", "task_id is required");
+    if (tail[0] === "content") return serveVideoContent(req, env, store, auth, taskId, ctx);
+    return serveVideoRetrieve(req, env, store, auth, path, taskId, ctx);
   }
 
   if ((req.method === "GET" || req.method === "HEAD") && path.startsWith("/v1/videos/")) {
     const rest = path.slice("/v1/videos/".length);
-    const [taskId, ...tail] = rest.split("/");
-    if (tail[0] === "content") {
-      if (env.R2 && taskId) {
-        const obj = await env.R2.get(`tasks/${taskId}/content`);
-        if (obj) {
-          return new Response(req.method === "HEAD" ? null : await obj.arrayBuffer(), {
-            headers: { "content-type": obj.httpMetadata?.contentType || "application/octet-stream" },
-          });
-        }
-      }
-      const local = await store.getTaskByTid(taskId);
-      if (local) {
-        return new Response(JSON.stringify(local), { headers: { "content-type": "application/json" } });
-      }
-      return relayJson(req, env, store, auth, "video", path, { id: taskId }, ctx, req.method);
-    }
-    const local = await store.getTaskByTid(taskId);
-    if (local) return new Response(JSON.stringify(local), { headers: { "content-type": "application/json" } });
-    return relayJson(req, env, store, auth, "video", path, { id: taskId }, ctx, "GET");
+    const [taskIdRaw, ...tail] = rest.split("/").filter(Boolean);
+    const taskId = decodeURIComponent(taskIdRaw || "");
+    if (!taskId) return videoProxyError(400, "invalid_request_error", "task_id is required");
+    if (tail[0] === "content") return serveVideoContent(req, env, store, auth, taskId, ctx);
+    return serveVideoRetrieve(req, env, store, auth, path, taskId, ctx);
   }
 
   if (req.method === "GET" && path.startsWith("/v1/responses/")) {
@@ -360,6 +346,81 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   }
 
   return res;
+}
+
+async function serveVideoRetrieve(
+  req: Request,
+  env: Env,
+  store: Store,
+  auth: AuthToken,
+  path: string,
+  taskId: string,
+  ctx: ExecutionContextLike,
+): Promise<Response> {
+  const local = await store.getTaskByTid(taskId);
+  const owned = local && Number(local.user_id) === auth.user.id;
+  if (owned && local) {
+    return new Response(JSON.stringify(openaiVideoView(local)), {
+      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" },
+    });
+  }
+  return relayJson(req, env, store, auth, "video", path, { id: taskId }, ctx, "GET");
+}
+
+async function serveVideoContent(
+  req: Request,
+  env: Env,
+  store: Store,
+  auth: AuthToken,
+  taskId: string,
+  ctx: ExecutionContextLike,
+): Promise<Response> {
+  const local = await store.getTaskByTid(taskId);
+  const owned = local && Number(local.user_id) === auth.user.id;
+  if (!owned || !local) return videoProxyError(404, "invalid_request_error", "Task not found");
+  if (String(local.status) !== "SUCCESS") {
+    return videoProxyError(400, "invalid_request_error", `Task is not completed yet, current status: ${local.status}`);
+  }
+  if (env.R2) {
+    const obj = await env.R2.get(`tasks/${taskId}/content`);
+    if (obj) {
+      return new Response(req.method === "HEAD" ? null : await obj.arrayBuffer(), {
+        headers: {
+          "content-type": obj.httpMetadata?.contentType || "application/octet-stream",
+          "cache-control": "private, no-store",
+        },
+      });
+    }
+  }
+  const resultURL = taskResultURL(local);
+  if (resultURL.startsWith("data:")) {
+    const decoded = decodeVideoDataURL(resultURL);
+    if (!decoded) return taskArtifactError(410, "artifact_gone", "Artifact content is no longer available");
+    const copy = new Uint8Array(decoded.bytes.byteLength);
+    copy.set(decoded.bytes);
+    return new Response(req.method === "HEAD" ? null : copy.buffer, {
+      headers: { "content-type": decoded.mime, "cache-control": "private, no-store" },
+    });
+  }
+  if (!resultURL) return taskArtifactError(410, "artifact_gone", "Artifact content is no longer available");
+  return relayJson(req, env, store, auth, "video", `/v1/videos/${taskId}/content`, { id: taskId }, ctx, req.method);
+}
+
+function decodeVideoDataURL(dataURL: string): { mime: string; bytes: Uint8Array } | null {
+  const parts = dataURL.split(",");
+  if (parts.length !== 2) return null;
+  const header = parts[0];
+  if (!header.startsWith("data:") || !header.includes(";base64")) return null;
+  let mime = header.slice("data:".length).replace(/;base64$/, "");
+  if (!mime) mime = "video/mp4";
+  try {
+    const bin = atob(parts[1]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return { mime, bytes };
+  } catch {
+    return null;
+  }
 }
 
 async function relayJson(

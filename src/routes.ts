@@ -1,5 +1,6 @@
 import {
   ROLE_ADMIN,
+  ROLE_GUEST,
   ROLE_ROOT,
   ROLE_USER,
   ROOT_QUOTA,
@@ -11,8 +12,10 @@ import {
   USER_ENABLED,
   VERSION,
   DEFAULT_TOKEN_QUOTA,
+  canManageTargetRole,
   nowSec,
   parseGoBool,
+  parseJson,
 } from "./constants.js";
 import { canWithPolicies, permissionDeltas, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { CHANNEL_TYPES, defaultBaseUrl } from "./catalog.js";
@@ -34,7 +37,7 @@ import {
   verifyPassword,
   decryptPassword,
 } from "./crypto.js";
-import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, json, pageData, pageQuery, parseUnixQuery, readJson, serveRevalidatedJSON } from "./http.js";
+import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, json, pageData, pageQuery, parseUnixQuery, readJson, serveRevalidatedJSON, strconvAtoi } from "./http.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -367,18 +370,38 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { display_name?: string; password?: string; original_password?: string };
+    const body = (await readJson(c.req)) as Record<string, unknown>;
+    const passwordValue = body.password;
+    const passwordRequested = passwordValue != null && (typeof passwordValue !== "string" || passwordValue !== "");
+    if ("sidebar_modules" in body && !passwordRequested) {
+      const user = await s.getUserById(u.id);
+      if (!user) return apiFail("用户不存在");
+      const settings = parseJson<Record<string, unknown>>(user.settings || "", {});
+      if (typeof body.sidebar_modules === "string") settings.sidebar_modules = body.sidebar_modules;
+      await s.updateUser(u.id, { settings: JSON.stringify(settings) });
+      return apiOk(null, "更新成功");
+    }
+    if ("language" in body && !passwordRequested) {
+      const user = await s.getUserById(u.id);
+      if (!user) return apiFail("用户不存在");
+      const settings = parseJson<Record<string, unknown>>(user.settings || "", {});
+      if (typeof body.language === "string") settings.language = body.language;
+      await s.updateUser(u.id, { settings: JSON.stringify(settings) });
+      return apiOk(null, "更新成功");
+    }
     const patch: Record<string, unknown> = {};
+    if (typeof body.username === "string" && body.username.trim()) patch.username = body.username.trim();
     if (body.display_name != null) patch.display_name = body.display_name;
-    if (body.password) {
+    if (passwordRequested) {
       const user = await s.getUserById(u.id);
       if (!user) return apiFail("用户不存在");
       const firstPassword = !user.password;
       const scope = firstPassword ? "account.password.set" : "account.password.change";
       const proof = await requireProof(c, s, { scope });
       if (isResponse(proof)) return proof;
-      if (body.password.length < 8) return apiFail("密码长度必须在 8 到 128 之间");
-      patch.password = await hashPassword(body.password);
+      const password = String(passwordValue);
+      if (password.length < 8) return apiFail("密码长度必须在 8 到 128 之间");
+      patch.password = await hashPassword(password);
       await s.updateUser(u.id, patch);
       await s.bumpAuthVersion(u.id);
       const fresh = await s.getUserById(u.id);
@@ -389,7 +412,7 @@ export function adminRouter(): Router<Env> {
       return sessionResponse(issued);
     }
     await s.updateUser(u.id, patch);
-    return apiOk(null, "更新成功");
+    return apiOk(null);
   });
 
   r.get("/api/user/models", async (c) => {
@@ -505,11 +528,11 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const id = Number(c.params.id);
-    if (!Number.isInteger(id)) return apiFail(`strconv.Atoi: parsing "${c.params.id}": invalid syntax`);
-    const user = await s.getUserById(id);
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiFail(id.message);
+    const user = await s.getUserById(id.n);
     if (!user) return apiFail("用户不存在");
-    if (u.role !== ROLE_ROOT && u.role <= user.role) return apiFail("无权获取同级或更高等级用户的信息");
+    if (!canManageTargetRole(u.role, user.role)) return apiFail("无权获取同级或更高等级用户的信息");
     const data = await publicSelf(s, user);
     return apiOk({ ...data, admin_permissions: (data.permissions as { admin_permissions?: unknown }).admin_permissions });
   });
@@ -541,22 +564,24 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as Partial<UserRow> & {
       id?: number;
+      username?: string;
       password?: string;
       admin_permissions?: Record<string, Record<string, boolean>>;
     };
-    if (!body.id) return apiFail("无效的参数");
+    const username = String(body.username || "").trim();
+    if (!body.id || !username) return apiFail("无效的参数");
     const target = await s.getUserById(body.id);
     if (!target) return apiFail("用户不存在");
-    if (target.role >= u.role && target.id !== u.id) return apiFail("无权修改更高等级用户");
-    const patch: Record<string, unknown> = {};
+    if (body.role != null && body.role !== ROLE_GUEST && body.role !== target.role) return apiFail("无效的参数");
+    if (!canManageTargetRole(u.role, target.role)) return apiFail("无权更新同权限等级或更高权限等级的用户信息");
+    const patch: Record<string, unknown> = { username };
     for (const k of ["display_name", "email", "quota", "group", "status"] as const) {
       if (body[k] != null) patch[k] = body[k];
     }
     if (body.password) patch.password = await hashPassword(body.password);
-    if (body.role != null && body.role < u.role) patch.role = body.role;
     if (body.admin_permissions) {
       if (u.role < ROLE_ROOT) return apiFail("only root can update admin permissions");
-      const targetRole = Number(patch.role ?? target.role);
+      const targetRole = target.role;
       if (targetRole < ROLE_ADMIN) {
         await s.clearUserCasbinPolicies(body.id);
         patch.admin_permissions = "";
@@ -568,7 +593,7 @@ export function adminRouter(): Router<Env> {
     }
     await s.updateUser(body.id, patch);
     if (body.password) await s.bumpAuthVersion(body.id);
-    return apiOk(null, "更新成功");
+    return apiOk(null);
   });
 
   r.post("/api/user/manage", async (c) => {
@@ -579,13 +604,12 @@ export function adminRouter(): Router<Env> {
     if (!body.id || !body.action) return apiFail("无效的参数");
     const target = await s.getUserById(body.id);
     if (!target) return apiFail("用户不存在");
-    if (target.role >= u.role && target.id !== u.id) return apiFail("无权操作更高等级用户");
+    if (!canManageTargetRole(u.role, target.role)) return apiFail("无权更新同权限等级或更高权限等级的用户信息");
     if (body.action === "add_quota") {
       const mode = body.mode || "add";
       const value = Number(body.value ?? body.quota ?? 0);
       if (mode !== "add" && mode !== "subtract" && mode !== "override") return apiFail("无效的参数");
       if (mode !== "override" && value <= 0) return apiFail("额度变更量不能为0");
-      if (u.role !== ROLE_ROOT && u.role <= target.role) return apiFail("无权操作更高等级用户");
       if (mode === "override") await s.updateUser(target.id, { quota: value });
       else await s.addQuota(target.id, mode === "subtract" ? -value : value);
       await s.audit(u.id, u.username, "user.manage", `${body.action} user ${target.username}`, clientIp(c.req));
@@ -626,8 +650,11 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const target = await s.getUserById(Number(c.params.id));
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiFail(id.message);
+    const target = await s.getUserById(id.n);
     if (!target) return apiFail("用户不存在");
+    if (!canManageTargetRole(u.role, target.role)) return apiFail("无权更新同权限等级或更高权限等级的用户信息");
     if (target.role === ROLE_ROOT) return apiFail("不能删除超级管理员账户");
     await s.deleteUser(target.id);
     return apiOk(null);
@@ -799,7 +826,9 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
-    const ch = await s.getChannel(Number(c.params.id));
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiFail(id.message);
+    const ch = await s.getChannel(id.n);
     if (!ch) return apiFail("渠道不存在");
     return apiOk(stripChannelKey(ch));
   });
@@ -1021,18 +1050,28 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const ch = await s.getChannel(Number(c.params.id));
-    if (!ch) return apiFail("渠道不存在");
-    const result = await testChannel(s, ch);
-    return result.success ? apiOk(result, result.message) : apiFail(result.message, result);
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiFail(id.message);
+    const ch = await s.getChannel(id.n);
+    if (!ch) return apiFail("record not found");
+    const result = await testChannel(s, ch, {
+      model: c.url.searchParams.get("model") || "",
+      endpointType: c.url.searchParams.get("endpoint_type") || "",
+      stream: parseGoBool(c.url.searchParams.get("stream"), false),
+    });
+    const body: Record<string, unknown> = { success: result.success, message: result.message, time: result.time };
+    if (result.error_code) body.error_code = result.error_code;
+    return json(200, body);
   });
 
   r.get("/api/channel/fetch_models/:id", async (c) => {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const ch = await s.getChannel(Number(c.params.id));
-    if (!ch) return apiFail("渠道不存在");
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiFail(id.message);
+    const ch = await s.getChannel(id.n);
+    if (!ch) return apiFail("record not found");
     try {
       const models = await fetchUpstreamModels(ch);
       return apiOk(models);

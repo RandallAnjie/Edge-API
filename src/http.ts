@@ -20,6 +20,24 @@ export function apiFail(message: string, data: unknown = null, status = 200): Re
   return json(status, { success: false, message, data });
 }
 
+/** Original `strconv.Atoi` error string from `common.ApiError`. */
+export function strconvAtoi(raw: string): { ok: true; n: number } | { ok: false; message: string } {
+  if (/^-?\d+$/.test(raw)) return { ok: true, n: Number(raw) };
+  return { ok: false, message: `strconv.Atoi: parsing "${raw}": invalid syntax` };
+}
+
+/** Original `i18n.T` with DefaultLang English. */
+export function i18nPair(req: Request, zh: string, en: string): string {
+  const lang = (req.headers.get("accept-language") || "").toLowerCase();
+  if (lang.startsWith("zh")) return zh;
+  return en;
+}
+
+/** Original `controller.paymentReturnPath`. */
+export function paymentReturnPath(serverAddress: string, suffix: string): string {
+  return serverAddress.replace(/\/+$/, "") + suffix;
+}
+
 export function apiFailCode(message: string, code: string, status = 200): Response {
   return json(status, { success: false, message, code, data: null });
 }

@@ -51,7 +51,7 @@ import {
   updateCustomOAuthProvider,
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
-import { apiFail, apiFailCode, apiOk, clientIp, json, pageData, pageQuery, readJson, serveRevalidatedJSON } from "./http.js";
+import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -71,7 +71,6 @@ import {
 } from "./auth.js";
 import { httpStats } from "./metrics.js";
 import { Store, publicUser } from "./store.js";
-import { testChannel } from "./relay.js";
 import { updateOneChannelBalance } from "./channel-balance.js";
 import type { Env, UserRow } from "./types.js";
 
@@ -836,6 +835,9 @@ export function registerMore(r: Router<Env>): void {
   r.get("/api/oauth/:provider", async (c) => {
     const s = store(c);
     const provider = c.params.provider;
+    if (!(await oauthProviderKnown(s, provider))) {
+      return json(400, { success: false, message: i18nPair(c.req, "未知的 OAuth 提供商", "Unknown OAuth provider") });
+    }
     const origin = new URL(c.req.url).origin;
     const redirect = `${origin}/oauth/${provider}`;
     const code = c.url.searchParams.get("code") || "";
@@ -847,7 +849,7 @@ export function registerMore(r: Router<Env>): void {
 
     const flow = state ? await s.getAuthFlow(state) : null;
     if (!flow || flow.type !== "oauth" || flow.expires_at < nowSec()) {
-      return json(403, { success: false, message: "OAuth state is invalid", data: null });
+      return json(403, { success: false, message: i18nPair(c.req, "state 参数为空或不匹配", "State parameter is empty or mismatched") });
     }
     const payload = parseJson<{
       provider?: string;
@@ -855,11 +857,11 @@ export function registerMore(r: Router<Env>): void {
       verification?: { scope?: string; context_hash?: string; provider_user_id?: string; auth_version?: number; session_version?: number };
     }>(flow.payload, {});
     if (payload.provider && payload.provider !== provider) {
-      return json(403, { success: false, message: "OAuth state is invalid", data: null });
+      return json(403, { success: false, message: i18nPair(c.req, "state 参数为空或不匹配", "State parameter is empty or mismatched") });
     }
     const intent = payload.intent || "login";
     if ((intent === "bind" || intent === "verify") && (!identity || identity.userId !== flow.user_id)) {
-      return json(403, { success: false, message: "OAuth state is invalid", data: null });
+      return json(403, { success: false, message: i18nPair(c.req, "state 参数为空或不匹配", "State parameter is empty or mismatched") });
     }
     await s.deleteAuthFlow(state);
     const bindUser = intent === "bind" ? existing : null;
@@ -923,7 +925,7 @@ export function registerMore(r: Router<Env>): void {
         return apiFail("请使用 /api/oauth/wechat");
       }
       const custom = await s.getOAuthProvider(provider);
-      if (!custom) return json(400, { success: false, message: "未知的 OAuth 提供商" });
+      if (!custom) return json(400, { success: false, message: i18nPair(c.req, "未知的 OAuth 提供商", "Unknown OAuth provider") });
       if (!code) return apiFail("无效的授权码");
       const server = ((await s.option("ServerAddress")) || origin).replace(/\/+$/, "");
       const customRedirect = `${server}/oauth/${provider}`;
@@ -982,10 +984,26 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const channels = await s.enabledChannels();
-    const results = [];
-    for (const ch of channels) results.push({ id: ch.id, name: ch.name, ...(await testChannel(s, ch)) });
-    return apiOk(results);
+    const existing = await s.currentSystemTask("channel_test");
+    if (existing) {
+      return json(409, {
+        success: false,
+        message: "已有通道测试任务正在运行或等待中，不能启动本次手动任务",
+        data: {
+          task_id: String(existing.task_id || existing.id || ""),
+          status: String(existing.status || "pending"),
+          type: String(existing.type || "channel_test"),
+        },
+      });
+    }
+    const id = "systask_" + randomHex(16);
+    await s.insertSystemTask({
+      id,
+      type: "channel_test",
+      status: "pending",
+      payload: { mode: "scheduled_all", notify: true },
+    });
+    return apiOk({ task_id: id, status: "pending" });
   });
 
   r.post("/api/channel/batch", async (c) => {
@@ -1002,9 +1020,9 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { tag?: string; status?: number };
-    if (!body.tag) return apiFail("缺少 tag");
-    const n = await s.setChannelsByTag(body.tag, Number(body.status ?? 1));
-    return apiOk({ count: n });
+    if (!body.tag) return apiFail("参数错误");
+    await s.setChannelsByTag(body.tag, Number(body.status ?? 1));
+    return apiOk(null);
   });
 
   r.post("/api/channel/:id/update_balance", async (c) => {

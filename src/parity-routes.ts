@@ -26,7 +26,7 @@ import { bytesToHex, sha256Bytes, md5Hex } from "./crypto.js";
 import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-oauth.js";
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
-import { apiFail, apiOk, json, pageData, pageQuery, parseUnixQuery, readJson, taskArtifactError } from "./http.js";
+import { apiFail, apiOk, json, pageData, pageQuery, parseUnixQuery, readJson, paymentReturnPath, taskArtifactError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -45,7 +45,7 @@ import {
   sessionSecret,
 } from "./auth.js";
 import { Store } from "./store.js";
-import { testChannel, fetchUpstreamModels } from "./relay.js";
+import { fetchUpstreamModels } from "./relay.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
 import { enrichModelMeta, extractPluginMeta, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView } from "./dto.js";
 import { channelAffinityCacheStats, clearAffinityCacheAll, clearAffinityCacheByRule, emptyAffinityUsageStats } from "./channel-affinity.js";
@@ -454,8 +454,9 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { tag?: string };
-    if (!body.tag) return apiFail("缺少 tag");
-    return apiOk({ count: await s.setChannelsByTag(body.tag, 2) });
+    if (!body.tag) return apiFail("参数错误");
+    await s.setChannelsByTag(body.tag, 2);
+    return apiOk(null);
   });
 
   r.put("/api/channel/tag", async (c) => {
@@ -659,8 +660,8 @@ export function registerParity(r: Router<Env>): void {
 
   r.post("/api/subscription/epay/notify", (c) => handleEpayNotify(store(c), c.req, c.url));
   r.get("/api/subscription/epay/notify", (c) => handleEpayNotify(store(c), c.req, c.url));
-  r.get("/api/subscription/epay/return", () => apiOk({ ok: true }));
-  r.post("/api/subscription/epay/return", () => apiOk({ ok: true }));
+  r.get("/api/subscription/epay/return", (c) => subscriptionEpayReturn(c));
+  r.post("/api/subscription/epay/return", (c) => subscriptionEpayReturn(c));
 
   r.post("/api/option/payment_compliance", async (c) => {
     const s = store(c);
@@ -1579,6 +1580,29 @@ async function fetchUptimeGroup(
     return result;
   }
   return result;
+}
+
+/** Original `controller.SubscriptionEpayReturn` — browser return redirects to `/wallet?pay=`. */
+async function subscriptionEpayReturn(c: C): Promise<Response> {
+  const s = store(c);
+  const server = await s.option("ServerAddress");
+  const redirect = (suffix: string) =>
+    new Response(null, { status: 302, headers: { location: paymentReturnPath(server, suffix), "cache-control": "no-store" } });
+  const params = new URLSearchParams();
+  if (c.req.method === "POST") {
+    const ct = c.req.headers.get("content-type") || "";
+    if (ct.includes("application/x-www-form-urlencoded")) {
+      const text = await c.req.text();
+      for (const [k, v] of new URLSearchParams(text)) params.set(k, v);
+    } else {
+      for (const [k, v] of c.url.searchParams) params.set(k, v);
+    }
+  } else {
+    for (const [k, v] of c.url.searchParams) params.set(k, v);
+  }
+  if (![...params.keys()].length) return redirect("/wallet?pay=fail");
+  if (!(await s.option("EpayId"))) return redirect("/wallet?pay=fail");
+  return redirect("/wallet?pay=fail");
 }
 
 async function ollamaOp(c: C, action: "pull" | "delete"): Promise<Response> {

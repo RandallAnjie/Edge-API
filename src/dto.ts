@@ -1083,6 +1083,48 @@ export function publicTask(row: Record<string, unknown>, fillUser: boolean, view
   return item;
 }
 
+/** Original `model.TaskStatus.ToVideoStatus`. */
+export function taskStatusToVideoStatus(status: string): string {
+  switch (status) {
+    case "NOT_START":
+    case "QUEUED":
+    case "SUBMITTED":
+      return "queued";
+    case "IN_PROGRESS":
+      return "in_progress";
+    case "SUCCESS":
+      return "completed";
+    case "FAILURE":
+      return "failed";
+    default:
+      return "unknown";
+  }
+}
+
+/** Original `model.Task.ToOpenAIVideo`. */
+export function openaiVideoView(row: Record<string, unknown>): Record<string, unknown> {
+  const status = String(row.status || "");
+  const properties =
+    typeof row.properties === "string"
+      ? parseJson<Record<string, unknown>>(row.properties, {})
+      : ((row.properties as Record<string, unknown> | undefined) ?? {});
+  const progressRaw = String(row.progress || "").replace(/%$/, "");
+  const progress = Number.parseInt(progressRaw, 10);
+  const out: Record<string, unknown> = {
+    id: String(row.task_id || ""),
+    object: "video",
+    model: String(properties.origin_model_name || ""),
+    status: taskStatusToVideoStatus(status),
+    progress: Number.isFinite(progress) ? progress : 0,
+    created_at: Number(row.created_at || 0),
+  };
+  if (status === "SUCCESS") {
+    const completed = Number(row.finish_time || 0) || Number(row.updated_at || 0);
+    if (completed) out.completed_at = completed;
+  }
+  return out;
+}
+
 export function taskFetchView(row: Record<string, unknown>): Record<string, unknown> {
   const createdAt = Number(row.created_at || 0) || Number(row.submit_time || 0);
   const status = String(row.status || "");

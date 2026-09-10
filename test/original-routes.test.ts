@@ -143,6 +143,10 @@ const ORIGINAL_API: { method: string; path: string }[] = [
   { method: "GET", path: "/api/log/search" },
   { method: "POST", path: "/api/channel/fix" },
   { method: "GET", path: "/dashboard/billing/subscription" },
+  { method: "GET", path: "/api/channel/test" },
+  { method: "GET", path: "/v1/videos/task_missing" },
+  { method: "GET", path: "/api/subscription/epay/return" },
+  { method: "GET", path: "/api/oauth/github" },
 ];
 
 test("original Gin API surfaces are registered (not 404)", async () => {
@@ -531,7 +535,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
     new Request("http://local/api/user/", {
       method: "PUT",
       headers: auth,
-      body: JSON.stringify({ id: adminRow!.id, admin_permissions: { channel: { read: false } } }),
+      body: JSON.stringify({ id: adminRow!.id, username: "admin1", admin_permissions: { channel: { read: false } } }),
     }),
     e,
   );
@@ -1117,7 +1121,7 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
     new Request("http://local/api/user/", {
       method: "PUT",
       headers: auth,
-      body: JSON.stringify({ id: vip.id, group: "vip" }),
+      body: JSON.stringify({ id: vip.id, username: "vipuser", group: "vip" }),
     }),
     e,
   );
@@ -2187,7 +2191,7 @@ test("original ResetPassword, Register, CustomOAuth, GetUser JSON", async () => 
     new Request("http://local/api/user/", {
       method: "PUT",
       headers: auth,
-      body: JSON.stringify({ id: rootId, email: "root@example.com" }),
+      body: JSON.stringify({ id: rootId, username: "root", email: "root@example.com" }),
     }),
     e,
   );
@@ -2442,6 +2446,136 @@ test("original ResetPassword, Register, CustomOAuth, GetUser JSON", async () => 
   );
   assert.equal(del.body.success, true);
   assert.equal(del.body.message, "删除成功");
+});
+
+test("original TestChannel, UpdateSelf, video, OAuth, and subscription return JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const mj = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "mj-test", type: 2, key: "mj-key", models: "midjourney" }),
+    }),
+    e,
+  );
+  assert.equal(mj.body.success, true, String(mj.body.message));
+  const channels = await json(new Request("http://local/api/channel/", { headers: auth }), e);
+  const mjRow = ((channels.body.data as { items: { id: number; name: string }[] }).items || []).find((c) => c.name === "mj-test");
+  assert.ok(mjRow);
+  const tested = await json(new Request("http://local/api/channel/test/" + mjRow.id, { headers: auth }), e);
+  assert.equal(tested.body.success, false);
+  assert.equal(tested.body.message, "Midjourney channel test is not supported");
+  assert.equal(tested.body.time, 0);
+  assert.equal(tested.body.data, undefined);
+
+  const badChannelId = await json(new Request("http://local/api/channel/test/abc", { headers: auth }), e);
+  assert.equal(badChannelId.body.message, 'strconv.Atoi: parsing "abc": invalid syntax');
+  const badGetChannel = await json(new Request("http://local/api/channel/abc", { headers: auth }), e);
+  assert.equal(badGetChannel.body.message, 'strconv.Atoi: parsing "abc": invalid syntax');
+
+  const allTest = await json(new Request("http://local/api/channel/test", { headers: auth }), e);
+  assert.equal(allTest.body.success, true, String(allTest.body.message));
+  const queued = allTest.body.data as { task_id: string; status: string };
+  assert.equal(typeof queued.task_id, "string");
+  assert.ok(String(queued.task_id).startsWith("systask_"));
+  assert.equal(queued.status, "pending");
+  const conflict = await json(new Request("http://local/api/channel/test", { headers: auth }), e);
+  assert.equal(conflict.res.status, 409);
+  assert.equal(conflict.body.message, "已有通道测试任务正在运行或等待中，不能启动本次手动任务");
+  const cdata = conflict.body.data as { task_id: string; status: string; type: string };
+  assert.equal(cdata.task_id, queued.task_id);
+  assert.equal(cdata.type, "channel_test");
+
+  const sidebar = await json(
+    new Request("http://local/api/user/self", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ sidebar_modules: JSON.stringify({ chat: true }) }),
+    }),
+    e,
+  );
+  assert.equal(sidebar.body.success, true, String(sidebar.body.message));
+  assert.equal(sidebar.body.message, "更新成功");
+  const lang = await json(
+    new Request("http://local/api/user/self", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ language: "en" }),
+    }),
+    e,
+  );
+  assert.equal(lang.body.success, true);
+  assert.equal(lang.body.message, "更新成功");
+  const self = await json(new Request("http://local/api/user/self", { headers: auth }), e);
+  assert.ok(String((self.body.data as { sidebar_modules?: string }).sidebar_modules || "").includes("chat"));
+
+  const unknownOauth = await json(new Request("http://local/api/oauth/not-a-provider"), e);
+  assert.equal(unknownOauth.res.status, 400);
+  assert.equal(unknownOauth.body.message, "Unknown OAuth provider");
+  const zhUnknown = await json(new Request("http://local/api/oauth/not-a-provider", { headers: { "accept-language": "zh-CN" } }), e);
+  assert.equal(zhUnknown.body.message, "未知的 OAuth 提供商");
+  const oauthState = await json(new Request("http://local/api/oauth/github"), e);
+  assert.equal(oauthState.res.status, 403);
+  assert.equal(oauthState.body.message, "State parameter is empty or mismatched");
+  const zhState = await json(new Request("http://local/api/oauth/github", { headers: { "accept-language": "zh-CN" } }), e);
+  assert.equal(zhState.body.message, "state 参数为空或不匹配");
+
+  const epayReturn = await json(new Request("http://local/api/subscription/epay/return"), e);
+  assert.equal(epayReturn.res.status, 302);
+  assert.equal(epayReturn.res.headers.get("location"), "/wallet?pay=fail");
+
+  const tok = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "video-json", remain_quota: 1000, unlimited_quota: true }),
+    }),
+    e,
+  );
+  const sk = String((tok.body.data as { key?: string })?.key || "");
+  await e.DB.prepare(
+    `INSERT INTO tasks (task_id, user_id, platform, action, status, progress, properties, private_data, created_at, updated_at, finish_time, submit_time)
+     VALUES (?, 1, 'jimeng', 'text_to_video', 'SUCCESS', '100%', ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      "task_jimeng_public",
+      JSON.stringify({ origin_model_name: "jimeng_vgfm_t2v_l20" }),
+      JSON.stringify({ result_url: "data:video/mp4;base64,ZGF0YQ==" }),
+      1710000000,
+      1710000060,
+      1710000060,
+      1710000000,
+    )
+    .run();
+  const video = await json(new Request("http://local/v1/videos/task_jimeng_public", { headers: { authorization: "Bearer " + sk } }), e);
+  assert.equal(video.body.id, "task_jimeng_public");
+  assert.equal(video.body.object, "video");
+  assert.equal(video.body.status, "completed");
+  assert.equal(video.body.progress, 100);
+  assert.equal(video.body.created_at, 1710000000);
+  assert.equal(video.body.completed_at, 1710000060);
+  const generations = await json(
+    new Request("http://local/v1/video/generations/task_jimeng_public", { headers: { authorization: "Bearer " + sk } }),
+    e,
+  );
+  assert.equal(generations.body.object, "video");
+  assert.equal(generations.body.status, "completed");
+  const content = await json(
+    new Request("http://local/v1/videos/task_jimeng_public/content", { headers: { authorization: "Bearer " + sk } }),
+    e,
+  );
+  assert.equal(content.res.status, 200);
+  assert.equal(content.text, "data");
+  const missingVideo = await json(new Request("http://local/v1/videos/missing/content", { headers: { authorization: "Bearer " + sk } }), e);
+  assert.equal(missingVideo.res.status, 404);
+  assert.equal((missingVideo.body.error as { type: string }).type, "invalid_request_error");
+  assert.equal((missingVideo.body.error as { message: string }).message, "Task not found");
+
+  const delUser = await json(new Request("http://local/api/user/abc", { method: "DELETE", headers: auth }), e);
+  assert.equal(delUser.body.message, 'strconv.Atoi: parsing "abc": invalid syntax');
 });
 
 
