@@ -5,6 +5,8 @@ import {
   openaiToAnthropic,
   openaiToGemini,
   usageFromOpenAI,
+  applyOpenAIChatCompatibility,
+  getOpenAIChatCapabilities,
 } from "../src/convert.js";
 import { buildUpstream } from "../src/upstream.js";
 import type { ChannelRow } from "../src/types.js";
@@ -80,4 +82,21 @@ test("azure upstream url uses deployment and api-version", () => {
   const t = buildUpstream(ch, "chat", "/v1/chat/completions", "gpt-4o", { model: "gpt-4o" });
   assert.match(t.url, /\/openai\/deployments\/gpt-4o\/chat\/completions/);
   assert.equal(t.headers["api-key"], "ak");
+});
+
+test("original GetOpenAIChatCapabilities and ConvertOpenAIRequest token limits", () => {
+  assert.equal(getOpenAIChatCapabilities("gpt-4.1").useMaxCompletionTokens, false);
+  assert.equal(getOpenAIChatCapabilities("o3-mini").useMaxCompletionTokens, true);
+  assert.equal(getOpenAIChatCapabilities("gpt-6-astra").useMaxCompletionTokens, true);
+  assert.equal(getOpenAIChatCapabilities("gpt-5.6-luna").useMaxCompletionTokens, true);
+  const gpt6 = applyOpenAIChatCompatibility({ model: "gpt-6-astra", messages: [{ role: "user", content: "hi" }], stream: true, max_tokens: 16, stream_options: { include_usage: true } }, "gpt-6-astra", 1);
+  assert.equal(gpt6.max_completion_tokens, 16);
+  assert.equal("max_tokens" in gpt6, false);
+  assert.deepEqual(gpt6.stream_options, { include_usage: true });
+  const ali = applyOpenAIChatCompatibility({ model: "qwen-turbo", messages: [{ role: "user", content: "hi" }], stream: true, max_tokens: 16, stream_options: { include_usage: true } }, "qwen-turbo", 17);
+  assert.equal(ali.max_tokens, 16);
+  assert.equal("stream_options" in ali, false);
+  const azure = applyOpenAIChatCompatibility({ model: "o3-mini", messages: [{ role: "user", content: "hi" }], max_completion_tokens: 16 }, "o3-mini", 3);
+  assert.equal(azure.max_completion_tokens, 16);
+  assert.equal("max_tokens" in azure, false);
 });

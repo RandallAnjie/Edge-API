@@ -4,7 +4,7 @@ import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { Store } from "../src/store.js";
-import { runChannelTestTask, selectChannelsForAutomaticTest } from "../src/channel-test.js";
+import { runChannelTestTask, selectChannelsForAutomaticTest, buildTestRequest, channelTestRequestPath, normalizeChannelTestEndpoint, resolveChannelTestModel } from "../src/channel-test.js";
 import { modelsUrl } from "../src/upstream.js";
 import { resetCodexClientVersionCache, codexModelsURL } from "../src/codex-models.js";
 import {
@@ -4201,6 +4201,293 @@ test("original FetchCodexChannelModels, advanced-custom fetch, GetPricing endpoi
   }
   assert.equal(channel.key, "");
 });
+
+test("original TestChannel POSTs gin httptest chat/embeddings/responses bodies", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const openaiChat = buildTestRequest("gpt-4o-mini", "openai", false);
+  assert.equal(openaiChat.kind, "chat");
+  assert.deepEqual(openaiChat.body.messages, [{ role: "user", content: "hi" }]);
+  assert.equal(openaiChat.body.max_tokens, 16);
+  const gpt6 = buildTestRequest("gpt-6-astra", "", false);
+  assert.equal(gpt6.body.max_tokens, 16);
+  const o3 = buildTestRequest("o3-mini", "", false);
+  assert.equal(o3.body.max_completion_tokens, 16);
+  assert.equal("max_tokens" in o3.body, false);
+  const embed = buildTestRequest("text-embedding-3-small", "", false);
+  assert.equal(embed.kind, "embedding");
+  assert.deepEqual(embed.body.input, ["hello world"]);
+  const responses = buildTestRequest("gpt-5.1-codex", "", true);
+  assert.equal(responses.kind, "responses");
+  assert.equal(responses.body.stream, true);
+  assert.deepEqual(responses.body.input, [{ role: "user", content: "hi" }]);
+
+  const fakeOpenAI = {
+    type: 1,
+    test_model: "",
+    models: "gpt-4o-mini",
+  } as ChannelRow;
+  assert.equal(resolveChannelTestModel(fakeOpenAI, ""), "gpt-4o-mini");
+  assert.equal(resolveChannelTestModel({ ...fakeOpenAI, test_model: "gpt-4o" }, ""), "gpt-4o");
+  assert.equal(normalizeChannelTestEndpoint({ type: 57 } as ChannelRow, ""), "openai-response");
+  assert.equal(channelTestRequestPath(fakeOpenAI, "text-embedding-3-small", "", false), "/v1/embeddings");
+  assert.equal(channelTestRequestPath({ type: 44 } as ChannelRow, "moka-embed", "", false), "/v1/embeddings");
+  assert.equal(channelTestRequestPath({ type: 45 } as ChannelRow, "doubao-seedream-4.0", "", false), "/v1/images/generations");
+  assert.equal(channelTestRequestPath({ type: 1 } as ChannelRow, "gpt-5.1-codex", "", false), "/v1/responses");
+  assert.equal(channelTestRequestPath({ type: 57 } as ChannelRow, "gpt-5", "openai-response", false), "/v1/responses");
+  assert.equal(channelTestRequestPath({ type: 24 } as ChannelRow, "gemini-2.5-flash", "gemini", true).includes("streamGenerateContent"), true);
+
+  const seen: { url: string; method: string; headers: Record<string, string>; body: unknown }[] = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const headers: Record<string, string> = {};
+    const raw = init?.headers;
+    if (raw instanceof Headers) {
+      raw.forEach((v, k) => {
+        headers[k.toLowerCase()] = v;
+      });
+    } else if (raw && typeof raw === "object") {
+      for (const [k, v] of Object.entries(raw as Record<string, string>)) headers[k.toLowerCase()] = v;
+    }
+    let body: unknown = null;
+    if (typeof init?.body === "string") {
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+        body = init.body;
+      }
+    }
+    seen.push({ url, method: String(init?.method || "GET"), headers, body });
+    if (url.includes("/v1/chat/completions")) {
+      const req = (body || {}) as { model?: string; stream?: boolean };
+      if (req.model === "fail-me") {
+        return new Response(JSON.stringify({ error: { message: "upstream rejected" } }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      const usage = { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 };
+      if (req.stream) {
+        return new Response(
+          `data: ${JSON.stringify({ id: "chatcmpl-stream", choices: [{ delta: { content: "hi" } }], usage })}\n\n`,
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          id: "chatcmpl-test",
+          object: "chat.completion",
+          choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+          usage,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/v1/embeddings")) {
+      return new Response(
+        JSON.stringify({
+          object: "list",
+          data: [{ embedding: [0.1], index: 0 }],
+          usage: { prompt_tokens: 2, total_tokens: 2 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/backend-api/codex/responses")) {
+      if (url.includes("/compact")) {
+        return new Response(JSON.stringify({ error: { message: "no compact" } }), { status: 400 });
+      }
+      return new Response(
+        JSON.stringify({
+          id: "resp_1",
+          object: "response",
+          output: [],
+          usage: { input_tokens: 2, output_tokens: 1 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/v1/responses")) {
+      return new Response(
+        JSON.stringify({
+          id: "resp_oai",
+          object: "response",
+          usage: { input_tokens: 2, output_tokens: 1 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response("unexpected " + url, { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const created = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          name: "test-openai",
+          type: 1,
+          key: "sk-test",
+          models: "gpt-4o-mini,gpt-6-astra,text-embedding-3-small",
+          group: "default",
+          base_url: "https://api.example.test",
+        }),
+      }),
+      e,
+    );
+    assert.equal(created.body.success, true, String(created.body.message));
+    const channels = await json(new Request("http://local/api/channel/", { headers: auth }), e);
+    const openaiRow = ((channels.body.data as { items: { id: number; name: string }[] }).items || []).find((c) => c.name === "test-openai");
+    assert.ok(openaiRow);
+
+    seen.length = 0;
+    const chat = await json(new Request("http://local/api/channel/test/" + openaiRow.id + "?model=gpt-4o-mini", { headers: auth }), e);
+    assert.equal(chat.body.success, true, String(chat.body.message));
+    assert.equal(chat.body.message, "");
+    assert.equal(typeof chat.body.time, "number");
+    assert.ok(Number(chat.body.time) >= 0);
+    assert.ok(Number(chat.body.time) < 5);
+    assert.equal(chat.body.data, undefined);
+    assert.equal("error_code" in chat.body, false);
+    const chatHit = seen.find((s) => s.url === "https://api.example.test/v1/chat/completions");
+    assert.ok(chatHit, JSON.stringify(seen.map((s) => s.url)));
+    assert.equal(chatHit.method, "POST");
+    assert.equal((chatHit.body as { model?: string }).model, "gpt-4o-mini");
+    assert.deepEqual((chatHit.body as { messages?: unknown }).messages, [{ role: "user", content: "hi" }]);
+    assert.equal((chatHit.body as { max_tokens?: number }).max_tokens, 16);
+    assert.match(String(chatHit.headers.authorization || ""), /Bearer sk-test/i);
+
+    const got = await json(new Request("http://local/api/channel/" + openaiRow.id, { headers: auth }), e);
+    assert.ok(Number((got.body.data as { test_time: number }).test_time) > 0);
+    assert.ok(Number((got.body.data as { response_time: number }).response_time) >= 0);
+
+    const logs = await json(new Request("http://local/api/log/?type=2&token_name=" + encodeURIComponent("模型测试"), { headers: auth }), e);
+    const items = (logs.body.data as { items: { token_name?: string; content?: string; model_name?: string }[] }).items || [];
+    const testLog = items.find((l) => l.token_name === "模型测试");
+    assert.ok(testLog, "TestChannel must RecordConsumeLog with token_name 模型测试");
+    assert.equal(testLog.content, "模型测试");
+    assert.equal(testLog.model_name, "gpt-4o-mini");
+
+    seen.length = 0;
+    const gpt6Test = await json(
+      new Request("http://local/api/channel/test/" + openaiRow.id + "?model=gpt-6-astra&endpoint_type=openai&stream=true", { headers: auth }),
+      e,
+    );
+    assert.equal(gpt6Test.body.success, true, String(gpt6Test.body.message));
+    const gpt6Hit = seen.find((s) => s.url.includes("/v1/chat/completions"));
+    assert.ok(gpt6Hit);
+    assert.equal((gpt6Hit.body as { max_completion_tokens?: number }).max_completion_tokens, 16);
+    assert.equal("max_tokens" in (gpt6Hit.body as object), false);
+    assert.equal((gpt6Hit.body as { stream?: boolean }).stream, true);
+    assert.deepEqual((gpt6Hit.body as { stream_options?: unknown }).stream_options, { include_usage: true });
+
+    seen.length = 0;
+    const embedTest = await json(
+      new Request("http://local/api/channel/test/" + openaiRow.id + "?model=text-embedding-3-small", { headers: auth }),
+      e,
+    );
+    assert.equal(embedTest.body.success, true, String(embedTest.body.message));
+    const embedHit = seen.find((s) => s.url === "https://api.example.test/v1/embeddings");
+    assert.ok(embedHit, JSON.stringify(seen.map((s) => s.url)));
+    assert.deepEqual((embedHit.body as { input?: unknown }).input, ["hello world"]);
+
+    seen.length = 0;
+    const failed = await json(new Request("http://local/api/channel/test/" + openaiRow.id + "?model=fail-me", { headers: auth }), e);
+    assert.equal(failed.body.success, false);
+    assert.equal(failed.body.message, "upstream rejected");
+    assert.equal(failed.body.time, 0);
+    assert.equal(failed.body.error_code, "bad_response");
+
+    const mj = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ name: "mj-probe", type: 2, key: "mj-key", models: "midjourney" }),
+      }),
+      e,
+    );
+    assert.equal(mj.body.success, true, String(mj.body.message));
+    const mjChannels = await json(new Request("http://local/api/channel/", { headers: auth }), e);
+    const mjRow = ((mjChannels.body.data as { items: { id: number; name: string }[] }).items || []).find((c) => c.name === "mj-probe");
+    assert.ok(mjRow);
+    const mjTest = await json(new Request("http://local/api/channel/test/" + mjRow.id, { headers: auth }), e);
+    assert.equal(mjTest.body.success, false);
+    assert.equal(mjTest.body.message, "Midjourney channel test is not supported");
+    assert.equal(mjTest.body.time, 0);
+
+    const codex = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          mode: "single",
+          channel: {
+            name: "test-codex",
+            type: 57,
+            key: JSON.stringify({ access_token: "codex-at", account_id: "acct-test", refresh_token: "rt", type: "codex" }),
+            models: "gpt-5.1-codex",
+            group: "default",
+            base_url: "https://chatgpt.com",
+          },
+        }),
+      }),
+      e,
+    );
+    assert.equal(codex.body.success, true, String(codex.body.message));
+    const afterCodex = await json(new Request("http://local/api/channel/", { headers: auth }), e);
+    const codexRow = ((afterCodex.body.data as { items: { id: number; name: string }[] }).items || []).find((c) => c.name === "test-codex");
+    assert.ok(codexRow);
+    seen.length = 0;
+    const codexTest = await json(new Request("http://local/api/channel/test/" + codexRow.id, { headers: auth }), e);
+    assert.equal(codexTest.body.success, true, String(codexTest.body.message));
+    const codexHit = seen.find((s) => s.url === "https://chatgpt.com/backend-api/codex/responses");
+    assert.ok(codexHit, JSON.stringify(seen.map((s) => s.url)));
+    assert.equal(codexHit.headers["chatgpt-account-id"], "acct-test");
+    assert.equal(codexHit.headers.authorization, "Bearer codex-at");
+    assert.equal(codexHit.headers["openai-beta"], "responses=experimental");
+    assert.equal(codexHit.headers.originator, "codex_cli_rs");
+    assert.equal((codexHit.body as { store?: boolean }).store, false);
+    assert.equal((codexHit.body as { instructions?: string }).instructions, "");
+    assert.equal((codexHit.body as { model?: string }).model, "gpt-5.1-codex");
+
+    seen.length = 0;
+    const compact = await json(
+      new Request("http://local/api/channel/test/" + openaiRow.id + "?model=gpt-4o-mini&endpoint_type=openai-response-compact", { headers: auth }),
+      e,
+    );
+    assert.equal(compact.body.success, true, String(compact.body.message));
+    const compactHit = seen.find((s) => s.url === "https://api.example.test/v1/responses/compact");
+    assert.ok(compactHit, JSON.stringify(seen.map((s) => s.url)));
+
+    const anthropicCompact = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ name: "test-claude", type: 14, key: "sk-ant", models: "claude-3-5-sonnet", group: "default", base_url: "https://api.anthropic.com" }),
+      }),
+      e,
+    );
+    assert.equal(anthropicCompact.body.success, true, String(anthropicCompact.body.message));
+    const claudeChannels = await json(new Request("http://local/api/channel/", { headers: auth }), e);
+    const claudeRow = ((claudeChannels.body.data as { items: { id: number; name: string }[] }).items || []).find((c) => c.name === "test-claude");
+    assert.ok(claudeRow);
+    const compactDenied = await json(
+      new Request("http://local/api/channel/test/" + claudeRow.id + "?endpoint_type=openai-response-compact", { headers: auth }),
+      e,
+    );
+    assert.equal(compactDenied.body.success, false);
+    assert.match(String(compactDenied.body.message), /responses compaction test is not supported for api type 1/);
+    assert.equal(compactDenied.body.error_code, "invalid_api_type");
+    assert.equal(compactDenied.body.time, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 
 
 

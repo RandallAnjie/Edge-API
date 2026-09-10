@@ -412,6 +412,80 @@ function applyAuthTemplate(template: string, apiKey: string): string {
   return template.replaceAll("{api_key}", apiKey);
 }
 
+function applyAdvancedCustomAuth(
+  url: string,
+  headers: Record<string, string>,
+  auth: AdvancedCustomRoute["auth"],
+  apiKey: string,
+): { url: string; headers: Record<string, string> } {
+  if (!auth) {
+    headers.authorization = "Bearer " + apiKey;
+    return { url, headers };
+  }
+  const authType = String(auth.type || "").trim();
+  if (authType === "header") {
+    headers[String(auth.name || "").trim()] = applyAuthTemplate(String(auth.value || ""), apiKey);
+  } else if (authType === "query") {
+    const parsed = new URL(url);
+    parsed.searchParams.set(String(auth.name || "").trim(), applyAuthTemplate(String(auth.value || ""), apiKey));
+    url = parsed.toString();
+  } else if (authType !== "none") {
+    throw new Error(`invalid advanced custom auth type: ${authType}`);
+  }
+  return { url, headers };
+}
+
+const ADVANCED_CUSTOM_MODEL_PLACEHOLDER = "{model}";
+
+/** Original `dto.matchAdvancedCustomIncomingPath`. */
+export function matchAdvancedCustomIncomingPath(configuredPath: string, requestPath: string): boolean {
+  if (matchAdvancedCustomIncomingPathTemplate(configuredPath, requestPath)) return true;
+  if (configuredPath.includes(":generateContent")) {
+    const streamPath = configuredPath.replace(":generateContent", ":streamGenerateContent");
+    return matchAdvancedCustomIncomingPathTemplate(streamPath, requestPath);
+  }
+  return false;
+}
+
+function matchAdvancedCustomIncomingPathTemplate(configuredPath: string, requestPath: string): boolean {
+  if (!configuredPath.includes(ADVANCED_CUSTOM_MODEL_PLACEHOLDER)) return configuredPath === requestPath;
+  const parts = configuredPath.split(ADVANCED_CUSTOM_MODEL_PLACEHOLDER);
+  if (parts.length !== 2) return false;
+  if (!requestPath.startsWith(parts[0]) || !requestPath.endsWith(parts[1])) return false;
+  const model = requestPath.slice(parts[0].length, requestPath.length - parts[1].length);
+  return model !== "" && !model.includes("/");
+}
+
+/** Original `dto.AdvancedCustomConfig.MatchPathForModel`. */
+export function matchAdvancedCustomPathForModel(
+  config: AdvancedCustomConfig | null | undefined,
+  requestPath: string,
+  model: string,
+): AdvancedCustomRoute | null {
+  if (!config) return null;
+  const trimmed = String(model || "").trim();
+  for (const route of config.advanced_routes || []) {
+    if (
+      matchAdvancedCustomIncomingPath(String(route.incoming_path || "").trim(), requestPath) &&
+      matchAdvancedCustomRouteModel(route.models, trimmed)
+    ) {
+      return route;
+    }
+  }
+  return null;
+}
+
+function useGeminiStreamGenerateContentURL(url: string): string {
+  const parsed = new URL(url);
+  if (parsed.pathname.includes(":generateContent")) {
+    parsed.pathname = parsed.pathname.replace(":generateContent", ":streamGenerateContent");
+  }
+  if (parsed.pathname.includes(":streamGenerateContent")) {
+    parsed.searchParams.set("alt", "sse");
+  }
+  return parsed.toString();
+}
+
 function joinBaseURLAndUpstreamPath(baseURL: string, upstreamPath: string): string {
   const parsedBase = new URL(String(baseURL || "").trim());
   if (!/^https?:$/i.test(parsedBase.protocol) || !parsedBase.host) {
@@ -468,24 +542,51 @@ export function buildAdvancedCustomModelListRequest(channel: ChannelRow): Advanc
   }
   const apiKey = pickChannelKey(channel.key);
   const baseURL = String(channel.base_url || "").trim();
-  let url = resolveAdvancedCustomUpstreamURL(String(route.upstream_path || "").trim(), baseURL);
-  const headers: Record<string, string> = {};
-  const auth = route.auth;
-  if (!auth) {
-    headers.authorization = "Bearer " + apiKey;
-  } else {
-    const authType = String(auth.type || "").trim();
-    if (authType === "header") {
-      headers[String(auth.name || "").trim()] = applyAuthTemplate(String(auth.value || ""), apiKey);
-    } else if (authType === "query") {
-      const parsed = new URL(url);
-      parsed.searchParams.set(String(auth.name || "").trim(), applyAuthTemplate(String(auth.value || ""), apiKey));
-      url = parsed.toString();
-    } else if (authType !== "none") {
-      throw new Error(`invalid advanced custom auth type: ${authType}`);
-    }
+  const url = resolveAdvancedCustomUpstreamURL(String(route.upstream_path || "").trim(), baseURL);
+  const applied = applyAdvancedCustomAuth(url, {}, route.auth, apiKey);
+  return { url: applied.url, headers: applied.headers, body: null, method: "GET" };
+}
+
+export type AdvancedCustomRelayTarget = {
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
+  method: "POST";
+  converter: string;
+};
+
+/** Original `advancedcustom.Adaptor.GetRequestURL` + `SetupRequestHeader` for a matched incoming path. */
+export function buildAdvancedCustomRelayTarget(
+  channel: ChannelRow,
+  incomingPath: string,
+  originModel: string,
+  upstreamModel: string,
+  body: unknown,
+  isStream: boolean,
+): AdvancedCustomRelayTarget {
+  const config = advancedCustomConfigFromSettings(channel.settings);
+  if (!config) throw new Error("advanced_custom is required");
+  const invalid = validateAdvancedCustomConfig(config);
+  if (invalid) throw invalid;
+  const route = matchAdvancedCustomPathForModel(config, incomingPath, originModel);
+  if (!route) {
+    throw new Error(`advanced custom channel does not support request path ${incomingPath} for model ${originModel}`);
   }
-  return { url, headers, body: null, method: "GET" };
+  const converter = String(route.converter || "").trim() || "none";
+  const apiKey = pickChannelKey(channel.key);
+  const upstreamPath = String(route.upstream_path || "")
+    .trim()
+    .replaceAll(ADVANCED_CUSTOM_MODEL_PLACEHOLDER, upstreamModel);
+  let url = resolveAdvancedCustomUpstreamURL(upstreamPath, String(channel.base_url || "").trim());
+  if (
+    isStream &&
+    (converter === "openai_chat_completions_to_gemini_generate_content" ||
+      converter === "openai_responses_to_gemini_generate_content")
+  ) {
+    url = useGeminiStreamGenerateContentURL(url);
+  }
+  const applied = applyAdvancedCustomAuth(url, { "content-type": "application/json" }, route.auth, apiKey);
+  return { url: applied.url, headers: applied.headers, body, method: "POST", converter };
 }
 
 function modelsTooLong(models: string): string | null {

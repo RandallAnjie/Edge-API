@@ -226,3 +226,110 @@ export function extractGeminiModelAction(path: string): { model: string; action:
   if (!m) return null;
   return { model: decodeURIComponent(m[1]), action: m[2] };
 }
+
+/** Original `dto.IsOpenAIReasoningOModel`. */
+export function isOpenAIReasoningOModel(modelName: string): boolean {
+  return modelName.startsWith("o1") || modelName.startsWith("o3") || modelName.startsWith("o4");
+}
+
+/** Original `dto.IsOpenAIGPT5Model`. */
+export function isOpenAIGPT5Model(modelName: string): boolean {
+  return modelName === "gpt-5" || modelName.startsWith("gpt-5-") || modelName.startsWith("gpt-5.");
+}
+
+/** Original `dto.isOpenAIModelSnapshot`. */
+export function isOpenAIModelSnapshot(modelName: string, baseModel: string): boolean {
+  if (modelName === baseModel) return true;
+  if (!modelName.startsWith(baseModel + "-")) return false;
+  return /^\d{4}-\d{2}-\d{2}$/.test(modelName.slice(baseModel.length + 1));
+}
+
+/** Original `dto.OpenAIChatCapabilities`. */
+export type OpenAIChatCapabilities = {
+  useMaxCompletionTokens: boolean;
+  useDeveloperRole: boolean;
+  supportsTemperature: boolean;
+  supportsTopP: boolean;
+  supportsLogProbs: boolean;
+};
+
+/** Original `dto.GetOpenAIChatCapabilities`. */
+export function getOpenAIChatCapabilities(modelName: string, reasoningEffort = ""): OpenAIChatCapabilities {
+  const capabilities: OpenAIChatCapabilities = {
+    useMaxCompletionTokens: false,
+    useDeveloperRole: false,
+    supportsTemperature: true,
+    supportsTopP: true,
+    supportsLogProbs: true,
+  };
+  if (isOpenAIReasoningOModel(modelName)) {
+    capabilities.useMaxCompletionTokens = true;
+    capabilities.useDeveloperRole = !modelName.startsWith("o1-mini") && !modelName.startsWith("o1-preview");
+    capabilities.supportsTemperature = false;
+    return capabilities;
+  }
+  const isGPT5Model = isOpenAIGPT5Model(modelName);
+  if (!isGPT5Model && !isOpenAIModelSnapshot(modelName, "gpt-6-astra")) return capabilities;
+  capabilities.useMaxCompletionTokens = true;
+  capabilities.useDeveloperRole = true;
+  let supportsSampling = false;
+  if (isGPT5Model && (reasoningEffort === "" || reasoningEffort === "none")) {
+    for (const model of ["gpt-5.1", "gpt-5.2", "gpt-5.4"]) {
+      if (isOpenAIModelSnapshot(modelName, model)) {
+        supportsSampling = true;
+        break;
+      }
+    }
+  }
+  capabilities.supportsTemperature = supportsSampling;
+  capabilities.supportsTopP = supportsSampling;
+  capabilities.supportsLogProbs = supportsSampling;
+  return capabilities;
+}
+
+const CHANNEL_TYPE_OPENAI = 1;
+const CHANNEL_TYPE_AZURE = 3;
+
+/** Original `openai.Adaptor.ConvertOpenAIRequest` chat compatibility (token limit + sampling + developer role + stream_options). */
+export function applyOpenAIChatCompatibility(
+  body: Record<string, unknown>,
+  upstreamModel: string,
+  channelType: number,
+  reasoningEffort = "",
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...body, model: upstreamModel };
+  if (channelType !== CHANNEL_TYPE_OPENAI && channelType !== CHANNEL_TYPE_AZURE) {
+    delete out.stream_options;
+  }
+  const capabilities = getOpenAIChatCapabilities(upstreamModel, reasoningEffort);
+  const maxCompletion = Number(out.max_completion_tokens ?? 0);
+  const maxTokens = Number(out.max_tokens ?? 0);
+  if (capabilities.useMaxCompletionTokens && maxCompletion === 0 && maxTokens !== 0) {
+    out.max_completion_tokens = out.max_tokens;
+    delete out.max_tokens;
+  }
+  if (!capabilities.supportsTemperature) delete out.temperature;
+  if (!capabilities.supportsTopP) delete out.top_p;
+  if (!capabilities.supportsLogProbs) {
+    delete out.logprobs;
+    delete out.top_logprobs;
+  }
+  if (capabilities.useDeveloperRole && Array.isArray(out.messages)) {
+    const messages = (out.messages as Record<string, unknown>[]).map((m) => ({ ...m }));
+    if (messages[0]?.role === "system") {
+      messages[0] = { ...messages[0], role: "developer" };
+      out.messages = messages;
+    }
+  }
+  return out;
+}
+
+/** Original `relayconvert` OpenAI chat → Responses request used by advanced-custom converters. */
+export function openaiChatToResponses(body: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    model: body.model,
+    input: body.messages ?? [{ role: "user", content: "hi" }],
+  };
+  if (body.stream != null) out.stream = body.stream;
+  return out;
+}

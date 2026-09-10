@@ -1,6 +1,7 @@
 import { CHANNEL_TYPE_CODEX, parseJson } from "./constants.js";
 import { parseChannelInfo } from "./channel-info.js";
 import { defaultBaseUrl } from "./catalog.js";
+import { applyFetchModelsHeaderOverrides, applyModelMapping, joinUrl, type RelayMode, type UpstreamTarget } from "./upstream.js";
 import type { Store } from "./store.js";
 import type { ChannelRow } from "./types.js";
 
@@ -221,4 +222,64 @@ export async function fetchCodexChannelModels(channel: ChannelRow, store?: Store
     throw new Error(`upstream status: ${result.statusCode}`);
   }
   return result.models;
+}
+
+/** Original `codex.Adaptor.GetRequestURL`. */
+export function codexRelayPath(mode: RelayMode, requestPath: string): string {
+  if (mode === "responses" || requestPath.includes("/v1/responses")) {
+    if (requestPath.includes("/compact")) return "/backend-api/codex/responses/compact";
+    return "/backend-api/codex/responses";
+  }
+  if (mode === "alpha_search" || requestPath.includes("/v1/alpha/search")) {
+    return "/backend-api/codex/alpha/search";
+  }
+  throw new Error("codex channel: only /v1/responses, /v1/responses/compact and /v1/alpha/search are supported");
+}
+
+/** Original `codex.Adaptor.ConvertOpenAIResponsesRequest`. */
+export function convertCodexResponsesRequest(body: Record<string, unknown>, compact: boolean): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...body };
+  if (out.instructions == null) out.instructions = "";
+  if (!compact) {
+    out.store = false;
+    delete out.max_output_tokens;
+    delete out.temperature;
+    delete out.frequency_penalty;
+    delete out.presence_penalty;
+  }
+  return out;
+}
+
+/** Original Codex adaptor GetRequestURL + SetupRequestHeader. */
+export function buildCodexRelayTarget(
+  channel: ChannelRow,
+  mode: RelayMode,
+  requestPath: string,
+  model: string,
+  body: unknown,
+  isStream: boolean,
+): UpstreamTarget {
+  const rawKey = String(channel.key || "").trim();
+  if (!rawKey.startsWith("{")) throw new Error("codex channel: key must be a JSON object");
+  const oauth = parseCodexOAuthKeyStrict(rawKey);
+  if (!String(oauth.access_token || "").trim()) throw new Error("codex channel: access_token is required");
+  if (!String(oauth.account_id || "").trim()) throw new Error("codex channel: account_id is required");
+  const path = codexRelayPath(mode, requestPath);
+  const compact = path.endsWith("/compact");
+  const upstreamModel = applyModelMapping(channel, model);
+  const payload =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? convertCodexResponsesRequest({ ...(body as Record<string, unknown>), model: upstreamModel || (body as { model?: string }).model }, compact)
+      : body;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    authorization: "Bearer " + oauth.access_token,
+    "chatgpt-account-id": oauth.account_id,
+    "openai-beta": "responses=experimental",
+    originator: "codex_cli_rs",
+    accept: isStream ? "text/event-stream" : "application/json",
+  };
+  applyFetchModelsHeaderOverrides(channel, oauth.access_token, headers);
+  const base = String(channel.base_url || "").trim() || defaultBaseUrl(CHANNEL_TYPE_CODEX);
+  return { url: joinUrl(base, path), headers, body: payload, method: "POST" };
 }

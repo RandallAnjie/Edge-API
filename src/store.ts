@@ -133,6 +133,11 @@ export class Store {
     return !!row;
   }
 
+  /** Original `controller.resolveChannelTestUserID` root lookup. */
+  async getRootUser(): Promise<UserRow | null> {
+    return this.db.prepare("SELECT * FROM users WHERE role = 100 LIMIT 1").first<UserRow>();
+  }
+
   async getUserById(id: number): Promise<UserRow | null> {
     return this.db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
   }

@@ -70,6 +70,7 @@ function openaiPath(mode: RelayMode, requestPath: string): string {
     case "rerank":
       return "/v1/rerank";
     case "responses":
+      if (requestPath.includes("/v1/responses/compact")) return "/v1/responses/compact";
       return "/v1/responses";
     case "video":
       return requestPath.startsWith("/") ? requestPath : `/${requestPath}`;
@@ -132,7 +133,9 @@ export function buildUpstream(
     }
     case "gemini": {
       const version = "v1beta";
-      const stream = payloadIsObject(body) && Boolean((body as { stream?: boolean }).stream);
+      const stream =
+        requestPath.includes("streamGenerateContent") ||
+        (payloadIsObject(body) && Boolean((body as { stream?: boolean }).stream));
       const action =
         mode === "embeddings"
           ? "embedContent"

@@ -1,10 +1,12 @@
-import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_TASK_PLUGIN, LOG_CONSUME, LOG_ERROR, parseBool, parseJson, UNSUPPORTED_CHANNEL_TEST_TYPES } from "./constants.js";
+import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_TASK_PLUGIN, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
+  applyOpenAIChatCompatibility,
   estimatePromptTokens,
   extractGeminiModelAction,
   geminiToOpenAIChat,
+  openaiChatToResponses,
   openaiFromAnthropicResponse,
   openaiFromGeminiResponse,
   openaiToAnthropic,
@@ -17,12 +19,12 @@ import { clientIp, openaiError } from "./http.js";
 import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
 import { pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
-import { buildAdvancedCustomModelListRequest } from "./channel-validate.js";
-import { fetchCodexChannelModels } from "./codex-models.js";
+import { buildAdvancedCustomModelListRequest, buildAdvancedCustomRelayTarget } from "./channel-validate.js";
+import { buildCodexRelayTarget, fetchCodexChannelModels } from "./codex-models.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
-import { applyFetchModelsHeaderOverrides, applyModelMapping, buildUpstream, joinUrl, modelsUrl, normalizeModelNames, type RelayMode } from "./upstream.js";
-import { channelKind, channelTypeName, resolveBaseUrl } from "./catalog.js";
+import { applyFetchModelsHeaderOverrides, applyModelMapping, buildUpstream, joinUrl, modelsUrl, normalizeModelNames, type RelayMode, type UpstreamTarget } from "./upstream.js";
+import { channelKind, resolveBaseUrl } from "./catalog.js";
 import {
   anthropicModel,
   consumeLogOther,
@@ -101,8 +103,14 @@ function convertOutbound(
   kind: ReturnType<typeof channelKind>,
   client: ClientFormat,
   body: unknown,
+  channelType = 0,
+  mappedModel = "",
 ): unknown {
-  const o = asObj(body);
+  let o = asObj(body);
+  if (client === "openai" && Array.isArray(o.messages)) {
+    o = applyOpenAIChatCompatibility(o, mappedModel || String(o.model || ""), channelType);
+    body = o;
+  }
   if (kind === "anthropic" && client === "openai") return openaiToAnthropic(o);
   if (kind === "gemini" && client === "openai") return openaiToGemini(o);
   if (kind === "openai" && client === "anthropic") return anthropicToOpenAI(o);
@@ -113,6 +121,52 @@ function convertOutbound(
   if (kind === "gemini" && client === "anthropic") return openaiToGemini(anthropicToOpenAI(o));
   if (kind === "anthropic" && client === "gemini") return openaiToAnthropic(geminiToOpenAIChat(o, String(o.model || "")));
   return body;
+}
+
+function convertAdvancedCustomOpenAIChat(converter: string, body: unknown): unknown {
+  const o = asObj(body);
+  switch (converter) {
+    case "none":
+      return body;
+    case "openai_chat_completions_to_anthropic_messages":
+      return openaiToAnthropic(o);
+    case "openai_chat_completions_to_gemini_generate_content":
+      return openaiToGemini(o);
+    case "openai_chat_completions_to_openai_responses":
+      return openaiChatToResponses(o);
+    default:
+      throw new Error(`converter ${JSON.stringify(converter)} does not support OpenAI chat completions requests`);
+  }
+}
+
+function buildChannelRelayTarget(
+  channel: ChannelRow,
+  mode: RelayMode,
+  path: string,
+  model: string,
+  body: unknown,
+  extraHeaders: Record<string, string>,
+  method: string,
+  stream: boolean,
+): UpstreamTarget {
+  if (channel.type === CHANNEL_TYPE_CODEX) {
+    return buildCodexRelayTarget(channel, mode, path, model, body, stream);
+  }
+  if (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
+    const incoming = path.split("?")[0];
+    const mapped = applyModelMapping(channel, model);
+    const target = buildAdvancedCustomRelayTarget(channel, incoming, model, mapped, body, stream);
+    target.body = convertAdvancedCustomOpenAIChat(target.converter, body);
+    applyFetchModelsHeaderOverrides(channel, pickChannelKey(channel.key), target.headers);
+    if (
+      target.converter === "openai_chat_completions_to_anthropic_messages" ||
+      (target.converter === "none" && incoming === "/v1/messages")
+    ) {
+      target.headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
+    }
+    return target;
+  }
+  return buildUpstream(channel, mode, path, model, body, extraHeaders, method);
 }
 
 function convertInbound(
@@ -227,18 +281,27 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     if (!channel) break;
     const lastAttempt = retry === retryTimes - 1;
     const kind = channelKind(channel.type);
-    const outbound = opts.rawBody ? opts.body : convertOutbound(kind, clientFormat, opts.body);
-    const target = buildUpstream(
-      channel,
-      mode,
-      path,
-      model,
-      opts.rawBody ? null : outbound,
-      {
-        "anthropic-version": opts.req.headers.get("anthropic-version") || "",
-      },
-      opts.method || opts.req.method || "POST",
-    );
+    const mapped = applyModelMapping(channel, model);
+    const outbound = opts.rawBody ? opts.body : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped);
+    let target: UpstreamTarget;
+    try {
+      target = buildChannelRelayTarget(
+        channel,
+        mode,
+        path,
+        model,
+        opts.rawBody ? null : outbound,
+        {
+          "anthropic-version": opts.req.headers.get("anthropic-version") || "",
+        },
+        opts.method || opts.req.method || "POST",
+        opts.stream,
+      );
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+      lastStatus = 400;
+      continue;
+    }
     if (opts.rawBody) {
       target.body = opts.rawBody;
       if (opts.rawContentType) target.headers["content-type"] = opts.rawContentType;
@@ -475,29 +538,7 @@ export async function retrieveModel(store: Store, auth: AuthToken, model: string
   });
 }
 
-/** Original `controller.TestChannel` JSON: `{success, message, time}` with `time` in seconds. */
-export async function testChannel(
-  store: Store,
-  channel: ChannelRow,
-  _opts: { model?: string; endpointType?: string; stream?: boolean } = {},
-): Promise<{ success: boolean; message: string; time: number; error_code?: string }> {
-  if (UNSUPPORTED_CHANNEL_TEST_TYPES.has(channel.type)) {
-    return { success: false, message: `${channelTypeName(channel.type)} channel test is not supported`, time: 0 };
-  }
-  const started = Date.now();
-  const target = modelsUrl(channel);
-  try {
-    const res = await fetchUpstream(target);
-    const milliseconds = Date.now() - started;
-    const text = await res.text();
-    const time = milliseconds / 1000;
-    if (!res.ok) return { success: false, message: text.slice(0, 500) || res.statusText, time };
-    await store.updateChannel(channel.id, { test_time: Math.floor(Date.now() / 1000), response_time: milliseconds });
-    return { success: true, message: "", time };
-  } catch (e) {
-    return { success: false, message: e instanceof Error ? e.message : String(e), time: 0 };
-  }
-}
+export { testChannel } from "./channel-test.js";
 
 function parseUpstreamModelIDs(text: string, channelType: number): string[] {
   const parsed = JSON.parse(text) as Record<string, unknown>;

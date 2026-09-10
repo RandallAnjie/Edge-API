@@ -1158,6 +1158,9 @@ export function adminRouter(): Router<Env> {
       model: c.url.searchParams.get("model") || "",
       endpointType: c.url.searchParams.get("endpoint_type") || "",
       stream: parseGoBool(c.url.searchParams.get("stream"), false),
+      userId: u.id,
+      username: u.username,
+      group: u.group || "default",
     });
     const body: Record<string, unknown> = { success: result.success, message: result.message, time: result.time };
     if (result.error_code) body.error_code = result.error_code;
