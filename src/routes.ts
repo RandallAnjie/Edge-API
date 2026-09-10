@@ -11,6 +11,7 @@ import {
   USER_DISABLED,
   USER_ENABLED,
   VERSION,
+  DEFAULT_GROUP_RATIO,
   DEFAULT_TOKEN_QUOTA,
   canManageTargetRole,
   CHANNEL_TYPE_ADVANCED_CUSTOM,
@@ -97,6 +98,51 @@ async function canChannelSensitiveWrite(s: Store, u: { id: number }): Promise<bo
   const userPolicies = await s.casbinPolicies(userSubject(user.id));
   const rolePolicies = roleKey ? await s.casbinPolicies(roleSubject(roleKey)) : [];
   return canWithPolicies(user, "channel", "sensitive_write", userPolicies, rolePolicies);
+}
+
+/** Original `controller.AddToken` / `UpdateToken` i18n + AutoGroups checks. */
+async function tokenWriteError(
+  req: Request,
+  s: Store,
+  user: { id: number; group?: string },
+  body: { name?: string; remain_quota?: number; unlimited_quota?: boolean; group?: string; auto_groups?: string[] },
+  creating: boolean,
+): Promise<Response | null> {
+  if (String(body.name || "").length > 50) {
+    return apiFail(i18nPair(req, "令牌名称过长", "Token name is too long"));
+  }
+  const unlimited = Boolean(body.unlimited_quota);
+  const remain = Number(body.remain_quota || 0);
+  if (!unlimited) {
+    if (remain < 0) return apiFail(i18nPair(req, "额度值不能为负数", "Quota value cannot be negative"));
+    const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
+    const maxQuota = Math.min(Number.MAX_SAFE_INTEGER, Math.floor(1_000_000_000 * quotaPerUnit));
+    if (remain > maxQuota) {
+      return apiFail(i18nPair(req, `额度值超出有效范围，最大值为 ${maxQuota}`, `Quota value exceeds valid range, maximum is ${maxQuota}`));
+    }
+  }
+  if (creating) {
+    const maxTokens = await s.optionNum("token_setting.max_user_tokens", 1000);
+    const { total } = await s.listTokens(user.id, 0, 1);
+    if (total >= maxTokens) return apiFail(`已达到最大令牌数量限制 (${maxTokens})`);
+  }
+  if (body.group === "auto" && Array.isArray(body.auto_groups) && body.auto_groups.length) {
+    const maxCount = await s.optionNum("MaxTokenAutoGroups", 5);
+    if (body.auto_groups.length > maxCount) {
+      return apiFail(i18nPair(req, `每个令牌最多可选择 ${maxCount} 个 Auto 分组`, `A token can select at most ${maxCount} Auto groups`));
+    }
+    const seen = new Set<string>();
+    const usable = await userUsableGroups(s, user.group || "default");
+    const ratios = parseJson<Record<string, number>>(await s.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
+    for (const g of body.auto_groups) {
+      if (seen.has(g)) return apiFail(i18nPair(req, `Auto 分组 ${g} 重复`, `Auto group ${g} is duplicated`));
+      seen.add(g);
+      if (!g || g === "auto" || usable[g] == null || ratios[g] == null) {
+        return apiFail(i18nPair(req, `Auto 分组 ${g} 不可用或无权访问`, `Auto group ${g} is unavailable or unauthorized`));
+      }
+    }
+  }
+  return null;
 }
 
 function auditListFilter(c: C): Response | {
@@ -715,6 +761,14 @@ export function adminRouter(): Router<Env> {
       auto_groups?: string[];
       cross_group_retry?: boolean;
     };
+    const writeErr = await tokenWriteError(c.req, s, u, body, true);
+    if (writeErr) return writeErr;
+    let autoGroups = Array.isArray(body.auto_groups) ? body.auto_groups : [];
+    let crossGroupRetry = body.cross_group_retry ? 1 : 0;
+    if (body.group !== "auto") {
+      autoGroups = [];
+      crossGroupRetry = 0;
+    }
     const key = generateTokenKey();
     const id = await s.insertToken({
       user_id: u.id,
@@ -727,8 +781,8 @@ export function adminRouter(): Router<Env> {
       model_limits: body.model_limits || "",
       allow_ips: body.allow_ips || "",
       group: body.group || "",
-      auto_groups: Array.isArray(body.auto_groups) ? JSON.stringify(body.auto_groups) : "",
-      cross_group_retry: body.cross_group_retry ? 1 : 0,
+      auto_groups: autoGroups.length ? JSON.stringify(autoGroups) : "",
+      cross_group_retry: crossGroupRetry,
       status: TOKEN_ENABLED,
     });
     return apiOk({ id, key: displayTokenKey(key) }, "创建成功");
@@ -738,20 +792,22 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number; status?: number };
+    const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number; status?: number; name?: string; remain_quota?: number; unlimited_quota?: boolean; group?: string; auto_groups?: string[] };
     if (!body.id) return apiFail("无效的参数");
     const existing = await s.getTokenById(Number(body.id), u.id);
     if (!existing) return apiFail("令牌不存在");
+    const writeErr = await tokenWriteError(c.req, s, u, body, false);
+    if (writeErr) return writeErr;
+    if (body.status === TOKEN_ENABLED) {
+      if (existing.status === TOKEN_EXPIRED && existing.expired_time !== -1 && existing.expired_time <= nowSec()) {
+        return apiFail(i18nPair(c.req, "令牌已过期，无法启用，请先修改令牌过期时间，或者设置为永不过期", "Token has expired and cannot be enabled. Please modify the expiration time or set it to never expire"));
+      }
+      if (existing.status === TOKEN_EXHAUSTED && existing.remain_quota <= 0 && !existing.unlimited_quota) {
+        return apiFail(i18nPair(c.req, "令牌可用额度已用尽，无法启用，请先修改令牌剩余额度，或者设置为无限额度", "Token quota is exhausted and cannot be enabled. Please modify the remaining quota or set it to unlimited"));
+      }
+    }
     const statusOnly = c.url.searchParams.get("status_only");
     if (statusOnly) {
-      if (body.status === TOKEN_ENABLED) {
-        if (existing.status === TOKEN_EXPIRED && existing.expired_time !== -1 && existing.expired_time <= nowSec()) {
-          return apiFail("令牌已过期，无法启用");
-        }
-        if (existing.status === TOKEN_EXHAUSTED && existing.remain_quota <= 0 && !existing.unlimited_quota) {
-          return apiFail("令牌额度已用尽，无法启用");
-        }
-      }
       await s.updateToken(Number(body.id), u.id, { status: Number(body.status) });
       return apiOk(null);
     }
@@ -761,8 +817,14 @@ export function adminRouter(): Router<Env> {
     }
     if (body.unlimited_quota != null) patch.unlimited_quota = body.unlimited_quota ? 1 : 0;
     if (body.model_limits_enabled != null) patch.model_limits_enabled = body.model_limits_enabled ? 1 : 0;
-    if (body.cross_group_retry != null) patch.cross_group_retry = body.cross_group_retry ? 1 : 0;
-    if (body.auto_groups != null) patch.auto_groups = Array.isArray(body.auto_groups) ? JSON.stringify(body.auto_groups) : String(body.auto_groups);
+    const nextGroup = body.group != null ? String(body.group) : existing.group;
+    if (nextGroup === "auto") {
+      if (body.cross_group_retry != null) patch.cross_group_retry = body.cross_group_retry ? 1 : 0;
+      if (body.auto_groups != null) patch.auto_groups = Array.isArray(body.auto_groups) ? JSON.stringify(body.auto_groups) : String(body.auto_groups);
+    } else {
+      patch.cross_group_retry = 0;
+      patch.auto_groups = "";
+    }
     await s.updateToken(Number(body.id), u.id, patch);
     return apiOk(null, "更新成功");
   });

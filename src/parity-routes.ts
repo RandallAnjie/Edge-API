@@ -28,7 +28,8 @@ import { bytesToHex, sha256Bytes, md5Hex } from "./crypto.js";
 import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-oauth.js";
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
-import { apiFail, apiOk, json, pageData, pageQuery, parseUnixQuery, readJson, paymentReturnPath, strconvAtoi, taskArtifactError } from "./http.js";
+import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates, runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
+import { apiFail, apiOk, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, paymentReturnPath, strconvAtoi, taskArtifactError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -47,7 +48,6 @@ import {
   sessionSecret,
 } from "./auth.js";
 import { Store } from "./store.js";
-import { fetchUpstreamModels } from "./relay.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
 import { enrichModelMeta, extractPluginMeta, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView } from "./dto.js";
 import { channelAffinityCacheStats, clearAffinityCacheAll, clearAffinityCacheByRule, emptyAffinityUsageStats } from "./channel-affinity.js";
@@ -467,7 +467,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as {
+    let body: {
       tag?: string;
       new_tag?: string;
       models?: string;
@@ -478,6 +478,11 @@ export function registerParity(r: Router<Env>): void {
       param_override?: string;
       header_override?: string;
     };
+    try {
+      body = (await readJson(c.req)) as typeof body;
+    } catch {
+      return apiFail("参数错误");
+    }
     if (!body.tag) return apiFail("tag不能为空");
     if ((body.param_override != null || body.header_override != null) && u.role < 100) {
       const user = await s.getUserById(u.id);
@@ -487,7 +492,19 @@ export function registerParity(r: Router<Env>): void {
       const allowed = user
         ? canWithPolicies(user, "channel", "sensitive_write", userPolicies, rolePolicies)
         : false;
-      if (!allowed) return apiFail("无权进行此操作，权限不足", null, 403);
+      if (!allowed) {
+        return apiFail(i18nPair(c.req, "无权进行此操作，权限不足", "Unauthorized, insufficient privileges"));
+      }
+    }
+    if (body.param_override != null) {
+      const trimmed = String(body.param_override).trim();
+      if (trimmed && !isJsonValue(trimmed)) return apiFail("参数覆盖必须是合法的 JSON 格式");
+      body.param_override = trimmed;
+    }
+    if (body.header_override != null) {
+      const trimmed = String(body.header_override).trim();
+      if (trimmed && !isJsonValue(trimmed)) return apiFail("请求头覆盖必须是合法的 JSON 格式");
+      body.header_override = trimmed;
     }
     const channels = await s.channelsByTag(body.tag);
     for (const ch of channels) {
@@ -657,10 +674,82 @@ export function registerParity(r: Router<Env>): void {
     return result.response;
   });
 
-  r.post("/api/channel/upstream_updates/detect", async (c) => detectUpdates(c, false));
-  r.post("/api/channel/upstream_updates/detect_all", async (c) => detectUpdates(c, true));
-  r.post("/api/channel/upstream_updates/apply", async (c) => applyUpdates(c, false));
-  r.post("/api/channel/upstream_updates/apply_all", async (c) => applyUpdates(c, true));
+  r.post("/api/channel/upstream_updates/detect", async (c) => {
+    const s = store(c);
+    const u = await requireChannel(c, s, "operate");
+    if (isResponse(u)) return u;
+    let body: { id?: number };
+    try {
+      body = (await readJson(c.req)) as { id?: number };
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+    const id = Number(body.id || 0);
+    if (id <= 0) return apiFail("invalid channel id");
+    const ch = await s.getChannel(id);
+    if (!ch) return apiFail("record not found");
+    try {
+      return apiOk(await detectChannelUpstreamModelUpdates(s, ch));
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+  r.post("/api/channel/upstream_updates/detect_all", async (c) => {
+    const s = store(c);
+    const u = await requireChannel(c, s, "operate");
+    if (isResponse(u)) return u;
+    const existing = await s.currentSystemTask("model_update");
+    if (existing) {
+      return json(409, {
+        success: false,
+        message: "已有模型更新任务正在运行或等待中，不能启动本次手动任务",
+        data: {
+          task_id: String(existing.task_id || existing.id || ""),
+          status: String(existing.status || "pending"),
+          type: String(existing.type || "model_update"),
+        },
+      });
+    }
+    const id = "systask_" + randomHex(16);
+    await s.insertSystemTask({
+      id,
+      type: "model_update",
+      status: "pending",
+      payload: { manual: true },
+    });
+    c.waitUntil(runPendingModelUpdateSystemTask(s));
+    return apiOk({ task_id: id, status: "pending" });
+  });
+  r.post("/api/channel/upstream_updates/apply", async (c) => {
+    const s = store(c);
+    const u = await requireChannel(c, s, "write");
+    if (isResponse(u)) return u;
+    let body: { id?: number; add_models?: string[]; remove_models?: string[]; ignore_models?: string[] };
+    try {
+      body = (await readJson(c.req)) as typeof body;
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+    const id = Number(body.id || 0);
+    if (id <= 0) return apiFail("invalid channel id");
+    const ch = await s.getChannel(id);
+    if (!ch) return apiFail("record not found");
+    try {
+      return apiOk(await applyChannelUpstreamModelUpdatesForId(s, ch, body.add_models, body.ignore_models, body.remove_models));
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+  r.post("/api/channel/upstream_updates/apply_all", async (c) => {
+    const s = store(c);
+    const u = await requireChannel(c, s, "write");
+    if (isResponse(u)) return u;
+    try {
+      return apiOk(await applyAllChannelUpstreamModelUpdates(s));
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+  });
 
   r.post("/api/subscription/admin/plans/:id/subscriptions/reset", async (c) => {
     const s = store(c);
@@ -1763,39 +1852,13 @@ function ollamaPullStream(res: Response, modelName: string): Response {
   return new Response(stream, { status: 200, headers: ollamaSseHeaders() });
 }
 
-async function detectUpdates(c: C, all: boolean, action: "operate" | "write" = "operate"): Promise<Response> {
-  const s = store(c);
-  const u = await requireChannel(c, s, action);
-  if (isResponse(u)) return u;
-  const body = (await readJson(c.req).catch(() => ({}))) as { ids?: number[] };
-  const channels = all ? await s.enabledChannels() : await Promise.all((body.ids || []).map((id) => s.getChannel(id)));
-  const updates = [];
-  for (const ch of channels) {
-    if (!ch) continue;
-    try {
-      const upstream = await fetchUpstreamModels(ch);
-      const current = new Set(csv(ch.models));
-      const added = upstream.filter((m) => !current.has(m));
-      if (added.length) updates.push({ id: ch.id, name: ch.name, added, removed: [] });
-    } catch {
-      /* skip */
-    }
+function isJsonValue(raw: string): boolean {
+  try {
+    JSON.parse(raw);
+    return true;
+  } catch {
+    return false;
   }
-  return apiOk(updates);
-}
-
-async function applyUpdates(c: C, all: boolean): Promise<Response> {
-  const detected = await detectUpdates(c, all, "write");
-  const parsed = (await detected.clone().json()) as { success?: boolean; data?: { id: number; added: string[] }[] };
-  if (!parsed.success) return detected;
-  const s = store(c);
-  for (const row of parsed.data || []) {
-    const ch = await s.getChannel(row.id);
-    if (!ch) continue;
-    const models = [...csv(ch.models), ...row.added].join(",");
-    await s.updateChannel(ch.id, { models });
-  }
-  return apiOk({ count: (parsed.data || []).length });
 }
 
 async function publicTaskPlugin(store: Store, row: Record<string, unknown>): Promise<Record<string, unknown>> {

@@ -153,6 +153,10 @@ const ORIGINAL_API: { method: string; path: string }[] = [
   { method: "POST", path: "/api/waffo-pancake/webhook/test" },
   { method: "POST", path: "/api/waffo/webhook" },
   { method: "GET", path: "/api/channel/ollama/version/1" },
+  { method: "POST", path: "/api/channel/upstream_updates/detect" },
+  { method: "POST", path: "/api/channel/upstream_updates/detect_all" },
+  { method: "POST", path: "/api/channel/upstream_updates/apply" },
+  { method: "POST", path: "/api/channel/upstream_updates/apply_all" },
 ];
 
 test("original Gin API surfaces are registered (not 404)", async () => {
@@ -2836,6 +2840,271 @@ test("original AddChannel, FetchModels, channel status, and RelayNotFound JSON",
   const getChat = await json(new Request("http://local/v1/chat/completions"), e);
   assert.equal(getChat.res.status, 404);
   assert.equal((getChat.body.error as { message: string }).message, "Invalid URL (GET /v1/chat/completions)");
+});
+
+test("original upstream model updates, token i18n, and EditTag JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const tooLong = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "n".repeat(51), remain_quota: 1, unlimited_quota: false }),
+    }),
+    e,
+  );
+  assert.equal(tooLong.body.success, false);
+  assert.equal(tooLong.body.message, "Token name is too long");
+  const tooLongZh = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: { ...auth, "accept-language": "zh-CN" },
+      body: JSON.stringify({ name: "n".repeat(51), remain_quota: 1, unlimited_quota: false }),
+    }),
+    e,
+  );
+  assert.equal(tooLongZh.body.message, "令牌名称过长");
+  const negative = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "neg", remain_quota: -1, unlimited_quota: false }),
+    }),
+    e,
+  );
+  assert.equal(negative.body.message, "Quota value cannot be negative");
+  const autoDup = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "auto-dup", group: "auto", auto_groups: ["default", "default"] }),
+    }),
+    e,
+  );
+  assert.equal(autoDup.body.message, "Auto group default is duplicated");
+
+  const created = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        mode: "single",
+        channel: {
+          name: "up-detect",
+          type: 1,
+          key: "sk-upstream-secret",
+          models: "gpt-4o",
+          group: "default",
+          base_url: "https://example.invalid",
+          settings: JSON.stringify({ upstream_model_update_check_enabled: true }),
+        },
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const channelId = Number((created.body.data as { id: number }).id);
+
+  const badDetect = await json(
+    new Request("http://local/api/channel/upstream_updates/detect", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({}),
+    }),
+    e,
+  );
+  assert.equal(badDetect.body.message, "invalid channel id");
+  const missingDetect = await json(
+    new Request("http://local/api/channel/upstream_updates/detect", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ id: 999999 }),
+    }),
+    e,
+  );
+  assert.equal(missingDetect.body.message, "record not found");
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/v1/models")) {
+      return new Response(JSON.stringify({ data: [{ id: "gpt-4o" }, { id: " gpt-4.1 " }, { id: "o3" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo);
+  }) as typeof fetch;
+  try {
+    const detected = await json(
+      new Request("http://local/api/channel/upstream_updates/detect", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ id: channelId }),
+      }),
+      e,
+    );
+    assert.equal(detected.body.success, true, String(detected.body.message));
+    const d = detected.body.data as {
+      channel_id: number;
+      channel_name: string;
+      add_models: string[];
+      remove_models: string[];
+      last_check_time: number;
+      auto_added_models: number;
+    };
+    assert.equal(d.channel_id, channelId);
+    assert.equal(d.channel_name, "up-detect");
+    assert.deepEqual(d.add_models, ["gpt-4.1", "o3"]);
+    assert.deepEqual(d.remove_models, []);
+    assert.equal(typeof d.last_check_time, "number");
+    assert.ok(d.last_check_time > 0);
+    assert.equal(d.auto_added_models, 0);
+
+    const applied = await json(
+      new Request("http://local/api/channel/upstream_updates/apply", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          id: channelId,
+          add_models: ["gpt-4.1"],
+          ignore_models: ["o3"],
+          remove_models: [],
+        }),
+      }),
+      e,
+    );
+    assert.equal(applied.body.success, true, String(applied.body.message));
+    const a = applied.body.data as {
+      id: number;
+      added_models: string[];
+      removed_models: string[];
+      ignored_models: string[];
+      remaining_models: string[];
+      remaining_remove_models: string[];
+      models: string;
+      settings: string;
+    };
+    assert.equal(a.id, channelId);
+    assert.deepEqual(a.added_models, ["gpt-4.1"]);
+    assert.deepEqual(a.removed_models, []);
+    assert.deepEqual(a.ignored_models, ["o3"]);
+    assert.deepEqual(a.remaining_models, []);
+    assert.deepEqual(a.remaining_remove_models, []);
+    assert.equal(a.models, "gpt-4o,gpt-4.1");
+    const settings = JSON.parse(a.settings) as {
+      upstream_model_update_ignored_models: string[];
+      upstream_model_update_last_detected_models: string[];
+    };
+    assert.deepEqual(settings.upstream_model_update_ignored_models, ["o3"]);
+    assert.deepEqual(settings.upstream_model_update_last_detected_models, []);
+
+    const created2 = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          mode: "single",
+          channel: {
+            name: "up-all",
+            type: 1,
+            key: "sk-upstream-all",
+            models: "old-model",
+            group: "default",
+            base_url: "https://example.invalid",
+            settings: JSON.stringify({ upstream_model_update_check_enabled: true }),
+          },
+        }),
+      }),
+      e,
+    );
+    const channelId2 = Number((created2.body.data as { id: number }).id);
+    const detected2 = await json(
+      new Request("http://local/api/channel/upstream_updates/detect", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ id: channelId2 }),
+      }),
+      e,
+    );
+    const d2 = detected2.body.data as { add_models: string[]; remove_models: string[] };
+    assert.deepEqual(d2.add_models, ["gpt-4o", "gpt-4.1", "o3"]);
+    assert.deepEqual(d2.remove_models, ["old-model"]);
+
+    const applyAll = await json(
+      new Request("http://local/api/channel/upstream_updates/apply_all", { method: "POST", headers: auth, body: "{}" }),
+      e,
+    );
+    assert.equal(applyAll.body.success, true, String(applyAll.body.message));
+    const all = applyAll.body.data as {
+      processed_channels: number;
+      added_models: number;
+      removed_models: number;
+      failed_channel_ids: number[];
+      results: { channel_id: number; added_models: string[]; removed_models: string[] }[];
+    };
+    assert.equal(all.processed_channels, 1);
+    assert.equal(all.added_models, 3);
+    assert.equal(all.removed_models, 1);
+    assert.deepEqual(all.failed_channel_ids, []);
+    assert.equal(all.results[0].channel_id, channelId2);
+    assert.deepEqual(all.results[0].added_models, ["gpt-4o", "gpt-4.1", "o3"]);
+    assert.deepEqual(all.results[0].removed_models, ["old-model"]);
+
+    const detectAll = await json(
+      new Request("http://local/api/channel/upstream_updates/detect_all", { method: "POST", headers: auth, body: "{}" }),
+      e,
+    );
+    assert.equal(detectAll.body.success, true, String(detectAll.body.message));
+    const queued = detectAll.body.data as { task_id: string; status: string };
+    assert.equal(typeof queued.task_id, "string");
+    assert.ok(queued.task_id.startsWith("systask_"));
+    assert.equal(queued.status, "pending");
+    const conflict = await json(
+      new Request("http://local/api/channel/upstream_updates/detect_all", { method: "POST", headers: auth, body: "{}" }),
+      e,
+    );
+    assert.equal(conflict.res.status, 409);
+    assert.equal(conflict.body.message, "已有模型更新任务正在运行或等待中，不能启动本次手动任务");
+    const cdata = conflict.body.data as { task_id: string; status: string; type: string };
+    assert.equal(cdata.task_id, queued.task_id);
+    assert.equal(cdata.type, "model_update");
+    assert.equal(cdata.status, "pending");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        mode: "single",
+        channel: { name: "tagged", type: 1, key: "sk-tag", models: "gpt-4o", group: "default", tag: "prod" },
+      }),
+    }),
+    e,
+  );
+  const badOverride = await json(
+    new Request("http://local/api/channel/tag", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ tag: "prod", param_override: "{not-json" }),
+    }),
+    e,
+  );
+  assert.equal(badOverride.body.message, "参数覆盖必须是合法的 JSON 格式");
+  const badHeader = await json(
+    new Request("http://local/api/channel/tag", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ tag: "prod", header_override: "not-json" }),
+    }),
+    e,
+  );
+  assert.equal(badHeader.body.message, "请求头覆盖必须是合法的 JSON 格式");
 });
 
 

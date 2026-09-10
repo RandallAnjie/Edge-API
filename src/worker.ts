@@ -1,4 +1,5 @@
 import { runChannelTestTask } from "./channel-test.js";
+import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
 import { apiFail, openaiError, pluginProtocolError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, videoProxyError, withCors } from "./http.js";
@@ -621,6 +622,7 @@ export default {
             });
           }
         }
+        await runPendingModelUpdateSystemTask(store);
       })(),
     );
   },
