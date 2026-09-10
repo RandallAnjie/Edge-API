@@ -6,6 +6,12 @@ import { resetSchemaFlag } from "../src/schema.js";
 import { Store } from "../src/store.js";
 import { runChannelTestTask, selectChannelsForAutomaticTest } from "../src/channel-test.js";
 import { modelsUrl } from "../src/upstream.js";
+import { resetCodexClientVersionCache, codexModelsURL } from "../src/codex-models.js";
+import {
+  buildAdvancedCustomModelListRequest,
+  supportedEndpointTypesForModel,
+  advancedCustomConfigFromSettings,
+} from "../src/channel-validate.js";
 import type { ChannelRow, Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -3801,6 +3807,399 @@ test("original GetLogsStat rpm window, GetGroups, checkin, CopyChannel, FetchUps
   const tagModels = await json(new Request("http://local/api/channel/tag/models?tag=parity-tag", { headers: auth }), e);
   assert.equal(tagModels.body.success, true);
   assert.equal(tagModels.body.data, "gpt-4o,gpt-4o-mini,gpt-4.1");
+});
+
+test("original FetchCodexChannelModels, advanced-custom fetch, GetPricing endpoints, GetAllTask/MJ JSON", async () => {
+  resetSchemaFlag();
+  resetCodexClientVersionCache();
+  const e = env();
+  const { auth } = await boot(e);
+  const s = new Store(e.DB);
+  const seen: { url: string; headers: Record<string, string> }[] = [];
+  const origFetch = globalThis.fetch;
+  let advId = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const headers: Record<string, string> = {};
+    const raw = init?.headers;
+    if (raw instanceof Headers) {
+      raw.forEach((v, k) => {
+        headers[k.toLowerCase()] = v;
+      });
+    } else if (raw && typeof raw === "object") {
+      for (const [k, v] of Object.entries(raw as Record<string, string>)) headers[k.toLowerCase()] = v;
+    }
+    seen.push({ url, headers });
+    if (url.startsWith("https://api.github.com/repos/openai/codex/releases/latest")) {
+      assert.equal(headers.accept, "application/vnd.github+json");
+      assert.equal(headers["user-agent"], "new-api");
+      return new Response(JSON.stringify({ name: "0.50.0", draft: false, prerelease: false }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.startsWith("https://auth.openai.com/oauth/token")) {
+      return new Response(JSON.stringify({ access_token: "new-at", refresh_token: "new-rt", expires_in: 3600 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("/backend-api/codex/models")) {
+      assert.equal(headers["chatgpt-account-id"], "acct-1");
+      assert.equal(headers["user-agent"], "codex-cli/0.50.0");
+      if (headers.authorization === "Bearer expired-at") return new Response("unauthorized", { status: 401 });
+      return new Response(
+        JSON.stringify({ models: [{ slug: "gpt-5" }, { slug: "gpt-5.1-codex" }, { slug: "gpt-5" }, { slug: "  " }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.startsWith("https://provider.example/provider/models")) {
+      assert.equal(headers["x-api-key"], "Bearer sk-adv");
+      assert.equal(headers["x-extra"], "ov-sk-adv");
+      return new Response(JSON.stringify({ data: [{ id: "custom-a" }, { id: "custom-a" }, { id: "custom-b" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.endsWith("/api/version")) {
+      return new Response(JSON.stringify({ version: "0.11.4" }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("nope", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    const setupFresh = env();
+    const setup = await json(new Request("http://local/api/setup"), setupFresh);
+    assert.equal(setup.body.success, true);
+    const setupData = setup.body.data as { status: boolean; root_init: boolean; database_type: string };
+    assert.equal(setupData.status, false);
+    assert.equal(setupData.root_init, false);
+    assert.equal(setupData.database_type, "d1");
+
+    const setupDone = await json(new Request("http://local/api/setup"), e);
+    const done = setupDone.body.data as { status: boolean; root_init: boolean; database_type: string };
+    assert.equal(done.status, true);
+    assert.equal(done.root_init, false);
+    assert.equal(done.database_type, "");
+
+    const self = await json(new Request("http://local/api/user/self", { headers: auth }), e);
+    const selfData = self.body.data as Record<string, unknown>;
+    for (const k of [
+      "id",
+      "username",
+      "display_name",
+      "has_password",
+      "role",
+      "status",
+      "email",
+      "github_id",
+      "discord_id",
+      "oidc_id",
+      "wechat_id",
+      "telegram_id",
+      "group",
+      "quota",
+      "used_quota",
+      "request_count",
+      "aff_code",
+      "aff_count",
+      "aff_quota",
+      "aff_history_quota",
+      "inviter_id",
+      "linux_do_id",
+      "setting",
+      "stripe_customer",
+      "sidebar_modules",
+      "permissions",
+    ]) {
+      assert.ok(k in selfData, "missing GetSelf field " + k);
+    }
+    const perms = selfData.permissions as { admin_permissions?: unknown; sidebar_settings?: boolean; is_root?: boolean };
+    assert.ok(perms.admin_permissions);
+    assert.equal(perms.sidebar_settings, false);
+    assert.equal(perms.is_root, true);
+
+    const users = await json(new Request("http://local/api/user/", { headers: auth }), e);
+    const userPage = users.body.data as { items: Record<string, unknown>[] };
+    for (const k of ["id", "username", "display_name", "role", "status", "email", "quota", "used_quota", "request_count", "group", "remark", "created_at", "last_login_at"]) {
+      assert.ok(k in userPage.items[0], "missing GetAllUsers field " + k);
+    }
+
+    const advancedSettings = JSON.stringify({
+      advanced_custom: {
+        advanced_routes: [
+          {
+            incoming_path: "/v1/chat/completions",
+            upstream_path: "/v1/chat/completions",
+            converter: "none",
+            models: ["gemini-2.5-flash"],
+          },
+          {
+            incoming_path: "/v1/responses",
+            upstream_path: "/v1/responses",
+            converter: "none",
+            models: ["gpt-4o"],
+          },
+          {
+            incoming_path: "/v1/models",
+            upstream_path: "https://provider.example/provider/models",
+            converter: "none",
+            auth: { type: "header", name: "X-Api-Key", value: "Bearer {api_key}" },
+          },
+        ],
+      },
+    });
+    const advCh = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          mode: "single",
+          channel: {
+            name: "adv-custom",
+            type: 58,
+            key: "sk-adv",
+            models: "gemini-2.5-flash,gpt-4o",
+            group: "default",
+            base_url: "https://provider.example",
+            settings: advancedSettings,
+            header_override: JSON.stringify({ "X-Extra": "ov-{api_key}" }),
+          },
+        }),
+      }),
+      e,
+    );
+    assert.equal(advCh.body.success, true, String(advCh.body.message));
+    advId = Number((advCh.body.data as { id: number }).id);
+    const savedAdv = (await s.getChannel(advId)) as ChannelRow;
+    const listReq = buildAdvancedCustomModelListRequest(savedAdv);
+    assert.equal(listReq.url, "https://provider.example/provider/models");
+    assert.equal(listReq.headers["X-Api-Key"], "Bearer sk-adv");
+    const cfg = advancedCustomConfigFromSettings(savedAdv.settings);
+    assert.deepEqual(supportedEndpointTypesForModel(cfg, "gemini-2.5-flash"), ["openai"]);
+    assert.deepEqual(supportedEndpointTypesForModel(cfg, "gpt-4o"), ["openai-response"]);
+    assert.deepEqual(supportedEndpointTypesForModel(cfg, "other-model"), []);
+
+    const advFetch = await json(new Request("http://local/api/channel/fetch_models/" + advId, { headers: auth }), e);
+    assert.equal(advFetch.body.success, true, String(advFetch.body.message));
+    assert.deepEqual(advFetch.body.data, ["custom-a", "custom-b"]);
+
+    const missingRoute = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          mode: "single",
+          channel: {
+            name: "adv-no-models",
+            type: 58,
+            key: "sk-adv-2",
+            models: "gemini-2.5-flash",
+            group: "default",
+            base_url: "https://provider.example",
+            settings: JSON.stringify({
+              advanced_custom: {
+                advanced_routes: [
+                  {
+                    incoming_path: "/v1/chat/completions",
+                    upstream_path: "/v1/chat/completions",
+                    converter: "none",
+                    models: ["gemini-2.5-flash"],
+                  },
+                ],
+              },
+            }),
+          },
+        }),
+      }),
+      e,
+    );
+    assert.equal(missingRoute.body.success, true, String(missingRoute.body.message));
+    const missingId = Number((missingRoute.body.data as { id: number }).id);
+    const missingFetch = await json(new Request("http://local/api/channel/fetch_models/" + missingId, { headers: auth }), e);
+    assert.equal(missingFetch.body.success, false);
+    assert.equal(missingFetch.body.message, "获取模型列表失败: advanced custom channel does not configure a /v1/models route");
+
+    const pricing = await json(new Request("http://local/api/pricing", { headers: auth }), e);
+    assert.equal(pricing.body.success, true);
+    const byModel = Object.fromEntries(
+      (pricing.body.data as Record<string, unknown>[]).map((m) => [String(m.model_name), m]),
+    );
+    assert.deepEqual(byModel["gemini-2.5-flash"].supported_endpoint_types, ["openai"]);
+    assert.deepEqual(byModel["gpt-4o"].supported_endpoint_types, ["openai-response"]);
+
+    const codexCh = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          mode: "single",
+          channel: {
+            name: "codex-ok",
+            type: 57,
+            key: JSON.stringify({ access_token: "good-at", account_id: "acct-1", refresh_token: "rt", type: "codex" }),
+            models: "gpt-5",
+            group: "default",
+            base_url: "https://chatgpt.com",
+          },
+        }),
+      }),
+      e,
+    );
+    assert.equal(codexCh.body.success, true, String(codexCh.body.message));
+    const codexId = Number((codexCh.body.data as { id: number }).id);
+    assert.equal(
+      codexModelsURL("https://chatgpt.com", "0.50.0"),
+      "https://chatgpt.com/backend-api/codex/models?client_version=0.50.0",
+    );
+    const codexFetch = await json(new Request("http://local/api/channel/fetch_models/" + codexId, { headers: auth }), e);
+    assert.equal(codexFetch.body.success, true, String(codexFetch.body.message));
+    assert.deepEqual(codexFetch.body.data, ["gpt-5", "gpt-5.1-codex"]);
+    assert.ok(seen.some((c) => c.url === "https://chatgpt.com/backend-api/codex/models?client_version=0.50.0"));
+
+    const expiredCh = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          mode: "single",
+          channel: {
+            name: "codex-expired",
+            type: 57,
+            key: JSON.stringify({ access_token: "expired-at", account_id: "acct-1", refresh_token: "rt", type: "codex" }),
+            models: "gpt-5",
+            group: "default",
+            base_url: "https://chatgpt.com",
+          },
+        }),
+      }),
+      e,
+    );
+    const expiredId = Number((expiredCh.body.data as { id: number }).id);
+    const expiredFetch = await json(new Request("http://local/api/channel/fetch_models/" + expiredId, { headers: auth }), e);
+    assert.equal(expiredFetch.body.success, true, String(expiredFetch.body.message));
+    assert.deepEqual(expiredFetch.body.data, ["gpt-5", "gpt-5.1-codex"]);
+    const refreshed = await s.getChannel(expiredId);
+    const refreshedKey = JSON.parse(String(refreshed?.key || "")) as { access_token: string; refresh_token: string };
+    assert.equal(refreshedKey.access_token, "new-at");
+    assert.equal(refreshedKey.refresh_token, "new-rt");
+
+    const multiId = await s.insertChannel({
+      name: "codex-multi",
+      type: 57,
+      key: JSON.stringify({ access_token: "good-at", account_id: "acct-1", type: "codex" }),
+      models: "gpt-5",
+      group: "default",
+      channel_info: JSON.stringify({
+        is_multi_key: true,
+        multi_key_size: 2,
+        multi_key_status_list: {},
+        multi_key_polling_index: 0,
+        multi_key_mode: "random",
+      }),
+    });
+    const multiFetch = await json(new Request("http://local/api/channel/fetch_models/" + multiId, { headers: auth }), e);
+    assert.equal(multiFetch.body.success, false);
+    assert.equal(multiFetch.body.message, "获取模型列表失败: codex channel does not support multi-key model discovery");
+
+    const ollamaCh = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          name: "ollama-ver",
+          type: 4,
+          key: "ollama-key",
+          models: "llama3",
+          group: "default",
+          base_url: "http://localhost:11434",
+        }),
+      }),
+      e,
+    );
+    const ollamaId = Number((ollamaCh.body.data as { id: number }).id);
+    const ollamaVer = await json(new Request("http://local/api/channel/ollama/version/" + ollamaId, { headers: auth }), e);
+    assert.equal(ollamaVer.body.success, true, String(ollamaVer.body.message));
+    assert.equal((ollamaVer.body.data as { version: string }).version, "0.11.4");
+    const ollamaBad = await json(new Request("http://local/api/channel/ollama/version/abc", { headers: auth }), e);
+    assert.equal(ollamaBad.res.status, 400);
+    assert.equal(ollamaBad.body.message, "Invalid channel id");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  await s.insertTask({
+    task_id: "task-parity-1",
+    user_id: 1,
+    channel_id: 3,
+    group: "default",
+    quota: 12,
+    platform: "suno",
+    action: "MUSIC",
+    status: "IN_PROGRESS",
+    progress: "40%",
+    fail_reason: "",
+    properties: { input: "make a song", origin_model_name: "suno-v4" },
+    data: { clips: 1 },
+    private_data: {
+      execution: {
+        request_id: "req-1",
+        request_path: "/v1/tasks/suno",
+        task_plugin: { key: "suno", name: "Suno", version: "1.0.0", api_version: 1, generation: 2, author: { name: "QN" } },
+      },
+      upstream_task_id: "up-1",
+      node_name: "edge-api",
+    },
+  });
+  const tasks = await json(new Request("http://local/api/task", { headers: auth }), e);
+  assert.equal(tasks.body.success, true);
+  const taskPage = tasks.body.data as { items: Record<string, unknown>[]; total: number; page: number; page_size: number };
+  assert.equal(typeof taskPage.total, "number");
+  assert.equal(typeof taskPage.page, "number");
+  assert.equal(typeof taskPage.page_size, "number");
+  const task = taskPage.items[0];
+  for (const k of ["id", "created_at", "updated_at", "task_id", "platform", "user_id", "group", "channel_id", "quota", "action", "status", "fail_reason", "submit_time", "start_time", "finish_time", "progress", "properties", "data", "username"]) {
+    assert.ok(k in task, "missing GetAllTask field " + k);
+  }
+  assert.equal(task.task_id, "task-parity-1");
+  assert.equal(task.username, "root");
+  assert.equal((task.properties as { input: string }).input, "make a song");
+  assert.equal((task.admin_info as { request_id: string }).request_id, "req-1");
+  assert.equal((task.root_info as { task_plugin: { api_version: number; generation: number } }).task_plugin.api_version, 1);
+  assert.equal((task.root_info as { task_plugin: { generation: number } }).task_plugin.generation, 2);
+  assert.equal((task.root_info as { upstream_task_id: string }).upstream_task_id, "up-1");
+
+  const selfTasks = await json(new Request("http://local/api/task/self", { headers: auth }), e);
+  const selfItem = (selfTasks.body.data as { items: Record<string, unknown>[] }).items[0];
+  assert.equal("username" in selfItem, false);
+  assert.equal("admin_info" in selfItem, false);
+  assert.equal("root_info" in selfItem, false);
+
+  await s.setOption("MjForwardUrlEnabled", "true");
+  await s.setOption("ServerAddress", "https://console.example");
+  await s.insertMj({
+    action: "IMAGINE",
+    user_id: 1,
+    mj_id: "mj-parity",
+    prompt: "a cat",
+    prompt_en: "a cat",
+    status: "SUCCESS",
+    image_url: "https://cdn.example/cat.png",
+    progress: "100%",
+  });
+  const mj = await json(new Request("http://local/api/mj/", { headers: auth }), e);
+  const mjItem = (mj.body.data as { items: Record<string, unknown>[] }).items[0];
+  for (const k of ["id", "code", "user_id", "action", "mj_id", "prompt", "prompt_en", "description", "state", "submit_time", "start_time", "finish_time", "image_url", "video_url", "video_urls", "status", "progress", "fail_reason", "channel_id", "quota", "buttons", "properties"]) {
+    assert.ok(k in mjItem, "missing GetAllMidjourney field " + k);
+  }
+  assert.equal(mjItem.image_url, "https://console.example/mj/image/mj-parity");
+
+  const ch = await json(new Request("http://local/api/channel/" + advId, { headers: auth }), e);
+  const channel = ch.body.data as Record<string, unknown>;
+  for (const k of ["id", "type", "key", "openai_organization", "test_model", "status", "name", "weight", "created_time", "test_time", "response_time", "base_url", "other", "balance", "balance_updated_time", "models", "group", "used_quota", "model_mapping", "status_code_mapping", "priority", "auto_ban", "other_info", "tag", "setting", "param_override", "header_override", "remark", "channel_info", "settings"]) {
+    assert.ok(k in channel, "missing GetChannel field " + k);
+  }
+  assert.equal(channel.key, "");
 });
 
 

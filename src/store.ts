@@ -608,26 +608,54 @@ export class Store {
 
   /** Original abilities JOIN enabled channels — `GetModelConnections`. */
   async listEnabledModelConnections(): Promise<
-    { model: string; group: string; channel_id: number; channel_name: string; channel_type: number }[]
+    {
+      model: string;
+      group: string;
+      channel_id: number;
+      channel_name: string;
+      channel_type: number;
+      channel_settings: string;
+    }[]
   > {
     const { results } = await this.db
       .prepare(
         `SELECT abilities.model as model, abilities."group" as "group", abilities.channel_id as channel_id,
-                channels.name as channel_name, channels.type as channel_type
+                channels.name as channel_name, channels.type as channel_type, channels.settings as channel_settings
          FROM abilities
          JOIN channels ON abilities.channel_id = channels.id
          WHERE abilities.enabled = 1 AND channels.status = 1
          ORDER BY abilities.model, abilities.channel_id`,
       )
-      .all<{ model: string; group: string; channel_id: number; channel_name: string; channel_type: number }>();
+      .all<{
+        model: string;
+        group: string;
+        channel_id: number;
+        channel_name: string;
+        channel_type: number;
+        channel_settings: string;
+      }>();
     if (results.length) return results;
     const channels = await this.enabledChannels();
-    const out: { model: string; group: string; channel_id: number; channel_name: string; channel_type: number }[] = [];
+    const out: {
+      model: string;
+      group: string;
+      channel_id: number;
+      channel_name: string;
+      channel_type: number;
+      channel_settings: string;
+    }[] = [];
     for (const ch of channels) {
       const groups = csv(ch.group || "default");
       for (const model of csv(ch.models)) {
         for (const group of groups) {
-          out.push({ model, group, channel_id: ch.id, channel_name: ch.name, channel_type: ch.type });
+          out.push({
+            model,
+            group,
+            channel_id: ch.id,
+            channel_name: ch.name,
+            channel_type: ch.type,
+            channel_settings: ch.settings || "",
+          });
         }
       }
     }

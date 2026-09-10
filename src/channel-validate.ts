@@ -6,9 +6,10 @@ import {
   CHANNEL_TYPE_VERTEX,
   parseJson,
 } from "./constants.js";
+import { pickChannelKey } from "./select.js";
 import type { ChannelRow } from "./types.js";
 
-const ADVANCED_CUSTOM_MODEL_LIST_PATH = "/v1/models";
+export const ADVANCED_CUSTOM_MODEL_LIST_PATH = "/v1/models";
 const ADVANCED_CUSTOM_BALANCE_PATH = "/v1/dashboard/billing/credit_grants";
 const ADVANCED_CUSTOM_CONVERTERS = new Set([
   "none",
@@ -39,7 +40,7 @@ type AdvancedCustomRoute = {
   auth?: { type?: string; name?: string; value?: string };
 };
 
-type AdvancedCustomConfig = { advanced_routes?: AdvancedCustomRoute[] };
+export type AdvancedCustomConfig = { advanced_routes?: AdvancedCustomRoute[] };
 
 function goJSONKind(v: unknown): string {
   if (Array.isArray(v)) return "array";
@@ -332,6 +333,159 @@ export function validateChannelSettings(channel: { type: number; setting?: strin
     }
   }
   return null;
+}
+
+const ADVANCED_CUSTOM_ENDPOINT_PATHS: Record<string, string> = {
+  "/v1/chat/completions": "openai",
+  "/v1/responses": "openai-response",
+  "/v1/responses/compact": "openai-response-compact",
+  "/v1/alpha/search": "openai-alpha-search",
+  "/v1/messages": "anthropic",
+  "/v1/rerank": "jina-rerank",
+  "/v1/images/generations": "image-generation",
+  "/v1/embeddings": "embeddings",
+};
+
+function isAdvancedCustomGeminiIncomingPath(incomingPath: string): boolean {
+  if (!incomingPath.startsWith("/v1beta/models/")) return false;
+  return incomingPath.includes(":generateContent") || incomingPath.includes(":streamGenerateContent");
+}
+
+function advancedCustomEndpointTypeFromIncomingPath(incomingPath: string): string | null {
+  const mapped = ADVANCED_CUSTOM_ENDPOINT_PATHS[incomingPath];
+  if (mapped) return mapped;
+  if (isAdvancedCustomGeminiIncomingPath(incomingPath)) return "gemini";
+  return null;
+}
+
+function matchAdvancedCustomRouteModelRule(rule: string, model: string): boolean {
+  if (!rule.startsWith("re:")) return rule === model;
+  const pattern = rule.slice(3);
+  if (!pattern) return false;
+  try {
+    return new RegExp(pattern).test(model);
+  } catch {
+    return false;
+  }
+}
+
+function matchAdvancedCustomRouteModel(models: string[] | undefined, model: string): boolean {
+  const normalized = normalizeRouteModels(models);
+  if (!normalized.length) return true;
+  return normalized.some((rule) => matchAdvancedCustomRouteModelRule(rule, model));
+}
+
+/** Original `dto.AdvancedCustomConfig.SupportedEndpointTypesForModel`. */
+export function supportedEndpointTypesForModel(config: AdvancedCustomConfig | null | undefined, model: string): string[] {
+  if (!config) return [];
+  const trimmed = String(model || "").trim();
+  const endpoints: string[] = [];
+  const seen = new Set<string>();
+  for (const route of config.advanced_routes || []) {
+    if (!matchAdvancedCustomRouteModel(route.models, trimmed)) continue;
+    const endpoint = advancedCustomEndpointTypeFromIncomingPath(String(route.incoming_path || "").trim());
+    if (!endpoint || seen.has(endpoint)) continue;
+    seen.add(endpoint);
+    endpoints.push(endpoint);
+  }
+  return endpoints;
+}
+
+/** Original `model.Channel.GetOtherSettings().AdvancedCustom`. */
+export function advancedCustomConfigFromSettings(settings: string | undefined | null): AdvancedCustomConfig | null {
+  const other = parseJson<Record<string, unknown>>(String(settings || ""), {});
+  const raw = other.advanced_custom;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as AdvancedCustomConfig;
+}
+
+/** Original `dto.AdvancedCustomConfig.ModelListRoute`. */
+export function advancedCustomModelListRoute(config: AdvancedCustomConfig | null | undefined): AdvancedCustomRoute | null {
+  if (!config) return null;
+  for (const route of config.advanced_routes || []) {
+    if (String(route.incoming_path || "").trim() === ADVANCED_CUSTOM_MODEL_LIST_PATH) return route;
+  }
+  return null;
+}
+
+function applyAuthTemplate(template: string, apiKey: string): string {
+  return template.replaceAll("{api_key}", apiKey);
+}
+
+function joinBaseURLAndUpstreamPath(baseURL: string, upstreamPath: string): string {
+  const parsedBase = new URL(String(baseURL || "").trim());
+  if (!/^https?:$/i.test(parsedBase.protocol) || !parsedBase.host) {
+    throw new Error("channel base URL must be a full URL when advanced custom upstream path is relative");
+  }
+  const parsedPath = new URL(upstreamPath, "https://placeholder.invalid");
+  parsedBase.pathname = `${parsedBase.pathname.replace(/\/+$/, "")}/${parsedPath.pathname.replace(/^\/+/, "")}`;
+  parsedBase.search = parsedPath.search;
+  parsedBase.hash = parsedPath.hash;
+  return parsedBase.toString();
+}
+
+function resolveAdvancedCustomUpstreamURL(upstreamPath: string, channelBaseUrl: string): string {
+  if (upstreamPath.startsWith("/")) {
+    if (upstreamPath.startsWith("//")) {
+      throw new Error("advanced custom upstream path must be a full URL or a path starting with /");
+    }
+    if (!String(channelBaseUrl || "").trim()) {
+      throw new Error("channel base URL is required when advanced custom upstream path is relative");
+    }
+    return joinBaseURLAndUpstreamPath(channelBaseUrl, upstreamPath);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(upstreamPath);
+  } catch {
+    throw new Error("advanced custom upstream path must be a full URL or a path starting with /");
+  }
+  if (!parsed.host) throw new Error("advanced custom upstream path must be a full URL or a path starting with /");
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("advanced custom upstream path must use http or https");
+  }
+  return parsed.toString();
+}
+
+export type AdvancedCustomModelListRequest = {
+  url: string;
+  headers: Record<string, string>;
+  body: null;
+  method: "GET";
+};
+
+/** Original `advancedcustom.Adaptor.BuildModelListRequest`. */
+export function buildAdvancedCustomModelListRequest(channel: ChannelRow): AdvancedCustomModelListRequest {
+  const config = advancedCustomConfigFromSettings(channel.settings);
+  if (!config) throw new Error("advanced_custom is required");
+  const invalid = validateAdvancedCustomConfig(config);
+  if (invalid) throw invalid;
+  const route = advancedCustomModelListRoute(config);
+  if (!route) throw new Error(`advanced custom channel does not configure a ${ADVANCED_CUSTOM_MODEL_LIST_PATH} route`);
+  const converter = String(route.converter || "").trim() || "none";
+  if (converter !== "none") {
+    throw new Error(`converter ${JSON.stringify(converter)} does not support ${ADVANCED_CUSTOM_MODEL_LIST_PATH} requests`);
+  }
+  const apiKey = pickChannelKey(channel.key);
+  const baseURL = String(channel.base_url || "").trim();
+  let url = resolveAdvancedCustomUpstreamURL(String(route.upstream_path || "").trim(), baseURL);
+  const headers: Record<string, string> = {};
+  const auth = route.auth;
+  if (!auth) {
+    headers.authorization = "Bearer " + apiKey;
+  } else {
+    const authType = String(auth.type || "").trim();
+    if (authType === "header") {
+      headers[String(auth.name || "").trim()] = applyAuthTemplate(String(auth.value || ""), apiKey);
+    } else if (authType === "query") {
+      const parsed = new URL(url);
+      parsed.searchParams.set(String(auth.name || "").trim(), applyAuthTemplate(String(auth.value || ""), apiKey));
+      url = parsed.toString();
+    } else if (authType !== "none") {
+      throw new Error(`invalid advanced custom auth type: ${authType}`);
+    }
+  }
+  return { url, headers, body: null, method: "GET" };
 }
 
 function modelsTooLong(models: string): string | null {

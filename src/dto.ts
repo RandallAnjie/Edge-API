@@ -2,6 +2,7 @@ import { billingCopies, getBillingExpr, getBillingMode } from "./billing-setting
 import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_CREATED } from "./channel-models.js";
 import { clearChannelInfoPublic } from "./channel-info.js";
 import {
+  CHANNEL_TYPE_ADVANCED_CUSTOM,
   DEFAULT_GROUP_RATIO,
   NAME_RULE_CONTAINS,
   NAME_RULE_EXACT,
@@ -11,6 +12,7 @@ import {
   parseJson,
 } from "./constants.js";
 import { hmacSha256Raw, maskKey } from "./crypto.js";
+import { advancedCustomConfigFromSettings, supportedEndpointTypesForModel } from "./channel-validate.js";
 import {
   getAudioCompletionRatioFromMap,
   getAudioRatioFromMap,
@@ -104,6 +106,20 @@ export function endpointTypesForChannel(type: number, modelName: string): string
   }
   if (isImageModel(modelName)) types = ["image-generation", ...types];
   return types;
+}
+
+/** Original `model.getPricingEndpointTypesForAbility`. */
+export function pricingEndpointTypesForAbility(
+  channelType: number,
+  modelName: string,
+  channelSettings?: string,
+): string[] {
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) {
+    return endpointTypesForChannel(channelType, modelName);
+  }
+  const config = advancedCustomConfigFromSettings(channelSettings);
+  if (config) return supportedEndpointTypesForModel(config, modelName);
+  return endpointTypesForChannel(channelType, modelName);
 }
 
 export async function userUsableGroups(store: Store, userGroup = ""): Promise<Record<string, string>> {
@@ -334,7 +350,7 @@ export async function buildPricing(
     if (!groupsByModel.has(name)) groupsByModel.set(name, new Set());
     groupsByModel.get(name)!.add(conn.group || "default");
     let existing = typesByModel.get(name) || [];
-    for (const et of endpointTypesForChannel(conn.channel_type, name)) {
+    for (const et of pricingEndpointTypesForAbility(conn.channel_type, name, conn.channel_settings)) {
       existing = appendPricingEndpoint(existing, et);
     }
     typesByModel.set(name, existing);

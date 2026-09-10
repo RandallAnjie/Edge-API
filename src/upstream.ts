@@ -240,7 +240,7 @@ export function normalizeModelNames(models: string[] | undefined | null): string
   return out;
 }
 
-function applyFetchModelsHeaderOverrides(channel: ChannelRow, apiKey: string, headers: Record<string, string>): void {
+export function applyFetchModelsHeaderOverrides(channel: ChannelRow, apiKey: string, headers: Record<string, string>): void {
   const headerOverride = parseJson<Record<string, string>>(channel.header_override || "", {});
   for (const [k, v] of Object.entries(headerOverride)) {
     headers[k] = String(v).replace(/\{api_key\}/g, apiKey);
