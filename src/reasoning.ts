@@ -446,6 +446,17 @@ export function trimEffortSuffixWithSuffixes(modelName: string, suffixes: string
   return { base: modelName.slice(0, -suffix.length), effort: suffix.slice(1), ok: true };
 }
 
+/** Original `reasoning.ParseDeepSeekV4ThinkingSuffix`. */
+export function parseDeepSeekV4ThinkingSuffix(modelName: string): { base: string; thinkingType: string; effort: string; ok: boolean } {
+  const trimmed = trimEffortSuffixWithSuffixes(modelName, DEEPSEEK_V4_EFFORT_SUFFIXES);
+  if (!trimmed.ok || !trimmed.base.startsWith("deepseek-v4-")) {
+    return { base: modelName, thinkingType: "", effort: "", ok: false };
+  }
+  if (trimmed.effort === "none") return { base: trimmed.base, thinkingType: "disabled", effort: "", ok: true };
+  if (trimmed.effort === "max") return { base: trimmed.base, thinkingType: "enabled", effort: "max", ok: true };
+  return { base: modelName, thinkingType: "", effort: "", ok: false };
+}
+
 export function splitModelNamespace(modelName: string): { prefix: string; bare: string } {
   const slash = modelName.lastIndexOf("/");
   if (slash >= 0) return { prefix: modelName.slice(0, slash + 1), bare: modelName.slice(slash + 1) };

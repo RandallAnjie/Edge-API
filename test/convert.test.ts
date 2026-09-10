@@ -16,7 +16,7 @@ import {
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_VERTEX } from "../src/constants.js";
+import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI } from "../src/constants.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
@@ -1052,5 +1052,87 @@ test("original Ollama ConvertOpenAIRequest is /api/chat JSON not OpenAI chat com
   assert.deepEqual(
     { prompt_tokens: (embedJson.usage as { prompt_tokens: number }).prompt_tokens, completion_tokens: (embedJson.usage as { completion_tokens: number }).completion_tokens, total_tokens: (embedJson.usage as { total_tokens: number }).total_tokens },
     { prompt_tokens: 4, completion_tokens: 0, total_tokens: 4 },
+  );
+});
+
+test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () => {
+  const volcThinking = convertOpenAIRequest(
+    { model: "deepseek-v3-thinking", messages: [{ role: "user", content: "hi" }], stream_options: { include_usage: true } },
+    { channelType: CHANNEL_TYPE_VOLC, originModelName: "deepseek-v3-thinking", upstreamModelName: "deepseek-v3-thinking" },
+  );
+  assert.equal(volcThinking.model, "deepseek-v3");
+  assert.deepEqual(volcThinking.thinking, { type: "enabled" });
+  assert.deepEqual(volcThinking.stream_options, { include_usage: true });
+
+  const volcPlain = convertOpenAIRequest(
+    { model: "doubao-pro", messages: [{ role: "user", content: "hi" }] },
+    { channelType: CHANNEL_TYPE_VOLC, originModelName: "doubao-pro", upstreamModelName: "doubao-pro" },
+  );
+  assert.equal(volcPlain.model, "doubao-pro");
+  assert.equal("thinking" in volcPlain, false);
+
+  const xaiSearch = convertOpenAIRequest(
+    { model: "grok-2-search", messages: [{ role: "user", content: "hi" }] },
+    { channelType: CHANNEL_TYPE_XAI, originModelName: "grok-2-search", upstreamModelName: "grok-2-search" },
+  );
+  assert.equal(xaiSearch.model, "grok-2");
+  assert.deepEqual(xaiSearch.search_parameters, { mode: "on" });
+
+  const grokMini = convertOpenAIRequest(
+    { model: "grok-3-mini-high", messages: [{ role: "user", content: "hi" }], max_tokens: 16 },
+    { channelType: CHANNEL_TYPE_XAI, originModelName: "grok-3-mini-high", upstreamModelName: "grok-3-mini-high" },
+  );
+  assert.equal(grokMini.model, "grok-3-mini");
+  assert.equal(grokMini.reasoning_effort, "high");
+  assert.equal(grokMini.max_completion_tokens, 16);
+  assert.equal("max_tokens" in grokMini, false);
+
+  const dsNone = convertOpenAIRequest(
+    { model: "deepseek-v4-flash-none", messages: [{ role: "user", content: "hi" }] },
+    { channelType: CHANNEL_TYPE_DEEPSEEK, originModelName: "deepseek-v4-flash-none", upstreamModelName: "deepseek-v4-flash-none" },
+  );
+  assert.equal(dsNone.model, "deepseek-v4-flash");
+  assert.deepEqual(dsNone.thinking, { type: "disabled" });
+  assert.equal("reasoning_effort" in dsNone, false);
+
+  const dsMax = convertOpenAIRequest(
+    { model: "deepseek-v4-pro-max", messages: [{ role: "user", content: "hi" }] },
+    { channelType: CHANNEL_TYPE_DEEPSEEK, originModelName: "deepseek-v4-pro-max", upstreamModelName: "deepseek-v4-pro-max" },
+  );
+  assert.equal(dsMax.model, "deepseek-v4-pro");
+  assert.deepEqual(dsMax.thinking, { type: "enabled" });
+  assert.equal(dsMax.reasoning_effort, "max");
+
+  const volc = testChannel({ type: CHANNEL_TYPE_VOLC, key: "vk", base_url: "", models: "doubao-pro,bot-1,deepseek-v3-thinking" });
+  assert.equal(
+    buildUpstream(volc, "chat", "/v1/chat/completions", "doubao-pro", volcPlain).url,
+    "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+  );
+  assert.equal(
+    buildUpstream(volc, "chat", "/v1/chat/completions", "bot-1", { model: "bot-1" }).url,
+    "https://ark.cn-beijing.volces.com/api/v3/bots/chat/completions",
+  );
+  assert.equal(
+    buildUpstream(volc, "images", "/v1/images/edits", "doubao-seedream-4.0", { model: "doubao-seedream-4.0" }).url,
+    "https://ark.cn-beijing.volces.com/api/v3/images/generations",
+  );
+  const plan = testChannel({ type: CHANNEL_TYPE_VOLC, key: "vk", base_url: "doubao-coding-plan", models: "doubao-pro" });
+  assert.equal(
+    buildUpstream(plan, "chat", "/v1/chat/completions", "doubao-pro", volcPlain).url,
+    "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+  );
+
+  const deepseek = testChannel({ type: CHANNEL_TYPE_DEEPSEEK, key: "sk-ds", base_url: "", models: "deepseek-chat" });
+  assert.equal(
+    buildUpstream(deepseek, "chat", "/v1/chat/completions", "deepseek-chat", dsMax).url,
+    "https://api.deepseek.com/v1/chat/completions",
+  );
+  assert.equal(
+    buildUpstream(deepseek, "completions", "/v1/completions", "deepseek-chat", { model: "deepseek-chat", prompt: "hi" }).url,
+    "https://api.deepseek.com/beta/completions",
+  );
+  assert.equal(
+    buildUpstream(deepseek, "messages", "/v1/messages", "deepseek-chat", { model: "deepseek-chat" }).url,
+    "https://api.deepseek.com/anthropic/v1/messages",
   );
 });

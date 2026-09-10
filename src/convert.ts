@@ -9,10 +9,11 @@ import {
 import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind } from "./catalog.js";
-import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX } from "./constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI } from "./constants.js";
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
+import { convertDeepSeekOpenAIRequest, convertVolcOpenAIRequest, convertXaiOpenAIRequest } from "./vendor-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 
 export type ChatMessage = {
@@ -348,6 +349,27 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
       return convertOllamaGenerateRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
     }
     return convertOllamaOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_VOLC) {
+    return convertVolcOpenAIRequest(suffixed.body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
+  }
+  if (opts.channelType === CHANNEL_TYPE_XAI) {
+    return convertXaiOpenAIRequest(suffixed.body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
+  }
+  if (opts.channelType === CHANNEL_TYPE_DEEPSEEK) {
+    return convertDeepSeekOpenAIRequest(suffixed.body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
   }
   const kind = channelKind(opts.channelType);
   if (kind === "anthropic") {

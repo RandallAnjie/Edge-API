@@ -3,6 +3,7 @@ import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_ANTHROPIC,
   CHANNEL_TYPE_AWS,
+  CHANNEL_TYPE_DEEPSEEK,
   CHANNEL_TYPE_GEMINI,
   CHANNEL_TYPE_MOONSHOT,
   CHANNEL_TYPE_OLLAMA,
@@ -198,6 +199,23 @@ export function buildUpstream(
     return { url, headers, body: payload, method };
   }
 
+  if (channel.type === CHANNEL_TYPE_DEEPSEEK) {
+    if (mode === "messages") url = `${base}/anthropic/v1/messages`;
+    else if (mode === "completions") {
+      const fim = base.endsWith("/beta") ? base : `${base}/beta`;
+      url = `${fim}/completions`;
+    } else if (mode === "responses") url = `${base}/responses`;
+    else url = `${base}/v1/chat/completions`;
+    headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
   switch (kind) {
     case "azure": {
       const version = channel.other || AZURE_API_VERSION;
@@ -264,7 +282,18 @@ export function buildUpstream(
       break;
     }
     case "volc": {
-      url = joinUrl(base, "/api/v3" + openaiPath(mode, requestPath).replace(/^\/v1/, ""));
+      const special = CHANNEL_SPECIAL_BASES[channel.base_url || ""];
+      if (mode === "messages" && special?.claude) {
+        url = `${special.claude.replace(/\/+$/, "")}/v1/messages`;
+      } else if (mode === "chat" && special?.openai) {
+        url = `${special.openai.replace(/\/+$/, "")}/chat/completions`;
+      } else if (mode === "images") {
+        url = `${base}/api/v3/images/generations`;
+      } else if ((mode === "chat" || mode === "messages") && upstreamModel.startsWith("bot")) {
+        url = `${base}/api/v3/bots/chat/completions`;
+      } else {
+        url = joinUrl(base, "/api/v3" + openaiPath(mode, requestPath).replace(/^\/v1/, ""));
+      }
       headers.authorization = `Bearer ${apiKey}`;
       break;
     }
