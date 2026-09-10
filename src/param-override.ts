@@ -62,6 +62,8 @@ export type ParamOverrideRelayInfo = {
   isChannelTest?: boolean;
   retryIndex?: number;
   affinityTemplate?: Record<string, unknown>;
+  /** Original `relaycommon.RelayInfo.IsStream`. */
+  isStream?: boolean;
 };
 
 type JsonType = 0 | 1 | 2 | 3 | 4 | 5;

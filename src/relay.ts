@@ -1,4 +1,4 @@
-import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
+import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
@@ -30,6 +30,8 @@ import { applyBaiduAccessToken, convertBaiduEmbeddingRequest, openaiFromBaiduEmb
 import { convertCohereRerankRequest, openaiFromCohereResponse, openaiFromCohereRerank, cohereUpstreamToOpenAIChat } from "./cohere-convert.js";
 import { completeCozeNonStreamChat, openaiFromCozeDetailResponse, cozeUpstreamToOpenAIChat, type CozeUsage } from "./coze-convert.js";
 import { openaiFromDifyResponse, difyUpstreamToOpenAIChat } from "./dify-convert.js";
+import { applyZhipuV3Authorization, openaiFromZhipuResponse, zhipuUpstreamToOpenAIChat } from "./zhipu-convert.js";
+import { cloudflareUpstreamToOpenAIChat, openaiFromCloudflareResponse } from "./cloudflare-convert.js";
 import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import {
@@ -218,6 +220,15 @@ function convertOutbound(
   if (client === "openai" && channelType === CHANNEL_TYPE_OLLAMA && mode === "completions") {
     return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
   }
+  if (client === "openai" && channelType === CHANNEL_TYPE_CLOUDFLARE && mode === "completions") {
+    return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_BAIDU_V2 && (mode === "embeddings" || mode === "rerank")) {
+    throw new Error("not implemented");
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_MINIMAX && (mode === "images" || mode === "audio_speech")) {
+    return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
+  }
   if (client === "openai" && mode === "responses") {
     o = convertOpenAIResponsesRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings });
     if (kind === "anthropic") {
@@ -320,7 +331,7 @@ function buildChannelRelayTarget(
     target.body = applyChannelParamOverride(channel, target.body, target.headers, { ...info, upstreamModel: mapped }, pickChannelKey(channel.key), mapped);
     return target;
   }
-  return buildUpstream(channel, mode, path, model, body, extraHeaders, method, info);
+  return buildUpstream(channel, mode, path, model, body, extraHeaders, method, { ...info, isStream: stream });
 }
 
 function convertInbound(
@@ -367,6 +378,16 @@ function convertInbound(
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_BAIDU) {
     if (opts.relayMode === "embeddings") return openaiFromBaiduEmbedding(upstreamJson);
     return openaiFromBaiduResponse(upstreamJson, { created: opts.created });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_ZHIPU) {
+    return openaiFromZhipuResponse(upstreamJson, { created: opts.created });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_CLOUDFLARE && opts.relayMode !== "responses") {
+    return openaiFromCloudflareResponse(upstreamJson, {
+      id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
+      upstreamModelName: model,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_AWS) {
     if (isNovaModel(model)) {
@@ -432,6 +453,19 @@ function openaiClientFromProvider(
   }
   if (opts.channelType === CHANNEL_TYPE_BAIDU && opts.relayMode !== "embeddings") {
     const out = baiduUpstreamToOpenAIChat(text);
+    return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
+  }
+  if (opts.channelType === CHANNEL_TYPE_ZHIPU) {
+    const out = zhipuUpstreamToOpenAIChat(text);
+    return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
+  }
+  if (opts.channelType === CHANNEL_TYPE_CLOUDFLARE && opts.relayMode !== "responses") {
+    const out = cloudflareUpstreamToOpenAIChat(text, {
+      id: `chatcmpl-${opts.requestId}`,
+      upstreamModelName: mapped,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+      includeUsage: opts.includeUsage,
+    });
     return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
   }
   const vertexMode = opts.channelType === CHANNEL_TYPE_VERTEX ? vertexRequestMode(mapped) : null;
@@ -726,6 +760,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       requestPath,
       retryIndex: retry,
       affinityTemplate: affinity?.template,
+      isStream: opts.stream,
     };
     let target: UpstreamTarget;
     try {
@@ -781,6 +816,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     try {
       if (channel.type === CHANNEL_TYPE_BAIDU) {
         target.url = await applyBaiduAccessToken(target.url, pickChannelKey(channel.key));
+      }
+      if (channel.type === CHANNEL_TYPE_ZHIPU) {
+        await applyZhipuV3Authorization(target.headers, pickChannelKey(channel.key));
       }
       res = await fetchUpstream(target);
     } catch (err) {
@@ -843,18 +881,26 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       channel.type === CHANNEL_TYPE_COHERE ||
       channel.type === CHANNEL_TYPE_DIFY ||
       channel.type === CHANNEL_TYPE_COZE ||
-      channel.type === CHANNEL_TYPE_BAIDU
+      channel.type === CHANNEL_TYPE_BAIDU ||
+      channel.type === CHANNEL_TYPE_ZHIPU
     ) {
       if (mode === "embeddings" || mode === "rerank") isSSE = false;
       else isSSE = Boolean(opts.stream);
+    }
+    if (channel.type === CHANNEL_TYPE_CLOUDFLARE && mode !== "responses") {
+      isSSE = Boolean(opts.stream);
     }
     if (affinity) {
       ctx?.waitUntil(recordChannelAffinity(store, opts.env, affinity.cacheKeySuffix, channel.id, affinity.ttlSeconds));
     }
 
     const ollamaResponsesPassthrough = channel.type === CHANNEL_TYPE_OLLAMA && mode === "responses";
+    const openaiShapedInbound =
+      kind === "openai" ||
+      channel.type === CHANNEL_TYPE_ZHIPU_V4 ||
+      (channel.type === CHANNEL_TYPE_CLOUDFLARE && mode === "responses");
     if (isSSE && res.body) {
-      if (kind !== "openai" && clientFormat === "openai" && !ollamaResponsesPassthrough) {
+      if (!openaiShapedInbound && clientFormat === "openai" && !ollamaResponsesPassthrough) {
         const text = await res.text();
         const includeUsage = Boolean(asObj(asObj(opts.body).stream_options).include_usage);
         let converted: { body: string; usageBody: Record<string, unknown> };

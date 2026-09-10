@@ -18,14 +18,17 @@ import {
   openaiFromBaiduResponse,
   openaiFromCohereResponse,
   openaiFromDifyResponse,
+  openaiFromZhipuResponse,
+  convertMiniMaxImageRequest,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI } from "../src/constants.js";
+import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
 import { isClientError } from "../src/reasoning.js";
+import { getZhipuToken, clearZhipuTokenCache } from "../src/zhipu-convert.js";
 import { mapModel } from "../src/select.js";
 import { buildUpstream } from "../src/upstream.js";
 import type { ChannelRow } from "../src/types.js";
@@ -1342,5 +1345,243 @@ test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON and URLs"
   assert.equal(
     buildUpstream(baiduCh, "embeddings", "/v1/embeddings", "Embedding-V1", embed).url,
     "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/embeddings/embedding-v1",
+  );
+});
+
+test("original Zhipu, ZhipuV4, Perplexity, Cloudflare, BaiduV2, and MiniMax ConvertOpenAIRequest JSON and URLs", async () => {
+  const zhipu = convertOpenAIRequest(
+    {
+      model: "chatglm_std",
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "hi zhipu" },
+      ],
+      temperature: 0.7,
+      top_p: 1,
+      stream: true,
+      stream_options: { include_usage: true },
+    },
+    { channelType: CHANNEL_TYPE_ZHIPU, originModelName: "chatglm_std", upstreamModelName: "chatglm_std" },
+  );
+  assert.deepEqual(zhipu.prompt, [
+    { role: "system", content: "sys" },
+    { role: "user", content: "Okay" },
+    { role: "user", content: "hi zhipu" },
+  ]);
+  assert.equal(zhipu.temperature, 0.7);
+  assert.equal(zhipu.top_p, 0.99);
+  assert.equal("incremental" in zhipu, false);
+  assert.equal("messages" in zhipu, false);
+  assert.equal("model" in zhipu, false);
+  assert.equal("stream" in zhipu, false);
+  assert.equal("stream_options" in zhipu, false);
+
+  const zhipuMapped = openaiFromZhipuResponse(
+    {
+      success: true,
+      data: {
+        task_id: "task-1",
+        choices: [{ role: "assistant", content: '"hello glm"' }],
+        usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 },
+      },
+    },
+    { created: 11 },
+  );
+  assert.equal(zhipuMapped.id, "task-1");
+  assert.equal(zhipuMapped.object, "chat.completion");
+  assert.equal((zhipuMapped.choices as { message: { content: string }; finish_reason: string }[])[0].message.content, "hello glm");
+  assert.equal((zhipuMapped.choices as { finish_reason: string }[])[0].finish_reason, "stop");
+  assert.deepEqual(zhipuMapped.usage, { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 });
+  assert.throws(() => openaiFromZhipuResponse({ success: false, msg: "quota", code: 1 }));
+
+  const zhipuV4 = convertOpenAIRequest(
+    {
+      model: "glm-4",
+      messages: [
+        { role: "user", name: "alice", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAA" } }] },
+      ],
+      top_p: 1,
+      stop: "END",
+      thinking: { type: "enabled" },
+      max_completion_tokens: 64,
+      stream_options: { include_usage: true },
+      frequency_penalty: 0.5,
+    },
+    { channelType: CHANNEL_TYPE_ZHIPU_V4, originModelName: "glm-4", upstreamModelName: "glm-4" },
+  );
+  assert.equal(zhipuV4.model, "glm-4");
+  assert.equal(zhipuV4.top_p, 0.99);
+  assert.deepEqual(zhipuV4.stop, ["END"]);
+  assert.deepEqual(zhipuV4.thinking, { type: "enabled" });
+  assert.equal(zhipuV4.max_tokens, 64);
+  assert.equal("stream_options" in zhipuV4, false);
+  assert.equal("frequency_penalty" in zhipuV4, false);
+  assert.equal("name" in (zhipuV4.messages as Record<string, unknown>[])[0], false);
+  assert.equal(
+    ((zhipuV4.messages as { content: { image_url: { url: string } }[] }[])[0].content[0].image_url.url),
+    "AAA",
+  );
+
+  const pplx = convertOpenAIRequest(
+    {
+      model: "sonar",
+      messages: [{ role: "user", name: "bob", content: "hi pplx", tool_calls: [{ id: "x" }] }],
+      top_p: 1,
+      temperature: 0.2,
+      max_tokens: 32,
+      search_mode: "web",
+      stream_options: { include_usage: true },
+      tools: [{ type: "function" }],
+    },
+    { channelType: CHANNEL_TYPE_PERPLEXITY, originModelName: "sonar", upstreamModelName: "sonar" },
+  );
+  assert.equal(pplx.model, "sonar");
+  assert.equal(pplx.top_p, 0.99);
+  assert.equal(pplx.max_tokens, 32);
+  assert.equal(pplx.search_mode, "web");
+  assert.deepEqual(pplx.messages, [{ role: "user", content: "hi pplx" }]);
+  assert.equal("stream_options" in pplx, false);
+  assert.equal("tools" in pplx, false);
+
+  const cfChat = convertOpenAIRequest(
+    {
+      model: "llama-3",
+      messages: [{ role: "user", content: "hi cf" }],
+      stream_options: { include_usage: true },
+    },
+    { channelType: CHANNEL_TYPE_CLOUDFLARE, originModelName: "llama-3", upstreamModelName: "llama-3" },
+  );
+  assert.equal(cfChat.model, "llama-3");
+  assert.deepEqual(cfChat.stream_options, { include_usage: true });
+
+  const cfComp = convertOpenAIRequest(
+    { model: "llama-3", prompt: "complete me", max_tokens: 8, stream: true, temperature: 0.1 },
+    { channelType: CHANNEL_TYPE_CLOUDFLARE, originModelName: "llama-3", upstreamModelName: "llama-3", relayMode: "completions" },
+  );
+  assert.deepEqual(cfComp, { prompt: "complete me", max_tokens: 8, stream: true, temperature: 0.1 });
+  assert.equal("model" in cfComp, false);
+
+  const baiduV2 = convertOpenAIRequest(
+    {
+      model: "ernie-4.0-8k-search",
+      messages: [{ role: "user", content: "hi" }],
+      stream_options: { include_usage: true },
+    },
+    { channelType: CHANNEL_TYPE_BAIDU_V2, originModelName: "ernie-4.0-8k-search", upstreamModelName: "ernie-4.0-8k-search" },
+  );
+  assert.equal(baiduV2.model, "ernie-4.0-8k");
+  assert.deepEqual(baiduV2.web_search, {
+    enable: true,
+    enable_citation: true,
+    enable_trace: true,
+    enable_status: false,
+  });
+  assert.deepEqual(baiduV2.stream_options, { include_usage: true });
+
+  const minimax = convertOpenAIRequest(
+    {
+      model: "abab6.5s-chat",
+      messages: [{ role: "user", content: "hi mm" }],
+      stream_options: { include_usage: true },
+    },
+    { channelType: CHANNEL_TYPE_MINIMAX, originModelName: "abab6.5s-chat", upstreamModelName: "abab6.5s-chat" },
+  );
+  assert.equal(minimax.model, "abab6.5s-chat");
+  assert.deepEqual(minimax.stream_options, { include_usage: true });
+
+  const mmImage = convertMiniMaxImageRequest({
+    model: "image-01",
+    prompt: "a red fox in snowfall",
+    size: "1536x1024",
+    response_format: "url",
+    n: 2,
+  });
+  assert.equal(mmImage.model, "image-01");
+  assert.equal(mmImage.prompt, "a red fox in snowfall");
+  assert.equal(mmImage.n, 2);
+  assert.equal(mmImage.aspect_ratio, "3:2");
+  assert.equal(mmImage.response_format, "url");
+
+  clearZhipuTokenCache();
+  const jwt = await getZhipuToken("id.secret", 1_700_000_000_000);
+  const parts = jwt.split(".");
+  assert.equal(parts.length, 3);
+  const pad = (s: string) => s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4);
+  const header = JSON.parse(Buffer.from(pad(parts[0]), "base64").toString()) as Record<string, unknown>;
+  const payload = JSON.parse(Buffer.from(pad(parts[1]), "base64").toString()) as Record<string, unknown>;
+  assert.equal(header.alg, "HS256");
+  assert.equal(header.sign_type, "SIGN");
+  assert.equal(header.typ, "JWT");
+  assert.equal(payload.api_key, "id");
+  assert.equal(payload.exp, 1_700_000_000_000 + 24 * 3600 * 1000);
+  assert.equal(payload.timestamp, 1_700_000_000_000);
+  assert.equal(await getZhipuToken("not-a-jwt"), "");
+
+  const zhipuCh = testChannel({ type: CHANNEL_TYPE_ZHIPU, key: "id.secret", base_url: "", models: "chatglm_std" });
+  assert.equal(
+    buildUpstream(zhipuCh, "chat", "/v1/chat/completions", "chatglm_std", zhipu).url,
+    "https://open.bigmodel.cn/api/paas/v3/model-api/chatglm_std/invoke",
+  );
+  assert.equal(
+    buildUpstream(zhipuCh, "chat", "/v1/chat/completions", "chatglm_std", zhipu, {}, "POST", { isStream: true }).url,
+    "https://open.bigmodel.cn/api/paas/v3/model-api/chatglm_std/sse-invoke",
+  );
+  assert.equal("authorization" in buildUpstream(zhipuCh, "chat", "/v1/chat/completions", "chatglm_std", zhipu).headers, false);
+
+  const zhipuV4Ch = testChannel({ type: CHANNEL_TYPE_ZHIPU_V4, key: "sk-z", base_url: "", models: "glm-4" });
+  assert.equal(
+    buildUpstream(zhipuV4Ch, "chat", "/v1/chat/completions", "glm-4", zhipuV4).url,
+    "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+  );
+  assert.equal(
+    buildUpstream(zhipuV4Ch, "messages", "/v1/messages", "glm-4", zhipuV4).url,
+    "https://open.bigmodel.cn/api/anthropic/v1/messages",
+  );
+  assert.equal(
+    buildUpstream(zhipuV4Ch, "responses", "/v1/responses", "glm-4", zhipuV4).url,
+    "https://open.bigmodel.cn/api/v1/responses",
+  );
+  const glmPlan = testChannel({ type: CHANNEL_TYPE_ZHIPU_V4, key: "sk-z", base_url: "glm-coding-plan", models: "glm-4" });
+  assert.equal(
+    buildUpstream(glmPlan, "chat", "/v1/chat/completions", "glm-4", zhipuV4).url,
+    "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+  );
+
+  const pplxCh = testChannel({ type: CHANNEL_TYPE_PERPLEXITY, key: "pk", base_url: "", models: "sonar" });
+  assert.equal(buildUpstream(pplxCh, "chat", "/v1/chat/completions", "sonar", pplx).url, "https://api.perplexity.ai/chat/completions");
+  assert.equal(buildUpstream(pplxCh, "responses", "/v1/responses", "sonar", pplx).url, "https://api.perplexity.ai/v1/responses");
+
+  const cfCh = testChannel({ type: CHANNEL_TYPE_CLOUDFLARE, key: "cfk", base_url: "", other: "acct-1", models: "llama-3" });
+  assert.equal(
+    buildUpstream(cfCh, "chat", "/v1/chat/completions", "llama-3", cfChat).url,
+    "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/v1/chat/completions",
+  );
+  assert.equal(
+    buildUpstream(cfCh, "completions", "/v1/completions", "llama-3", cfComp).url,
+    "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/run/llama-3",
+  );
+
+  const baiduV2Ch = testChannel({ type: CHANNEL_TYPE_BAIDU_V2, key: "tok|app-1", base_url: "", models: "ernie-4.0-8k-search" });
+  const baiduV2Up = buildUpstream(baiduV2Ch, "chat", "/v1/chat/completions", "ernie-4.0-8k", baiduV2);
+  assert.equal(baiduV2Up.url, "https://qianfan.baidubce.com/v2/chat/completions");
+  assert.equal(baiduV2Up.headers.authorization, "Bearer tok");
+  assert.equal(baiduV2Up.headers.appid, "app-1");
+
+  const mmCh = testChannel({ type: CHANNEL_TYPE_MINIMAX, key: "mk", base_url: "", models: "abab6.5s-chat,image-01" });
+  assert.equal(
+    buildUpstream(mmCh, "chat", "/v1/chat/completions", "abab6.5s-chat", minimax).url,
+    "https://api.minimax.chat/v1/text/chatcompletion_v2",
+  );
+  assert.equal(
+    buildUpstream(mmCh, "images", "/v1/images/generations", "image-01", mmImage).url,
+    "https://api.minimax.chat/v1/image_generation",
+  );
+  assert.equal(
+    buildUpstream(mmCh, "messages", "/v1/messages", "abab6.5s-chat", minimax).url,
+    "https://api.minimax.chat/anthropic/v1/messages",
+  );
+  assert.equal(
+    buildUpstream(mmCh, "audio_speech", "/v1/audio/speech", "speech-01", { model: "speech-01", input: "hi" }).url,
+    "https://api.minimax.chat/v1/t2a_v2",
   );
 });

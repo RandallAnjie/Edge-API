@@ -3,19 +3,29 @@ import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_ANTHROPIC,
   CHANNEL_TYPE_AWS,
+  CHANNEL_TYPE_BAIDU_V2,
+  CHANNEL_TYPE_CLOUDFLARE,
   CHANNEL_TYPE_DEEPSEEK,
   CHANNEL_TYPE_GEMINI,
+  CHANNEL_TYPE_MINIMAX,
   CHANNEL_TYPE_MOONSHOT,
   CHANNEL_TYPE_OLLAMA,
   CHANNEL_TYPE_OPENROUTER,
+  CHANNEL_TYPE_PERPLEXITY,
   CHANNEL_TYPE_VERTEX,
   CHANNEL_TYPE_VOLC,
+  CHANNEL_TYPE_ZHIPU,
   CHANNEL_TYPE_ZHIPU_V4,
   CLAUDE_VERSION,
   parseJson,
 } from "./constants.js";
 import { awsConverseUrl, getAwsModelID, parseAwsApiKey } from "./aws-convert.js";
 import { baiduWorkshopURL } from "./baidu-convert.js";
+import { applyBaiduV2Auth, baiduV2RequestURL } from "./baidu-v2-convert.js";
+import { cloudflareRequestURL } from "./cloudflare-convert.js";
+import { minimaxRequestURL } from "./minimax-convert.js";
+import { perplexityRequestURL } from "./perplexity-convert.js";
+import { zhipuV3RequestURL, zhipuV4RequestURL } from "./zhipu-convert.js";
 import {
   buildAnthropicModelURL,
   buildGoogleModelURL,
@@ -217,6 +227,78 @@ export function buildUpstream(
     return { url, headers, body: payload, method };
   }
 
+  if (channel.type === CHANNEL_TYPE_ZHIPU) {
+    const stream = Boolean(relayInfo.isStream) || (payloadIsObject(body) && Boolean((body as { stream?: boolean }).stream));
+    url = zhipuV3RequestURL(base, upstreamModel, stream);
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_ZHIPU_V4) {
+    url = zhipuV4RequestURL(base, mode, channel.base_url || "");
+    headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_PERPLEXITY) {
+    url = perplexityRequestURL(base, mode);
+    headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_CLOUDFLARE) {
+    url = cloudflareRequestURL(base, channel.other || "", mode, upstreamModel);
+    headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_BAIDU_V2) {
+    url = baiduV2RequestURL(base, mode, requestPath);
+    applyBaiduV2Auth(headers, apiKey);
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_MINIMAX) {
+    url = minimaxRequestURL(base, mode);
+    headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
   switch (kind) {
     case "azure": {
       const version = channel.other || AZURE_API_VERSION;
@@ -260,12 +342,6 @@ export function buildUpstream(
       headers.authorization = `Bearer ${apiKey}`;
       break;
     }
-    case "cloudflare": {
-      const account = channel.other || "";
-      url = `${base}/client/v4/accounts/${account}/ai/v1${openaiPath(mode, requestPath).replace(/^\/v1/, "")}`;
-      headers.authorization = `Bearer ${apiKey}`;
-      break;
-    }
     case "custom": {
       url = (channel.base_url || "").replace(/\{model\}/g, upstreamModel);
       headers.authorization = `Bearer ${apiKey}`;
@@ -273,12 +349,6 @@ export function buildUpstream(
     }
     case "ali": {
       url = joinUrl(base, "/compatible-mode" + openaiPath(mode, requestPath));
-      headers.authorization = `Bearer ${apiKey}`;
-      break;
-    }
-    case "zhipu": {
-      const p = openaiPath(mode, requestPath).replace(/^\/v1/, "/api/paas/v4");
-      url = joinUrl(base, p);
       headers.authorization = `Bearer ${apiKey}`;
       break;
     }

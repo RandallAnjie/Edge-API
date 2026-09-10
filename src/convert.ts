@@ -9,7 +9,7 @@ import {
 import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind } from "./catalog.js";
-import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI } from "./constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
@@ -18,6 +18,11 @@ import { convertBaiduEmbeddingRequest, convertBaiduOpenAIRequest } from "./baidu
 import { convertCohereOpenAIRequest, convertCohereRerankRequest } from "./cohere-convert.js";
 import { convertCozeOpenAIRequest } from "./coze-convert.js";
 import { convertDifyOpenAIRequest } from "./dify-convert.js";
+import { convertZhipuOpenAIRequest, convertZhipuV4OpenAIRequest } from "./zhipu-convert.js";
+import { convertPerplexityOpenAIRequest } from "./perplexity-convert.js";
+import { convertCloudflareCompletionsRequest, convertCloudflareOpenAIRequest } from "./cloudflare-convert.js";
+import { convertBaiduV2OpenAIRequest } from "./baidu-v2-convert.js";
+import { convertMiniMaxImageRequest, convertMiniMaxOpenAIRequest, convertMiniMaxTTSRequest } from "./minimax-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 
 export type ChatMessage = {
@@ -344,6 +349,15 @@ export {
 export { convertCohereOpenAIRequest, convertCohereRerankRequest, openaiFromCohereResponse } from "./cohere-convert.js";
 export { convertCozeOpenAIRequest, openaiFromCozeDetailResponse } from "./coze-convert.js";
 export { convertDifyOpenAIRequest, openaiFromDifyResponse } from "./dify-convert.js";
+export { convertZhipuOpenAIRequest, convertZhipuV4OpenAIRequest, openaiFromZhipuResponse } from "./zhipu-convert.js";
+export { convertPerplexityOpenAIRequest } from "./perplexity-convert.js";
+export {
+  convertCloudflareCompletionsRequest,
+  convertCloudflareOpenAIRequest,
+  openaiFromCloudflareResponse,
+} from "./cloudflare-convert.js";
+export { convertBaiduV2OpenAIRequest } from "./baidu-v2-convert.js";
+export { convertMiniMaxImageRequest, convertMiniMaxOpenAIRequest, convertMiniMaxTTSRequest } from "./minimax-convert.js";
 
 /** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
@@ -411,6 +425,32 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
   if (opts.channelType === CHANNEL_TYPE_BAIDU) {
     if (opts.relayMode === "embeddings") return convertBaiduEmbeddingRequest(suffixed.body);
     return convertBaiduOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_ZHIPU) {
+    return convertZhipuOpenAIRequest(suffixed.body);
+  }
+  if (opts.channelType === CHANNEL_TYPE_ZHIPU_V4) {
+    return convertZhipuV4OpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_PERPLEXITY) {
+    return convertPerplexityOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_CLOUDFLARE) {
+    if (opts.relayMode === "completions") return convertCloudflareCompletionsRequest(suffixed.body);
+    return convertCloudflareOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_BAIDU_V2) {
+    if (opts.relayMode === "embeddings" || opts.relayMode === "rerank") {
+      throw new Error("not implemented");
+    }
+    return convertBaiduV2OpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_MINIMAX) {
+    if (opts.relayMode === "images") return convertMiniMaxImageRequest(suffixed.body);
+    if (opts.relayMode === "audio_speech") {
+      return convertMiniMaxTTSRequest(suffixed.body, { originModelName: opts.originModelName });
+    }
+    return convertMiniMaxOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
   }
   const kind = channelKind(opts.channelType);
   if (kind === "anthropic") {

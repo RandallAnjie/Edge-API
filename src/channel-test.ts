@@ -6,6 +6,7 @@ import {
   CHANNEL_TYPE_COZE,
   CHANNEL_TYPE_MOKA,
   CHANNEL_TYPE_VOLC,
+  CHANNEL_TYPE_ZHIPU,
   CHANNEL_AUTO_DISABLED,
   CHANNEL_ENABLED,
   CHANNEL_MANUAL_DISABLED,
@@ -23,6 +24,7 @@ import {
   openaiToGemini,
 } from "./convert.js";
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest } from "./baidu-convert.js";
+import { applyZhipuV3Authorization } from "./zhipu-convert.js";
 import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
@@ -407,6 +409,7 @@ function buildTestTarget(
     upstreamModel: mappedModel,
     requestPath,
     isChannelTest: true,
+    isStream,
   };
   if (channel.type === CHANNEL_TYPE_CODEX) {
     if (kind === "chat") throw new Error("codex channel: /v1/chat/completions endpoint not supported");
@@ -503,6 +506,9 @@ export async function testChannel(
   try {
     if (channel.type === CHANNEL_TYPE_BAIDU) {
       target.url = await applyBaiduAccessToken(target.url, pickChannelKey(channel.key));
+    }
+    if (channel.type === CHANNEL_TYPE_ZHIPU) {
+      await applyZhipuV3Authorization(target.headers, pickChannelKey(channel.key));
     }
     res = await fetchTarget(target);
     if (channel.type === CHANNEL_TYPE_COZE && !isStream) {
