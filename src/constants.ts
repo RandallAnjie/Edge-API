@@ -38,6 +38,18 @@ export const CHANNEL_ENABLED = 1;
 export const CHANNEL_MANUAL_DISABLED = 2;
 export const CHANNEL_AUTO_DISABLED = 3;
 
+/** Original `constant.ChannelType*`. */
+export const CHANNEL_TYPE_VERTEX = 41;
+export const CHANNEL_TYPE_CODEX = 57;
+export const CHANNEL_TYPE_ADVANCED_CUSTOM = 58;
+export const CHANNEL_TYPE_NEW_API = 60;
+export const CHANNEL_TYPE_TASK_PLUGIN = 61;
+
+/** Original `controller.isManageableChannelStatus`. */
+export function isManageableChannelStatus(status: number): boolean {
+  return status === CHANNEL_ENABLED || status === CHANNEL_MANUAL_DISABLED;
+}
+
 export const REDEMPTION_ENABLED = 1;
 export const REDEMPTION_DISABLED = 2;
 export const REDEMPTION_USED = 3;

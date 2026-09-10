@@ -117,6 +117,31 @@ export function relayNotImplemented(): Response {
   });
 }
 
+/** Original `controller.RelayNotFound`. */
+export function relayNotFound(method: string, path: string): Response {
+  return json(
+    404,
+    {
+      error: {
+        message: `Invalid URL (${method} ${path})`,
+        type: "invalid_request_error",
+        param: "",
+        code: "",
+      },
+    },
+    {
+      "cache-control": "no-store, no-cache, must-revalidate, private, max-age=0",
+      pragma: "no-cache",
+      expires: "0",
+    },
+  );
+}
+
+/** Original `common.ApiErrorI18n(c, i18n.MsgInvalidParams)`. */
+export function apiFailInvalidParams(req: Request): Response {
+  return apiFail(i18nPair(req, "无效的参数", "Invalid parameters"));
+}
+
 export function corsHeaders(req: Request): Headers {
   const h = new Headers();
   h.set("access-control-allow-origin", req.headers.get("origin") || "*");

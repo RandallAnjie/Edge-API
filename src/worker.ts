@@ -1,7 +1,7 @@
 import { runChannelTestTask } from "./channel-test.js";
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
-import { apiFail, openaiError, pluginProtocolError, readJson, relayNotImplemented, taskArtifactError, videoProxyError, withCors } from "./http.js";
+import { apiFail, openaiError, pluginProtocolError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, videoProxyError, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -68,26 +68,41 @@ function clientFormatFrom(req: Request, path: string): ClientFormat {
 }
 
 function relayModeFrom(path: string, method: string): RelayMode | null {
-  if (path === "/v1/chat/completions") return "chat";
-  if (path === "/v1/completions") return "completions";
-  if (path === "/v1/embeddings") return "embeddings";
-  if (path === "/v1/messages") return "messages";
-  if (path === "/v1/images/generations" || path === "/v1/images/edits" || path === "/v1/edits") return "images";
-  if (path === "/v1/moderations") return "moderations";
-  if (path === "/v1/audio/speech") return "audio_speech";
-  if (path === "/v1/audio/transcriptions") return "audio_transcription";
-  if (path === "/v1/audio/translations") return "audio_translation";
-  if (path === "/v1/rerank") return "rerank";
-  if (path === "/v1/responses" || path === "/v1/responses/compact") return "responses";
-  if (path === "/v1/alpha/search") return "alpha_search";
-  if (path.startsWith("/v1/engines/") && path.endsWith("/embeddings")) return "engines_embeddings";
-  if (path === "/v1/video/generations" || path.startsWith("/v1/video/generations/")) return "video";
-  if (path === "/v1/videos" || path.startsWith("/v1/videos/")) return "video";
-  if (path.startsWith("/v1/tasks/")) return "passthrough";
-  if (path.startsWith("/v1/responses/") && method === "GET") return "responses";
-  if (path.startsWith("/v1beta/models") && method === "POST") return "gemini";
-  if (path.startsWith("/v1/models/") && method === "POST") return "gemini";
+  const post = method === "POST";
+  if (post && path === "/v1/chat/completions") return "chat";
+  if (post && path === "/v1/completions") return "completions";
+  if (post && path === "/v1/embeddings") return "embeddings";
+  if (post && path === "/v1/messages") return "messages";
+  if (post && (path === "/v1/images/generations" || path === "/v1/images/edits" || path === "/v1/edits")) return "images";
+  if (post && path === "/v1/moderations") return "moderations";
+  if (post && path === "/v1/audio/speech") return "audio_speech";
+  if (post && path === "/v1/audio/transcriptions") return "audio_transcription";
+  if (post && path === "/v1/audio/translations") return "audio_translation";
+  if (post && path === "/v1/rerank") return "rerank";
+  if (post && (path === "/v1/responses" || path === "/v1/responses/compact")) return "responses";
+  if (post && path === "/v1/alpha/search") return "alpha_search";
+  if (post && path.startsWith("/v1/engines/") && path.endsWith("/embeddings")) return "engines_embeddings";
+  if (post && (path === "/v1/video/generations" || path === "/v1/videos")) return "video";
+  if (post && /^\/v1\/videos\/[^/]+\/remix$/.test(path)) return "video";
+  if (post && path.startsWith("/v1/tasks/")) return "passthrough";
+  if (method === "GET" && path.startsWith("/v1/responses/")) return "responses";
+  if (post && path.startsWith("/v1beta/models")) return "gemini";
+  if (post && path.startsWith("/v1/models/")) return "gemini";
   return null;
+}
+
+/** Original registered relay/dashboard-plugin paths; unmatched /v1 /api /assets use RelayNotFound. */
+function isRegisteredRelay(method: string, path: string): boolean {
+  if (isMjImagePath(path) || isMjRelayRequest(path)) return true;
+  if (method === "GET" && (path === "/v1/models" || path === "/v1beta/models" || path === "/v1beta/openai/models")) return true;
+  if (method === "GET" && path.startsWith("/v1/models/")) return true;
+  if (path === "/v1/realtime") return true;
+  if (method === "GET" && path.startsWith("/v1/video/generations/")) return true;
+  if ((method === "GET" || method === "HEAD") && path.startsWith("/v1/videos/")) return true;
+  if (method === "GET" && path.startsWith("/v1/responses/")) return true;
+  if ((method === "GET" || method === "HEAD") && path.startsWith("/v1/tasks/")) return true;
+  if (notImplemented(method, path)) return true;
+  return relayModeFrom(path, method) != null;
 }
 
 function notImplemented(method: string, path: string): boolean {
@@ -261,7 +276,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
         method: req.method,
       });
     }
-    return openaiError(501, "尚未实现该接口", "not_implemented");
+    return relayNotFound(req.method, path);
   }
 
   let body: unknown = {};
@@ -516,6 +531,10 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
 
     try {
       if (isRelay && !path.startsWith("/v1/dashboard")) {
+        if (!isRegisteredRelay(req.method, path)) {
+          const plugin = await matchPluginRoute(store, req.method, path);
+          if (!plugin) return withCors(req, relayNotFound(req.method, path));
+        }
         try {
           return withCors(req, await handleRelay(req, env, ctx));
         } catch (err) {
@@ -533,6 +552,9 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       if (plugin) {
         hit("relay");
         return withCors(req, await handleRelay(req, env, ctx));
+      }
+      if (path.startsWith("/v1") || path.startsWith("/api") || path.startsWith("/assets")) {
+        return withCors(req, relayNotFound(req.method, path));
       }
     } catch (err) {
       hit("error");
@@ -561,6 +583,9 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
         return env.ASSETS.fetch(new Request(new URL("/index.html", req.url), req));
       }
     }
+  }
+  if (path.startsWith("/v1") || path.startsWith("/api") || path.startsWith("/assets")) {
+    return withCors(req, relayNotFound(req.method, path));
   }
   return new Response("Not Found", { status: 404 });
 }

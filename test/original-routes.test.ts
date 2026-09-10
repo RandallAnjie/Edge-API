@@ -2634,4 +2634,208 @@ test("original TestChannel, UpdateSelf, video, OAuth, and subscription return JS
   assert.equal(waffoHook.res.status, 403);
 });
 
+test("original AddChannel, FetchModels, channel status, and RelayNotFound JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const badMode = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ mode: "merge", channel: { name: "x", type: 1, key: "sk-x" } }),
+    }),
+    e,
+  );
+  assert.equal(badMode.body.success, false);
+  assert.equal(badMode.body.message, "不支持的添加模式");
+
+  const emptyKey = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ mode: "single", channel: { name: "empty-key", type: 1, key: "" } }),
+    }),
+    e,
+  );
+  assert.equal(emptyKey.body.message, "channel cannot be empty");
+
+  const wrapped = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        mode: "single",
+        channel: { name: "wrapped-ch", type: 1, key: "sk-one", models: "gpt-4o-mini", group: "default" },
+      }),
+    }),
+    e,
+  );
+  assert.equal(wrapped.body.success, true, String(wrapped.body.message));
+  const wrappedId = Number((wrapped.body.data as { id: number }).id);
+
+  const batch = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        mode: "batch",
+        batch_add_set_key_prefix_2_name: true,
+        channel: { name: "batch-ch", type: 1, key: "sk-batch-a\nsk-batch-b", models: "gpt-4o-mini", group: "default" },
+      }),
+    }),
+    e,
+  );
+  assert.equal(batch.body.success, true, String(batch.body.message));
+  assert.equal((batch.body.data as { count: number }).count, 2);
+  const listed = await json(new Request("http://local/api/channel/search?keyword=batch-ch", { headers: auth }), e);
+  const items = (listed.body.data as { items: { name: string }[] }).items;
+  assert.ok(items.some((ch) => ch.name.startsWith("batch-ch sk-batch")));
+
+  const autoBan = await json(
+    new Request("http://local/api/channel/" + wrappedId + "/status", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ status: 3 }),
+    }),
+    e,
+  );
+  assert.equal(autoBan.body.success, false);
+  assert.equal(autoBan.body.message, "Invalid parameters");
+  const zhStatus = await json(
+    new Request("http://local/api/channel/" + wrappedId + "/status", {
+      method: "POST",
+      headers: { ...auth, "accept-language": "zh-CN" },
+      body: JSON.stringify({ status: 3 }),
+    }),
+    e,
+  );
+  assert.equal(zhStatus.body.message, "无效的参数");
+  const badStatusId = await json(
+    new Request("http://local/api/channel/abc/status", { method: "POST", headers: auth, body: JSON.stringify({ status: 2 }) }),
+    e,
+  );
+  assert.equal(badStatusId.body.message, "Invalid parameters");
+  const disabled = await json(
+    new Request("http://local/api/channel/" + wrappedId + "/status", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ status: 2 }),
+    }),
+    e,
+  );
+  assert.equal(disabled.body.success, true);
+  assert.equal(disabled.body.data, true);
+  const again = await json(
+    new Request("http://local/api/channel/" + wrappedId + "/status", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ status: 2 }),
+    }),
+    e,
+  );
+  assert.equal(again.body.data, false);
+  const batchEmpty = await json(
+    new Request("http://local/api/channel/status/batch", { method: "POST", headers: auth, body: JSON.stringify({ ids: [], status: 1 }) }),
+    e,
+  );
+  assert.equal(batchEmpty.body.message, "Invalid parameters");
+  const batchOk = await json(
+    new Request("http://local/api/channel/status/batch", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ ids: [wrappedId], status: 1 }),
+    }),
+    e,
+  );
+  assert.equal(batchOk.body.success, true);
+  assert.equal(batchOk.body.data, 1);
+  assert.equal(typeof batchOk.body.data, "number");
+
+  const headerBad = await json(
+    new Request("http://local/api/channel/fetch_models", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        type: 58,
+        key: "sk-x",
+        advanced_custom: '{"advanced_routes":[{"incoming_path":"/v1/chat/completions","upstream_path":"/v1/chat/completions"}]}',
+        header_override: "not-json",
+      }),
+    }),
+    e,
+  );
+  assert.equal(headerBad.body.success, false);
+  assert.match(String(headerBad.body.message), /^header_override must be a JSON object: /);
+  const headerArray = await json(
+    new Request("http://local/api/channel/fetch_models", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        type: 58,
+        key: "sk-x",
+        advanced_custom: '{"advanced_routes":[{"incoming_path":"/v1/chat/completions","upstream_path":"/v1/chat/completions"}]}',
+        header_override: "[]",
+      }),
+    }),
+    e,
+  );
+  assert.equal(
+    headerArray.body.message,
+    "header_override must be a JSON object: json: cannot unmarshal array into Go value of type map[string]interface {}",
+  );
+  const typeMust = await json(
+    new Request("http://local/api/channel/fetch_models", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ type: 1, channel_id: wrappedId }),
+    }),
+    e,
+  );
+  assert.equal(typeMust.body.message, `channel ${wrappedId} is not an advanced custom channel`);
+  const typeMust2 = await json(
+    new Request("http://local/api/channel/fetch_models", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ type: 58, key: "sk-x", advanced_custom: "[]" }),
+    }),
+    e,
+  );
+  assert.equal(typeMust2.body.message, "json: cannot unmarshal array into Go value of type dto.AdvancedCustomConfig");
+  const emptyRoutes = await json(
+    new Request("http://local/api/channel/fetch_models", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ type: 58, key: "sk-x", advanced_custom: "{}" }),
+    }),
+    e,
+  );
+  assert.equal(emptyRoutes.body.message, "渠道额外设置[channel setting] 格式错误：advanced_custom requires at least one route");
+  const needAdv = await json(
+    new Request("http://local/api/channel/fetch_models", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ type: 58, key: "sk-x" }),
+    }),
+    e,
+  );
+  assert.equal(needAdv.body.message, "advanced_custom is required");
+
+  const unknownV1 = await json(new Request("http://local/v1/not-a-registered-route"), e);
+  assert.equal(unknownV1.res.status, 404);
+  assert.equal((unknownV1.body.error as { message: string; type: string; code: string }).type, "invalid_request_error");
+  assert.equal((unknownV1.body.error as { message: string }).message, "Invalid URL (GET /v1/not-a-registered-route)");
+  assert.equal((unknownV1.body.error as { code: string }).code, "");
+  assert.equal(unknownV1.res.headers.get("cache-control"), "no-store, no-cache, must-revalidate, private, max-age=0");
+  const unknownApi = await json(new Request("http://local/api/not-a-registered-route", { headers: auth }), e);
+  assert.equal(unknownApi.res.status, 404);
+  assert.equal((unknownApi.body.error as { message: string }).message, "Invalid URL (GET /api/not-a-registered-route)");
+  const unknownAssets = await json(new Request("http://local/assets/missing.js"), e);
+  assert.equal(unknownAssets.res.status, 404);
+  assert.equal((unknownAssets.body.error as { message: string }).message, "Invalid URL (GET /assets/missing.js)");
+  const getChat = await json(new Request("http://local/v1/chat/completions"), e);
+  assert.equal(getChat.res.status, 404);
+  assert.equal((getChat.body.error as { message: string }).message, "Invalid URL (GET /v1/chat/completions)");
+});
+
 

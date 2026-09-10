@@ -13,6 +13,9 @@ import {
   VERSION,
   DEFAULT_TOKEN_QUOTA,
   canManageTargetRole,
+  CHANNEL_TYPE_ADVANCED_CUSTOM,
+  CHANNEL_TYPE_TASK_PLUGIN,
+  isManageableChannelStatus,
   nowSec,
   parseGoBool,
   parseJson,
@@ -29,6 +32,15 @@ import {
   stringifyChannelInfo,
 } from "./channel-info.js";
 import {
+  buildAdvancedCustomModelPreviewChannel,
+  channelFieldsFromBody,
+  expandAddChannelKeys,
+  previewNonCustomChannel,
+  validateChannel,
+  validateChannelSettings,
+  type AddChannelMode,
+} from "./channel-validate.js";
+import {
   generateAffCode,
   generateRedemptionKey,
   generateTokenKey,
@@ -37,7 +49,7 @@ import {
   verifyPassword,
   decryptPassword,
 } from "./crypto.js";
-import { apiFail, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, serveRevalidatedJSON, strconvAtoi } from "./http.js";
+import { apiFail, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, serveRevalidatedJSON, strconvAtoi } from "./http.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -857,43 +869,50 @@ export function adminRouter(): Router<Env> {
     const ch = (body.channel || body) as Record<string, unknown>;
     if (!ch.name) return apiFail("渠道名称不能为空");
     const type = Number(ch.type || 1);
-    if (type === 61 && !(await canTaskPluginBind(s, u))) {
+    const wrapped = body.channel != null;
+    const originalShaped = wrapped || "mode" in body;
+    const modeRaw = String(body.mode || "");
+    if (originalShaped && modeRaw !== "single" && modeRaw !== "batch" && modeRaw !== "multi_to_single") {
+      return apiFail("不支持的添加模式");
+    }
+    const mode = (modeRaw || "single") as AddChannelMode;
+    if (type === CHANNEL_TYPE_TASK_PLUGIN && !(await canTaskPluginBind(s, u))) {
       return apiFail("task plugin channels require the task_plugin.bind permission");
     }
-    let key = String(ch.key || "");
-    let channelInfo =
-      typeof ch.channel_info === "string" ? ch.channel_info : ch.channel_info ? JSON.stringify(ch.channel_info) : "";
-    if (String(body.mode || "") === "multi_to_single") {
-      const keys = channelKeys(key).map((k) => k.trim()).filter(Boolean);
-      key = keys.join("\n");
-      channelInfo = stringifyChannelInfo(multiKeyInfoFromKeys(keys, String(body.multi_key_mode || "random")));
+    const fields = channelFieldsFromBody(ch);
+    const err = validateChannel(fields, true);
+    if (err) return apiFail(err.message);
+    let expanded;
+    try {
+      expanded = expandAddChannelKeys(
+        { type: Number(fields.type || 1), key: String(fields.key || ""), settings: fields.settings },
+        mode,
+      );
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
     }
-    const id = await s.insertChannel({
-      type,
-      key,
-      name: String(ch.name),
-      weight: Number(ch.weight ?? 1),
-      base_url: String(ch.base_url || ""),
-      other: String(ch.other || ""),
-      models: String(ch.models || ""),
-      group: String(ch.group || "default"),
-      model_mapping: typeof ch.model_mapping === "string" ? ch.model_mapping : JSON.stringify(ch.model_mapping || ""),
-      priority: Number(ch.priority || 0),
-      auto_ban: ch.auto_ban == null ? 1 : Number(ch.auto_ban),
-      tag: String(ch.tag || ""),
-      header_override: typeof ch.header_override === "string" ? ch.header_override : JSON.stringify(ch.header_override || ""),
-      param_override: typeof ch.param_override === "string" ? ch.param_override : JSON.stringify(ch.param_override || ""),
-      remark: String(ch.remark || ""),
-      openai_organization: String(ch.openai_organization || ""),
-      test_model: String(ch.test_model || ""),
-      settings: typeof ch.settings === "string" ? ch.settings : JSON.stringify(ch.settings || ""),
-      setting: typeof ch.setting === "string" ? ch.setting : JSON.stringify(ch.setting || ch.settings || ""),
-      other_info: String(ch.other_info || ""),
-      channel_info: channelInfo,
-      balance: String(ch.balance ?? ""),
-    });
-    await s.audit(u.id, u.username, "channel.create", `create channel ${ch.name}`, clientIp(c.req));
-    return apiOk({ id });
+    const prefixName = Boolean(body.batch_add_set_key_prefix_2_name) && expanded.keys.length > 1;
+    let id = 0;
+    let count = 0;
+    for (const key of expanded.keys) {
+      if (!key) continue;
+      let name = String(fields.name || "");
+      if (prefixName) {
+        const keyPrefix = key.length > 8 ? key.slice(0, 8) : key;
+        name = `${name} ${keyPrefix}`;
+      }
+      id = await s.insertChannel({
+        ...fields,
+        name,
+        key: mode === "multi_to_single" ? expanded.key : key,
+        channel_info: expanded.multiKey
+          ? stringifyChannelInfo(multiKeyInfoFromKeys(expanded.key.split("\n").filter(Boolean), String(body.multi_key_mode || "random")))
+          : "",
+      });
+      count += 1;
+    }
+    await s.audit(u.id, u.username, "channel.create", `create channel ${fields.name}`, clientIp(c.req));
+    return apiOk({ id, count });
   });
 
   r.slash("PUT", "/api/channel/", async (c) => {
@@ -983,12 +1002,19 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { status?: number };
-    const id = Number(c.params.id);
-    const ch = await s.getChannel(id);
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiFailInvalidParams(c.req);
+    let body: { status?: number };
+    try {
+      body = (await readJson(c.req)) as { status?: number };
+    } catch {
+      return apiFailInvalidParams(c.req);
+    }
     const status = Number(body.status);
+    if (!Number.isInteger(status) || !isManageableChannelStatus(status)) return apiFailInvalidParams(c.req);
+    const ch = await s.getChannel(id.n);
     const changed = Boolean(ch) && Number(ch!.status) !== status;
-    if (changed) await s.updateChannel(id, { status });
+    if (changed) await s.updateChannel(id.n, { status });
     return apiOk(changed);
   });
 
@@ -996,12 +1022,21 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { ids?: number[]; status?: number };
+    let body: { ids?: number[]; status?: number };
+    try {
+      body = (await readJson(c.req)) as { ids?: number[]; status?: number };
+    } catch {
+      return apiFailInvalidParams(c.req);
+    }
+    const status = Number(body.status);
+    if (!body.ids?.length || !Number.isInteger(status) || !isManageableChannelStatus(status)) {
+      return apiFailInvalidParams(c.req);
+    }
     let changedCount = 0;
-    for (const id of body.ids || []) {
+    for (const id of body.ids) {
       const ch = await s.getChannel(id);
-      if (!ch || Number(ch.status) === Number(body.status)) continue;
-      await s.updateChannel(id, { status: Number(body.status) });
+      if (!ch || Number(ch.status) === status) continue;
+      await s.updateChannel(id, { status });
       changedCount += 1;
     }
     return apiOk(changedCount);
@@ -1023,11 +1058,13 @@ export function adminRouter(): Router<Env> {
     if (!Number.isInteger(id)) return apiFail("invalid id");
     const origin = await s.getChannel(id);
     if (!origin) return apiFail("获取渠道信息失败，请稍后重试");
-    if (origin.type === 61 && !(await canTaskPluginBind(s, u))) {
+    if (origin.type === CHANNEL_TYPE_TASK_PLUGIN && !(await canTaskPluginBind(s, u))) {
       return apiFail("task plugin channels require the task_plugin.bind permission");
     }
     const suffix = c.url.searchParams.get("suffix") ?? "_复制";
     const resetBalance = parseGoBool(c.url.searchParams.get("reset_balance"), true);
+    const settingsErr = validateChannelSettings(origin);
+    if (settingsErr) return apiFail("Failed to copy channel: invalid channel settings");
     try {
       const cloneId = await s.insertChannel({
         ...origin,
@@ -1103,62 +1140,17 @@ export function adminRouter(): Router<Env> {
     try {
       const type = Number(body.type || 0);
       const channelId = Number(body.channel_id || 0);
-      let key = String(body.key || "").trim();
-      if (type !== 57) key = key.split("\n")[0] || "";
-      let baseUrl = String(body.base_url || "").trim();
-      let settings = "";
-      let headerOverride = String(body.header_override || "");
-      if (type === 58 || channelId > 0) {
-        let saved = channelId > 0 ? await s.getChannel(channelId) : null;
-        if (channelId > 0) {
-          if (!saved) return apiFail("record not found");
-          if (saved.type !== 58) return apiFail(`channel ${channelId} is not an advanced custom channel`);
-        } else if (type !== 58) {
-          return apiFail("channel type must be advanced custom");
+      let channel;
+      if (type === CHANNEL_TYPE_ADVANCED_CUSTOM || channelId > 0) {
+        try {
+          channel = await buildAdvancedCustomModelPreviewChannel(body, (id) => s.getChannel(id));
+        } catch (e) {
+          return apiFail(e instanceof Error ? e.message : String(e));
         }
-        if (saved) {
-          key = key || saved.key.split("\n")[0] || "";
-          if (!baseUrl) baseUrl = saved.base_url || "";
-          settings = saved.settings || saved.setting || "";
-          if (!headerOverride) headerOverride = saved.header_override || "";
-        }
-        if (body.advanced_custom != null) {
-          const raw = String(body.advanced_custom).trim();
-          if (!raw) return apiFail("advanced_custom is required");
-          settings = raw;
-        } else if (channelId <= 0) {
-          return apiFail("advanced_custom is required");
-        }
-      } else if (!baseUrl) {
-        baseUrl = defaultBaseUrl(type);
+      } else {
+        channel = previewNonCustomChannel(body, defaultBaseUrl(type));
       }
-      const models = await fetchUpstreamModels({
-        id: 0,
-        type: type || 1,
-        key,
-        base_url: baseUrl,
-        status: 1,
-        name: "tmp",
-        weight: 1,
-        created_time: 0,
-        test_time: 0,
-        response_time: 0,
-        other: "",
-        models: "",
-        group: "default",
-        used_quota: 0,
-        model_mapping: "",
-        status_code_mapping: "",
-        priority: 0,
-        auto_ban: 1,
-        tag: "",
-        header_override: headerOverride,
-        param_override: "",
-        remark: "",
-        settings,
-        openai_organization: "",
-        test_model: "",
-      });
+      const models = await fetchUpstreamModels(channel);
       return apiOk(models);
     } catch (e) {
       return apiFail(`获取模型列表失败: ${e instanceof Error ? e.message : String(e)}`);
