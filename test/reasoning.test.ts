@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
+import { CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
 import { applyReasoningModelSuffix } from "../src/reasoning.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
@@ -259,6 +259,133 @@ test("original Claude ConvertOpenAIRequest JSON is sent upstream with system blo
     const thinking = captured.body.thinking as { type: string; budget_tokens: number };
     assert.equal(thinking.type, "enabled");
     assert.equal(thinking.budget_tokens, Math.max(Math.trunc((4096 * 80) / 100), 1024));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original Claude DoResponse JSON is returned to OpenAI clients with usage and tool_calls", async () => {
+  const { e, auth, sk } = await boot();
+  const created = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "claude-resp",
+        type: CHANNEL_TYPE_ANTHROPIC,
+        key: "sk-ant",
+        models: "claude-test",
+        group: "default",
+        base_url: "https://anthropic.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        id: "msg_fixed",
+        type: "message",
+        role: "assistant",
+        model: "claude-test",
+        content: [
+          { type: "text", text: "The answer is 42." },
+          { type: "tool_use", id: "toolu_abc", name: "get_weather", input: { city: "Paris" } },
+        ],
+        stop_reason: "tool_use",
+        usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3, cache_creation_input_tokens: 2 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  try {
+    const relay = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-test", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(relay.res.status, 200, relay.text);
+    assert.equal(relay.body.id, "msg_fixed");
+    assert.equal(relay.body.model, "claude-test");
+    const choice = (relay.body.choices as { message: Record<string, unknown>; finish_reason: string }[])[0];
+    assert.equal(choice.finish_reason, "tool_calls");
+    assert.equal(choice.message.content, "The answer is 42.");
+    const tools = choice.message.tool_calls as { function: { arguments: string } }[];
+    assert.equal(tools[0].function.arguments, '{"city":"Paris"}');
+    const usage = relay.body.usage as Record<string, unknown>;
+    assert.equal(usage.prompt_tokens, 15);
+    assert.equal(usage.completion_tokens, 5);
+    assert.equal(usage.total_tokens, 20);
+    assert.equal(usage.usage_semantic, "openai");
+    assert.equal(usage.usage_source, "anthropic");
+    assert.equal((usage.billing_usage as { source: string }).source, "claude_messages");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original Gemini DoResponse JSON is returned to OpenAI clients with usage and tool_calls", async () => {
+  const { e, auth, sk } = await boot();
+  const created = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "gemini-resp",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gem-key",
+        models: "gemini-2.0-flash",
+        group: "default",
+        base_url: "https://generativelanguage.googleapis.com",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            finishReason: "STOP",
+            content: {
+              role: "model",
+              parts: [{ text: "The answer is 42." }, { functionCall: { name: "get_weather", args: { city: "Paris" } } }],
+            },
+          },
+        ],
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, thoughtsTokenCount: 2, totalTokenCount: 15 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  try {
+    const relay = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "gemini-2.0-flash", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(relay.res.status, 200, relay.text);
+    assert.equal(relay.body.model, "gemini-2.0-flash");
+    assert.match(String(relay.body.id), /^chatcmpl-/);
+    const choice = (relay.body.choices as { message: Record<string, unknown>; finish_reason: string }[])[0];
+    assert.equal(choice.finish_reason, "tool_calls");
+    assert.equal(choice.message.content, "The answer is 42.");
+    const usage = relay.body.usage as Record<string, unknown>;
+    assert.equal(usage.prompt_tokens, 10);
+    assert.equal(usage.completion_tokens, 7);
+    assert.equal(usage.total_tokens, 15);
+    const billing = usage.billing_usage as { source: string; gemini_usage_metadata: { thoughtsTokenCount: number } };
+    assert.equal(billing.source, "gemini_chat");
+    assert.equal(billing.gemini_usage_metadata.thoughtsTokenCount, 2);
+    assert.equal((usage.completion_tokens_details as { reasoning_tokens: number }).reasoning_tokens, 2);
   } finally {
     globalThis.fetch = origFetch;
   }

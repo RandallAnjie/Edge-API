@@ -10,6 +10,7 @@ import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind } from "./catalog.js";
 import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN } from "./constants.js";
+import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 
 export type ChatMessage = {
   role?: string;
@@ -117,57 +118,8 @@ export function geminiToOpenAIChat(body: Record<string, unknown>, model: string)
   };
 }
 
-export function openaiFromAnthropicResponse(upstream: Record<string, unknown>, model: string): Record<string, unknown> {
-  const content = Array.isArray(upstream.content) ? (upstream.content as { type?: string; text?: string }[]) : [];
-  const text = content.filter((c) => c.type === "text").map((c) => c.text || "").join("");
-  const usage = (upstream.usage || {}) as { input_tokens?: number; output_tokens?: number };
-  return {
-    id: String(upstream.id || `chatcmpl-${Date.now()}`),
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [
-      {
-        index: 0,
-        message: { role: "assistant", content: text },
-        finish_reason: upstream.stop_reason || "stop",
-      },
-    ],
-    usage: {
-      prompt_tokens: Number(usage.input_tokens || 0),
-      completion_tokens: Number(usage.output_tokens || 0),
-      total_tokens: Number(usage.input_tokens || 0) + Number(usage.output_tokens || 0),
-    },
-  };
-}
-
-export function openaiFromGeminiResponse(upstream: Record<string, unknown>, model: string): Record<string, unknown> {
-  const cands = Array.isArray(upstream.candidates) ? (upstream.candidates as { content?: { parts?: { text?: string }[] } }[]) : [];
-  const text = (cands[0]?.content?.parts || []).map((p) => p.text || "").join("");
-  const usage = (upstream.usageMetadata || {}) as {
-    promptTokenCount?: number;
-    candidatesTokenCount?: number;
-    totalTokenCount?: number;
-  };
-  return {
-    id: `chatcmpl-${Date.now()}`,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [
-      {
-        index: 0,
-        message: { role: "assistant", content: text },
-        finish_reason: "stop",
-      },
-    ],
-    usage: {
-      prompt_tokens: Number(usage.promptTokenCount || 0),
-      completion_tokens: Number(usage.candidatesTokenCount || 0),
-      total_tokens: Number(usage.totalTokenCount || 0),
-    },
-  };
-}
+export { openaiFromAnthropicResponse, claudeSseToOpenAIChat, usageFromClaudeAPIUsage } from "./claude-response.js";
+export { openaiFromGeminiResponse, geminiSseToOpenAIChat, usageFromGeminiMetadata } from "./gemini-response.js";
 
 export function usageFromOpenAI(body: Record<string, unknown> | null): {
   prompt: number;
@@ -207,6 +159,48 @@ export function sseOpenAIFromText(model: string, text: string): string {
     choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
   };
   return `data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(done)}\n\ndata: [DONE]\n\n`;
+}
+
+/** Fallback when upstream returned a JSON completion but the client asked for SSE. */
+export function sseFromOpenAIChatCompletion(response: Record<string, unknown>): string {
+  const id = String(response.id || `chatcmpl-${Date.now()}`);
+  const created = Number(response.created || Math.floor(Date.now() / 1000));
+  const model = String(response.model || "");
+  const choice = Array.isArray(response.choices) ? usageAsObj((response.choices as unknown[])[0]) : {};
+  const message = usageAsObj(choice.message);
+  const delta: Record<string, unknown> = { role: "assistant" };
+  if (message.content != null) delta.content = message.content;
+  if (message.reasoning_content != null) delta.reasoning_content = message.reasoning_content;
+  if (Array.isArray(message.tool_calls)) delta.tool_calls = message.tool_calls;
+  const first = {
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model,
+    system_fingerprint: null,
+    choices: [{ index: 0, delta, logprobs: null, finish_reason: null }],
+  };
+  const done = {
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model,
+    system_fingerprint: null,
+    choices: [{ index: 0, delta: {}, logprobs: null, finish_reason: choice.finish_reason || "stop" }],
+  };
+  let out = sseLine(first) + sseLine(done);
+  if (response.usage) {
+    out += sseLine({
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      system_fingerprint: null,
+      choices: [],
+      usage: response.usage,
+    });
+  }
+  return out + "data: [DONE]\n\n";
 }
 
 export function extractGeminiModelAction(path: string): { model: string; action: string } | null {

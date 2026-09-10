@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   openaiFromAnthropicResponse,
+  openaiFromGeminiResponse,
   openaiToAnthropic,
   openaiToGemini,
   usageFromOpenAI,
@@ -12,6 +13,8 @@ import {
   convertClaudeRequest,
   convertOpenAIChatToClaude,
 } from "../src/convert.js";
+import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
+import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
 import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
 import { isClientError } from "../src/reasoning.js";
 import { mapModel } from "../src/select.js";
@@ -61,6 +64,224 @@ test("anthropic response to openai usage", () => {
   );
   assert.equal(usageFromOpenAI(o).prompt, 3);
   assert.equal((o.choices as { message: { content: string } }[])[0].message.content, "hello");
+});
+
+test("original Claude DoResponse JSON matches claude_to_openai golden fields", () => {
+  const o = openaiFromAnthropicResponse(
+    {
+      id: "msg_fixed",
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        { type: "text", text: "The answer is 42." },
+        { type: "tool_use", id: "toolu_abc", name: "get_weather", input: { city: "Paris" } },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3, cache_creation_input_tokens: 2 },
+    },
+    "ignored",
+  );
+  assert.equal(o.id, "msg_fixed");
+  assert.equal(o.object, "chat.completion");
+  assert.equal(o.model, "claude-test");
+  const choice = (o.choices as { index: number; message: Record<string, unknown>; finish_reason: string }[])[0];
+  assert.equal(choice.index, 0);
+  assert.equal(choice.finish_reason, "tool_calls");
+  assert.equal(choice.message.role, "assistant");
+  assert.equal(choice.message.content, "The answer is 42.");
+  const tools = choice.message.tool_calls as { id: string; type: string; function: { name: string; arguments: string } }[];
+  assert.equal(tools[0].id, "toolu_abc");
+  assert.equal(tools[0].type, "function");
+  assert.equal(tools[0].function.name, "get_weather");
+  assert.equal(tools[0].function.arguments, '{"city":"Paris"}');
+  const usage = o.usage as Record<string, unknown>;
+  assert.equal(usage.prompt_tokens, 15);
+  assert.equal(usage.completion_tokens, 5);
+  assert.equal(usage.total_tokens, 20);
+  assert.equal(usage.usage_semantic, "openai");
+  assert.equal(usage.usage_source, "anthropic");
+  assert.equal(usage.input_tokens, 15);
+  assert.equal(usage.output_tokens, 0);
+  assert.equal(usage.input_tokens_details, null);
+  assert.equal(usage.claude_cache_creation_5_m_tokens, 2);
+  assert.equal(usage.claude_cache_creation_1_h_tokens, 0);
+  const billing = usage.billing_usage as { source: string; semantic: string; claude_usage: Record<string, number> };
+  assert.equal(billing.source, "claude_messages");
+  assert.equal(billing.semantic, "anthropic");
+  assert.equal(billing.claude_usage.input_tokens, 10);
+  assert.equal(billing.claude_usage.cache_creation_input_tokens, 2);
+  assert.equal(billing.claude_usage.cache_read_input_tokens, 3);
+  assert.equal(billing.claude_usage.output_tokens, 5);
+  assert.equal(billing.claude_usage.claude_cache_creation_5_m_tokens, 0);
+  assert.equal(billing.claude_usage.claude_cache_creation_1_h_tokens, 0);
+  const details = usage.prompt_tokens_details as Record<string, number>;
+  assert.equal(details.cached_tokens, 3);
+  assert.equal(details.cached_creation_tokens, 2);
+  assert.equal(details.cache_write_tokens, 2);
+  assert.equal(details.text_tokens, 0);
+  assert.equal(details.audio_tokens, 0);
+  assert.equal(details.image_tokens, 0);
+  const completionDetails = usage.completion_tokens_details as Record<string, number>;
+  assert.equal(completionDetails.reasoning_tokens, 0);
+  assert.equal(completionDetails.text_tokens, 0);
+  assert.equal(claudeStopReasonToOpenAIFinishReason("end_turn"), "stop");
+  assert.equal(claudeStopReasonToOpenAIFinishReason("max_tokens"), "length");
+  assert.equal(claudeStopReasonToOpenAIFinishReason("pause_turn"), "length");
+  assert.equal(claudeStopReasonToOpenAIFinishReason("refusal"), "content_filter");
+});
+
+test("original Claude thinking block becomes message.reasoning_content", () => {
+  const o = openaiFromAnthropicResponse({
+    id: "msg_think",
+    model: "claude-3-7-sonnet",
+    content: [
+      { type: "thinking", thinking: "Deep thought." },
+      { type: "text", text: "42" },
+    ],
+    stop_reason: "end_turn",
+    usage: { input_tokens: 1, output_tokens: 1 },
+  });
+  const choice = (o.choices as { message: { content: string; reasoning_content?: string }; finish_reason: string }[])[0];
+  assert.equal(choice.message.content, "42");
+  assert.equal(choice.message.reasoning_content, "Deep thought.");
+  assert.equal(choice.finish_reason, "stop");
+});
+
+test("original Gemini DoResponse JSON matches gemini_to_openai golden fields", () => {
+  const o = openaiFromGeminiResponse(
+    {
+      candidates: [
+        {
+          finishReason: "STOP",
+          content: {
+            role: "model",
+            parts: [{ text: "The answer is 42." }, { functionCall: { name: "get_weather", args: { city: "Paris" } } }],
+          },
+        },
+      ],
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, thoughtsTokenCount: 2, totalTokenCount: 15 },
+    },
+    "upstream-model",
+    { id: "chatcmpl-fixed", created: 0, upstreamModel: "upstream-model" },
+  );
+  assert.equal(o.id, "chatcmpl-fixed");
+  assert.equal(o.model, "upstream-model");
+  assert.equal(o.object, "chat.completion");
+  assert.equal(o.created, 0);
+  const choice = (o.choices as { index: number; message: Record<string, unknown>; finish_reason: string }[])[0];
+  assert.equal(choice.index, 0);
+  assert.equal(choice.finish_reason, "tool_calls");
+  assert.equal(choice.message.role, "assistant");
+  assert.equal(choice.message.content, "The answer is 42.");
+  const tools = choice.message.tool_calls as { id: string; type: string; function: { name: string; arguments: string } }[];
+  assert.equal(tools[0].type, "function");
+  assert.equal(tools[0].function.name, "get_weather");
+  assert.equal(tools[0].function.arguments, '{"city":"Paris"}');
+  assert.match(tools[0].id, /^call_/);
+  const usage = o.usage as Record<string, unknown>;
+  assert.equal(usage.prompt_tokens, 10);
+  assert.equal(usage.completion_tokens, 7);
+  assert.equal(usage.total_tokens, 15);
+  assert.equal(usage.input_tokens, 0);
+  assert.equal(usage.output_tokens, 0);
+  assert.equal(usage.input_tokens_details, null);
+  assert.equal(usage.claude_cache_creation_5_m_tokens, 0);
+  assert.equal(usage.claude_cache_creation_1_h_tokens, 0);
+  assert.equal("usage_semantic" in usage, false);
+  const billing = usage.billing_usage as { source: string; semantic: string; gemini_usage_metadata: Record<string, unknown> };
+  assert.equal(billing.source, "gemini_chat");
+  assert.equal(billing.semantic, "gemini");
+  assert.equal(billing.gemini_usage_metadata.promptTokenCount, 10);
+  assert.equal(billing.gemini_usage_metadata.toolUsePromptTokenCount, 0);
+  assert.equal(billing.gemini_usage_metadata.candidatesTokenCount, 5);
+  assert.equal(billing.gemini_usage_metadata.totalTokenCount, 15);
+  assert.equal(billing.gemini_usage_metadata.thoughtsTokenCount, 2);
+  assert.equal(billing.gemini_usage_metadata.cachedContentTokenCount, 0);
+  assert.deepEqual(billing.gemini_usage_metadata.promptTokensDetails, []);
+  assert.deepEqual(billing.gemini_usage_metadata.toolUsePromptTokensDetails, []);
+  assert.deepEqual(billing.gemini_usage_metadata.candidatesTokensDetails, []);
+  const details = usage.prompt_tokens_details as Record<string, number>;
+  assert.equal(details.cached_tokens, 0);
+  assert.equal(details.text_tokens, 10);
+  assert.equal(details.audio_tokens, 0);
+  assert.equal(details.image_tokens, 0);
+  assert.equal("cached_creation_tokens" in details, false);
+  const completionDetails = usage.completion_tokens_details as Record<string, number>;
+  assert.equal(completionDetails.reasoning_tokens, 2);
+  assert.equal(completionDetails.text_tokens, 0);
+
+  const length = openaiFromGeminiResponse(
+    {
+      candidates: [{ finishReason: "MAX_TOKENS", content: { parts: [{ text: "hi" }] } }],
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+    },
+    "m",
+  );
+  assert.equal((length.choices as { finish_reason: string }[])[0].finish_reason, "length");
+  const img = openaiFromGeminiResponse(
+    { candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: "abc" } }] } }] },
+    "m",
+  );
+  assert.equal((img.choices as { message: { content: string } }[])[0].message.content, "![image](data:image/png;base64,abc)");
+  const thought = openaiFromGeminiResponse(
+    { candidates: [{ content: { parts: [{ thought: true, text: "why" }, { text: "ans" }] } }] },
+    "m",
+  );
+  const thoughtChoice = (thought.choices as { message: { content: string; reasoning_content?: string } }[])[0];
+  assert.equal(thoughtChoice.message.content, "ans");
+  assert.equal(thoughtChoice.message.reasoning_content, "why");
+});
+
+test("original Claude stream DoResponse emits OpenAI chunks with tool_calls finish_reason", () => {
+  const sse = [
+    'event: message_start',
+    'data: {"type":"message_start","message":{"id":"msg_fixed","model":"claude-test","usage":{"input_tokens":10,"cache_read_input_tokens":3,"cache_creation_input_tokens":2,"output_tokens":0}}}',
+    "",
+    'event: content_block_start',
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+    "",
+    'event: content_block_delta',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The answer is 42."}}',
+    "",
+    'event: content_block_stop',
+    'data: {"type":"content_block_stop","index":0}',
+    "",
+    'event: content_block_start',
+    'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_abc","name":"get_weather"}}',
+    "",
+    'event: content_block_delta',
+    'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"city\\":\\"Paris\\"}"}}',
+    "",
+    'event: message_delta',
+    'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}',
+    "",
+    'event: message_stop',
+    'data: {"type":"message_stop"}',
+    "",
+  ].join("\n");
+  const converted = claudeSseToOpenAIChat(sse, { created: 0, includeUsage: true, upstreamModel: "claude-test" });
+  assert.match(converted.body, /"object":"chat.completion.chunk"/);
+  assert.match(converted.body, /"finish_reason":"tool_calls"/);
+  assert.match(converted.body, /data: \[DONE\]/);
+  assert.equal(converted.usage.prompt_tokens, 15);
+  assert.equal(converted.usage.completion_tokens, 5);
+  assert.equal(converted.usage.usage_semantic, "openai");
+  assert.equal(converted.usage.usage_source, "anthropic");
+});
+
+test("original Gemini stream DoResponse emits OpenAI chunks with usage.reasoning_tokens", () => {
+  const sse = [
+    'data: {"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"The answer is 42."}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":2,"totalTokenCount":15}}',
+    "",
+  ].join("\n");
+  const converted = geminiSseToOpenAIChat(sse, { id: "chatcmpl-fixed", created: 0, upstreamModel: "upstream-model" });
+  assert.match(converted.body, /"role":"assistant"/);
+  assert.match(converted.body, /The answer is 42\./);
+  assert.match(converted.body, /"finish_reason":"stop"/);
+  assert.equal(converted.usage.prompt_tokens, 10);
+  assert.equal(converted.usage.completion_tokens, 7);
+  assert.equal(converted.usage.completion_tokens_details.reasoning_tokens, 2);
 });
 
 test("azure upstream url uses deployment and api-version", () => {

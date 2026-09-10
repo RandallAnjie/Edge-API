@@ -14,10 +14,13 @@ import {
   openaiFromGeminiResponse,
   openaiToAnthropic,
   openaiToGemini,
+  sseFromOpenAIChatCompletion,
   sseOpenAIFromText,
   usageFromOpenAI,
   type ChatMessage,
 } from "./convert.js";
+import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
+import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
 import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import {
@@ -278,10 +281,62 @@ function convertInbound(
   client: ClientFormat,
   upstreamJson: Record<string, unknown>,
   model: string,
+  opts: { requestId?: string; created?: number; fallbackPromptTokens?: number } = {},
 ): Record<string, unknown> {
   if (client === "openai" && kind === "anthropic") return openaiFromAnthropicResponse(upstreamJson, model);
-  if (client === "openai" && kind === "gemini") return openaiFromGeminiResponse(upstreamJson, model);
+  if (client === "openai" && kind === "gemini") {
+    return openaiFromGeminiResponse(upstreamJson, model, {
+      id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
+      created: opts.created,
+      upstreamModel: model,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+  }
   return upstreamJson;
+}
+
+function openaiClientFromProvider(
+  kind: ReturnType<typeof channelKind>,
+  text: string,
+  mapped: string,
+  stream: boolean,
+  opts: { requestId: string; includeUsage?: boolean; fallbackPromptTokens?: number },
+): { body: string; usageBody: Record<string, unknown> } {
+  if (kind === "anthropic") {
+    const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
+    if (stream) {
+      return {
+        body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),
+        usageBody: { usage: { prompt_tokens: out.usage.prompt_tokens, completion_tokens: out.usage.completion_tokens, total_tokens: out.usage.total_tokens, prompt_tokens_details: out.usage.prompt_tokens_details } },
+      };
+    }
+    return { body: JSON.stringify(out.json), usageBody: out.json || {} };
+  }
+  if (kind === "gemini") {
+    const out = geminiUpstreamToOpenAIChat(text, mapped, {
+      id: `chatcmpl-${opts.requestId}`,
+      upstreamModel: mapped,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+    if (stream) {
+      return {
+        body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),
+        usageBody: { usage: { prompt_tokens: out.usage.prompt_tokens, completion_tokens: out.usage.completion_tokens, total_tokens: out.usage.total_tokens, prompt_tokens_details: out.usage.prompt_tokens_details } },
+      };
+    }
+    return { body: JSON.stringify(out.json), usageBody: out.json || {} };
+  }
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    parsed = { content: text };
+  }
+  const converted = convertInbound(kind, "openai", parsed, mapped, {
+    requestId: opts.requestId,
+    fallbackPromptTokens: opts.fallbackPromptTokens,
+  });
+  return { body: stream ? sseFromOpenAIChatCompletion(converted) : JSON.stringify(converted), usageBody: converted };
 }
 
 async function settle(
@@ -594,21 +649,19 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     if (isSSE && res.body) {
       if (kind !== "openai" && clientFormat === "openai") {
         const text = await res.text();
-        let parsed: Record<string, unknown> = {};
-        try {
-          parsed = JSON.parse(text) as Record<string, unknown>;
-        } catch {
-          parsed = { content: text };
-        }
-        const converted = convertInbound(kind, clientFormat, parsed, model);
-        const usage = usageFromOpenAI(converted);
-        const content = String(
-          ((converted.choices as { message?: { content?: string } }[] | undefined)?.[0]?.message?.content) || "",
-        );
+        const includeUsage = Boolean(asObj(asObj(opts.body).stream_options).include_usage);
+        const converted = openaiClientFromProvider(kind, text, mapped, true, {
+          requestId: rid,
+          includeUsage,
+          fallbackPromptTokens: promptEst,
+        });
+        const usage = usageFromOpenAI(converted.usageBody);
+        extra.cachedTokens = usage.cachedTokens;
+        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
         ctx?.waitUntil(
           settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
         );
-        return new Response(sseOpenAIFromText(model, content), {
+        return new Response(converted.body, {
           status: 200,
           headers: {
             "content-type": "text/event-stream; charset=utf-8",
@@ -639,7 +692,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         headers: { "content-type": ct || "application/json", "x-oneapi-request-id": rid },
       });
     }
-    const converted = convertInbound(kind, clientFormat, parsed, model);
+    const converted = convertInbound(kind, clientFormat, parsed, mapped, {
+      requestId: rid,
+      fallbackPromptTokens: promptEst,
+    });
     const usage = usageFromOpenAI(converted);
     extra.cachedTokens = usage.cachedTokens;
     extra.promptCacheHitTokens = usage.promptCacheHitTokens;
