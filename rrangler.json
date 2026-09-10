@@ -1,0 +1,31 @@
+{
+  "name": "edge-api",
+  "main": "dist/worker.js",
+  "compatibilityDate": "2026-07-05",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "edge-api"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "title": "edge-api-kv"
+    }
+  ],
+  "vars": {
+    "SYSTEM_NAME": "Edge API"
+  },
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS",
+    "spa": true
+  },
+  "r2_buckets": [
+    {
+      "binding": "R2",
+      "bucket_name": "edge-api-artifacts"
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+new-api Notices
+
+new-api
+Copyright (c) QuantumNous and contributors.
+
+This project is licensed under the GNU Affero General Public License v3.0.
+See LICENSE for the full project license terms.
+
+==== Additional Terms under AGPLv3 Section 7 ====
+
+Pursuant to Section 7(b) of the GNU Affero General Public License version 3,
+the following reasonable legal notice and author attribution must be preserved
+by modified versions in the Appropriate Legal Notices and in any prominent
+about, legal, footer, or attribution location presented by the user interface:
+
+"Frontend design and development by New API contributors."
+
+Modified versions that present a user interface must also preserve a visible
+link to the original project in a prominent about, legal, footer, or
+attribution location:
+
+https://github.com/QuantumNous/new-api
+
+Modified versions must not misrepresent the origin of the software and must
+mark their changes in accordance with AGPLv3 Section 7(c).
+
+==== Modifications (Edge API / RandallFlare) ====
+
+This tree is a modified version of QuantumNous/new-api, rewritten to run as a
+Cloudflare Workers-compatible Worker on RandallFlare (workerd + D1 + KV +
+static assets via @bigrandall/rrangler).
+
+Material changes from upstream:
+
+- Runtime: Go/Gin + embedded React replaced by a TypeScript Worker on workerd.
+- Storage: MySQL/PostgreSQL/SQLite-via-GORM replaced by D1 (SQLite) + KV.
+- Password hashing: Argon2id/bcrypt replaced by Web Crypto PBKDF2-SHA256
+  (existing upstream password hashes are not portable). This is documented
+  PBKDF2-SHA256, not a fake Argon2 implementation.
+- Dashboard access tokens are original-shaped JWTs (HS256, iss=new-api,
+  aud=new-api-dashboard, 15-minute TTL). The HttpOnly refresh cookie
+  `new_api_refresh` is the original `sid.secret` value (Path=/api/user/auth,
+  SameSite=Strict) with rotation and AUTH_REFRESH_RACE. Security proofs are
+  original-shaped JWTs (`token_use=security_proof`, 1-minute TTL) sent as
+  `X-Security-Proof` and consumed once via hashed auth_flows rows.
+- The original QuantumNous/new-api TanStack + Rsbuild frontend is vendored
+  under web/ and served as ASSETS (public/ is the production build). It is
+  not a compact replacement SPA.
+- Channel types that require vendor SDKs or local plugins (AWS SigV4 service
+  accounts, Vertex service-account JWT minting, in-process JS task plugins)
+  are exposed in the catalog and will relay when the channel is
+  OpenAI/Anthropic/Gemini compatible or uses HTTP pass-through; otherwise they
+  return a structured error. Stripe/Epay/Creem/Waffo checkout use HTTP APIs
+  (no vendor SDK). io.net model deployments use the original HTTP API (no
+  vendor SDK). Task plugins are a D1 registry plus passthrough routes.
+
+==== End of Notices ====

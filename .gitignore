@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dist-test/
+*.tsbuildinfo
+.rrangler.json
+.wrangler/
+.rrangler-dev/
+.rrangler-dev.capnp
+.DS_Store
+*.log
+env.d.ts
+web/.tanstack/
+
