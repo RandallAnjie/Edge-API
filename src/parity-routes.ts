@@ -28,7 +28,7 @@ import { bytesToHex, sha256Bytes, md5Hex } from "./crypto.js";
 import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-oauth.js";
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
-import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates, runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
+import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { apiFail, apiOk, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, paymentReturnPath, strconvAtoi, taskArtifactError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -717,7 +717,6 @@ export function registerParity(r: Router<Env>): void {
       status: "pending",
       payload: { manual: true },
     });
-    c.waitUntil(runPendingModelUpdateSystemTask(s));
     return apiOk({ task_id: id, status: "pending" });
   });
   r.post("/api/channel/upstream_updates/apply", async (c) => {
