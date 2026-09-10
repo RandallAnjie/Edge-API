@@ -1,6 +1,9 @@
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
+  CHANNEL_TYPE_BAIDU,
   CHANNEL_TYPE_CODEX,
+  CHANNEL_TYPE_COHERE,
+  CHANNEL_TYPE_COZE,
   CHANNEL_TYPE_MOKA,
   CHANNEL_TYPE_VOLC,
   CHANNEL_AUTO_DISABLED,
@@ -11,7 +14,7 @@ import {
   UNSUPPORTED_CHANNEL_TEST_TYPES,
   csv,
 } from "./constants.js";
-import { channelKind, channelTypeName } from "./catalog.js";
+import { channelKind, channelTypeName, resolveBaseUrl } from "./catalog.js";
 import {
   convertOpenAIRequest,
   isOpenAIReasoningOModel,
@@ -19,6 +22,9 @@ import {
   openaiToAnthropic,
   openaiToGemini,
 } from "./convert.js";
+import { applyBaiduAccessToken, convertBaiduEmbeddingRequest } from "./baidu-convert.js";
+import { convertCohereRerankRequest } from "./cohere-convert.js";
+import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
 import { computeQuota, quotaRatios } from "./quota.js";
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
@@ -437,10 +443,15 @@ function buildTestTarget(
       channelType: channel.type,
       originModelName: originModel,
       upstreamModelName: mappedModel,
+      botId: channel.other || "",
     });
     if (payload && typeof payload === "object" && typeof (payload as { model?: unknown }).model === "string") {
       info.upstreamModel = String((payload as { model: string }).model);
     }
+  } else if (kind === "embedding" && channel.type === CHANNEL_TYPE_BAIDU) {
+    payload = convertBaiduEmbeddingRequest(body as Record<string, unknown>);
+  } else if (kind === "rerank" && channel.type === CHANNEL_TYPE_COHERE) {
+    payload = convertCohereRerankRequest(body as Record<string, unknown>, { upstreamModelName: mappedModel });
   }
   const extra: Record<string, string> = {};
   if (kind === "anthropic" || kindName === "anthropic") extra["anthropic-version"] = CLAUDE_VERSION;
@@ -490,7 +501,14 @@ export async function testChannel(
   const started = Date.now();
   let res: Response;
   try {
+    if (channel.type === CHANNEL_TYPE_BAIDU) {
+      target.url = await applyBaiduAccessToken(target.url, pickChannelKey(channel.key));
+    }
     res = await fetchTarget(target);
+    if (channel.type === CHANNEL_TYPE_COZE && !isStream) {
+      const completed = await completeCozeNonStreamChat(res, resolveBaseUrl(channel.type, channel.base_url), target.headers);
+      res = completed.response;
+    }
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err), "do_request_failed");
   }

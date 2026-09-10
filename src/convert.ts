@@ -9,11 +9,15 @@ import {
 import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind } from "./catalog.js";
-import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI } from "./constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI } from "./constants.js";
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
 import { convertDeepSeekOpenAIRequest, convertVolcOpenAIRequest, convertXaiOpenAIRequest } from "./vendor-convert.js";
+import { convertBaiduEmbeddingRequest, convertBaiduOpenAIRequest } from "./baidu-convert.js";
+import { convertCohereOpenAIRequest, convertCohereRerankRequest } from "./cohere-convert.js";
+import { convertCozeOpenAIRequest } from "./coze-convert.js";
+import { convertDifyOpenAIRequest } from "./dify-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 
 export type ChatMessage = {
@@ -314,6 +318,12 @@ export type ConvertOpenAIOpts = {
   upstreamModelName: string;
   settings?: ReasoningHostSettings;
   relayMode?: string;
+  /** Original Coze `c.GetString("bot_id")` from `channel.Other`. */
+  botId?: string;
+  /** Original `helper.GetResponseID` (`chatcmpl-${requestId}`). */
+  responseId?: string;
+  /** Original `common.CohereSafetySetting`; default `NONE`. */
+  cohereSafetySetting?: string;
 };
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
@@ -325,6 +335,15 @@ export {
   openaiFromOllamaChatResponse,
   openaiFromOllamaEmbedding,
 } from "./ollama-convert.js";
+export {
+  convertBaiduEmbeddingRequest,
+  convertBaiduOpenAIRequest,
+  openaiFromBaiduEmbedding,
+  openaiFromBaiduResponse,
+} from "./baidu-convert.js";
+export { convertCohereOpenAIRequest, convertCohereRerankRequest, openaiFromCohereResponse } from "./cohere-convert.js";
+export { convertCozeOpenAIRequest, openaiFromCozeDetailResponse } from "./coze-convert.js";
+export { convertDifyOpenAIRequest, openaiFromDifyResponse } from "./dify-convert.js";
 
 /** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
@@ -370,6 +389,28 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
       upstreamModelName: suffixed.upstreamModelName,
       settings,
     });
+  }
+  if (opts.channelType === CHANNEL_TYPE_COHERE) {
+    if (opts.relayMode === "rerank") {
+      return convertCohereRerankRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+    }
+    if (opts.relayMode === "embeddings") {
+      throw new Error("not implemented");
+    }
+    return convertCohereOpenAIRequest(suffixed.body, {
+      upstreamModelName: suffixed.upstreamModelName,
+      safetySetting: opts.cohereSafetySetting,
+    });
+  }
+  if (opts.channelType === CHANNEL_TYPE_DIFY) {
+    return convertDifyOpenAIRequest(suffixed.body, { responseId: opts.responseId });
+  }
+  if (opts.channelType === CHANNEL_TYPE_COZE) {
+    return convertCozeOpenAIRequest(suffixed.body, { botId: opts.botId, responseId: opts.responseId });
+  }
+  if (opts.channelType === CHANNEL_TYPE_BAIDU) {
+    if (opts.relayMode === "embeddings") return convertBaiduEmbeddingRequest(suffixed.body);
+    return convertBaiduOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
   }
   const kind = channelKind(opts.channelType);
   if (kind === "anthropic") {

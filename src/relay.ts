@@ -1,4 +1,4 @@
-import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
+import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
@@ -26,6 +26,10 @@ import { compactUuid } from "./openai-usage.js";
 import { isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding, ollamaUpstreamToOpenAIChat } from "./ollama-convert.js";
 import { imagenUsage, openaiFromImagenResponse, removeFunctionCallIDs, vertexRequestMode, wrapVertexClaude } from "./vertex-convert.js";
+import { applyBaiduAccessToken, convertBaiduEmbeddingRequest, openaiFromBaiduEmbedding, openaiFromBaiduResponse, baiduUpstreamToOpenAIChat } from "./baidu-convert.js";
+import { convertCohereRerankRequest, openaiFromCohereResponse, openaiFromCohereRerank, cohereUpstreamToOpenAIChat } from "./cohere-convert.js";
+import { completeCozeNonStreamChat, openaiFromCozeDetailResponse, cozeUpstreamToOpenAIChat, type CozeUsage } from "./coze-convert.js";
+import { openaiFromDifyResponse, difyUpstreamToOpenAIChat } from "./dify-convert.js";
 import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import {
@@ -177,6 +181,7 @@ function convertOutbound(
   originModel = "",
   settings: ReasoningHostSettings = {},
   mode: RelayMode = "chat",
+  extras: { botId?: string; responseId?: string; cohereSafetySetting?: string } = {},
 ): unknown {
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
@@ -200,6 +205,15 @@ function convertOutbound(
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_OLLAMA && mode === "embeddings") {
     return convertOllamaEmbeddingRequest(o, { upstreamModelName: upstream });
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_BAIDU && mode === "embeddings") {
+    return convertBaiduEmbeddingRequest(o);
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_COHERE && mode === "rerank") {
+    return convertCohereRerankRequest(o, { upstreamModelName: upstream });
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_COHERE && mode === "embeddings") {
+    throw new Error("not implemented");
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_OLLAMA && mode === "completions") {
     return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
@@ -229,7 +243,16 @@ function convertOutbound(
     return o;
   }
   if (client === "openai" && (mode === "chat" || Array.isArray(o.messages))) {
-    o = convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
+    o = convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+      botId: extras.botId,
+      responseId: extras.responseId,
+      cohereSafetySetting: extras.cohereSafetySetting,
+    });
     if (kind === "anthropic" || kind === "gemini") return o;
     body = o;
   }
@@ -305,7 +328,15 @@ function convertInbound(
   client: ClientFormat,
   upstreamJson: Record<string, unknown>,
   model: string,
-  opts: { requestId?: string; created?: number; fallbackPromptTokens?: number; channelType?: number; relayMode?: RelayMode; rawText?: string } = {},
+  opts: {
+    requestId?: string;
+    created?: number;
+    fallbackPromptTokens?: number;
+    channelType?: number;
+    relayMode?: RelayMode;
+    rawText?: string;
+    cozeUsage?: CozeUsage;
+  } = {},
 ): Record<string, unknown> {
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_OLLAMA) {
     if (opts.relayMode === "embeddings") return openaiFromOllamaEmbedding(upstreamJson, model);
@@ -314,6 +345,28 @@ function convertInbound(
       id: opts.requestId ? compactUuid() : undefined,
       created: opts.created,
     });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_COHERE) {
+    if (opts.relayMode === "rerank") {
+      return openaiFromCohereRerank(upstreamJson, { estimatePromptTokens: opts.fallbackPromptTokens });
+    }
+    return openaiFromCohereResponse(upstreamJson, model, {
+      id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
+      created: opts.created,
+    });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_DIFY) {
+    return openaiFromDifyResponse(upstreamJson, { created: opts.created });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_COZE) {
+    return openaiFromCozeDetailResponse(upstreamJson, model, {
+      id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
+      usage: opts.cozeUsage,
+    });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_BAIDU) {
+    if (opts.relayMode === "embeddings") return openaiFromBaiduEmbedding(upstreamJson);
+    return openaiFromBaiduResponse(upstreamJson, { created: opts.created });
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_AWS) {
     if (isNovaModel(model)) {
@@ -357,6 +410,28 @@ function openaiClientFromProvider(
 ): { body: string; usageBody: Record<string, unknown> } {
   if (opts.channelType === CHANNEL_TYPE_OLLAMA && opts.relayMode !== "responses" && opts.relayMode !== "embeddings") {
     const out = ollamaUpstreamToOpenAIChat(text, mapped);
+    return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
+  }
+  if (opts.channelType === CHANNEL_TYPE_COHERE && opts.relayMode !== "rerank") {
+    const out = cohereUpstreamToOpenAIChat(text, mapped, {
+      id: `chatcmpl-${opts.requestId}`,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+    return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
+  }
+  if (opts.channelType === CHANNEL_TYPE_DIFY) {
+    const out = difyUpstreamToOpenAIChat(text, { fallbackPromptTokens: opts.fallbackPromptTokens });
+    return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
+  }
+  if (opts.channelType === CHANNEL_TYPE_COZE) {
+    const out = cozeUpstreamToOpenAIChat(text, mapped, {
+      id: `chatcmpl-${opts.requestId}`,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+    return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
+  }
+  if (opts.channelType === CHANNEL_TYPE_BAIDU && opts.relayMode !== "embeddings") {
+    const out = baiduUpstreamToOpenAIChat(text);
     return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
   }
   const vertexMode = opts.channelType === CHANNEL_TYPE_VERTEX ? vertexRequestMode(mapped) : null;
@@ -614,7 +689,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let outbound: unknown = opts.body;
     try {
       mapped = applyModelMapping(channel, model);
-      outbound = opts.rawBody ? opts.body : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode);
+      outbound = opts.rawBody
+        ? opts.body
+        : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode, {
+            botId: channel.other || "",
+            responseId: `chatcmpl-${rid}`,
+          });
       if (!opts.rawBody) {
         const convertedModel = asObj(outbound).model;
         if (typeof convertedModel === "string" && convertedModel) mapped = convertedModel;
@@ -697,7 +777,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     }
     const started = Date.now();
     let res: Response;
+    let cozeUsage: CozeUsage | undefined;
     try {
+      if (channel.type === CHANNEL_TYPE_BAIDU) {
+        target.url = await applyBaiduAccessToken(target.url, pickChannelKey(channel.key));
+      }
       res = await fetchUpstream(target);
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
@@ -737,11 +821,32 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       return new Response(errRes.body, { status: errRes.status, headers });
     }
 
+    if (channel.type === CHANNEL_TYPE_COZE && !opts.stream && mode !== "embeddings" && mode !== "rerank") {
+      try {
+        const completed = await completeCozeNonStreamChat(res, resolveBaseUrl(channel.type, channel.base_url), target.headers);
+        res = completed.response;
+        cozeUsage = completed.usage;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, message.slice(0, 2000), extra);
+        return openaiError(500, message, "bad_response_body");
+      }
+    }
+
     const ct = res.headers.get("content-type") || "";
     let isSSE = ct.includes("text/event-stream") || opts.stream;
     if (channel.type === CHANNEL_TYPE_OLLAMA) {
       if (mode === "embeddings") isSSE = false;
       else if (mode !== "responses") isSSE = Boolean(opts.stream);
+    }
+    if (
+      channel.type === CHANNEL_TYPE_COHERE ||
+      channel.type === CHANNEL_TYPE_DIFY ||
+      channel.type === CHANNEL_TYPE_COZE ||
+      channel.type === CHANNEL_TYPE_BAIDU
+    ) {
+      if (mode === "embeddings" || mode === "rerank") isSSE = false;
+      else isSSE = Boolean(opts.stream);
     }
     if (affinity) {
       ctx?.waitUntil(recordChannelAffinity(store, opts.env, affinity.cacheKeySuffix, channel.id, affinity.ttlSeconds));
@@ -819,6 +924,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         channelType: channel.type,
         relayMode: mode,
         rawText: text,
+        cozeUsage,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

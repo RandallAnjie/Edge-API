@@ -13,10 +13,15 @@ import {
   convertClaudeRequest,
   convertOpenAIChatToClaude,
   convertOllamaEmbeddingRequest,
+  convertBaiduEmbeddingRequest,
+  convertCohereRerankRequest,
+  openaiFromBaiduResponse,
+  openaiFromCohereResponse,
+  openaiFromDifyResponse,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI } from "../src/constants.js";
+import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI } from "../src/constants.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
@@ -1134,5 +1139,208 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () =
   assert.equal(
     buildUpstream(deepseek, "messages", "/v1/messages", "deepseek-chat", { model: "deepseek-chat" }).url,
     "https://api.deepseek.com/anthropic/v1/messages",
+  );
+});
+
+test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON and URLs", () => {
+  const cohere = convertOpenAIRequest(
+    {
+      model: "command-r",
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "assistant", content: "prior" },
+        { role: "user", content: "first" },
+        { role: "user", content: "hi cohere" },
+      ],
+      max_tokens: 0,
+      stream: false,
+      stream_options: { include_usage: true },
+    },
+    { channelType: CHANNEL_TYPE_COHERE, originModelName: "command-r", upstreamModelName: "command-r" },
+  );
+  assert.equal(cohere.model, "command-r");
+  assert.equal(cohere.message, "hi cohere");
+  assert.deepEqual(cohere.chat_history, [
+    { role: "SYSTEM", message: "sys" },
+    { role: "CHATBOT", message: "prior" },
+  ]);
+  assert.equal(cohere.stream, false);
+  assert.equal(cohere.max_tokens, 4000);
+  assert.equal("safety_mode" in cohere, false);
+  assert.equal("stream_options" in cohere, false);
+  assert.equal("messages" in cohere, false);
+
+  const safety = convertOpenAIRequest(
+    { model: "command-r", messages: [{ role: "user", content: "hi" }] },
+    {
+      channelType: CHANNEL_TYPE_COHERE,
+      originModelName: "command-r",
+      upstreamModelName: "command-r",
+      cohereSafetySetting: "CONTEXTUAL",
+    },
+  );
+  assert.equal(safety.safety_mode, "CONTEXTUAL");
+
+  const rerank = convertCohereRerankRequest(
+    { model: "rerank-english-v3.0", query: "q", documents: ["a", "b"], top_n: 0 },
+    { upstreamModelName: "rerank-english-v3.0" },
+  );
+  assert.deepEqual(rerank, {
+    query: "q",
+    documents: ["a", "b"],
+    model: "rerank-english-v3.0",
+    top_n: 1,
+    return_documents: true,
+  });
+
+  const mapped = openaiFromCohereResponse(
+    {
+      response_id: "resp-1",
+      text: "hello cohere",
+      finish_reason: "COMPLETE",
+      meta: { billed_units: { input_tokens: 3, output_tokens: 5 } },
+    },
+    "command-r",
+    { created: 1 },
+  );
+  assert.equal(mapped.id, "resp-1");
+  assert.equal(mapped.object, "chat.completion");
+  assert.equal(mapped.model, "command-r");
+  assert.equal((mapped.choices as { message: { content: string }; finish_reason: string }[])[0].message.content, "hello cohere");
+  assert.equal((mapped.choices as { finish_reason: string }[])[0].finish_reason, "stop");
+  assert.deepEqual(mapped.usage, { prompt_tokens: 3, completion_tokens: 5, total_tokens: 8 });
+
+  const dify = convertOpenAIRequest(
+    {
+      model: "dify-bot",
+      user: "alice",
+      stream: true,
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "assistant", content: "prior" },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "see" },
+            { type: "image_url", image_url: { url: "https://example.com/a.png", mime_type: "image" } },
+          ],
+        },
+      ],
+    },
+    { channelType: CHANNEL_TYPE_DIFY, originModelName: "dify-bot", upstreamModelName: "dify-bot", responseId: "chatcmpl-fallback" },
+  );
+  assert.deepEqual(dify.inputs, {});
+  assert.equal(dify.query, "SYSTEM: \nsys\nASSISTANT: \nprior\nUSER: \nsee\n");
+  assert.equal(dify.response_mode, "streaming");
+  assert.equal(dify.user, "alice");
+  assert.equal(dify.auto_generate_name, false);
+  assert.deepEqual(dify.files, [{ type: "image", transfer_mode: "remote_url", url: "https://example.com/a.png" }]);
+  assert.equal("model" in dify, false);
+
+  const difyNoUser = convertOpenAIRequest(
+    { model: "dify-bot", messages: [{ role: "user", content: "hi" }] },
+    { channelType: CHANNEL_TYPE_DIFY, originModelName: "dify-bot", upstreamModelName: "dify-bot", responseId: "chatcmpl-rid" },
+  );
+  assert.equal(difyNoUser.user, "chatcmpl-rid");
+  assert.equal(difyNoUser.response_mode, "blocking");
+  assert.deepEqual(difyNoUser.files, []);
+
+  const difyMapped = openaiFromDifyResponse(
+    {
+      conversation_id: "conv-1",
+      answer: "ok dify",
+      metadata: { usage: { prompt_tokens: 2, completion_tokens: 4, total_tokens: 6 } },
+    },
+    { created: 2 },
+  );
+  assert.equal(difyMapped.id, "conv-1");
+  assert.equal(difyMapped.model, "");
+  assert.equal(difyMapped.object, "chat.completion");
+  assert.equal((difyMapped.choices as { message: { content: string }; finish_reason: string }[])[0].message.content, "ok dify");
+  assert.equal((difyMapped.choices as { finish_reason: string }[])[0].finish_reason, "stop");
+
+  const coze = convertOpenAIRequest(
+    {
+      model: "moonshot-v1-8k",
+      user: "u1",
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "hi coze" },
+        { role: "assistant", content: "prior" },
+        { role: "user", content: "again" },
+      ],
+    },
+    { channelType: CHANNEL_TYPE_COZE, originModelName: "moonshot-v1-8k", upstreamModelName: "moonshot-v1-8k", botId: "bot-xyz", responseId: "chatcmpl-coze" },
+  );
+  assert.equal(coze.bot_id, "bot-xyz");
+  assert.equal(coze.user_id, "u1");
+  assert.equal("stream" in coze, false);
+  assert.deepEqual(coze.additional_messages, [
+    { role: "user", content: "hi coze", content_type: "text" },
+    { role: "user", content: "again", content_type: "text" },
+  ]);
+
+  const baidu = convertOpenAIRequest(
+    {
+      model: "ERNIE-4.0",
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "hi baidu" },
+      ],
+      max_tokens: 1,
+      temperature: 0,
+      top_p: 0.9,
+      frequency_penalty: 0.2,
+      user: "u-baidu",
+    },
+    { channelType: CHANNEL_TYPE_BAIDU, originModelName: "ERNIE-4.0", upstreamModelName: "ERNIE-4.0" },
+  );
+  assert.equal(baidu.system, "sys");
+  assert.deepEqual(baidu.messages, [{ role: "user", content: "hi baidu" }]);
+  assert.equal(baidu.max_output_tokens, 2);
+  assert.equal(baidu.temperature, 0);
+  assert.equal(baidu.top_p, 0.9);
+  assert.equal(baidu.penalty_score, 0.2);
+  assert.equal(baidu.user_id, "u-baidu");
+  assert.equal("disable_search" in baidu, false);
+  assert.equal("enable_citation" in baidu, false);
+  assert.equal("stream" in baidu, false);
+  assert.equal("model" in baidu, false);
+
+  const embed = convertBaiduEmbeddingRequest({ model: "Embedding-V1", input: "hello" });
+  assert.deepEqual(embed, { input: ["hello"] });
+
+  const baiduMapped = openaiFromBaiduResponse(
+    {
+      id: "as-1",
+      created: 9,
+      result: "hello baidu",
+      usage: { prompt_tokens: 4, completion_tokens: 6, total_tokens: 10 },
+    },
+    { created: 9 },
+  );
+  assert.equal(baiduMapped.id, "as-1");
+  assert.equal(baiduMapped.model, "");
+  assert.equal((baiduMapped.choices as { message: { content: string } }[])[0].message.content, "hello baidu");
+  assert.equal((baiduMapped.choices as { finish_reason: string }[])[0].finish_reason, "stop");
+
+  const cohereCh = testChannel({ type: CHANNEL_TYPE_COHERE, key: "ck", base_url: "", models: "command-r" });
+  assert.equal(buildUpstream(cohereCh, "chat", "/v1/chat/completions", "command-r", cohere).url, "https://api.cohere.ai/v1/chat");
+  assert.equal(buildUpstream(cohereCh, "rerank", "/v1/rerank", "rerank-english-v3.0", rerank).url, "https://api.cohere.ai/v1/rerank");
+
+  const difyCh = testChannel({ type: CHANNEL_TYPE_DIFY, key: "dk", base_url: "", models: "dify-bot" });
+  assert.equal(buildUpstream(difyCh, "chat", "/v1/chat/completions", "dify-bot", dify).url, "https://api.dify.ai/v1/chat-messages");
+
+  const cozeCh = testChannel({ type: CHANNEL_TYPE_COZE, key: "zk", base_url: "", models: "moonshot-v1-8k", other: "bot-xyz" });
+  assert.equal(buildUpstream(cozeCh, "chat", "/v1/chat/completions", "moonshot-v1-8k", coze).url, "https://api.coze.cn/v3/chat");
+
+  const baiduCh = testChannel({ type: CHANNEL_TYPE_BAIDU, key: "ak|sk", base_url: "", models: "ERNIE-4.0,Embedding-V1" });
+  assert.equal(
+    buildUpstream(baiduCh, "chat", "/v1/chat/completions", "ERNIE-4.0", baidu).url,
+    "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions_pro",
+  );
+  assert.equal(
+    buildUpstream(baiduCh, "embeddings", "/v1/embeddings", "Embedding-V1", embed).url,
+    "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/embeddings/embedding-v1",
   );
 });

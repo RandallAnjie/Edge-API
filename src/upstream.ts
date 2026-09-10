@@ -15,6 +15,7 @@ import {
   parseJson,
 } from "./constants.js";
 import { awsConverseUrl, getAwsModelID, parseAwsApiKey } from "./aws-convert.js";
+import { baiduWorkshopURL } from "./baidu-convert.js";
 import {
   buildAnthropicModelURL,
   buildGoogleModelURL,
@@ -298,7 +299,8 @@ export function buildUpstream(
       break;
     }
     case "cohere": {
-      url = joinUrl(base, mode === "embeddings" ? "/v1/embed" : "/v2/chat");
+      if (mode === "rerank") url = joinUrl(base, "/v1/rerank");
+      else url = joinUrl(base, "/v1/chat");
       headers.authorization = `Bearer ${apiKey}`;
       break;
     }
@@ -313,7 +315,7 @@ export function buildUpstream(
       break;
     }
     case "baidu": {
-      url = joinUrl(base, "/v2/chat/completions");
+      url = baiduWorkshopURL(base, upstreamModel);
       headers.authorization = `Bearer ${apiKey}`;
       break;
     }
