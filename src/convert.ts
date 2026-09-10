@@ -9,7 +9,9 @@ import {
 import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind } from "./catalog.js";
-import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN } from "./constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX } from "./constants.js";
+import { convertAwsOpenAIRequest } from "./aws-convert.js";
+import { convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 
 export type ChatMessage = {
@@ -318,6 +320,20 @@ export { convertGeminiRequest, convertOpenAIChatToGemini } from "./gemini-conver
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
   const settings = opts.settings || {};
   const suffixed = applyReasoningModelSuffix(body, opts.originModelName, opts.upstreamModelName, settings, "chat");
+  if (opts.channelType === CHANNEL_TYPE_AWS) {
+    return convertAwsOpenAIRequest(suffixed.body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
+  }
+  if (opts.channelType === CHANNEL_TYPE_VERTEX) {
+    return convertVertexOpenAIRequest(suffixed.body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
+  }
   const kind = channelKind(opts.channelType);
   if (kind === "anthropic") {
     return convertOpenAIChatToClaude(suffixed.body, {

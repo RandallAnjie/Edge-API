@@ -58,6 +58,7 @@ export type ReasoningHostSettings = {
   geminiSafetySettings?: Record<string, string>;
   geminiSupportedImagineModels?: string[];
   geminiFunctionCallThoughtSignatureEnabled?: boolean;
+  removeFunctionResponseIdEnabled?: boolean;
   passThrough?: boolean;
 };
 

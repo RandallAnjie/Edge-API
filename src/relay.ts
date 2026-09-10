@@ -1,4 +1,4 @@
-import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_TASK_PLUGIN, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
+import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
@@ -21,6 +21,8 @@ import {
 } from "./convert.js";
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
 import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
+import { isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
+import { imagenUsage, openaiFromImagenResponse, removeFunctionCallIDs, vertexRequestMode, wrapVertexClaude } from "./vertex-convert.js";
 import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import {
@@ -28,6 +30,7 @@ import {
   DEFAULT_EFFORT_TAIL_MODEL_IDS,
   DEFAULT_THINKING_MODEL_BLACKLIST,
   ReasoningClientError,
+  applyReasoningModelSuffix,
   type ReasoningHostSettings,
 } from "./reasoning.js";
 import {
@@ -146,6 +149,7 @@ async function reasoningSettingsFromStore(store: Store): Promise<ReasoningHostSe
     geminiSafetySettings: parseJson(await store.option("gemini.safety_settings"), { default: "OFF" }),
     geminiSupportedImagineModels: parseJson(await store.option("gemini.supported_imagine_models"), []),
     geminiFunctionCallThoughtSignatureEnabled: (await store.option("gemini.function_call_thought_signature_enabled")) !== "false",
+    removeFunctionResponseIdEnabled: (await store.option("gemini.remove_function_response_id_enabled")) !== "false",
   };
 }
 
@@ -174,8 +178,19 @@ function convertOutbound(
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
   const upstream = mappedModel || String(o.model || "");
+  if (channelType === CHANNEL_TYPE_AWS && client === "anthropic" && !isNovaModel(upstream)) {
+    return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
+  }
+  if (channelType === CHANNEL_TYPE_VERTEX && client === "anthropic" && vertexRequestMode(upstream) === "claude") {
+    return wrapVertexClaude(convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings }));
+  }
   if (client === "anthropic" && kind === "anthropic") {
     return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
+  }
+  if (channelType === CHANNEL_TYPE_VERTEX && client === "gemini") {
+    const geminiReq = convertGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
+    if (settings.removeFunctionResponseIdEnabled !== false) removeFunctionCallIDs(geminiReq);
+    return geminiReq;
   }
   if (client === "gemini" && kind === "gemini") {
     return convertGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
@@ -281,8 +296,29 @@ function convertInbound(
   client: ClientFormat,
   upstreamJson: Record<string, unknown>,
   model: string,
-  opts: { requestId?: string; created?: number; fallbackPromptTokens?: number } = {},
+  opts: { requestId?: string; created?: number; fallbackPromptTokens?: number; channelType?: number } = {},
 ): Record<string, unknown> {
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_AWS) {
+    if (isNovaModel(model)) {
+      return openaiFromNovaResponse(upstreamJson, model, {
+        id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
+        created: opts.created,
+      });
+    }
+    return openaiFromAnthropicResponse(upstreamJson, model);
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_VERTEX) {
+    const mode = vertexRequestMode(model);
+    if (mode === "claude") return openaiFromAnthropicResponse(upstreamJson, model);
+    if (model.startsWith("imagen")) return openaiFromImagenResponse(upstreamJson, { created: opts.created });
+    if (mode === "opensource") return upstreamJson;
+    return openaiFromGeminiResponse(upstreamJson, model, {
+      id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
+      created: opts.created,
+      upstreamModel: model,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+  }
   if (client === "openai" && kind === "anthropic") return openaiFromAnthropicResponse(upstreamJson, model);
   if (client === "openai" && kind === "gemini") {
     return openaiFromGeminiResponse(upstreamJson, model, {
@@ -300,9 +336,39 @@ function openaiClientFromProvider(
   text: string,
   mapped: string,
   stream: boolean,
-  opts: { requestId: string; includeUsage?: boolean; fallbackPromptTokens?: number },
+  opts: { requestId: string; includeUsage?: boolean; fallbackPromptTokens?: number; channelType?: number },
 ): { body: string; usageBody: Record<string, unknown> } {
-  if (kind === "anthropic") {
+  const vertexMode = opts.channelType === CHANNEL_TYPE_VERTEX ? vertexRequestMode(mapped) : null;
+  const useClaude =
+    kind === "anthropic" ||
+    (opts.channelType === CHANNEL_TYPE_AWS && !isNovaModel(mapped)) ||
+    vertexMode === "claude";
+  const useGemini = (kind === "gemini" || opts.channelType === CHANNEL_TYPE_VERTEX) && vertexMode !== "claude" && !mapped.startsWith("imagen") && vertexMode !== "opensource";
+  if (opts.channelType === CHANNEL_TYPE_AWS && isNovaModel(mapped)) {
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      parsed = { output: { message: { content: [{ text }] } } };
+    }
+    const json = openaiFromNovaResponse(parsed, mapped, { id: `chatcmpl-${opts.requestId}` });
+    return { body: stream ? sseFromOpenAIChatCompletion(json) : JSON.stringify(json), usageBody: json };
+  }
+  if (mapped.startsWith("imagen") && opts.channelType === CHANNEL_TYPE_VERTEX) {
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      parsed = { predictions: [] };
+    }
+    const json = openaiFromImagenResponse(parsed);
+    const billed = imagenUsage((json.data as unknown[] | undefined)?.length || 0);
+    return {
+      body: JSON.stringify(json),
+      usageBody: { usage: { prompt_tokens: billed.prompt, completion_tokens: 0, total_tokens: billed.total } },
+    };
+  }
+  if (useClaude) {
     const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
     if (stream) {
       return {
@@ -312,7 +378,7 @@ function openaiClientFromProvider(
     }
     return { body: JSON.stringify(out.json), usageBody: out.json || {} };
   }
-  if (kind === "gemini") {
+  if (useGemini) {
     const out = geminiUpstreamToOpenAIChat(text, mapped, {
       id: `chatcmpl-${opts.requestId}`,
       upstreamModel: mapped,
@@ -335,6 +401,7 @@ function openaiClientFromProvider(
   const converted = convertInbound(kind, "openai", parsed, mapped, {
     requestId: opts.requestId,
     fallbackPromptTokens: opts.fallbackPromptTokens,
+    channelType: opts.channelType,
   });
   return { body: stream ? sseFromOpenAIChatCompletion(converted) : JSON.stringify(converted), usageBody: converted };
 }
@@ -530,6 +597,15 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (!opts.rawBody) {
         const convertedModel = asObj(outbound).model;
         if (typeof convertedModel === "string" && convertedModel) mapped = convertedModel;
+        else {
+          mapped = applyReasoningModelSuffix(
+            asObj(opts.body),
+            model,
+            mapped,
+            convertSettings,
+            mode === "responses" ? "responses" : "chat",
+          ).upstreamModelName;
+        }
       }
     } catch (err) {
       const ret = convertRequestFailed(err);
@@ -654,6 +730,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           requestId: rid,
           includeUsage,
           fallbackPromptTokens: promptEst,
+          channelType: channel.type,
         });
         const usage = usageFromOpenAI(converted.usageBody);
         extra.cachedTokens = usage.cachedTokens;
@@ -695,8 +772,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     const converted = convertInbound(kind, clientFormat, parsed, mapped, {
       requestId: rid,
       fallbackPromptTokens: promptEst,
+      channelType: channel.type,
     });
-    const usage = usageFromOpenAI(converted);
+    let usage = usageFromOpenAI(converted);
+    if (mapped.startsWith("imagen") && Array.isArray(converted.data)) {
+      usage = imagenUsage((converted.data as unknown[]).length);
+    }
     extra.cachedTokens = usage.cachedTokens;
     extra.promptCacheHitTokens = usage.promptCacheHitTokens;
     await settle(

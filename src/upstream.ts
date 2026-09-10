@@ -2,15 +2,28 @@ import {
   AZURE_API_VERSION,
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_ANTHROPIC,
+  CHANNEL_TYPE_AWS,
   CHANNEL_TYPE_GEMINI,
   CHANNEL_TYPE_MOONSHOT,
   CHANNEL_TYPE_OLLAMA,
   CHANNEL_TYPE_OPENROUTER,
+  CHANNEL_TYPE_VERTEX,
   CHANNEL_TYPE_VOLC,
   CHANNEL_TYPE_ZHIPU_V4,
   CLAUDE_VERSION,
   parseJson,
 } from "./constants.js";
+import { awsConverseUrl, getAwsModelID, parseAwsApiKey } from "./aws-convert.js";
+import {
+  buildAnthropicModelURL,
+  buildGoogleModelURL,
+  buildOpenSourceChatCompletionsURL,
+  getModelRegion,
+  vertexActionSuffix,
+  vertexClaudeURLModel,
+  vertexProjectIdFromKey,
+  vertexRequestMode,
+} from "./vertex-convert.js";
 import { CHANNEL_SPECIAL_BASES, channelKind, defaultBaseUrl, resolveBaseUrl } from "./catalog.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
 import { mapModel, pickChannelKey } from "./select.js";
@@ -117,6 +130,72 @@ export function buildUpstream(
 
   if (payloadIsObject(body) && upstreamModel && "model" in body) {
     payload = { ...(body as Record<string, unknown>), model: upstreamModel };
+  }
+
+  if (channel.type === CHANNEL_TYPE_AWS) {
+    const settings = parseJson<Record<string, unknown>>(channel.settings || "", {});
+    const keyType = String(settings.aws_key_type || "");
+    const parts = apiKey.split("|");
+    if (keyType === "api_key" || parts.length === 2) {
+      const parsed = parseAwsApiKey(apiKey);
+      url = awsConverseUrl(getAwsModelID(upstreamModel), parsed.region);
+      headers.authorization = `Bearer ${apiKey}`;
+      headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
+      payload = applyChannelParamOverride(channel, payload, headers, {
+        ...relayInfo,
+        originalModel: relayInfo.originalModel || model,
+        upstreamModel: relayInfo.upstreamModel || upstreamModel,
+        requestPath: relayInfo.requestPath || requestPath,
+      }, apiKey, upstreamModel);
+      return { url, headers, body: payload, method };
+    }
+    if (parts.length !== 3) throw new Error("invalid aws secret key");
+    url = awsConverseUrl(getAwsModelID(upstreamModel), parts[2]);
+    headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_VERTEX) {
+    const mode = vertexRequestMode(upstreamModel);
+    const region = getModelRegion(channel.other || "", relayInfo.originalModel || model);
+    const settings = parseJson<Record<string, unknown>>(channel.settings || "", {});
+    const keyType = String(settings.vertex_key_type || "");
+    const stream =
+      requestPath.includes("streamGenerateContent") ||
+      requestPath.includes("streamRawPredict") ||
+      (payloadIsObject(body) && Boolean((body as { stream?: boolean }).stream));
+    const suffix = vertexActionSuffix(mode, upstreamModel, stream);
+    const urlModel = mode === "claude" ? vertexClaudeURLModel(upstreamModel) : upstreamModel;
+    const projectID = vertexProjectIdFromKey(apiKey);
+    if (keyType === "api_key") {
+      if (mode === "opensource") throw new Error("unsupported request mode");
+      const built =
+        mode === "claude"
+          ? buildAnthropicModelURL(base, "v1", "", region, urlModel, suffix)
+          : buildGoogleModelURL(base, "v1", "", region, urlModel, suffix);
+      const keyPrefix = suffix.endsWith("?alt=sse") ? "&" : "?";
+      url = `${built}${keyPrefix}key=${encodeURIComponent(apiKey)}`;
+      headers["x-goog-api-key"] = apiKey;
+    } else {
+      if (mode === "opensource") url = buildOpenSourceChatCompletionsURL(base, projectID, region);
+      else if (mode === "claude") url = buildAnthropicModelURL(base, "v1", projectID, region, urlModel, suffix);
+      else url = buildGoogleModelURL(base, "v1", projectID, region, urlModel, suffix);
+      if (projectID) headers["x-goog-user-project"] = projectID;
+    }
+    if (mode === "claude") headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
   }
 
   switch (kind) {

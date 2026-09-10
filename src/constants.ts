@@ -48,6 +48,7 @@ export const CHANNEL_TYPE_OPENROUTER = 20;
 export const CHANNEL_TYPE_GEMINI = 24;
 export const CHANNEL_TYPE_MOONSHOT = 25;
 export const CHANNEL_TYPE_ZHIPU_V4 = 26;
+export const CHANNEL_TYPE_AWS = 33;
 export const CHANNEL_TYPE_VERTEX = 41;
 export const CHANNEL_TYPE_MOKA = 44;
 export const CHANNEL_TYPE_VOLC = 45;

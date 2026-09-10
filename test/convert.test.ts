@@ -15,7 +15,9 @@ import {
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
+import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_VERTEX } from "../src/constants.js";
+import { openaiFromNovaResponse } from "../src/aws-convert.js";
+import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
 import { isClientError } from "../src/reasoning.js";
 import { mapModel } from "../src/select.js";
 import { buildUpstream } from "../src/upstream.js";
@@ -641,4 +643,260 @@ test("original OpenAI→Gemini ConvertRequest JSON fields", () => {
   const tools = out.tools as { functionDeclarations: { name: string }[] }[];
   assert.equal(tools[0].functionDeclarations[0].name, "get_weather");
   assert.deepEqual(out.toolConfig, { functionCallingConfig: { mode: "AUTO" } });
+});
+
+function testChannel(partial: Partial<ChannelRow>): ChannelRow {
+  return {
+    id: 1,
+    type: 1,
+    key: "k",
+    status: 1,
+    name: "ch",
+    weight: 1,
+    created_time: 0,
+    test_time: 0,
+    response_time: 0,
+    base_url: "",
+    other: "",
+    models: "m",
+    group: "default",
+    used_quota: 0,
+    model_mapping: "",
+    status_code_mapping: "",
+    priority: 0,
+    auto_ban: 1,
+    tag: "",
+    header_override: "",
+    param_override: "",
+    remark: "",
+    settings: "",
+    openai_organization: "",
+    test_model: "",
+    ...partial,
+  };
+}
+
+test("original AWS ConvertOpenAIRequest Nova JSON and Converse URL sprintf order", () => {
+  const nova = convertOpenAIRequest(
+    {
+      model: "nova-lite-v1:0",
+      messages: [{ role: "user", content: "hi nova" }],
+      max_tokens: 32,
+      temperature: 0.4,
+      top_p: 0.9,
+      stop: ["END"],
+    },
+    { channelType: CHANNEL_TYPE_AWS, originModelName: "nova-lite-v1:0", upstreamModelName: "nova-lite-v1:0" },
+  );
+  assert.equal(nova.schemaVersion, "messages-v1");
+  assert.deepEqual(nova.messages, [{ role: "user", content: [{ text: "hi nova" }] }]);
+  assert.deepEqual(nova.inferenceConfig, { maxTokens: 32, temperature: 0.4, topP: 0.9, stopSequences: ["END"] });
+  assert.equal("model" in nova, false);
+  assert.equal("anthropic_version" in nova, false);
+
+  const omitted = convertOpenAIRequest(
+    { model: "nova-lite-v1:0", messages: [{ role: "user", content: "hi" }] },
+    { channelType: CHANNEL_TYPE_AWS, originModelName: "nova-lite-v1:0", upstreamModelName: "nova-lite-v1:0" },
+  );
+  assert.equal("inferenceConfig" in omitted, false);
+
+  const claude = convertOpenAIRequest(
+    {
+      model: "claude-3-5-sonnet-20241022",
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "hi" },
+      ],
+    },
+    { channelType: CHANNEL_TYPE_AWS, originModelName: "claude-3-5-sonnet-20241022", upstreamModelName: "claude-3-5-sonnet-20241022" },
+  );
+  assert.equal("schemaVersion" in claude, false);
+  assert.equal(claude.model, "claude-3-5-sonnet-20241022");
+  assert.deepEqual(claude.system, [{ type: "text", text: "sys" }]);
+  assert.equal(claude.max_tokens, 8192);
+  assert.equal("anthropic_version" in claude, false);
+
+  const aws = testChannel({
+    type: CHANNEL_TYPE_AWS,
+    key: "ak|us-east-1",
+    settings: JSON.stringify({ aws_key_type: "api_key" }),
+    models: "nova-lite-v1:0,claude-3-5-sonnet-20241022",
+  });
+  const novaUrl = buildUpstream(aws, "chat", "/v1/chat/completions", "nova-lite-v1:0", nova);
+  assert.equal(novaUrl.url, "https://bedrock-runtime.amazon.nova-lite-v1:0.amazonaws.com/model/us-east-1/converse");
+  assert.equal(novaUrl.headers.authorization, "Bearer ak|us-east-1");
+  const claudeUrl = buildUpstream(aws, "chat", "/v1/chat/completions", "claude-3-5-sonnet-20241022", claude);
+  assert.equal(
+    claudeUrl.url,
+    "https://bedrock-runtime.anthropic.claude-3-5-sonnet-20241022-v2:0.amazonaws.com/model/us-east-1/converse",
+  );
+
+  const mapped = openaiFromNovaResponse(
+    {
+      output: { message: { content: [{ text: "hello nova" }] } },
+      usage: { inputTokens: 4, outputTokens: 6, totalTokens: 10 },
+    },
+    "nova-lite-v1:0",
+    { id: "chatcmpl-nova", created: 1 },
+  );
+  assert.equal(mapped.object, "chat.completion");
+  assert.equal(mapped.model, "nova-lite-v1:0");
+  assert.equal((mapped.choices as { message: { content: string }; finish_reason: string }[])[0].message.content, "hello nova");
+  assert.equal((mapped.choices as { finish_reason: string }[])[0].finish_reason, "stop");
+  assert.equal(usageFromOpenAI(mapped).prompt, 4);
+  assert.equal(usageFromOpenAI(mapped).completion, 6);
+  assert.equal(usageFromOpenAI(mapped).total, 10);
+});
+
+test("original Vertex ConvertOpenAIRequest Claude wrap, Gemini id strip, imagen, and publisher URLs", () => {
+  const claude = convertOpenAIRequest(
+    {
+      model: "claude-3-5-sonnet-20241022",
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "hi" },
+      ],
+      max_tokens: 1024,
+    },
+    { channelType: CHANNEL_TYPE_VERTEX, originModelName: "claude-3-5-sonnet-20241022", upstreamModelName: "claude-3-5-sonnet-20241022" },
+  );
+  assert.equal(claude.anthropic_version, "vertex-2023-10-16");
+  assert.equal("model" in claude, false);
+  assert.deepEqual(claude.system, [{ type: "text", text: "sys" }]);
+  assert.equal(claude.max_tokens, 1024);
+  assert.deepEqual(claude.messages, [{ role: "user", content: "hi" }]);
+
+  const gemini = convertOpenAIRequest(
+    {
+      model: "gemini-2.0-flash",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"Paris\"}" } }],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "15 degrees" },
+      ],
+    },
+    { channelType: CHANNEL_TYPE_VERTEX, originModelName: "gemini-2.0-flash", upstreamModelName: "gemini-2.0-flash" },
+  );
+  const contents = gemini.contents as { role: string; parts: Record<string, unknown>[] }[];
+  const modelParts = contents.find((c) => c.role === "model")?.parts || [];
+  const call = modelParts.find((p) => p.functionCall) as { functionCall: { id?: string; name: string } };
+  assert.equal(call.functionCall.name, "get_weather");
+  assert.equal("id" in call.functionCall, false);
+  const userParts = contents.find((c) => c.role === "user" && c.parts.some((p) => p.functionResponse))?.parts || [];
+  const resp = userParts.find((p) => p.functionResponse) as { functionResponse: { id?: string; name: string } };
+  assert.equal(resp.functionResponse.name, "get_weather");
+  assert.equal("id" in resp.functionResponse, false);
+
+  const keepIds = convertOpenAIRequest(
+    {
+      model: "gemini-2.0-flash",
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "assistant",
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"Paris\"}" } }],
+        },
+        { role: "tool", tool_call_id: "call_1", content: "15 degrees" },
+      ],
+    },
+    {
+      channelType: CHANNEL_TYPE_VERTEX,
+      originModelName: "gemini-2.0-flash",
+      upstreamModelName: "gemini-2.0-flash",
+      settings: { removeFunctionResponseIdEnabled: false },
+    },
+  );
+  const keepContents = keepIds.contents as { role: string; parts: Record<string, unknown>[] }[];
+  const keepCall = keepContents.find((c) => c.role === "model")?.parts.find((p) => p.functionCall) as { functionCall: { id?: string } };
+  assert.equal(keepCall.functionCall.id, "call_1");
+
+  const imagen = convertOpenAIRequest(
+    {
+      model: "imagen-3.0-generate-001",
+      messages: [{ role: "user", content: "a cat" }],
+      n: 2,
+      size: "1792x1024",
+      extra_body: { aspectRatio: "16:9" },
+    },
+    { channelType: CHANNEL_TYPE_VERTEX, originModelName: "imagen-3.0-generate-001", upstreamModelName: "imagen-3.0-generate-001" },
+  );
+  assert.deepEqual(imagen.instances, [{ prompt: "a cat" }]);
+  const parameters = imagen.parameters as { sampleCount: number; aspectRatio: string; personGeneration: string };
+  assert.equal(parameters.sampleCount, 2);
+  assert.equal(parameters.aspectRatio, "16:9");
+  assert.equal(parameters.personGeneration, "allow_adult");
+
+  const vertex = testChannel({
+    type: CHANNEL_TYPE_VERTEX,
+    key: "vkey",
+    other: JSON.stringify({ default: "us-central1" }),
+    settings: JSON.stringify({ vertex_key_type: "api_key" }),
+    models: "claude-3-5-sonnet-20241022,gemini-2.0-flash,imagen-3.0-generate-001,meta/llama3-405b-instruct-maas",
+  });
+  const claudeUrl = buildUpstream(vertex, "chat", "/v1/chat/completions", "claude-3-5-sonnet-20241022", claude);
+  assert.equal(
+    claudeUrl.url,
+    "https://us-central1-aiplatform.googleapis.com/v1/publishers/anthropic/models/claude-3-5-sonnet-v2@20241022:rawPredict?key=vkey",
+  );
+  const geminiUrl = buildUpstream(vertex, "chat", "/v1/chat/completions", "gemini-2.0-flash", gemini);
+  assert.equal(
+    geminiUrl.url,
+    "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent?key=vkey",
+  );
+  const imagenUrl = buildUpstream(vertex, "chat", "/v1/chat/completions", "imagen-3.0-generate-001", imagen);
+  assert.equal(
+    imagenUrl.url,
+    "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/imagen-3.0-generate-001:predict?key=vkey",
+  );
+  const jsonCreds = testChannel({
+    type: CHANNEL_TYPE_VERTEX,
+    key: JSON.stringify({ project_id: "proj-1" }),
+    other: JSON.stringify({ default: "us-east1" }),
+    models: "claude-3-5-sonnet-20241022",
+  });
+  const jsonUrl = buildUpstream(jsonCreds, "chat", "/v1/chat/completions", "claude-3-5-sonnet-20241022", claude);
+  assert.equal(
+    jsonUrl.url,
+    "https://us-east1-aiplatform.googleapis.com/v1/projects/proj-1/locations/us-east1/publishers/anthropic/models/claude-3-5-sonnet-v2@20241022:rawPredict",
+  );
+  assert.equal(jsonUrl.headers["x-goog-user-project"], "proj-1");
+
+  let threw = false;
+  try {
+    buildUpstream(
+      testChannel({
+        type: CHANNEL_TYPE_VERTEX,
+        key: "vkey",
+        other: JSON.stringify({ default: "us-central1" }),
+        settings: JSON.stringify({ vertex_key_type: "api_key" }),
+        models: "meta/llama3-405b-instruct-maas",
+      }),
+      "chat",
+      "/v1/chat/completions",
+      "meta/llama3-405b-instruct-maas",
+      { model: "meta/llama3-405b-instruct-maas", messages: [{ role: "user", content: "hi" }] },
+    );
+  } catch (err) {
+    threw = true;
+    assert.equal(String(err), "Error: unsupported request mode");
+  }
+  assert.equal(threw, true);
+
+  const imageJson = openaiFromImagenResponse(
+    {
+      predictions: [
+        { bytesBase64Encoded: "YWE=", raiFilteredReason: "" },
+        { bytesBase64Encoded: "YmI=", raiFilteredReason: "blocked" },
+      ],
+    },
+    { created: 9 },
+  );
+  assert.equal(imageJson.created, 9);
+  assert.deepEqual(imageJson.data, [{ url: "", b64_json: "YWE=", revised_prompt: "" }]);
+  assert.equal(imagenUsage(1).prompt, VERTEX_IMAGE_TOKENS);
+  assert.equal(imagenUsage(1).completion, 0);
+  assert.equal(imagenUsage(1).total, VERTEX_IMAGE_TOKENS);
 });
