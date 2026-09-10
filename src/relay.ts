@@ -25,6 +25,9 @@ import {
   type ChannelAffinityResolution,
 } from "./channel-affinity.js";
 import { cacheGetRandomSatisfiedChannel, increaseChannelSelectRetry, selectDistributedChannel } from "./channel-select.js";
+import { PIN_RETRY_SAME_CHANNEL, PIN_RETRY_SINGLE_ATTEMPT, type ChannelPin } from "./channel-constraint.js";
+import { retryStatusCodeRangesFromOption, shouldRetryByStatusCode } from "./status-code-ranges.js";
+import type { OriginTaskRef } from "./origin-task.js";
 import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
 import { pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
@@ -70,6 +73,8 @@ export interface RelayRequest {
   requestPath?: string;
   expectedTaskPluginKey?: string;
   taskPluginChannelTypes?: number[];
+  originPin?: ChannelPin;
+  originTasks?: OriginTaskRef[];
 }
 
 function asObj(v: unknown): Record<string, unknown> {
@@ -90,8 +95,10 @@ export function detectStream(body: unknown, req: Request): boolean {
   return Boolean(o.stream);
 }
 
-function retryable(status: number): boolean {
-  return status === 429 || status === 502 || status === 503 || status === 504 || status === 408;
+function retryable(status: number, ranges = retryStatusCodeRangesFromOption("")): boolean {
+  if (status >= 200 && status < 300) return false;
+  if (status < 100 || status > 599) return true;
+  return shouldRetryByStatusCode(status, ranges);
 }
 
 async function fetchUpstream(target: ReturnType<typeof buildUpstream>, timeoutMs = 120_000): Promise<Response> {
@@ -330,6 +337,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     headers: requestHeadersFrom(opts.req),
     expectedTaskPluginKey: opts.expectedTaskPluginKey,
     taskPluginChannelTypes: opts.taskPluginChannelTypes,
+    originPin: opts.originPin,
   });
   if (selected.error) {
     return openaiError(selected.error.status, selected.error.message, selected.error.code);
@@ -337,7 +345,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   auth.usingGroup = selected.usingGroup;
   const first = selected.channel;
   const usedAffinityChannel = selected.usedAffinity;
-  const usedPin = selected.pinned;
+  const pinRetryMode = selected.pinRetryMode;
+  const suppressesRetry = pinRetryMode === PIN_RETRY_SINGLE_ATTEMPT;
   const affinity = selected.affinity;
   const selectParam = selected.selectParam;
   const selectState = selected.selectState;
@@ -347,6 +356,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   }
 
   const autoDisable = await store.optionBool("AutomaticDisableChannelEnabled", false);
+  const retryRanges = retryStatusCodeRangesFromOption(await store.option("AutomaticRetryStatusCodes"));
   const ip = clientIp(opts.req);
   const rid = opts.req.headers.get("x-oneapi-request-id") || crypto.randomUUID();
 
@@ -370,7 +380,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   for (let retry = 0; retry <= retryTimes; retry++) {
     let channel: ChannelRow | null;
     if (retry === 0) channel = first;
-    else if (usedPin) break;
+    else if (suppressesRetry) break;
+    else if (pinRetryMode === PIN_RETRY_SAME_CHANNEL) channel = first;
     else {
       increaseChannelSelectRetry(selectState);
       const next = await cacheGetRandomSatisfiedChannel(store, selectParam, selectState);
@@ -378,8 +389,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (next.selectGroup && next.selectGroup !== "auto") auth.usingGroup = next.selectGroup;
     }
     if (!channel) break;
-    const skipAffinityRetry = usedPin || (usedAffinityChannel && Boolean(affinity?.skipRetryOnFailure));
-    const lastAttempt = retry === retryTimes || skipAffinityRetry;
+    const skipFurtherRetry = suppressesRetry || (usedAffinityChannel && Boolean(affinity?.skipRetryOnFailure));
+    const lastAttempt = retry === retryTimes || skipFurtherRetry;
     const affinityLog = usedAffinityChannel && affinity ? channelAffinityLogInfo(affinity, auth.usingGroup, channel.id) : undefined;
     const kind = channelKind(channel.type);
     const mapped = applyModelMapping(channel, model);
@@ -452,7 +463,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       lastErr = err instanceof Error ? err.message : String(err);
       lastStatus = 502;
       if (autoDisable) await store.autoDisableChannel(channel.id);
-      if (skipAffinityRetry) break;
+      if (skipFurtherRetry) break;
       continue;
     }
     const useTime = Math.max(0, Math.round((Date.now() - started) / 1000));
@@ -467,7 +478,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       promptCacheHitTokens: 0,
     };
 
-    if (!res.ok && retryable(res.status) && !lastAttempt) {
+    if (!res.ok && retryable(res.status, retryRanges) && !lastAttempt) {
       lastErr = await res.text().catch(() => res.statusText);
       lastStatus = res.status;
       continue;
@@ -479,7 +490,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       lastStatus = res.status;
       await settle(store, auth, channel, model, promptEst, 0, useTime, opts.stream, ip, rid, false, lastErr.slice(0, 2000), extra);
       if (res.status >= 500 && autoDisable) await store.autoDisableChannel(channel.id);
-      if (!lastAttempt && retryable(res.status)) continue;
+      if (!lastAttempt && retryable(res.status, retryRanges)) continue;
       const errRes = relayErrorHandler(res.status, text, String(channel.status_code_mapping || ""));
       const headers = new Headers(errRes.headers);
       headers.set("x-oneapi-request-id", rid);

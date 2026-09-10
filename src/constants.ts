@@ -52,11 +52,17 @@ export const CHANNEL_TYPE_MOKA = 44;
 export const CHANNEL_TYPE_VOLC = 45;
 export const CHANNEL_TYPE_KLING = 50;
 export const CHANNEL_TYPE_JIMENG = 51;
+export const CHANNEL_TYPE_VIDU = 52;
+export const CHANNEL_TYPE_DOUBAO_VIDEO = 54;
+export const CHANNEL_TYPE_SORA = 55;
 export const CHANNEL_TYPE_CODEX = 57;
 export const CHANNEL_TYPE_ADVANCED_CUSTOM = 58;
 export const CHANNEL_TYPE_SUB2API = 59;
 export const CHANNEL_TYPE_NEW_API = 60;
 export const CHANNEL_TYPE_TASK_PLUGIN = 61;
+
+/** Original `constant.TaskPlatformSuno`. */
+export const TASK_PLATFORM_SUNO = "suno";
 
 /** Original `common.MaxRecentItems` (GetLogByKey). */
 export const MAX_RECENT_ITEMS = 1000;
@@ -205,8 +211,8 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   SensitiveWords: "",
   StreamCacheQueueLength: "0",
   AutomaticDisableKeywords: "",
-  AutomaticDisableStatusCodes: "",
-  AutomaticRetryStatusCodes: "",
+  AutomaticDisableStatusCodes: "401",
+  AutomaticRetryStatusCodes: "100-199,300-399,401-407,409-499,500-503,505-523,525-599",
   ModelRequestRateLimitEnabled: "false",
   ModelRequestRateLimitCount: "0",
   ModelRequestRateLimitDurationMinutes: "1",

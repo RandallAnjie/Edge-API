@@ -10,7 +10,12 @@ import {
 import {
   channelSatisfiesFilters,
   distributorChannelFilters,
+  PIN_SOURCE_ORIGIN_TASK,
+  resolvedPin,
+  tokenChannelPin,
   type ChannelFilter,
+  type ChannelPin,
+  type PinRetryMode,
 } from "./channel-constraint.js";
 import { requestAutoGroups } from "./dto.js";
 import { channelDisabledMessage, getChannelFailedMessage, invalidChannelIdMessage, noAvailableChannelMessage } from "./http.js";
@@ -98,6 +103,8 @@ export type DistributeSelectResult = {
   usingGroup: string;
   usedAffinity: boolean;
   pinned: boolean;
+  pinRetryMode?: PinRetryMode;
+  pinSource?: string;
   affinity: ChannelAffinityResolution | null;
   selectState: ChannelSelectState;
   selectParam: ChannelSelectParam;
@@ -116,6 +123,7 @@ export async function selectDistributedChannel(opts: {
   headers: Record<string, string>;
   expectedTaskPluginKey?: string;
   taskPluginChannelTypes?: number[];
+  originPin?: ChannelPin;
 }): Promise<DistributeSelectResult> {
   const { store, env, req, auth, model, requestPath, body, headers } = opts;
   const retryTimes = await store.optionNum("RetryTimes", 0);
@@ -139,19 +147,50 @@ export async function selectDistributedChannel(opts: {
     selectParam,
   };
 
-  if (auth.pinnedChannelId) {
-    const pinned = await store.getChannel(auth.pinnedChannelId);
+  const pins: ChannelPin[] = [];
+  if (auth.pinnedChannelId) pins.push(tokenChannelPin(auth.pinnedChannelId));
+  if (opts.originPin) pins.push(opts.originPin);
+  const resolved = resolvedPin(pins);
+  if (resolved.found && resolved.pin) {
+    const pin = resolved.pin;
+    const pinned = await store.getChannel(pin.channelId);
     if (!pinned) {
+      if (pin.source === PIN_SOURCE_ORIGIN_TASK) {
+        return {
+          ...empty,
+          channel: null,
+          pinned: true,
+          pinRetryMode: pin.retryMode,
+          pinSource: pin.source,
+          error: { status: 400, message: "origin_task_channel_disabled", code: "origin_task_channel_disabled" },
+        };
+      }
       return {
         ...empty,
         channel: null,
+        pinned: true,
+        pinRetryMode: pin.retryMode,
+        pinSource: pin.source,
         error: { status: 400, message: invalidChannelIdMessage(req), code: "invalid_channel_id" },
       };
     }
     if (pinned.status !== CHANNEL_ENABLED) {
+      if (pin.source === PIN_SOURCE_ORIGIN_TASK) {
+        return {
+          ...empty,
+          channel: null,
+          pinned: true,
+          pinRetryMode: pin.retryMode,
+          pinSource: pin.source,
+          error: { status: 400, message: "origin_task_channel_disabled", code: "origin_task_channel_disabled" },
+        };
+      }
       return {
         ...empty,
         channel: null,
+        pinned: true,
+        pinRetryMode: pin.retryMode,
+        pinSource: pin.source,
         error: { status: 403, message: channelDisabledMessage(req), code: "channel_disabled" },
       };
     }
@@ -160,6 +199,9 @@ export async function selectDistributedChannel(opts: {
       return {
         ...empty,
         channel: null,
+        pinned: true,
+        pinRetryMode: pin.retryMode,
+        pinSource: pin.source,
         error: {
           status: 400,
           message: noAvailableChannelMessage(req, auth.usingGroup, model),
@@ -167,7 +209,13 @@ export async function selectDistributedChannel(opts: {
         },
       };
     }
-    return { ...empty, channel: pinned, pinned: true };
+    return {
+      ...empty,
+      channel: pinned,
+      pinned: true,
+      pinRetryMode: pin.retryMode,
+      pinSource: pin.source,
+    };
   }
 
   const affinity = await resolveChannelAffinity(store, env, {

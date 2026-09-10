@@ -144,3 +144,96 @@ export function filterCandidateIDs(
   }
   return { kept, emptiedBy: "" };
 }
+
+/** Original `dto.PinSourceToken` / `PinSourceOriginTask`. */
+export const PIN_SOURCE_TOKEN = "token" as const;
+export const PIN_SOURCE_ORIGIN_TASK = "origin_task" as const;
+
+export type ChannelPinSource = typeof PIN_SOURCE_TOKEN | typeof PIN_SOURCE_ORIGIN_TASK;
+
+/** Original `dto.PinRankToken` / `PinRankOriginTask`. */
+export const PIN_RANK_TOKEN = 0;
+export const PIN_RANK_ORIGIN_TASK = 10;
+
+/** Original `dto.PinRetrySameChannel` / `PinRetrySingleAttempt` (iota). */
+export const PIN_RETRY_SAME_CHANNEL = 0;
+export const PIN_RETRY_SINGLE_ATTEMPT = 1;
+
+export type PinRetryMode = typeof PIN_RETRY_SAME_CHANNEL | typeof PIN_RETRY_SINGLE_ATTEMPT;
+
+/** Original `dto.PinRetryMode.Stricter`. */
+export function stricterPinRetryMode(a: PinRetryMode, other: PinRetryMode): PinRetryMode {
+  if (a === PIN_RETRY_SINGLE_ATTEMPT || other === PIN_RETRY_SINGLE_ATTEMPT) return PIN_RETRY_SINGLE_ATTEMPT;
+  return PIN_RETRY_SAME_CHANNEL;
+}
+
+/** Original `dto.ChannelPin`. */
+export type ChannelPin = {
+  channelId: number;
+  source: ChannelPinSource;
+  rank: number;
+  retryMode: PinRetryMode;
+};
+
+export function tokenChannelPin(channelId: number): ChannelPin {
+  return {
+    channelId,
+    source: PIN_SOURCE_TOKEN,
+    rank: PIN_RANK_TOKEN,
+    retryMode: PIN_RETRY_SINGLE_ATTEMPT,
+  };
+}
+
+export function originTaskChannelPin(channelId: number): ChannelPin {
+  return {
+    channelId,
+    source: PIN_SOURCE_ORIGIN_TASK,
+    rank: PIN_RANK_ORIGIN_TASK,
+    retryMode: PIN_RETRY_SAME_CHANNEL,
+  };
+}
+
+/** Original `dto.ChannelConstraints.ResolvedPin`. Lowest Rank wins; same-channel pins merge to stricter RetryMode. */
+export function resolvedPin(pins: ChannelPin[] | null | undefined): {
+  pin: ChannelPin | null;
+  found: boolean;
+  overridden: ChannelPin[];
+} {
+  if (!pins?.length) return { pin: null, found: false, overridden: [] };
+  const merged = new Map<number, ChannelPin>();
+  const order: number[] = [];
+  for (const pin of pins) {
+    const existing = merged.get(pin.channelId);
+    if (!existing) {
+      merged.set(pin.channelId, { ...pin });
+      order.push(pin.channelId);
+      continue;
+    }
+    const next: ChannelPin = {
+      ...existing,
+      retryMode: stricterPinRetryMode(existing.retryMode, pin.retryMode),
+    };
+    if (pin.rank < existing.rank) {
+      next.rank = pin.rank;
+      next.source = pin.source;
+    }
+    merged.set(pin.channelId, next);
+  }
+  let winner = merged.get(order[0])!;
+  for (const channelId of order.slice(1)) {
+    const candidate = merged.get(channelId)!;
+    if (candidate.rank < winner.rank) winner = candidate;
+  }
+  const overridden: ChannelPin[] = [];
+  for (const channelId of order) {
+    const candidate = merged.get(channelId)!;
+    if (candidate.channelId !== winner.channelId) overridden.push(candidate);
+  }
+  return { pin: winner, found: true, overridden };
+}
+
+/** Original `dto.ChannelConstraints.SuppressesRetry`. */
+export function suppressesRetry(pins: ChannelPin[] | null | undefined): boolean {
+  const { pin, found } = resolvedPin(pins);
+  return found && pin?.retryMode === PIN_RETRY_SINGLE_ATTEMPT;
+}

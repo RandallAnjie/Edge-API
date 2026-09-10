@@ -10,9 +10,16 @@ import {
 import {
   FILTER_REQUEST_PATH,
   FILTER_TASK_PLUGIN_IDENTITY,
+  PIN_RETRY_SINGLE_ATTEMPT,
+  PIN_SOURCE_ORIGIN_TASK,
+  PIN_SOURCE_TOKEN,
   channelSatisfiesFilters,
   distributorChannelFilters,
   filterCandidateIDs,
+  originTaskChannelPin,
+  resolvedPin,
+  suppressesRetry,
+  tokenChannelPin,
   type ChannelFilter,
   type ChannelFilterSubject,
 } from "../src/channel-constraint.js";
@@ -182,4 +189,35 @@ test("original Distribute always adds request_path and task_plugin_identity filt
   assert.equal(filters[0].requestPath, "/v1/chat/completions");
   assert.equal(filters[1].kind, FILTER_TASK_PLUGIN_IDENTITY);
   assert.equal(filters[1].taskPluginKey, "");
+});
+
+test("original ResolvedPin priority, merge, and SuppressesRetry", () => {
+  const empty = resolvedPin(null);
+  assert.equal(empty.found, false);
+  assert.equal(empty.pin, null);
+  assert.deepEqual(empty.overridden, []);
+  assert.equal(suppressesRetry(null), false);
+
+  const different = resolvedPin([
+    originTaskChannelPin(10),
+    tokenChannelPin(1),
+  ]);
+  assert.equal(different.found, true);
+  assert.equal(different.pin?.channelId, 1);
+  assert.equal(different.pin?.source, PIN_SOURCE_TOKEN);
+  assert.equal(different.pin?.retryMode, PIN_RETRY_SINGLE_ATTEMPT);
+  assert.equal(different.overridden.length, 1);
+  assert.equal(different.overridden[0].source, PIN_SOURCE_ORIGIN_TASK);
+  assert.equal(different.overridden[0].channelId, 10);
+  assert.equal(suppressesRetry([originTaskChannelPin(10), tokenChannelPin(1)]), true);
+
+  const same = resolvedPin([originTaskChannelPin(7), tokenChannelPin(7)]);
+  assert.equal(same.found, true);
+  assert.equal(same.pin?.channelId, 7);
+  assert.equal(same.pin?.source, PIN_SOURCE_TOKEN);
+  assert.equal(same.pin?.retryMode, PIN_RETRY_SINGLE_ATTEMPT);
+  assert.deepEqual(same.overridden, []);
+  assert.equal(suppressesRetry([originTaskChannelPin(7), tokenChannelPin(7)]), true);
+
+  assert.equal(suppressesRetry([originTaskChannelPin(2)]), false);
 });

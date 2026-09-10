@@ -228,6 +228,68 @@ export function pluginProtocolError(status: number, code: string, message: strin
   return json(status, { error: { message, type: "new_api_error", code } });
 }
 
+/** Original `middleware.sanitizedTaskPluginError`. */
+export function sanitizedTaskPluginError(
+  status: number,
+  detail = "",
+): { code: string; message: string; httpStatus: number; retryable: boolean } {
+  let httpStatus = status;
+  let code = "server_error";
+  let message = "Task request failed";
+  let retryable = false;
+  switch (status) {
+    case 400:
+      code = "invalid_request";
+      message = "Invalid request";
+      httpStatus = 400;
+      break;
+    case 401:
+      code = "authentication_error";
+      message = "Authentication failed";
+      httpStatus = 401;
+      break;
+    case 403:
+      code = "permission_denied";
+      message = "Access denied";
+      httpStatus = 403;
+      break;
+    case 404:
+      code = "task_not_found";
+      message = "Task not found";
+      httpStatus = 404;
+      break;
+    case 409:
+      code = "request_conflict";
+      message = "Request conflict";
+      httpStatus = 409;
+      break;
+    case 429:
+      code = "rate_limit_exceeded";
+      message = "Too many requests";
+      httpStatus = 429;
+      retryable = true;
+      break;
+    default:
+      if (httpStatus < 400 || httpStatus > 599) httpStatus = 500;
+      if (httpStatus < 500) {
+        code = "invalid_request";
+        message = "Invalid request";
+      } else {
+        code = "server_error";
+        message = "Task request failed";
+        retryable = httpStatus >= 500;
+      }
+  }
+  if (detail && httpStatus < 500) message = detail;
+  return { code, message, httpStatus, retryable };
+}
+
+/** Original `middleware.abortTaskPluginRouteErrorDetail` without a Goja error renderer. */
+export function taskPluginRouteError(status: number, detail = ""): Response {
+  const taskErr = sanitizedTaskPluginError(status, detail);
+  return json(taskErr.httpStatus, { code: taskErr.code, message: taskErr.message, data: null });
+}
+
 /** Original `controller.RelayNotImplemented`. */
 export function relayNotImplemented(): Response {
   return json(501, {

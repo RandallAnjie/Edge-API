@@ -2153,6 +2153,15 @@ export class Store {
     return this.db.prepare("SELECT * FROM tasks WHERE task_id = ?").bind(taskId).first<Record<string, unknown>>();
   }
 
+  /** Original `model.GetByTaskId` — ownership is `user_id` AND `task_id`. */
+  async getTaskByUserAndTid(userId: number, taskId: string): Promise<Record<string, unknown> | null> {
+    if (!taskId) return null;
+    return this.db
+      .prepare("SELECT * FROM tasks WHERE user_id = ? AND task_id = ?")
+      .bind(userId, taskId)
+      .first<Record<string, unknown>>();
+  }
+
   async updateTaskByTid(taskId: string, patch: Record<string, unknown>): Promise<void> {
     const cols: string[] = [];
     const vals: unknown[] = [];

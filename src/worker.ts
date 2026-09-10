@@ -2,7 +2,7 @@ import { runChannelTestTask } from "./channel-test.js";
 import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
-import { apiFail, noAvailableChannelMessage, openaiError, pluginProtocolError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, videoProxyError, withCors } from "./http.js";
+import { apiFail, noAvailableChannelMessage, openaiError, pluginProtocolError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -22,7 +22,9 @@ import { extractGeminiModelAction } from "./convert.js";
 import { ensureSchema } from "./schema.js";
 import { Store } from "./store.js";
 import { hit } from "./metrics.js";
-import { matchPluginRoute } from "./plugin-dispatch.js";
+import { matchPluginRoute, matchTaskPlugin, type MatchedPlugin } from "./plugin-dispatch.js";
+import { applyOriginTaskIntent, type OriginTaskRef } from "./origin-task.js";
+import type { ChannelPin } from "./channel-constraint.js";
 import { taskArtifactsView, taskFetchView, openaiVideoView, taskResultURL } from "./dto.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
 
@@ -120,6 +122,31 @@ function extractFormField(buf: ArrayBuffer, name: string): string {
   const text = new TextDecoder("latin1").decode(buf.slice(0, 16_384));
   const re = new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)`);
   return (text.match(re)?.[1] || "").trim();
+}
+
+function intentBody(body: unknown): Record<string, unknown> {
+  return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
+async function preparePluginOrigin(
+  store: Store,
+  userId: number,
+  body: unknown,
+  plugin: MatchedPlugin,
+  model: string,
+): Promise<{ error?: Response; pin?: ChannelPin; tasks?: OriginTaskRef[] }> {
+  if (plugin.kind === "route" && plugin.models.length && model && !plugin.models.includes(model)) {
+    return { error: taskPluginRouteError(400, `model "${model}" is not served by this plugin`) };
+  }
+  const intent = await applyOriginTaskIntent(store, userId, intentBody(body), {
+    key: plugin.key,
+    channelTypes: plugin.channelTypes,
+  });
+  if (intent.error) {
+    if (plugin.kind === "route") return { error: taskPluginRouteError(intent.error.statusCode, intent.error.message) };
+    return { error: openaiError(intent.error.statusCode, intent.error.message, intent.error.code) };
+  }
+  return { pin: intent.pin, tasks: intent.tasks };
 }
 
 function ctxStore(req: Request, env: Env, ctx: ExecutionContextLike) {
@@ -266,7 +293,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
 
   const mode = relayModeFrom(path, req.method);
   if (!mode) {
-    const plugin = await matchPluginRoute(store, req.method, path);
+    const plugin = await matchTaskPlugin(store, req.method, path);
     if (plugin) {
       let body: unknown = {};
       if (req.method !== "GET" && req.method !== "HEAD") {
@@ -276,6 +303,9 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
           body = {};
         }
       }
+      const model = detectModel(body, path, url) || plugin.key;
+      const origin = await preparePluginOrigin(store, auth.user.id, body, plugin, model);
+      if (origin.error) return origin.error;
       return relay({
         req,
         env,
@@ -283,7 +313,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
         auth,
         mode: "passthrough",
         clientFormat: "openai",
-        model: detectModel(body, path, url) || plugin.key,
+        model,
         body,
         stream: detectStream(body, req),
         path,
@@ -291,6 +321,8 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
         method: req.method,
         expectedTaskPluginKey: plugin.key,
         taskPluginChannelTypes: plugin.channelTypes,
+        originPin: origin.pin,
+        originTasks: origin.tasks,
       });
     }
     return relayNotFound(req.method, path);
@@ -338,6 +370,16 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     model = decodeURIComponent(path.slice("/v1/engines/".length, -"/embeddings".length));
   }
 
+  const plugin = await matchTaskPlugin(store, req.method, path, model);
+  let originPin: ChannelPin | undefined;
+  let originTasks: OriginTaskRef[] | undefined;
+  if (plugin) {
+    const origin = await preparePluginOrigin(store, auth.user.id, body, plugin, model);
+    if (origin.error) return origin.error;
+    originPin = origin.pin;
+    originTasks = origin.tasks;
+  }
+
   const fmt = clientFormatFrom(req, path);
   const res = await relay({
     req,
@@ -352,6 +394,10 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     path,
     ctx,
     method: req.method,
+    expectedTaskPluginKey: plugin?.key,
+    taskPluginChannelTypes: plugin?.channelTypes,
+    originPin,
+    originTasks,
   });
 
   if (req.method === "POST" && (path === "/v1/video/generations" || path === "/v1/videos" || path.startsWith("/v1/tasks/") || path.endsWith("/remix"))) {
@@ -519,6 +565,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
   }
 
   const needsDb =
+    Boolean(env.DB) ||
     path.startsWith("/api/") ||
     path.startsWith("/v1") ||
     path.startsWith("/pg/") ||
