@@ -1,5 +1,6 @@
 import {
   ROLE_ROOT,
+  MAX_RECENT_ITEMS,
   nowSec,
   parseJson,
   randomHex,
@@ -1084,7 +1085,7 @@ export function registerMore(r: Router<Env>): void {
     if (!auth.token.id) return apiFail("无效的令牌");
     const { items } = await s.listLogs({
       offset: 0,
-      limit: 1000,
+      limit: MAX_RECENT_ITEMS,
       tokenId: auth.token.id,
     });
     return apiOk(publicUserLogs(items, 0));

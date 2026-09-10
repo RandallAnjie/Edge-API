@@ -83,3 +83,25 @@ export function resolveBaseUrl(type: number, baseUrl: string): string {
   const raw = (baseUrl || defaultBaseUrl(type)).replace(/\/+$/, "");
   return raw;
 }
+
+/** Original `constant.ChannelSpecialBases`. */
+export type ChannelSpecialBase = { claude: string; openai: string };
+
+export const CHANNEL_SPECIAL_BASES: Record<string, ChannelSpecialBase> = {
+  "glm-coding-plan": {
+    claude: "https://open.bigmodel.cn/api/anthropic",
+    openai: "https://open.bigmodel.cn/api/coding/paas/v4",
+  },
+  "glm-coding-plan-international": {
+    claude: "https://api.z.ai/api/anthropic",
+    openai: "https://api.z.ai/api/coding/paas/v4",
+  },
+  "kimi-coding-plan": {
+    claude: "https://api.kimi.com/coding",
+    openai: "https://api.kimi.com/coding/v1",
+  },
+  "doubao-coding-plan": {
+    claude: "https://ark.cn-beijing.volces.com/api/coding",
+    openai: "https://ark.cn-beijing.volces.com/api/coding/v3",
+  },
+};

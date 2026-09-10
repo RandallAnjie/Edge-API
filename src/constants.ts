@@ -39,11 +39,21 @@ export const CHANNEL_MANUAL_DISABLED = 2;
 export const CHANNEL_AUTO_DISABLED = 3;
 
 /** Original `constant.ChannelType*`. */
+export const CHANNEL_TYPE_OLLAMA = 4;
+export const CHANNEL_TYPE_ANTHROPIC = 14;
+export const CHANNEL_TYPE_ALI = 17;
+export const CHANNEL_TYPE_GEMINI = 24;
+export const CHANNEL_TYPE_MOONSHOT = 25;
+export const CHANNEL_TYPE_ZHIPU_V4 = 26;
+export const CHANNEL_TYPE_VOLC = 45;
 export const CHANNEL_TYPE_VERTEX = 41;
 export const CHANNEL_TYPE_CODEX = 57;
 export const CHANNEL_TYPE_ADVANCED_CUSTOM = 58;
 export const CHANNEL_TYPE_NEW_API = 60;
 export const CHANNEL_TYPE_TASK_PLUGIN = 61;
+
+/** Original `common.MaxRecentItems` (GetLogByKey). */
+export const MAX_RECENT_ITEMS = 1000;
 
 /** Original `controller.isManageableChannelStatus`. */
 export function isManageableChannelStatus(status: number): boolean {

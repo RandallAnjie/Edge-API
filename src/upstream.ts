@@ -1,5 +1,16 @@
-import { AZURE_API_VERSION, CLAUDE_VERSION, parseJson } from "./constants.js";
-import { channelKind, resolveBaseUrl } from "./catalog.js";
+import {
+  AZURE_API_VERSION,
+  CHANNEL_TYPE_ALI,
+  CHANNEL_TYPE_ANTHROPIC,
+  CHANNEL_TYPE_GEMINI,
+  CHANNEL_TYPE_MOONSHOT,
+  CHANNEL_TYPE_OLLAMA,
+  CHANNEL_TYPE_VOLC,
+  CHANNEL_TYPE_ZHIPU_V4,
+  CLAUDE_VERSION,
+  parseJson,
+} from "./constants.js";
+import { CHANNEL_SPECIAL_BASES, channelKind, defaultBaseUrl, resolveBaseUrl } from "./catalog.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import type { ChannelRow } from "./types.js";
 
@@ -216,39 +227,71 @@ function payloadIsObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
+/** Original `controller.normalizeModelNames`. */
+export function normalizeModelNames(models: string[] | undefined | null): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const model of models || []) {
+    const trimmed = String(model || "").trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function applyFetchModelsHeaderOverrides(channel: ChannelRow, apiKey: string, headers: Record<string, string>): void {
+  const headerOverride = parseJson<Record<string, string>>(channel.header_override || "", {});
+  for (const [k, v] of Object.entries(headerOverride)) {
+    headers[k] = String(v).replace(/\{api_key\}/g, apiKey);
+  }
+}
+
+/** Original `controller.fetchChannelUpstreamModelIDs` request URL + auth headers. */
 export function modelsUrl(channel: ChannelRow): UpstreamTarget {
-  const kind = channelKind(channel.type);
-  const base = resolveBaseUrl(channel.type, channel.base_url);
+  const type = Number(channel.type);
   const apiKey = pickChannelKey(channel.key);
-  if (kind === "gemini") {
-    return {
-      url: `${base}/v1beta/models?key=${encodeURIComponent(apiKey)}`,
-      headers: { "x-goog-api-key": apiKey },
-      body: null,
-      method: "GET",
-    };
+  const rawBase = String(channel.base_url || "").trim() || defaultBaseUrl(type);
+  const special = CHANNEL_SPECIAL_BASES[rawBase];
+  const headers: Record<string, string> = {};
+
+  if (type === CHANNEL_TYPE_OLLAMA) {
+    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+    applyFetchModelsHeaderOverrides(channel, apiKey, headers);
+    return { url: `${rawBase.replace(/\/+$/, "")}/api/tags`, headers, body: null, method: "GET" };
   }
-  if (kind === "anthropic") {
-    return {
-      url: joinUrl(base, "/v1/models"),
-      headers: { "x-api-key": apiKey, "anthropic-version": CLAUDE_VERSION },
-      body: null,
-      method: "GET",
-    };
+
+  if (type === CHANNEL_TYPE_GEMINI) {
+    headers["x-goog-api-key"] = apiKey;
+    applyFetchModelsHeaderOverrides(channel, apiKey, headers);
+    return { url: `${rawBase.replace(/\/+$/, "")}/v1beta/models`, headers, body: null, method: "GET" };
   }
-  if (kind === "azure") {
-    const version = channel.other || AZURE_API_VERSION;
-    return {
-      url: `${base}/openai/models?api-version=${encodeURIComponent(version)}`,
-      headers: { "api-key": apiKey },
-      body: null,
-      method: "GET",
-    };
+
+  if (type === CHANNEL_TYPE_ANTHROPIC) {
+    headers["x-api-key"] = apiKey;
+    headers["anthropic-version"] = CLAUDE_VERSION;
+    applyFetchModelsHeaderOverrides(channel, apiKey, headers);
+    return { url: joinUrl(rawBase, "/v1/models"), headers, body: null, method: "GET" };
   }
-  return {
-    url: joinUrl(base, "/v1/models"),
-    headers: { authorization: `Bearer ${apiKey}` },
-    body: null,
-    method: "GET",
-  };
+
+  headers.authorization = `Bearer ${apiKey}`;
+  applyFetchModelsHeaderOverrides(channel, apiKey, headers);
+
+  let url: string;
+  if (type === CHANNEL_TYPE_ALI) {
+    url = `${rawBase.replace(/\/+$/, "")}/compatible-mode/v1/models`;
+  } else if (type === CHANNEL_TYPE_ZHIPU_V4) {
+    url = special?.openai
+      ? `${special.openai.replace(/\/+$/, "")}/models`
+      : `${rawBase.replace(/\/+$/, "")}/api/paas/v4/models`;
+  } else if (type === CHANNEL_TYPE_VOLC) {
+    url = special?.openai
+      ? `${special.openai.replace(/\/+$/, "")}/v1/models`
+      : `${rawBase.replace(/\/+$/, "")}/api/v3/models`;
+  } else if (type === CHANNEL_TYPE_MOONSHOT && special?.openai) {
+    url = `${special.openai.replace(/\/+$/, "")}/models`;
+  } else {
+    url = joinUrl(rawBase, "/v1/models");
+  }
+  return { url, headers, body: null, method: "GET" };
 }

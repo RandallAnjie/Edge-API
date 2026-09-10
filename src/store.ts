@@ -38,6 +38,25 @@ function num(v: unknown, d = 0): number {
   return Number.isFinite(n) ? n : d;
 }
 
+/** Original `model.applyExplicitLogTextFilter` + `sanitizeLikePattern`. */
+function applyExplicitLogTextFilter(column: string, value: string | undefined, where: string[], binds: unknown[]): void {
+  if (!value) return;
+  if (!value.includes("%")) {
+    where.push(`${column} = ?`);
+    binds.push(value);
+    return;
+  }
+  const pattern = value.replace(/!/g, "!!").replace(/_/g, "!_");
+  if (pattern.includes("%%")) throw new Error("搜索模式中不允许包含连续的 % 通配符");
+  const count = (pattern.match(/%/g) || []).length;
+  if (count > 2) throw new Error("搜索模式中最多允许包含 2 个 % 通配符");
+  if (count > 0 && pattern.replace(/%/g, "").length < 2) {
+    throw new Error("使用模糊搜索时，关键词长度至少为 2 个字符");
+  }
+  where.push(`${column} LIKE ? ESCAPE '!'`);
+  binds.push(pattern);
+}
+
 function bool01(v: unknown): number {
   if (v === true || v === 1 || v === "1" || v === "true") return 1;
   return 0;
@@ -719,14 +738,8 @@ export class Store {
       where.push("request_logs.created_at <= ?");
       binds.push(opts.end);
     }
-    if (opts.model) {
-      where.push("request_logs.model_name = ?");
-      binds.push(opts.model);
-    }
-    if (opts.username) {
-      where.push("request_logs.username = ?");
-      binds.push(opts.username);
-    }
+    applyExplicitLogTextFilter("request_logs.model_name", opts.model, where, binds);
+    applyExplicitLogTextFilter("request_logs.username", opts.username, where, binds);
     if (opts.tokenName) {
       where.push("request_logs.token_name = ?");
       binds.push(opts.tokenName);
@@ -782,22 +795,12 @@ export class Store {
   }> {
     const where: string[] = [`type = ${LOG_CONSUME}`];
     const binds: unknown[] = [];
-    if (opts.userId) {
-      where.push("user_id = ?");
-      binds.push(opts.userId);
-    }
-    if (opts.username) {
-      where.push("username = ?");
-      binds.push(opts.username);
-    }
+    applyExplicitLogTextFilter("username", opts.username, where, binds);
     if (opts.tokenName) {
       where.push("token_name = ?");
       binds.push(opts.tokenName);
     }
-    if (opts.model) {
-      where.push("model_name = ?");
-      binds.push(opts.model);
-    }
+    applyExplicitLogTextFilter("model_name", opts.model, where, binds);
     if (opts.channel) {
       where.push("channel_id = ?");
       binds.push(opts.channel);
@@ -806,22 +809,25 @@ export class Store {
       where.push('"group" = ?');
       binds.push(opts.group);
     }
+    const quotaWhere = [...where];
+    const quotaBinds = [...binds];
     if (opts.start) {
-      where.push("created_at >= ?");
-      binds.push(opts.start);
+      quotaWhere.push("created_at >= ?");
+      quotaBinds.push(opts.start);
     }
     if (opts.end) {
-      where.push("created_at <= ?");
-      binds.push(opts.end);
+      quotaWhere.push("created_at <= ?");
+      quotaBinds.push(opts.end);
     }
-    const w = where.join(" AND ");
+    const w = quotaWhere.join(" AND ");
     const row = await this.db
       .prepare(`SELECT COALESCE(SUM(quota),0) as quota FROM request_logs WHERE ${w}`)
-      .bind(...binds)
+      .bind(...quotaBinds)
       .first<{ quota: number }>();
     const minuteAgo = nowSec() - 60;
+    const rpmWhere = [...where, "created_at >= ?"].join(" AND ");
     const rpmRow = await this.db
-      .prepare(`SELECT COUNT(*) as c, COALESCE(SUM(prompt_tokens+completion_tokens),0) as t FROM request_logs WHERE ${w} AND created_at >= ?`)
+      .prepare(`SELECT COUNT(*) as c, COALESCE(SUM(prompt_tokens+completion_tokens),0) as t FROM request_logs WHERE ${rpmWhere}`)
       .bind(...binds, minuteAgo)
       .first<{ c: number; t: number }>();
     return { quota: num(row?.quota), rpm: num(rpmRow?.c), tpm: num(rpmRow?.t) };

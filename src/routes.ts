@@ -1173,7 +1173,7 @@ export function adminRouter(): Router<Env> {
     const ch = await s.getChannel(id.n);
     if (!ch) return apiFail("record not found");
     try {
-      const models = await fetchUpstreamModels(ch);
+      const models = await fetchUpstreamModels(ch, s);
       return apiOk(models);
     } catch (e) {
       return apiFail(`获取模型列表失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -1213,7 +1213,7 @@ export function adminRouter(): Router<Env> {
       } else {
         channel = previewNonCustomChannel(body, defaultBaseUrl(type));
       }
-      const models = await fetchUpstreamModels(channel);
+      const models = await fetchUpstreamModels(channel, s);
       return apiOk(models);
     } catch (e) {
       return apiFail(`获取模型列表失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -1225,21 +1225,25 @@ export function adminRouter(): Router<Env> {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listLogs({
-      offset: q.offset,
-      limit: q.page_size,
-      type: Number(c.url.searchParams.get("type") || 0) || undefined,
-      start: Number(c.url.searchParams.get("start_timestamp") || 0) || undefined,
-      end: Number(c.url.searchParams.get("end_timestamp") || 0) || undefined,
-      model: c.url.searchParams.get("model_name") || undefined,
-      username: c.url.searchParams.get("username") || undefined,
-      tokenName: c.url.searchParams.get("token_name") || undefined,
-      channel: Number(c.url.searchParams.get("channel") || 0) || undefined,
-      requestId: c.url.searchParams.get("request_id") || undefined,
-      group: c.url.searchParams.get("group") || undefined,
-      upstreamRequestId: c.url.searchParams.get("upstream_request_id") || undefined,
-    });
-    return apiOk(pageData(items.map((row) => publicLog(row, u.role)), total, q));
+    try {
+      const { items, total } = await s.listLogs({
+        offset: q.offset,
+        limit: q.page_size,
+        type: Number(c.url.searchParams.get("type") || 0) || undefined,
+        start: Number(c.url.searchParams.get("start_timestamp") || 0) || undefined,
+        end: Number(c.url.searchParams.get("end_timestamp") || 0) || undefined,
+        model: c.url.searchParams.get("model_name") || undefined,
+        username: c.url.searchParams.get("username") || undefined,
+        tokenName: c.url.searchParams.get("token_name") || undefined,
+        channel: Number(c.url.searchParams.get("channel") || 0) || undefined,
+        requestId: c.url.searchParams.get("request_id") || undefined,
+        group: c.url.searchParams.get("group") || undefined,
+        upstreamRequestId: c.url.searchParams.get("upstream_request_id") || undefined,
+      });
+      return apiOk(pageData(items.map((row) => publicLog(row, u.role)), total, q));
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/log/self", async (c) => {
@@ -1247,56 +1251,68 @@ export function adminRouter(): Router<Env> {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listLogs({
-      offset: q.offset,
-      limit: q.page_size,
-      userId: u.id,
-      type: Number(c.url.searchParams.get("type") || 0) || undefined,
-      start: Number(c.url.searchParams.get("start_timestamp") || 0) || undefined,
-      end: Number(c.url.searchParams.get("end_timestamp") || 0) || undefined,
-      model: c.url.searchParams.get("model_name") || undefined,
-      tokenName: c.url.searchParams.get("token_name") || undefined,
-      requestId: c.url.searchParams.get("request_id") || undefined,
-      group: c.url.searchParams.get("group") || undefined,
-      upstreamRequestId: c.url.searchParams.get("upstream_request_id") || undefined,
-    });
-    return apiOk(pageData(publicUserLogs(items, q.offset), total, q));
+    try {
+      const { items, total } = await s.listLogs({
+        offset: q.offset,
+        limit: q.page_size,
+        userId: u.id,
+        type: Number(c.url.searchParams.get("type") || 0) || undefined,
+        start: Number(c.url.searchParams.get("start_timestamp") || 0) || undefined,
+        end: Number(c.url.searchParams.get("end_timestamp") || 0) || undefined,
+        model: c.url.searchParams.get("model_name") || undefined,
+        tokenName: c.url.searchParams.get("token_name") || undefined,
+        requestId: c.url.searchParams.get("request_id") || undefined,
+        group: c.url.searchParams.get("group") || undefined,
+        upstreamRequestId: c.url.searchParams.get("upstream_request_id") || undefined,
+      });
+      return apiOk(pageData(publicUserLogs(items, q.offset), total, q));
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/log/stat", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk(
-      await s.logStat({
-        type: Number(c.url.searchParams.get("type") || 0) || undefined,
-        start: Number(c.url.searchParams.get("start_timestamp") || 0) || undefined,
-        end: Number(c.url.searchParams.get("end_timestamp") || 0) || undefined,
-        username: c.url.searchParams.get("username") || undefined,
-        tokenName: c.url.searchParams.get("token_name") || undefined,
-        model: c.url.searchParams.get("model_name") || undefined,
-        channel: Number(c.url.searchParams.get("channel") || 0) || undefined,
-        group: c.url.searchParams.get("group") || undefined,
-      }),
-    );
+    try {
+      return apiOk(
+        await s.logStat({
+          type: Number(c.url.searchParams.get("type") || 0) || undefined,
+          start: Number(c.url.searchParams.get("start_timestamp") || 0) || undefined,
+          end: Number(c.url.searchParams.get("end_timestamp") || 0) || undefined,
+          username: c.url.searchParams.get("username") || undefined,
+          tokenName: c.url.searchParams.get("token_name") || undefined,
+          model: c.url.searchParams.get("model_name") || undefined,
+          channel: Number(c.url.searchParams.get("channel") || 0) || undefined,
+          group: c.url.searchParams.get("group") || undefined,
+        }),
+      );
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/log/self/stat", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return apiOk(
-      await s.logStat({
-        userId: u.id,
-        username: u.username,
-        type: Number(c.url.searchParams.get("type") || 0) || undefined,
-        start: Number(c.url.searchParams.get("start_timestamp") || 0) || undefined,
-        end: Number(c.url.searchParams.get("end_timestamp") || 0) || undefined,
-        tokenName: c.url.searchParams.get("token_name") || undefined,
-        model: c.url.searchParams.get("model_name") || undefined,
-        group: c.url.searchParams.get("group") || undefined,
-      }),
-    );
+    try {
+      return apiOk(
+        await s.logStat({
+          username: u.username,
+          type: Number(c.url.searchParams.get("type") || 0) || undefined,
+          start: Number(c.url.searchParams.get("start_timestamp") || 0) || undefined,
+          end: Number(c.url.searchParams.get("end_timestamp") || 0) || undefined,
+          tokenName: c.url.searchParams.get("token_name") || undefined,
+          model: c.url.searchParams.get("model_name") || undefined,
+          channel: Number(c.url.searchParams.get("channel") || 0) || undefined,
+          group: c.url.searchParams.get("group") || undefined,
+        }),
+      );
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.slash("GET", "/api/data/", async (c) => {

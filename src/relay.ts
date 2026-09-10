@@ -1,4 +1,4 @@
-import { csv, LOG_CONSUME, LOG_ERROR, parseBool, UNSUPPORTED_CHANNEL_TEST_TYPES } from "./constants.js";
+import { csv, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_TASK_PLUGIN, LOG_CONSUME, LOG_ERROR, parseBool, parseJson, UNSUPPORTED_CHANNEL_TEST_TYPES } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
@@ -19,11 +19,12 @@ import { pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
-import { applyModelMapping, buildUpstream, joinUrl, modelsUrl, type RelayMode } from "./upstream.js";
+import { applyModelMapping, buildUpstream, joinUrl, modelsUrl, normalizeModelNames, type RelayMode } from "./upstream.js";
 import { channelKind, channelTypeName, resolveBaseUrl } from "./catalog.js";
 import {
   anthropicModel,
   consumeLogOther,
+  extractPluginMeta,
   geminiModel,
   modelNotFoundError,
   openAIModel,
@@ -496,19 +497,32 @@ export async function testChannel(
   }
 }
 
-export async function fetchUpstreamModels(channel: ChannelRow): Promise<string[]> {
+export async function fetchUpstreamModels(channel: ChannelRow, store?: Store): Promise<string[]> {
+  if (channel.type === CHANNEL_TYPE_TASK_PLUGIN) {
+    const setting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
+    const pluginKey = String(setting.task_plugin_key || setting.TaskPluginKey || "").trim();
+    const plugin = store ? await store.getTaskPlugin(pluginKey) : null;
+    if (!plugin) throw new Error(`task plugin ${JSON.stringify(pluginKey)} is not registered`);
+    const meta = extractPluginMeta(String(plugin.source || ""));
+    const models = Array.isArray(meta.models) ? (meta.models as unknown[]).map((m) => String(m)) : [];
+    return normalizeModelNames(models);
+  }
+  if (channel.type === CHANNEL_TYPE_CODEX && parseChannelInfo(String(channel.channel_info || "")).is_multi_key) {
+    throw new Error("codex channel does not support multi-key model discovery");
+  }
   const target = modelsUrl(channel);
   const res = await fetchUpstream(target);
   const text = await res.text();
   if (!res.ok) throw new Error(text.slice(0, 400) || res.statusText);
   const parsed = JSON.parse(text) as Record<string, unknown>;
+  let ids: string[] = [];
   if (Array.isArray(parsed.data)) {
-    return (parsed.data as { id?: string }[]).map((x) => String(x.id || "")).filter(Boolean);
+    ids = (parsed.data as { id?: string }[]).map((x) => String(x.id || ""));
+  } else if (Array.isArray(parsed.models)) {
+    ids = (parsed.models as { name?: string }[]).map((x) => String(x.name || ""));
   }
-  if (Array.isArray(parsed.models)) {
-    return (parsed.models as { name?: string }[]).map((x) => String(x.name || "").replace(/^models\//, "")).filter(Boolean);
-  }
-  return [];
+  if (channel.type === CHANNEL_TYPE_GEMINI) ids = ids.map((id) => id.replace(/^models\//, ""));
+  return normalizeModelNames(ids);
 }
 
 export async function playgroundRelay(

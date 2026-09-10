@@ -1,7 +1,10 @@
 import { CHANNEL_ENABLED, nowSec, parseJson } from "./constants.js";
 import { fetchUpstreamModels } from "./relay.js";
+import { normalizeModelNames } from "./upstream.js";
 import type { Store } from "./store.js";
 import type { ChannelRow } from "./types.js";
+
+export { normalizeModelNames };
 
 /** Original `controller.channelUpstreamModelUpdateMinCheckIntervalSeconds`. */
 export const CHANNEL_UPSTREAM_MODEL_UPDATE_MIN_CHECK_INTERVAL_SECONDS = 300;
@@ -53,19 +56,6 @@ export type ApplyAllChannelUpstreamModelUpdatesResult = {
   remaining_models: string[];
   remaining_remove_models: string[];
 };
-
-/** Original `controller.normalizeModelNames`. */
-export function normalizeModelNames(models: string[] | undefined | null): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const model of models || []) {
-    const trimmed = String(model || "").trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    out.push(trimmed);
-  }
-  return out;
-}
 
 /** Original `model.Channel.GetModels`. */
 export function channelGetModels(channel: ChannelRow): string[] {
@@ -186,12 +176,13 @@ function sanitizeFetchModelsError(err: unknown, key: string): Error {
 }
 
 async function collectPendingUpstreamModelChanges(
+  store: Store,
   channel: ChannelRow,
   settings: ChannelOtherSettings,
 ): Promise<{ pendingAddModels: string[]; pendingRemoveModels: string[] }> {
   let upstreamModels: string[];
   try {
-    upstreamModels = await fetchUpstreamModels(channel);
+    upstreamModels = await fetchUpstreamModels(channel, store);
   } catch (e) {
     throw sanitizeFetchModelsError(e, channel.key || "");
   }
@@ -239,7 +230,7 @@ export async function checkAndPersistChannelUpstreamModelUpdates(
   let pendingAddModels: string[] = [];
   let pendingRemoveModels: string[] = [];
   try {
-    const pending = await collectPendingUpstreamModelChanges(channel, settings);
+    const pending = await collectPendingUpstreamModelChanges(store, channel, settings);
     pendingAddModels = pending.pendingAddModels;
     pendingRemoveModels = pending.pendingRemoveModels;
   } catch (e) {

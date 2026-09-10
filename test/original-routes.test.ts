@@ -5,7 +5,8 @@ import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { Store } from "../src/store.js";
 import { runChannelTestTask, selectChannelsForAutomaticTest } from "../src/channel-test.js";
-import type { Env, ExecutionContextLike } from "../src/types.js";
+import { modelsUrl } from "../src/upstream.js";
+import type { ChannelRow, Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
@@ -143,6 +144,10 @@ const ORIGINAL_API: { method: string; path: string }[] = [
   { method: "GET", path: "/api/data/self" },
   { method: "GET", path: "/api/data/flow/self?start_timestamp=1&end_timestamp=2" },
   { method: "GET", path: "/api/log/search" },
+  { method: "GET", path: "/api/log/stat" },
+  { method: "GET", path: "/api/log/self/stat" },
+  { method: "POST", path: "/api/channel/copy/1" },
+  { method: "GET", path: "/api/channel/fetch_models/1" },
   { method: "POST", path: "/api/channel/fix" },
   { method: "GET", path: "/dashboard/billing/subscription" },
   { method: "GET", path: "/api/channel/test" },
@@ -3511,6 +3516,291 @@ test("original GetPricing omitempty ratios and models matched_models JSON", asyn
   assert.equal(byModel["parity-unmapped-ratio"].quota_type, 0);
   assert.equal((byModel["usage-task"].billing_usage_schema as { clips: { type: string } }).clips.type, "number");
   assert.equal((byModel["usage-task"].billing_usage_examples as { label: string }[])[0].label, "one");
+});
+
+test("original GetLogsStat rpm window, GetGroups, checkin, CopyChannel, FetchUpstreamModels JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const s = new Store(e.DB);
+
+  const ali = modelsUrl({ type: 17, key: "sk-ali", base_url: "" } as ChannelRow);
+  assert.equal(ali.url, "https://dashscope.aliyuncs.com/compatible-mode/v1/models");
+  const ollama = modelsUrl({ type: 4, key: "ollama-key", base_url: "http://localhost:11434" } as ChannelRow);
+  assert.equal(ollama.url, "http://localhost:11434/api/tags");
+  const zhipu = modelsUrl({ type: 26, key: "sk-z", base_url: "" } as ChannelRow);
+  assert.equal(zhipu.url, "https://open.bigmodel.cn/api/paas/v4/models");
+  const glmPlan = modelsUrl({ type: 26, key: "sk-z", base_url: "glm-coding-plan" } as ChannelRow);
+  assert.equal(glmPlan.url, "https://open.bigmodel.cn/api/coding/paas/v4/models");
+  const volc = modelsUrl({ type: 45, key: "sk-v", base_url: "" } as ChannelRow);
+  assert.equal(volc.url, "https://ark.cn-beijing.volces.com/api/v3/models");
+  const gemini = modelsUrl({ type: 24, key: "gem-key", base_url: "" } as ChannelRow);
+  assert.equal(gemini.url, "https://generativelanguage.googleapis.com/v1beta/models");
+  assert.equal(gemini.headers["x-goog-api-key"], "gem-key");
+  assert.equal(gemini.url.includes("key="), false);
+
+  const groups = await json(new Request("http://local/api/group/", { headers: auth }), e);
+  assert.equal(groups.body.success, true);
+  const names = groups.body.data as string[];
+  assert.ok(Array.isArray(names));
+  assert.ok(names.includes("default"));
+  assert.ok(names.includes("vip"));
+  assert.ok(names.includes("svip"));
+  assert.equal(names.every((n) => typeof n === "string"), true);
+
+  const userGroups = await json(new Request("http://local/api/user/self/groups", { headers: auth }), e);
+  const ug = userGroups.body.data as Record<string, { ratio: number | string; desc: string }>;
+  assert.equal(typeof ug.default.ratio, "number");
+  assert.equal(typeof ug.default.desc, "string");
+  assert.equal("auto" in ug, false);
+
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "checkin_setting.enabled", value: "true" }),
+    }),
+    e,
+  );
+  const doCk = await json(new Request("http://local/api/user/checkin", { method: "POST", headers: auth }), e);
+  assert.equal(doCk.body.success, true, String(doCk.body.message));
+  assert.equal(doCk.body.message, "签到成功");
+  const ck = doCk.body.data as { quota_awarded: number; checkin_date: string };
+  assert.equal(typeof ck.quota_awarded, "number");
+  assert.match(ck.checkin_date, /^\d{4}-\d{2}-\d{2}$/);
+  const againCk = await json(new Request("http://local/api/user/checkin", { method: "POST", headers: auth }), e);
+  assert.equal(againCk.body.success, false);
+  assert.equal(againCk.body.message, "今日已签到");
+
+  const tooWide = await json(
+    new Request("http://local/api/data/self?start_timestamp=1&end_timestamp=3000001", { headers: auth }),
+    e,
+  );
+  assert.equal(tooWide.body.success, false);
+  assert.equal(tooWide.body.message, "时间跨度不能超过 1 个月");
+  const dataSelf = await json(
+    new Request("http://local/api/data/self?start_timestamp=1&end_timestamp=100", { headers: auth }),
+    e,
+  );
+  assert.equal(dataSelf.body.success, true);
+  assert.ok(Array.isArray(dataSelf.body.data));
+  const row0 = (dataSelf.body.data as Record<string, unknown>[])[0];
+  if (row0) {
+    assert.equal("user_id" in row0, true);
+    assert.equal("model_name" in row0, true);
+    assert.equal("token_used" in row0, true);
+  }
+
+  const created = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "stat-src",
+        type: 1,
+        key: "sk-copy",
+        models: "gpt-4o",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const srcId = Number((created.body.data as { id: number }).id);
+  await s.updateChannel(srcId, { used_quota: 42, balance: "9.5" });
+  const keepBal = await json(
+    new Request("http://local/api/channel/copy/" + srcId + "?reset_balance=false&suffix=_bak", { method: "POST", headers: auth }),
+    e,
+  );
+  assert.equal(keepBal.body.success, true, String(keepBal.body.message));
+  const keepId = Number((keepBal.body.data as { id: number }).id);
+  const keepGet = await json(new Request("http://local/api/channel/" + keepId, { headers: auth }), e);
+  const keepCh = keepGet.body.data as { name: string; used_quota: number; balance: number };
+  assert.equal(keepCh.name, "stat-src_bak");
+  assert.equal(keepCh.used_quota, 42);
+
+  const pluginUp = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ source: pluginSource("fetch-demo", "Fetch Demo") }),
+    }),
+    e,
+  );
+  assert.equal(pluginUp.body.success, true, String(pluginUp.body.message));
+  const pluginCh = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "plugin-fetch",
+        type: 61,
+        key: "plugin-key",
+        models: "fetch-demo",
+        group: "default",
+        setting: JSON.stringify({ task_plugin_key: "fetch-demo" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(pluginCh.body.success, true, String(pluginCh.body.message));
+  const pluginId = Number((pluginCh.body.data as { id: number }).id);
+  const pluginModels = await json(new Request("http://local/api/channel/fetch_models/" + pluginId, { headers: auth }), e);
+  assert.equal(pluginModels.body.success, true, String(pluginModels.body.message));
+  assert.deepEqual(pluginModels.body.data, ["fetch-demo"]);
+
+  const missingPlugin = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "plugin-missing",
+        type: 61,
+        key: "x",
+        models: "none",
+        group: "default",
+        setting: JSON.stringify({ task_plugin_key: "not-registered" }),
+      }),
+    }),
+    e,
+  );
+  const missingId = Number((missingPlugin.body.data as { id: number }).id);
+  const missingFetch = await json(new Request("http://local/api/channel/fetch_models/" + missingId, { headers: auth }), e);
+  assert.equal(missingFetch.body.success, false);
+  assert.equal(missingFetch.body.message, '获取模型列表失败: task plugin "not-registered" is not registered');
+
+  const seen: string[] = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = String(input instanceof Request ? input.url : input);
+    seen.push(url);
+    if (url.includes("/compatible-mode/v1/models")) {
+      return new Response(JSON.stringify({ data: [{ id: "qwen-plus" }, { id: " qwen-max " }, { id: "qwen-plus" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("/api/tags")) {
+      return new Response(JSON.stringify({ models: [{ name: "llama3" }, { name: "mistral" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  };
+  try {
+    const aliFetch = await json(
+      new Request("http://local/api/channel/fetch_models", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ type: 17, key: "sk-ali", base_url: "https://dashscope.aliyuncs.com" }),
+      }),
+      e,
+    );
+    assert.equal(aliFetch.body.success, true, String(aliFetch.body.message));
+    assert.deepEqual(aliFetch.body.data, ["qwen-plus", "qwen-max"]);
+    assert.ok(seen.some((u) => u === "https://dashscope.aliyuncs.com/compatible-mode/v1/models"));
+
+    const ollamaCh = await json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          name: "ollama-local",
+          type: 4,
+          key: "ollama-key",
+          models: "llama3",
+          group: "default",
+          base_url: "http://localhost:11434",
+        }),
+      }),
+      e,
+    );
+    const ollamaId = Number((ollamaCh.body.data as { id: number }).id);
+    const ollamaFetch = await json(new Request("http://local/api/channel/fetch_models/" + ollamaId, { headers: auth }), e);
+    assert.equal(ollamaFetch.body.success, true, String(ollamaFetch.body.message));
+    assert.deepEqual(ollamaFetch.body.data, ["llama3", "mistral"]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  await s.insertLog({
+    user_id: 1,
+    username: "root",
+    type: 2,
+    quota: 100,
+    prompt_tokens: 1,
+    completion_tokens: 1,
+    created_at: now - 120,
+    channel_id: 7,
+  });
+  await s.insertLog({
+    user_id: 1,
+    username: "root",
+    type: 2,
+    quota: 50,
+    prompt_tokens: 10,
+    completion_tokens: 5,
+    created_at: now,
+    channel_id: 8,
+  });
+  const hist = await json(
+    new Request(`http://local/api/log/stat?start_timestamp=${now - 200}&end_timestamp=${now - 90}`, { headers: auth }),
+    e,
+  );
+  const hs = hist.body.data as { quota: number; rpm: number; tpm: number };
+  assert.equal(hs.quota, 100);
+  assert.equal(hs.rpm, 1);
+  assert.equal(hs.tpm, 15);
+
+  const selfCh = await json(new Request("http://local/api/log/self/stat?channel=7", { headers: auth }), e);
+  const ss = selfCh.body.data as { quota: number; rpm: number; tpm: number };
+  assert.equal(ss.quota, 100);
+  assert.equal(ss.rpm, 0);
+
+  const likeBad = await json(new Request("http://local/api/log/?username=" + encodeURIComponent("%r%"), { headers: auth }), e);
+  assert.equal(likeBad.body.success, false);
+  assert.equal(likeBad.body.message, "使用模糊搜索时，关键词长度至少为 2 个字符");
+  const likeOk = await json(new Request("http://local/api/log/?username=" + encodeURIComponent("%ro%"), { headers: auth }), e);
+  assert.equal(likeOk.body.success, true);
+  const items = (likeOk.body.data as { items: unknown[] }).items;
+  assert.ok(items.length >= 2);
+
+  const tagged = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "short-tag",
+        type: 1,
+        key: "sk-t",
+        models: "a",
+        group: "default",
+        tag: "parity-tag",
+      }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "long-tag",
+        type: 1,
+        key: "sk-t2",
+        models: "gpt-4o,gpt-4o-mini,gpt-4.1",
+        group: "default",
+        tag: "parity-tag",
+      }),
+    }),
+    e,
+  );
+  void tagged;
+  const tagModels = await json(new Request("http://local/api/channel/tag/models?tag=parity-tag", { headers: auth }), e);
+  assert.equal(tagModels.body.success, true);
+  assert.equal(tagModels.body.data, "gpt-4o,gpt-4o-mini,gpt-4.1");
 });
 
 
