@@ -323,7 +323,7 @@ test("original sora multipart native RelayTask submit JSON fields", async () => 
       new Request("http://local/v1/videos", {
         method: "POST",
         headers: { authorization: "Bearer " + sk, "content-type": inbound.contentType },
-        body: inbound.body,
+        body: inbound.body as unknown as BodyInit,
       }),
       e,
     );

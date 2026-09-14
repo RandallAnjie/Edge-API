@@ -412,7 +412,7 @@ async function doNativeSubmitRequest(
   try {
     const encoded = encodeNativeSubmitBody(descriptor, files);
     if (encoded.contentType) headers.set("Content-Type", encoded.contentType);
-    if (encoded.body != null) body = encoded.body;
+    if (encoded.body != null) body = encoded.body as unknown as BodyInit;
   } catch (err) {
     return taskErr("build_request_failed", hookMessage(err), 500, false);
   }
