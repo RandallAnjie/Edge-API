@@ -384,14 +384,14 @@ function otherRatiosFromContext(bc: Record<string, unknown>): Record<string, num
 
 function taskModelName(row: Record<string, unknown>, privateData: Record<string, unknown>): string {
   const bc = billingContext(privateData);
-  const fromBc = String(bc.origin_model_name ?? bc.originModelName || "");
+  const fromBc = String(bc.origin_model_name ?? bc.originModelName ?? "");
   if (fromBc) return fromBc;
   const properties = objectFrom(row.properties);
   return String(properties.origin_model_name || row.model_name || "");
 }
 
 function taskGroup(row: Record<string, unknown>): string {
-  return String(row.group ?? row["group"] || "");
+  return String(row.group ?? row["group"] ?? "");
 }
 
 /** Original `service.taskBillingOther`. */
