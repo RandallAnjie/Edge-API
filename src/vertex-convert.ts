@@ -1,7 +1,7 @@
 /** Original `relay/channel/vertex` ConvertOpenAIRequest (Claude wrap, Gemini, imagen) + URL builders. */
 
 import { convertClaudeRequest, convertOpenAIChatToClaude, type ConvertClaudeOpts } from "./claude-convert.js";
-import { convertOpenAIChatToGemini } from "./gemini-convert.js";
+import { convertGeminiRequest, convertOpenAIChatToGemini } from "./gemini-convert.js";
 import type { ReasoningHostSettings } from "./reasoning.js";
 
 /** Original `vertex.RequestMode*`. */
@@ -82,6 +82,16 @@ export function wrapVertexClaude(claudeReq: Record<string, unknown>, version = V
  */
 export function convertVertexClaudeRequest(body: Record<string, unknown>, opts: ConvertVertexOpts = {}): Record<string, unknown> {
   return wrapVertexClaude(convertClaudeRequest(body, opts));
+}
+
+/**
+ * Original `vertex.Adaptor.ConvertGeminiRequest`.
+ * Always strips Vertex Gemini function-call IDs then `gemini.Adaptor.ConvertGeminiRequest` — RequestMode is not consulted.
+ */
+export function convertVertexGeminiRequest(body: Record<string, unknown>, opts: ConvertVertexOpts = {}): Record<string, unknown> {
+  const req: Record<string, unknown> = { ...body };
+  if (opts.settings?.removeFunctionResponseIdEnabled !== false) removeFunctionCallIDs(req);
+  return convertGeminiRequest(req, opts);
 }
 
 /** Original `vertex.removeFunctionCallIDs`. */

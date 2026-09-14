@@ -49,7 +49,7 @@ import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
 import { compactUuid } from "./openai-usage.js";
 import { isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding, ollamaUpstreamToOpenAIChat } from "./ollama-convert.js";
-import { convertVertexClaudeRequest, imagenUsage, openaiFromImagenResponse, removeFunctionCallIDs, vertexRequestMode } from "./vertex-convert.js";
+import { convertVertexClaudeRequest, convertVertexGeminiRequest, imagenUsage, openaiFromImagenResponse, vertexRequestMode } from "./vertex-convert.js";
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest, openaiFromBaiduEmbedding, openaiFromBaiduResponse, baiduUpstreamToOpenAIChat } from "./baidu-convert.js";
 import { convertCohereRerankRequest, openaiFromCohereResponse, openaiFromCohereRerank, cohereUpstreamToOpenAIChat } from "./cohere-convert.js";
 import { completeCozeNonStreamChat, openaiFromCozeDetailResponse, cozeUpstreamToOpenAIChat, type CozeUsage } from "./coze-convert.js";
@@ -362,9 +362,7 @@ async function convertOutbound(
     return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
   if (channelType === CHANNEL_TYPE_VERTEX && client === "gemini") {
-    const geminiReq = convertGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
-    if (settings.removeFunctionResponseIdEnabled !== false) removeFunctionCallIDs(geminiReq);
-    return geminiReq;
+    return convertVertexGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
   if (client === "gemini" && kind === "gemini") {
     return convertGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
@@ -835,6 +833,12 @@ async function convertInbound(
       upstreamModel: model,
       fallbackPromptTokens: opts.fallbackPromptTokens,
     });
+  }
+  if (client === "gemini" && opts.channelType === CHANNEL_TYPE_VERTEX) {
+    const mode = vertexRequestMode(model);
+    if (mode === "claude") return claudeResponseToGeminiChat(upstreamJson, model);
+    if (mode === "opensource") return openaiChatToGeminiResponse(upstreamJson);
+    return upstreamJson;
   }
   if (client === "openai" && kind === "anthropic") {
     const chat = openaiFromAnthropicResponse(upstreamJson, model);
@@ -1717,7 +1721,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           },
         });
       }
-      if (channel.type === CHANNEL_TYPE_ANTHROPIC && clientFormat === "gemini") {
+      if (
+        clientFormat === "gemini" &&
+        (channel.type === CHANNEL_TYPE_ANTHROPIC || (channel.type === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "claude"))
+      ) {
         const text = await res.text();
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
@@ -1726,6 +1733,31 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             upstreamModel: mapped,
             created: Math.floor(started / 1000),
           });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          return openaiError(500, message, "bad_response_body");
+        }
+        const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
+        extra.cachedTokens = usage.cachedTokens;
+        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        ctx?.waitUntil(
+          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
+        );
+        return new Response(converted.sse, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            "x-oneapi-request-id": rid,
+          },
+        });
+      }
+      if (channel.type === CHANNEL_TYPE_VERTEX && clientFormat === "gemini" && vertexRequestMode(mapped) === "opensource") {
+        const text = await res.text();
+        let converted: { sse: string; usageBody: Record<string, unknown> };
+        try {
+          converted = oaiChatSseToGeminiSse(text, { estimatePromptTokens: promptEst });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);

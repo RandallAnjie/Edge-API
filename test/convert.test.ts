@@ -26,6 +26,7 @@ import {
   usesOpenAIAdaptor,
   convertClaudeRequest,
   convertVertexClaudeRequest,
+  convertVertexGeminiRequest,
   VERTEX_ANTHROPIC_VERSION,
   convertAdvancedCustomClaudeRequest,
   convertAdvancedCustomGeminiRequest,
@@ -2001,6 +2002,96 @@ test("original Vertex ConvertClaudeRequest always wraps Vertex Claude JSON", () 
   assert.equal(
     geminiStreamUrl.url,
     "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:streamGenerateContent?alt=sse&key=vkey",
+  );
+});
+
+test("original Vertex ConvertGeminiRequest always uses Gemini generateContent JSON", () => {
+  const geminiBody = () => ({
+    contents: [
+      { role: "user", parts: [{ text: "What is in this image?" }, { inlineData: { mimeType: "image/png", data: "aGVsbG8=" } }] },
+      { role: "model", parts: [{ functionCall: { id: "call_1", name: "lookup", args: { q: "x" } } }] },
+      { role: "user", parts: [{ functionResponse: { id: "call_1", name: "lookup", response: { ok: true } } }] },
+    ],
+    systemInstruction: { parts: [{ text: "You are a helpful assistant." }] },
+    tools: [
+      {
+        functionDeclarations: [
+          { name: "lookup", description: "Lookup data", parameters: { type: "object", properties: { q: { type: "string" } } } },
+        ],
+      },
+    ],
+  });
+
+  const claudeNamed = convertVertexGeminiRequest(geminiBody(), {
+    originModelName: "claude-3-5-sonnet-20241022",
+    upstreamModelName: "claude-3-5-sonnet-20241022",
+  });
+  assert.equal("anthropic_version" in claudeNamed, false);
+  assert.equal("messages" in claudeNamed, false);
+  assert.equal((claudeNamed.systemInstruction as { parts: { text: string }[] }).parts[0].text, "You are a helpful assistant.");
+  const contents = claudeNamed.contents as { role: string; parts: Record<string, unknown>[] }[];
+  assert.equal(contents[0].role, "user");
+  assert.equal(contents[0].parts[0].text, "What is in this image?");
+  assert.deepEqual(contents[0].parts[1].inlineData, { mimeType: "image/png", data: "aGVsbG8=" });
+  const call = contents[1].parts[0].functionCall as { id?: string; name: string };
+  assert.equal(call.name, "lookup");
+  assert.equal("id" in call, false);
+  const resp = contents[2].parts[0].functionResponse as { id?: string; name: string };
+  assert.equal(resp.name, "lookup");
+  assert.equal("id" in resp, false);
+
+  const keepIds = convertVertexGeminiRequest(geminiBody(), {
+    originModelName: "claude-3-5-sonnet-20241022",
+    upstreamModelName: "claude-3-5-sonnet-20241022",
+    settings: { removeFunctionResponseIdEnabled: false },
+  });
+  const keepContents = keepIds.contents as { role: string; parts: Record<string, unknown>[] }[];
+  const keepCall = keepContents[1].parts[0].functionCall as { id?: string };
+  assert.equal(keepCall.id, "call_1");
+
+  const geminiNamed = convertVertexGeminiRequest(geminiBody(), {
+    originModelName: "gemini-2.0-flash",
+    upstreamModelName: "gemini-2.0-flash",
+  });
+  assert.equal("anthropic_version" in geminiNamed, false);
+  const geminiContents = geminiNamed.contents as { role: string }[];
+  assert.equal(geminiContents[0].role, "user");
+
+  const inbound = claudeResponseToGeminiChat(
+    {
+      id: "msg_vertex",
+      type: "message",
+      role: "assistant",
+      content: [
+        { type: "text", text: "ok vertex claude" },
+        { type: "tool_use", id: "toolu_9", name: "lookup", input: { q: "y" } },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 3, output_tokens: 5 },
+    },
+    "claude-3-5-sonnet-20241022",
+  );
+  const candidates = inbound.candidates as { content: { role: string; parts: Record<string, unknown>[] } }[];
+  assert.equal(candidates[0].content.role, "model");
+  assert.ok(candidates[0].content.parts.some((part) => part.text === "ok vertex claude"));
+  assert.ok(candidates[0].content.parts.some((part) => (part.functionCall as { name?: string } | undefined)?.name === "lookup"));
+
+  const vertex = testChannel({
+    type: CHANNEL_TYPE_VERTEX,
+    key: "vkey",
+    other: JSON.stringify({ default: "us-central1" }),
+    settings: JSON.stringify({ vertex_key_type: "api_key" }),
+    models: "claude-3-5-sonnet-20241022,gemini-2.0-flash",
+  });
+  const claudeUrl = buildUpstream(vertex, "gemini", "/v1beta/models/claude-3-5-sonnet-20241022:generateContent", "claude-3-5-sonnet-20241022", claudeNamed);
+  assert.equal(
+    claudeUrl.url,
+    "https://us-central1-aiplatform.googleapis.com/v1/publishers/anthropic/models/claude-3-5-sonnet-v2@20241022:rawPredict?key=vkey",
+  );
+  const geminiUrl = buildUpstream(vertex, "gemini", "/v1beta/models/gemini-2.0-flash:generateContent", "gemini-2.0-flash", geminiNamed);
+  assert.equal(
+    geminiUrl.url,
+    "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent?key=vkey",
   );
 });
 
