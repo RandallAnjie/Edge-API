@@ -16,6 +16,7 @@ import {
   openaiFromXaiResponse,
   xaiSseToOpenAIChat,
   nativeClaudeGeminiConvertError,
+  nativeOpenAIConvertEndpointError,
   estimatePromptTokens,
   extractGeminiModelAction,
   geminiToOpenAIChat,
@@ -396,6 +397,10 @@ async function convertOutbound(
   }
   const nativeClaudeGeminiErr = nativeClaudeGeminiConvertError(channelType, client);
   if (nativeClaudeGeminiErr) throw new Error(nativeClaudeGeminiErr);
+  if (client === "openai") {
+    const endpointErr = nativeOpenAIConvertEndpointError(channelType, mode);
+    if (endpointErr) throw new Error(endpointErr);
+  }
   if (client === "openai" && channelType === CHANNEL_TYPE_OLLAMA && mode === "embeddings") {
     return convertOllamaEmbeddingRequest(o, { upstreamModelName: upstream });
   }
@@ -408,7 +413,7 @@ async function convertOutbound(
   if (client === "openai" && channelType === CHANNEL_TYPE_GEMINI && mode === "embeddings") {
     return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
   }
-  if (client === "openai" && channelType === CHANNEL_TYPE_DIFY) {
+  if (client === "openai" && channelType === CHANNEL_TYPE_DIFY && (mode === "chat" || mode === "completions")) {
     return convertDifyOpenAIRequestWithUploads(o, {
       responseId: extras.responseId,
       channelBase: extras.channelBase,
@@ -1180,6 +1185,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     const aliMultipartEdits = multipartEdits && channel.type === CHANNEL_TYPE_ALI;
     try {
       mapped = applyModelMapping(channel, model);
+      const endpointErr = nativeOpenAIConvertEndpointError(channel.type, mode);
+      if (endpointErr) throw new Error(endpointErr);
       const channelSetting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
       if (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
         advancedConverter = resolveAdvancedCustomConverter(channel, requestPath, model);

@@ -785,3 +785,73 @@ test("original xAIStreamHandler HTTP SSE rewrites completion_tokens without text
     globalThis.fetch = origFetch;
   }
 });
+
+test("original Moonshot ConvertAudioRequest and ConvertOpenAIResponsesRequest HTTP JSON errors", async () => {
+  const { e, auth, sk } = await boot();
+  const add = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "moonshot-endpoint",
+        type: CHANNEL_TYPE_MOONSHOT,
+        key: "mk",
+        models: "kimi-k2.5",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(add.body.success, true, String(add.body.message));
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("upstream must not be called");
+  }) as typeof fetch;
+  try {
+    const speech = await json(
+      new Request("http://local/v1/audio/speech", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "kimi-k2.5", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(speech.res.status, 500, speech.text);
+    assert.equal((speech.body.error as { message: string }).message, "not supported");
+    assert.equal((speech.body.error as { code: string }).code, "convert_request_failed");
+    assert.equal((speech.body.error as { type: string }).type, "new_api_error");
+
+    const boundary = "----MoonshotAudio";
+    const raw =
+      `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nkimi-k2.5\r\n` +
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\nContent-Type: audio/wav\r\n\r\nRIFF\r\n` +
+      `--${boundary}--\r\n`;
+    const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0));
+    const transcription = await json(
+      new Request("http://local/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": `multipart/form-data; boundary=${boundary}` },
+        body: bytes.buffer,
+      }),
+      e,
+    );
+    assert.equal(transcription.res.status, 500, transcription.text);
+    assert.equal((transcription.body.error as { message: string }).message, "not supported");
+    assert.equal((transcription.body.error as { code: string }).code, "convert_request_failed");
+
+    const responses = await json(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "kimi-k2.5", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(responses.res.status, 500, responses.text);
+    assert.equal((responses.body.error as { message: string }).message, "not implemented");
+    assert.equal((responses.body.error as { code: string }).code, "convert_request_failed");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

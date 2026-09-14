@@ -639,10 +639,37 @@ export function nativeClaudeGeminiConvertError(channelType: number, client: stri
   return undefined;
 }
 
+function isAudioRelayMode(mode?: string): boolean {
+  return mode === "audio_speech" || mode === "audio_transcription" || mode === "audio_translation";
+}
+
+/**
+ * Original adaptor ConvertImageRequest / ConvertAudioRequest / ConvertEmbeddingRequest /
+ * ConvertRerankRequest / ConvertOpenAIResponsesRequest error strings.
+ */
+export function nativeOpenAIConvertEndpointError(channelType: number, mode?: string): string | undefined {
+  const m = mode || "chat";
+  const audio = isAudioRelayMode(m);
+  const embeddings = m === "embeddings" || m === "engines_embeddings";
+  if (channelType === CHANNEL_TYPE_COZE) {
+    if (m === "images" || audio || embeddings || m === "rerank" || m === "responses") return "not implemented";
+  }
+  if (channelType === CHANNEL_TYPE_DIFY) {
+    if (m === "images" || audio || embeddings || m === "responses") return "not implemented";
+  }
+  if (channelType === CHANNEL_TYPE_MOONSHOT) {
+    if (audio) return "not supported";
+    if (m === "responses") return "not implemented";
+  }
+  return undefined;
+}
+
 /** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
   const settings = opts.settings || {};
   const suffixed = applyReasoningModelSuffix(body, opts.originModelName, opts.upstreamModelName, settings, "chat");
+  const endpointErr = nativeOpenAIConvertEndpointError(opts.channelType, opts.relayMode);
+  if (endpointErr) throw new Error(endpointErr);
   if (opts.channelType === CHANNEL_TYPE_AWS) {
     return convertAwsOpenAIRequest(suffixed.body, {
       originModelName: opts.originModelName,
@@ -712,6 +739,7 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
     });
   }
   if (opts.channelType === CHANNEL_TYPE_DIFY) {
+    if (opts.relayMode === "rerank") return suffixed.body;
     return convertDifyOpenAIRequest(suffixed.body, { responseId: opts.responseId });
   }
   if (opts.channelType === CHANNEL_TYPE_COZE) {
@@ -903,6 +931,8 @@ export function convertOpenAIAdaptorGeminiRequest(body: Record<string, unknown>,
 export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
   const settings = opts.settings || {};
   const suffixed = applyReasoningModelSuffix(body, opts.originModelName, opts.upstreamModelName, settings, "responses");
+  const endpointErr = nativeOpenAIConvertEndpointError(opts.channelType, "responses");
+  if (endpointErr) throw new Error(endpointErr);
   if (opts.channelType === CHANNEL_TYPE_TASK_PLUGIN) throw new Error("invalid api type: -1");
   if (opts.channelType === CHANNEL_TYPE_SUBMODEL) submodelUnsupportedEndpoint();
   if (opts.channelType === CHANNEL_TYPE_REPLICATE) throw new Error("replicate adaptor: ConvertOpenAIResponsesRequest is not implemented");

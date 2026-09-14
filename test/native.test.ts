@@ -454,3 +454,105 @@ test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON is sent u
     globalThis.fetch = origFetch;
   }
 });
+
+test("original Coze/Dify ConvertImage/Audio/Embedding/Responses HTTP JSON errors", async () => {
+  const { e, auth, sk } = await boot();
+  const dify = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "dify-endpoint",
+        type: CHANNEL_TYPE_DIFY,
+        key: "dk",
+        models: "dify-bot",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(dify.body.success, true, String(dify.body.message));
+  const coze = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "coze-endpoint",
+        type: CHANNEL_TYPE_COZE,
+        key: "zk",
+        models: "moonshot-v1-8k",
+        group: "default",
+        other: "bot-xyz",
+      }),
+    }),
+    e,
+  );
+  assert.equal(coze.body.success, true, String(coze.body.message));
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("upstream must not be called");
+  }) as typeof fetch;
+  try {
+    async function assertFailed(path: string, payload: Record<string, unknown>, model: string, message: string) {
+      const hit = await json(
+        new Request("http://local" + path, {
+          method: "POST",
+          headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+          body: JSON.stringify({ model, ...payload }),
+        }),
+        e,
+      );
+      assert.equal(hit.res.status, 500, hit.text);
+      assert.equal((hit.body.error as { message: string }).message, message);
+      assert.equal((hit.body.error as { code: string }).code, "convert_request_failed");
+      assert.equal((hit.body.error as { type: string }).type, "new_api_error");
+    }
+
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "moonshot-v1-8k", "not implemented");
+    await assertFailed("/v1/embeddings", { input: "hi" }, "moonshot-v1-8k", "not implemented");
+    await assertFailed("/v1/rerank", { query: "q", documents: ["a"] }, "moonshot-v1-8k", "not implemented");
+    await assertFailed("/v1/audio/speech", { input: "hi" }, "moonshot-v1-8k", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "moonshot-v1-8k", "not implemented");
+
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "dify-bot", "not implemented");
+    await assertFailed("/v1/embeddings", { input: "hi" }, "dify-bot", "not implemented");
+    await assertFailed("/v1/audio/speech", { input: "hi" }, "dify-bot", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "dify-bot", "not implemented");
+
+    const boundary = "----CozeDifyAudio";
+    const form =
+      `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nmoonshot-v1-8k\r\n` +
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\nContent-Type: audio/wav\r\n\r\nRIFF\r\n` +
+      `--${boundary}--\r\n`;
+    const audioBytes = Uint8Array.from(form, (c) => c.charCodeAt(0));
+    const cozeAudio = await json(
+      new Request("http://local/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": `multipart/form-data; boundary=${boundary}` },
+        body: audioBytes,
+      }),
+      e,
+    );
+    assert.equal(cozeAudio.res.status, 500, cozeAudio.text);
+    assert.equal((cozeAudio.body.error as { message: string }).message, "not implemented");
+    assert.equal((cozeAudio.body.error as { code: string }).code, "convert_request_failed");
+
+    const difyForm =
+      `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ndify-bot\r\n` +
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\nContent-Type: audio/wav\r\n\r\nRIFF\r\n` +
+      `--${boundary}--\r\n`;
+    const difyAudio = await json(
+      new Request("http://local/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": `multipart/form-data; boundary=${boundary}` },
+        body: Uint8Array.from(difyForm, (c) => c.charCodeAt(0)),
+      }),
+      e,
+    );
+    assert.equal(difyAudio.res.status, 500, difyAudio.text);
+    assert.equal((difyAudio.body.error as { message: string }).message, "not implemented");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

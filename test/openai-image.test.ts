@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
+import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
 import { convertOpenAIImageEditForm, detectImageMimeType, usesOpenAIImageEditAdaptor } from "../src/openai-image-convert.js";
 import { parseMultipartForm } from "../src/multipart-form.js";
 import { createMemoryD1 } from "./d1-memory.js";
@@ -89,7 +89,10 @@ test("original OpenAI ConvertImageRequest multipart edits keep form fields and f
   assert.equal(detectImageMimeType("noext"), "image/png");
   assert.equal(usesOpenAIImageEditAdaptor(CHANNEL_TYPE_OPENAI), true);
   assert.equal(usesOpenAIImageEditAdaptor(CHANNEL_TYPE_OPENROUTER), true);
+  assert.equal(usesOpenAIImageEditAdaptor(CHANNEL_TYPE_MOONSHOT), true);
   assert.equal(usesOpenAIImageEditAdaptor(CHANNEL_TYPE_ALI), false);
+  assert.equal(usesOpenAIImageEditAdaptor(CHANNEL_TYPE_COZE), false);
+  assert.equal(usesOpenAIImageEditAdaptor(CHANNEL_TYPE_DIFY), false);
 
   const prompt = "edit this image";
   const { buf, ct } = imageEditForm(prompt);

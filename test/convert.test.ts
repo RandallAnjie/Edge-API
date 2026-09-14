@@ -19,6 +19,7 @@ import {
   openaiFromXaiResponse,
   xaiSseToOpenAIChat,
   nativeClaudeGeminiConvertError,
+  nativeOpenAIConvertEndpointError,
   usesClaudeAdaptorForClaudeRequest,
   openaiChatToClaudeResponse,
   openaiChatToGeminiResponse,
@@ -2328,6 +2329,92 @@ test("original xAI/Jimeng/Replicate/Submodel/Coze ConvertClaudeRequest and Conve
   assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_ALI, "gemini"), "not implemented");
   assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_OLLAMA, "gemini"), "not implemented");
   assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_AWS, "gemini"), "not implemented");
+});
+
+test("original Coze/Dify/Moonshot ConvertImage/Audio/Embedding/Responses error strings", () => {
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_COZE, "images"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_COZE, "embeddings"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_COZE, "audio_speech"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_COZE, "audio_transcription"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_COZE, "rerank"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_COZE, "responses"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_COZE, "chat"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_DIFY, "images"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_DIFY, "embeddings"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_DIFY, "audio_translation"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_DIFY, "responses"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_DIFY, "rerank"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_DIFY, "chat"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MOONSHOT, "audio_speech"), "not supported");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MOONSHOT, "audio_transcription"), "not supported");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MOONSHOT, "responses"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MOONSHOT, "images"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MOONSHOT, "embeddings"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MOONSHOT, "chat"), undefined);
+
+  const cozeOpts = {
+    channelType: CHANNEL_TYPE_COZE,
+    originModelName: "moonshot-v1-8k",
+    upstreamModelName: "moonshot-v1-8k",
+  };
+  assert.throws(
+    () => convertOpenAIRequest({ model: "moonshot-v1-8k", prompt: "a cat" }, { ...cozeOpts, relayMode: "images" }),
+    /not implemented/,
+  );
+  assert.throws(
+    () => convertOpenAIRequest({ model: "moonshot-v1-8k", input: "hi" }, { ...cozeOpts, relayMode: "embeddings" }),
+    /not implemented/,
+  );
+  assert.throws(
+    () => convertOpenAIRequest({ model: "moonshot-v1-8k", input: "hi" }, { ...cozeOpts, relayMode: "audio_speech" }),
+    /not implemented/,
+  );
+  assert.throws(
+    () => convertOpenAIRequest({ model: "moonshot-v1-8k", query: "q", documents: ["a"] }, { ...cozeOpts, relayMode: "rerank" }),
+    /not implemented/,
+  );
+  assert.throws(
+    () => convertOpenAIResponsesRequest({ model: "moonshot-v1-8k", input: "hi" }, cozeOpts),
+    /not implemented/,
+  );
+
+  const difyOpts = { channelType: CHANNEL_TYPE_DIFY, originModelName: "dify-bot", upstreamModelName: "dify-bot" };
+  assert.throws(
+    () => convertOpenAIRequest({ model: "dify-bot", prompt: "a cat" }, { ...difyOpts, relayMode: "images" }),
+    /not implemented/,
+  );
+  assert.throws(
+    () => convertOpenAIRequest({ model: "dify-bot", input: "hi" }, { ...difyOpts, relayMode: "embeddings" }),
+    /not implemented/,
+  );
+  assert.throws(
+    () => convertOpenAIRequest({ model: "dify-bot", input: "hi" }, { ...difyOpts, relayMode: "audio_speech" }),
+    /not implemented/,
+  );
+  assert.throws(() => convertOpenAIResponsesRequest({ model: "dify-bot", input: "hi" }, difyOpts), /not implemented/);
+  const difyRerank = convertOpenAIRequest(
+    { model: "dify-bot", query: "q", documents: ["a"] },
+    { ...difyOpts, relayMode: "rerank" },
+  );
+  assert.equal(difyRerank.query, "q");
+  assert.deepEqual(difyRerank.documents, ["a"]);
+
+  const moonshotOpts = { channelType: CHANNEL_TYPE_MOONSHOT, originModelName: "kimi-k2.5", upstreamModelName: "kimi-k2.5" };
+  assert.throws(
+    () => convertOpenAIRequest({ model: "kimi-k2.5", input: "hi" }, { ...moonshotOpts, relayMode: "audio_speech" }),
+    /not supported/,
+  );
+  assert.throws(
+    () => convertOpenAIRequest({ model: "kimi-k2.5", input: "hi" }, { ...moonshotOpts, relayMode: "audio_transcription" }),
+    /not supported/,
+  );
+  assert.throws(() => convertOpenAIResponsesRequest({ model: "kimi-k2.5", input: "hi" }, moonshotOpts), /not implemented/);
+  const moonshotImage = convertOpenAIRequest(
+    { model: "kimi-k2.5", prompt: "a cat" },
+    { ...moonshotOpts, relayMode: "images" },
+  );
+  assert.equal(moonshotImage.model, "kimi-k2.5");
+  assert.equal(moonshotImage.prompt, "a cat");
 });
 
 test("original xAIHandler and xAIStreamHandler usage JSON", () => {
