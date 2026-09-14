@@ -77,6 +77,7 @@ import {
   oaiChatSseToResponsesSse,
   claudeSseToResponsesSse,
   geminiSseToResponsesSse,
+  GeminiToChatStreamState,
   oaiResponsesSseToChatSse,
   convertOpenAIResponsesRequestToClaudeMessages,
   convertOpenAIResponsesRequestToGeminiChat,
@@ -1172,6 +1173,179 @@ test("original Gemini hosted ConvertResponse stream JSON emits web_search_call S
   const chat = geminiSseToOpenAIChat(sse, { id: "chatcmpl-stream", created: 0, upstreamModel: "gemini-test" });
   assert.equal(chat.body.includes("web_search_call"), false);
   assert.match(chat.body, /"type":"url_citation"/);
+});
+
+test("original GeminiToChatStreamState ConvertChunk JSON emits delayed grounding and reconstructed partial tools", () => {
+  const textChunk = {
+    candidates: [{ index: 0, content: { role: "model", parts: [{ text: "The answer is 42." }] } }],
+    usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+  };
+  const groundingChunk = {
+    candidates: [
+      {
+        index: 0,
+        finishReason: "STOP",
+        content: { role: "model", parts: [{ text: "" }] },
+        groundingMetadata: {
+          webSearchQueries: ["answer 42"],
+          groundingChunks: [{ web: { uri: "https://example.com/42", title: "The Hitchhiker" } }],
+          groundingSupports: [
+            { segment: { startIndex: 0, endIndex: 17, text: "The answer is 42." }, groundingChunkIndices: [0] },
+          ],
+        },
+      },
+    ],
+    usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+  };
+  const delayedSse = ["data: " + JSON.stringify(textChunk), "", "data: " + JSON.stringify(groundingChunk), ""].join("\n");
+  const delayed = geminiSseToResponsesSse(delayedSse, { id: "gemini-delayed-ground", model: "gemini-test", created: 0 });
+  let orderOffset = 0;
+  for (const part of [
+    '"delta":"The answer is 42."',
+    "event: response.output_text.annotation.added",
+    '"type":"url_citation"',
+    '"url":"https://example.com/42"',
+    "event: response.output_text.done",
+    '"type":"web_search_call"',
+    "event: response.completed",
+  ]) {
+    const idx = delayed.sse.indexOf(part, orderOffset);
+    assert.notEqual(idx, -1, `missing ${part}`);
+    orderOffset = idx + part.length;
+  }
+  const annotation = [...delayed.sse.matchAll(/event: response\.output_text\.annotation\.added\ndata: (\{.*\})/g)].map(
+    (m) => JSON.parse(m[1]) as { annotation?: { type?: string; url?: string; title?: string; start_index?: number; end_index?: number } },
+  )[0];
+  assert.equal(annotation.annotation?.type, "url_citation");
+  assert.equal(annotation.annotation?.url, "https://example.com/42");
+  assert.equal(annotation.annotation?.title, "The Hitchhiker");
+  assert.equal(annotation.annotation?.start_index, 0);
+  assert.equal(annotation.annotation?.end_index, 17);
+
+  const state = new GeminiToChatStreamState("chatcmpl-partial", 0);
+  const continuing = state.convertChunk(
+    {
+      candidates: [
+        {
+          index: 0,
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  id: "call_1",
+                  name: "lookup",
+                  willContinue: true,
+                  partialArgs: [{ jsonPath: "$.q", stringValue: "pri" }],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    "gemini-test",
+    null,
+  );
+  assert.equal(
+    continuing.some((chunk) =>
+      (chunk.choices as { delta?: { tool_calls?: unknown[] } }[] | undefined)?.some((choice) => choice.delta?.tool_calls?.length),
+    ),
+    false,
+  );
+  const completed = state.convertChunk(
+    {
+      candidates: [
+        {
+          index: 0,
+          finishReason: "STOP",
+          content: {
+            parts: [
+              {
+                functionCall: {
+                  id: "call_1",
+                  name: "lookup",
+                  willContinue: false,
+                  partialArgs: [{ jsonPath: "$.q", stringValue: "cing" }],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    "gemini-test",
+    null,
+  );
+  const toolChunk = completed.find((chunk) =>
+    (chunk.choices as { delta?: { tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[] | undefined)?.some(
+      (choice) => choice.delta?.tool_calls?.length,
+    ),
+  );
+  const tool = (toolChunk?.choices as { delta: { tool_calls: { index: number; id: string; function: { name: string; arguments: string } }[] } }[])[0]
+    .delta.tool_calls[0];
+  assert.equal(tool.index, 0);
+  assert.equal(tool.id, "call_1");
+  assert.equal(tool.function.name, "lookup");
+  assert.equal(tool.function.arguments, '{"q":"pricing"}');
+  const second = state.convertChunk(
+    {
+      candidates: [
+        {
+          index: 0,
+          content: { parts: [{ functionCall: { id: "call_2", name: "other", args: { z: 1 } } }] },
+        },
+      ],
+    },
+    "gemini-test",
+    null,
+  );
+  const secondTool = (second[0].choices as { delta: { tool_calls: { index: number; id: string }[] } }[])[0].delta.tool_calls[0];
+  assert.equal(secondTool.index, 1);
+  assert.equal(secondTool.id, "call_2");
+
+  const incomplete = new GeminiToChatStreamState("chatcmpl-incomplete", 0);
+  incomplete.convertChunk(
+    {
+      candidates: [
+        {
+          content: {
+            parts: [{ functionCall: { id: "call_x", name: "lookup", willContinue: true, partialArgs: [{ jsonPath: "$.q", stringValue: "x" }] } }],
+          },
+        },
+      ],
+    },
+    "gemini-test",
+    null,
+  );
+  assert.throws(() => incomplete.finalize("gemini-test"), /incomplete function call for candidate 0/);
+
+  const incompleteSse = geminiSseToResponsesSse(
+    'data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_x","name":"lookup","willContinue":true,"partialArgs":[{"jsonPath":"$.q","stringValue":"x"}]}}]}}]}\n\n',
+    { id: "gemini-incomplete", model: "gemini-test", created: 0 },
+  );
+  assert.match(incompleteSse.sse, /incomplete function call for candidate 0/);
+
+  const chatTools = geminiSseToOpenAIChat(
+    [
+      'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{"q":"a"}}}]}}]}',
+      "",
+      'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{"q":"b"}}}]}}]}',
+      "",
+      'data: {"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"call_2","name":"other","args":{"z":1}}}]}}]}',
+      "",
+    ].join("\n"),
+    { id: "chatcmpl-tools", created: 0, upstreamModel: "gemini-test" },
+  );
+  const chatChunks = [...chatTools.body.matchAll(/data: (\{.*\})/g)].map((m) => JSON.parse(m[1]) as {
+    choices?: { delta?: { tool_calls?: { id?: string; index?: number }[] } }[];
+  });
+  const indexed = chatChunks.flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || []).filter((tool) => tool.id);
+  assert.equal(indexed[0].id, "call_1");
+  assert.equal(indexed[0].index, 0);
+  assert.equal(indexed[1].id, "call_1");
+  assert.equal(indexed[1].index, 0);
+  assert.equal(indexed[2].id, "call_2");
+  assert.equal(indexed[2].index, 1);
 });
 
 test("azure upstream url uses deployment and api-version", () => {

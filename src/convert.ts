@@ -178,6 +178,7 @@ export {
   usageFromGeminiMetadata,
   groundingAnnotationsToChat,
   groundingWebSearchQueries,
+  GeminiToChatStreamState,
 } from "./gemini-response.js";
 
 export function usageFromOpenAI(body: Record<string, unknown> | null): {

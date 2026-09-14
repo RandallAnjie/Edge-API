@@ -617,6 +617,523 @@ export function streamResponseGeminiChat2OpenAI(geminiResponse: Record<string, u
   return { chunk, isStop };
 }
 
+type StreamedGeminiPartSpan = {
+  partStartByte: number;
+  partEndByte: number;
+  renderedStartByte: number;
+};
+
+type StreamedGeminiPart = {
+  text: string;
+  spans: StreamedGeminiPartSpan[];
+};
+
+/** Original `geminiGroundingStreamCandidate`. */
+class GeminiGroundingStreamCandidate {
+  rendered = "";
+  parts = new Map<number, StreamedGeminiPart>();
+  chunks: Record<string, unknown>[] = [];
+
+  appendContent(content: Record<string, unknown>, rendered: string): void {
+    const renderedParts = locateRenderedGeminiParts(content, rendered);
+    const renderedBase = utf8Bytes(this.rendered).length;
+    const parts = asArr(content.parts);
+    for (let index = 0; index < parts.length; index++) {
+      const partContent = parts[index];
+      const text = str(partContent.text);
+      if (!text || partContent.thought === true) continue;
+      let part = this.parts.get(index);
+      if (!part) {
+        part = { text: "", spans: [] };
+        this.parts.set(index, part);
+      }
+      const partStart = utf8Bytes(part.text).length;
+      part.text += text;
+      if (text === "\n" || index >= renderedParts.length || renderedParts[index].startByte < 0) continue;
+      part.spans.push({
+        partStartByte: partStart,
+        partEndByte: partStart + utf8Bytes(text).length,
+        renderedStartByte: renderedBase + renderedParts[index].startByte,
+      });
+    }
+    this.rendered += rendered;
+  }
+
+  appendGroundingChunks(metadata: Record<string, unknown> | null): void {
+    if (!metadata) return;
+    const chunks = parseJsonArray(metadata.groundingChunks || metadata.grounding_chunks);
+    if (!chunks || !chunks.length) return;
+    this.chunks.push(...chunks);
+  }
+
+  groundingAnnotations(
+    metadata: Record<string, unknown> | null,
+    candidateIndex: number,
+    seen: Set<string>,
+  ): Record<string, unknown>[] | undefined {
+    if (!metadata) return undefined;
+    this.appendGroundingChunks(metadata);
+    const supports = parseJsonArray(metadata.groundingSupports || metadata.grounding_supports);
+    if (!this.chunks.length || !supports || !supports.length) return undefined;
+    const annotations: Record<string, unknown>[] = [];
+    const keyPrefix = `${candidateIndex}:`;
+    for (const support of supports) {
+      const partIndex = this.groundingPartIndex(support);
+      if (partIndex == null) continue;
+      const segment = asObj(support.segment);
+      const startByte = asInt(segment.startIndex ?? segment.start_index);
+      const endByte = asInt(segment.endIndex ?? segment.end_index);
+      const range = this.groundingRuneRange(partIndex, startByte, endByte);
+      if (!range) continue;
+      const part = this.parts.get(partIndex);
+      if (!part) continue;
+      const segmentText = str(segment.text);
+      if (segmentText) {
+        try {
+          if (utf8Slice(part.text, startByte, endByte) !== segmentText) continue;
+        } catch {
+          continue;
+        }
+      }
+      appendGroundingAnnotations(annotations, this.chunks, support, range.start, range.end, keyPrefix, seen);
+    }
+    return annotations.length ? annotations : undefined;
+  }
+
+  private groundingPartIndex(support: Record<string, unknown>): number | undefined {
+    const segment = asObj(support.segment);
+    const explicit = optionalInt(segment.partIndex ?? segment.part_index);
+    if (explicit != null) {
+      const part = this.parts.get(explicit);
+      return part && part.spans.length ? explicit : undefined;
+    }
+    let sole = -1;
+    for (const [partIndex, part] of this.parts) {
+      if (!part.spans.length) continue;
+      if (sole >= 0) return undefined;
+      sole = partIndex;
+    }
+    return sole >= 0 ? sole : undefined;
+  }
+
+  private groundingRuneRange(partIndex: number, startByte: number, endByte: number): { start: number; end: number } | null {
+    const part = this.parts.get(partIndex);
+    if (!part) return null;
+    const partBytes = utf8Bytes(part.text);
+    if (startByte < 0 || endByte <= startByte || endByte > partBytes.length) return null;
+    if (!utf8ValidPrefix(part.text, startByte) || !utf8ValidPrefix(part.text, endByte)) return null;
+    let renderedStart = -1;
+    let renderedEnd = -1;
+    for (const span of part.spans) {
+      if (renderedStart < 0 && startByte >= span.partStartByte && startByte < span.partEndByte) {
+        renderedStart = span.renderedStartByte + startByte - span.partStartByte;
+      }
+      if (endByte > span.partStartByte && endByte <= span.partEndByte) {
+        renderedEnd = span.renderedStartByte + endByte - span.partStartByte;
+      }
+    }
+    if (renderedStart < 0 || renderedEnd <= renderedStart) return null;
+    const renderedBytes = utf8Bytes(this.rendered);
+    if (renderedEnd > renderedBytes.length) return null;
+    try {
+      if (utf8Slice(this.rendered, renderedStart, renderedEnd) !== utf8Slice(part.text, startByte, endByte)) return null;
+    } catch {
+      return null;
+    }
+    if (!utf8ValidPrefix(this.rendered, renderedStart) || !utf8ValidPrefix(this.rendered, renderedEnd)) return null;
+    return {
+      start: runeCount(utf8Slice(this.rendered, 0, renderedStart)),
+      end: runeCount(utf8Slice(this.rendered, 0, renderedEnd)),
+    };
+  }
+}
+
+type GeminiPartialArgPathSegment = { member: string; index: number; isIndex: boolean };
+
+type GeminiPartialToolCall = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+};
+
+const MAX_GEMINI_PARTIAL_ARG_ARRAY_INDEX = 4095;
+
+function choiceHasToolCalls(choice: Record<string, unknown>): boolean {
+  const tools = asObj(choice.delta).tool_calls;
+  return Array.isArray(tools) && tools.length > 0;
+}
+
+function choiceContentString(choice: Record<string, unknown>): string {
+  const content = asObj(choice.delta).content;
+  return typeof content === "string" ? content : "";
+}
+
+function boolFlag(v: unknown): boolean {
+  return v === true;
+}
+
+function geminiPartialArgValue(partial: Record<string, unknown>): { value: unknown; present: boolean } {
+  if (partial.stringValue != null || partial.string_value != null) {
+    return { value: str(partial.stringValue ?? partial.string_value), present: true };
+  }
+  if (partial.numberValue != null || partial.number_value != null) {
+    return { value: Number(partial.numberValue ?? partial.number_value), present: true };
+  }
+  if (partial.boolValue != null || partial.bool_value != null) {
+    return { value: Boolean(partial.boolValue ?? partial.bool_value), present: true };
+  }
+  if (partial.nullValue != null || partial.null_value != null) return { value: null, present: true };
+  return { value: null, present: false };
+}
+
+function parseGeminiPartialArgMember(path: string, offset: number): { member: string; next: number } {
+  const quote = path[offset];
+  const start = offset;
+  offset += 1;
+  while (offset < path.length) {
+    if (path[offset] === "\\") {
+      offset += 2;
+      continue;
+    }
+    if (path[offset] === quote) {
+      let raw = path.slice(start, offset + 1);
+      if (quote === "'") {
+        raw = `"${raw.slice(1, -1).replace(/"/g, '\\"').replace(/\\'/g, "'")}"`;
+      }
+      return { member: JSON.parse(raw) as string, next: offset + 1 };
+    }
+    offset += 1;
+  }
+  throw new Error("unterminated quoted member");
+}
+
+function parseGeminiPartialArgPath(jsonPath: string): GeminiPartialArgPathSegment[] {
+  const path = jsonPath.trim();
+  if (!path || path[0] !== "$") throw new Error(`unsupported Gemini partial argument path ${JSON.stringify(jsonPath)}`);
+  const segments: GeminiPartialArgPathSegment[] = [];
+  for (let offset = 1; offset < path.length; ) {
+    switch (path[offset]) {
+      case ".": {
+        offset += 1;
+        const start = offset;
+        while (offset < path.length && path[offset] !== "." && path[offset] !== "[") offset += 1;
+        if (start === offset) throw new Error(`empty member in Gemini partial argument path ${JSON.stringify(jsonPath)}`);
+        const member = path.slice(start, offset);
+        if (/[\]*?]/.test(member)) throw new Error(`unsupported member ${JSON.stringify(member)} in Gemini partial argument path`);
+        segments.push({ member, index: 0, isIndex: false });
+        break;
+      }
+      case "[": {
+        offset += 1;
+        if (offset >= path.length) throw new Error(`unterminated selector in Gemini partial argument path ${JSON.stringify(jsonPath)}`);
+        if (path[offset] === "'" || path[offset] === '"') {
+          const parsed = parseGeminiPartialArgMember(path, offset);
+          offset = parsed.next;
+          if (offset >= path.length || path[offset] !== "]") {
+            throw new Error(`unterminated member selector in Gemini partial argument path ${JSON.stringify(jsonPath)}`);
+          }
+          offset += 1;
+          segments.push({ member: parsed.member, index: 0, isIndex: false });
+          break;
+        }
+        const start = offset;
+        while (offset < path.length && path[offset] >= "0" && path[offset] <= "9") offset += 1;
+        if (start === offset || offset >= path.length || path[offset] !== "]") {
+          throw new Error(`unsupported selector in Gemini partial argument path ${JSON.stringify(jsonPath)}`);
+        }
+        const index = Number(path.slice(start, offset));
+        if (!Number.isInteger(index)) {
+          throw new Error(`invalid array index in Gemini partial argument path ${JSON.stringify(jsonPath)}`);
+        }
+        if (index > MAX_GEMINI_PARTIAL_ARG_ARRAY_INDEX) {
+          throw new Error(`array index ${index} exceeds Gemini partial argument materialization limit ${MAX_GEMINI_PARTIAL_ARG_ARRAY_INDEX}`);
+        }
+        offset += 1;
+        segments.push({ member: "", index, isIndex: true });
+        break;
+      }
+      default:
+        throw new Error(`unsupported selector at offset ${offset} in Gemini partial argument path ${JSON.stringify(jsonPath)}`);
+    }
+  }
+  if (!segments.length) throw new Error(`Gemini partial argument path ${JSON.stringify(jsonPath)} targets the arguments root`);
+  return segments;
+}
+
+function setGeminiPartialArgValue(current: unknown, path: GeminiPartialArgPathSegment[], value: unknown, appendString: boolean): unknown {
+  if (!path.length) {
+    if (appendString && typeof current === "string" && typeof value === "string") return current + value;
+    return value;
+  }
+  const segment = path[0];
+  if (segment.isIndex) {
+    let array: unknown[];
+    if (current == null) array = new Array(segment.index + 1);
+    else if (Array.isArray(current)) {
+      array = current;
+      if (array.length <= segment.index) array = array.concat(new Array(segment.index - array.length + 1));
+    } else {
+      throw new Error(`array index ${segment.index} traverses ${typeof current}`);
+    }
+    array[segment.index] = setGeminiPartialArgValue(array[segment.index], path.slice(1), value, appendString);
+    return array;
+  }
+  let object: Record<string, unknown>;
+  if (current == null) object = {};
+  else if (current && typeof current === "object" && !Array.isArray(current)) object = current as Record<string, unknown>;
+  else throw new Error(`member ${JSON.stringify(segment.member)} traverses ${typeof current}`);
+  object[segment.member] = setGeminiPartialArgValue(object[segment.member], path.slice(1), value, appendString);
+  return object;
+}
+
+function cloneGeminiChatResponse(response: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...response,
+    candidates: asArr(response.candidates).map((candidate) => {
+      const content = asObj(candidate.content);
+      return {
+        ...candidate,
+        content: {
+          ...content,
+          parts: asArr(content.parts).map((part) => {
+            const next = { ...part };
+            const camel = part.functionCall;
+            const snake = part.function_call;
+            if (camel && typeof camel === "object") next.functionCall = { ...asObj(camel) };
+            if (snake && typeof snake === "object") next.function_call = { ...asObj(snake) };
+            return next;
+          }),
+        },
+      };
+    }),
+  };
+}
+
+/** Original `GeminiToChatStreamState` used by Gemini→Responses ConvertStreamResponseChunk. */
+export class GeminiToChatStreamState {
+  id: string;
+  created: number;
+  private sawToolCall = false;
+  private finishEmitted = false;
+  private latestUsage: OpenAIUsage | null = null;
+  private nextToolIndexByCandidate = new Map<number, number>();
+  private toolIndexByCandidateID = new Map<number, Map<string, number>>();
+  private partialToolByCandidate = new Map<number, GeminiPartialToolCall>();
+  private groundingByCandidate = new Map<number, GeminiGroundingStreamCandidate>();
+  private sentGroundingAnnotations = new Set<string>();
+
+  constructor(id: string, created: number) {
+    this.id = id.trim() || `chatcmpl-${compactUuid()}`;
+    this.created = created || Math.floor(Date.now() / 1000);
+  }
+
+  convertChunk(
+    geminiResponse: Record<string, unknown>,
+    model: string,
+    usage: OpenAIUsage | null,
+  ): Record<string, unknown>[] {
+    const prepared = this.preparePartialFunctionCalls(geminiResponse);
+    let hasNonStopFinish = false;
+    for (const candidate of asArr(prepared.candidates)) {
+      const finish = str(candidate.finishReason ?? candidate.finish_reason).trim();
+      if (finish && finish !== "STOP") {
+        hasNonStopFinish = true;
+        break;
+      }
+    }
+    const { chunk, isStop } = streamResponseGeminiChat2OpenAI(prepared);
+    chunk.id = this.id;
+    chunk.created = this.created;
+    chunk.model = model;
+    if (usage) chunk.usage = openAIUsageToJson(usage);
+    else delete chunk.usage;
+    const candidates = asArr(prepared.candidates);
+    const choices = asArr(chunk.choices);
+    for (let index = 0; index < candidates.length && index < choices.length; index++) {
+      const candidate = candidates[index];
+      const choice = choices[index];
+      const delta = asObj(choice.delta);
+      const tools = Array.isArray(delta.tool_calls) ? (delta.tool_calls as Record<string, unknown>[]) : [];
+      const candidateIndex = asInt(candidate.index);
+      for (const tool of tools) {
+        const callID = str(tool.id).trim();
+        let indexesByID = this.toolIndexByCandidateID.get(candidateIndex);
+        if (!indexesByID) {
+          indexesByID = new Map();
+          this.toolIndexByCandidateID.set(candidateIndex, indexesByID);
+        }
+        let stableIndex = callID ? indexesByID.get(callID) : undefined;
+        if (stableIndex == null) {
+          stableIndex = this.nextToolIndexByCandidate.get(candidateIndex) || 0;
+          this.nextToolIndexByCandidate.set(candidateIndex, stableIndex + 1);
+          if (callID) indexesByID.set(callID, stableIndex);
+        }
+        tool.index = stableIndex;
+      }
+      let grounding = this.groundingByCandidate.get(candidateIndex);
+      if (!grounding) {
+        grounding = new GeminiGroundingStreamCandidate();
+        this.groundingByCandidate.set(candidateIndex, grounding);
+      }
+      grounding.appendContent(asObj(candidate.content), choiceContentString(choice));
+      const annotations = grounding.groundingAnnotations(
+        groundingMetadataFromCandidate(candidate),
+        candidateIndex,
+        this.sentGroundingAnnotations,
+      );
+      if (annotations) delta.annotations = annotations;
+      else delete delta.annotations;
+    }
+    if (choices.some((choice) => choiceHasToolCalls(choice))) {
+      this.sawToolCall = true;
+      if (!hasNonStopFinish) {
+        for (const choice of choices) {
+          if (str(choice.finish_reason) === "tool_calls") choice.finish_reason = null;
+        }
+      }
+    }
+    if (usage) this.latestUsage = usage;
+    for (const choice of choices) {
+      if (str(choice.finish_reason).trim()) {
+        this.finishEmitted = true;
+        break;
+      }
+    }
+    const chunks = [chunk];
+    if (isStop && !this.finishEmitted) chunks.push(this.terminalChunk(model));
+    return chunks;
+  }
+
+  finalize(model: string): Record<string, unknown>[] {
+    if (this.partialToolByCandidate.size) {
+      const candidateIndex = [...this.partialToolByCandidate.keys()].sort((a, b) => a - b)[0];
+      const partial = this.partialToolByCandidate.get(candidateIndex)!;
+      throw new Error(
+        `Gemini stream ended with an incomplete function call for candidate ${candidateIndex} (id ${JSON.stringify(partial.id)}, name ${JSON.stringify(partial.name)})`,
+      );
+    }
+    if (this.finishEmitted) return [];
+    return [this.terminalChunk(model)];
+  }
+
+  private preparePartialFunctionCalls(response: Record<string, unknown>): Record<string, unknown> {
+    const prepared = cloneGeminiChatResponse(response);
+    for (const candidate of asArr(prepared.candidates)) {
+      const content = asObj(candidate.content);
+      const parts: Record<string, unknown>[] = [];
+      for (const part of asArr(content.parts)) {
+        const call = partFunctionCall(part);
+        const partialArgs = call
+          ? Array.isArray(call.partialArgs)
+            ? call.partialArgs
+            : Array.isArray(call.partial_args)
+              ? call.partial_args
+              : []
+          : [];
+        if (
+          !call ||
+          (!this.partialToolByCandidate.has(asInt(candidate.index)) &&
+            call.willContinue == null &&
+            call.will_continue == null &&
+            partialArgs.length === 0)
+        ) {
+          parts.push(part);
+          continue;
+        }
+        const completed = this.appendPartialFunctionCall(asInt(candidate.index), call);
+        if (completed) {
+          part.functionCall = completed;
+          delete part.function_call;
+          parts.push(part);
+        }
+      }
+      content.parts = parts;
+    }
+    return prepared;
+  }
+
+  private appendPartialFunctionCall(candidateIndex: number, call: Record<string, unknown>): Record<string, unknown> | null {
+    let current = this.partialToolByCandidate.get(candidateIndex);
+    if (!current) {
+      current = { id: "", name: "", arguments: {} };
+      this.partialToolByCandidate.set(candidateIndex, current);
+    }
+    const id = str(call.id).trim();
+    if (id) {
+      if (current.id && current.id !== id) {
+        throw new Error(`candidate ${candidateIndex} function call changed id from ${JSON.stringify(current.id)} to ${JSON.stringify(id)}`);
+      }
+      current.id = id;
+    }
+    const name = str(call.name).trim();
+    if (name) {
+      if (current.name && current.name !== name) {
+        throw new Error(`candidate ${candidateIndex} function call changed name from ${JSON.stringify(current.name)} to ${JSON.stringify(name)}`);
+      }
+      current.name = name;
+    }
+    const partialArgs = Array.isArray(call.partialArgs) ? call.partialArgs : Array.isArray(call.partial_args) ? call.partial_args : [];
+    for (const raw of partialArgs) {
+      const partial = asObj(raw);
+      const path = parseGeminiPartialArgPath(str(partial.jsonPath || partial.json_path));
+      const parsed = geminiPartialArgValue(partial);
+      if (!parsed.present) continue;
+      const updated = setGeminiPartialArgValue(current.arguments, path, parsed.value, partial.stringValue != null || partial.string_value != null);
+      if (!updated || typeof updated !== "object" || Array.isArray(updated)) {
+        throw new Error(`partial argument path ${JSON.stringify(partial.jsonPath || partial.json_path)} replaced the arguments object`);
+      }
+      current.arguments = updated as Record<string, unknown>;
+    }
+    if (boolFlag(call.willContinue) || boolFlag(call.will_continue)) return null;
+    if (!current.name) throw new Error(`candidate ${candidateIndex} completed a partial function call without a name`);
+    const completed = { id: current.id, name: current.name, args: current.arguments };
+    this.partialToolByCandidate.delete(candidateIndex);
+    return completed;
+  }
+
+  private terminalChunk(model: string): Record<string, unknown> {
+    this.finishEmitted = true;
+    const chunk: Record<string, unknown> = {
+      id: this.id,
+      object: "chat.completion.chunk",
+      created: this.created,
+      model,
+      choices: [{ index: 0, delta: {}, logprobs: null, finish_reason: this.sawToolCall ? "tool_calls" : "stop" }],
+    };
+    if (this.latestUsage) chunk.usage = openAIUsageToJson(this.latestUsage);
+    return chunk;
+  }
+}
+
+function remapGeminiChatHandlerToolIndexes(
+  chunk: Record<string, unknown>,
+  toolCallIndexByChoice: Map<number, Map<string, number>>,
+  nextToolCallIndexByChoice: Map<number, number>,
+): void {
+  for (const choice of asArr(chunk.choices)) {
+    const choiceKey = asInt(choice.index);
+    const tools = Array.isArray(asObj(choice.delta).tool_calls) ? (asObj(choice.delta).tool_calls as Record<string, unknown>[]) : [];
+    for (const tool of tools) {
+      const id = str(tool.id).trim();
+      if (!id) continue;
+      let byID = toolCallIndexByChoice.get(choiceKey);
+      if (!byID) {
+        byID = new Map();
+        toolCallIndexByChoice.set(choiceKey, byID);
+      }
+      const existing = byID.get(id);
+      if (existing != null) {
+        tool.index = existing;
+        continue;
+      }
+      const idx = nextToolCallIndexByChoice.get(choiceKey) || 0;
+      nextToolCallIndexByChoice.set(choiceKey, idx + 1);
+      byID.set(id, idx);
+      tool.index = idx;
+    }
+  }
+}
+
 function startEmptyChunk(id: string, created: number, model: string): Record<string, unknown> {
   return {
     id,
@@ -660,6 +1177,8 @@ export function geminiSseToOpenAIChat(sseText: string, opts: GeminiToOpenAIOpts 
   let sentFirst = false;
   let latestUsage = emptyOpenAIUsage();
   let body = "";
+  const toolCallIndexByChoice = new Map<number, Map<string, number>>();
+  const nextToolCallIndexByChoice = new Map<number, number>();
   const payloads = looksLikeSse(sseText) ? parseSseDataPayloads(sseText) : [sseText];
   for (const payload of payloads) {
     let geminiResponse: Record<string, unknown>;
@@ -673,6 +1192,7 @@ export function geminiSseToOpenAIChat(sseText: string, opts: GeminiToOpenAIOpts 
     chunk.created = created;
     chunk.model = model;
     chunk.system_fingerprint = null;
+    remapGeminiChatHandlerToolIndexes(chunk, toolCallIndexByChoice, nextToolCallIndexByChoice);
     const choices = asArr(chunk.choices);
     const isToolCall = choices.some((c) => asArr(asObj(c.delta).tool_calls).length > 0);
     if (isToolCall) finishReason = "tool_calls";

@@ -19,7 +19,7 @@ import {
 } from "./claude-response.js";
 import {
   groundingWebSearchQueries,
-  streamResponseGeminiChat2OpenAI,
+  GeminiToChatStreamState,
   usageFromGeminiMetadata,
 } from "./gemini-response.js";
 import { hostedResponsesOutputJson, normalizeResponsesWebSearchAction } from "./hosted-response.js";
@@ -1792,57 +1792,9 @@ export class GeminiHostedStreamBridge {
   }
 }
 
-function geminiHasNonStopFinish(response: Record<string, unknown>): boolean {
-  const candidates = Array.isArray(response.candidates) ? response.candidates : [];
-  for (const candidate of candidates) {
-    const finish = str(asObj(candidate).finishReason ?? asObj(candidate).finish_reason).trim();
-    if (finish && finish !== "STOP") return true;
-  }
-  return false;
-}
-
 function geminiStreamUsage(response: Record<string, unknown>, fallbackPromptTokens: number): OpenAIUsage | null {
   const meta = response.usageMetadata || response.usage_metadata;
   return usageFromGeminiMetadata(meta && typeof meta === "object" ? asObj(meta) : null, fallbackPromptTokens);
-}
-
-function geminiChatChunkHasToolCalls(chunk: Record<string, unknown>): boolean {
-  const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
-  return choices.some((choice) => {
-    const tools = asObj(asObj(choice).delta).tool_calls;
-    return Array.isArray(tools) && tools.length > 0;
-  });
-}
-
-function geminiClearToolCallFinish(chunk: Record<string, unknown>): void {
-  const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
-  for (const choice of choices) {
-    const o = asObj(choice);
-    if (str(o.finish_reason) === "tool_calls") o.finish_reason = null;
-  }
-}
-
-function geminiChunkFinishEmitted(chunk: Record<string, unknown>): boolean {
-  const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
-  return choices.some((choice) => str(asObj(choice).finish_reason).trim() !== "");
-}
-
-function geminiTerminalChatChunk(
-  id: string,
-  created: number,
-  model: string,
-  finishReason: string,
-  usage: OpenAIUsage | null,
-): Record<string, unknown> {
-  const chunk: Record<string, unknown> = {
-    id,
-    object: "chat.completion.chunk",
-    created,
-    model,
-    choices: [{ index: 0, delta: {}, logprobs: null, finish_reason: finishReason }],
-  };
-  if (usage) chunk.usage = openAIUsageToJson(usage);
-  return chunk;
 }
 
 /** Original `GeminiResponsesStreamHandler` client SSE (`EmitSequenceNumber: true`). */
@@ -1850,11 +1802,13 @@ export function geminiSseToResponsesSse(
   text: string,
   opts: { id: string; model: string; created?: number; fallbackPromptTokens?: number },
 ): { sse: string; usageBody: Record<string, unknown> } {
+  const created = opts.created ?? Math.floor(Date.now() / 1000);
   const state = newChatToResponsesStreamState(opts.id, opts.model, {
-    created: opts.created,
+    created,
     emitSequenceNumber: true,
   });
   const hosted = new GeminiHostedStreamBridge();
+  const geminiChat = new GeminiToChatStreamState(opts.id, created);
   const events: ChatToResponsesStreamEvent[] = [];
   const fail = (err: Error): { sse: string; usageBody: Record<string, unknown> } => {
     events.push(...state.fail("server_error", err.message, ""));
@@ -1863,51 +1817,23 @@ export function geminiSseToResponsesSse(
       usageBody: usageBodyFrom(state.usage),
     };
   };
-  const id = opts.id;
-  const created = opts.created ?? Math.floor(Date.now() / 1000);
   const fallback = opts.fallbackPromptTokens || 0;
-  let finishEmitted = false;
-  let sawToolCall = false;
-  let latestUsage: OpenAIUsage | null = null;
   const payloads = looksLikeSse(text) ? parseSseDataLines(text) : [text];
   for (const payload of payloads) {
     const parsed = parseJsonObject(payload);
     if (!parsed) return fail(new Error("unmarshal Gemini stream response"));
     hosted.observe(parsed);
     try {
-      const { chunk, isStop } = streamResponseGeminiChat2OpenAI(parsed);
-      chunk.id = id;
-      chunk.created = created;
-      chunk.model = opts.model;
-      const usage = geminiStreamUsage(parsed, fallback);
-      if (usage) {
-        latestUsage = usage;
-        chunk.usage = openAIUsageToJson(usage);
-      }
-      const hasNonStopFinish = geminiHasNonStopFinish(parsed);
-      if (geminiChatChunkHasToolCalls(chunk)) {
-        sawToolCall = true;
-        if (!hasNonStopFinish) geminiClearToolCallFinish(chunk);
-      }
-      events.push(...chatCompletionsStreamChunkToResponsesEvents(chunk, state));
-      if (geminiChunkFinishEmitted(chunk)) finishEmitted = true;
-      if (isStop && !finishEmitted) {
-        const terminal = geminiTerminalChatChunk(
-          id,
-          created,
-          opts.model,
-          sawToolCall ? "tool_calls" : "stop",
-          latestUsage,
-        );
-        events.push(...chatCompletionsStreamChunkToResponsesEvents(terminal, state));
-        finishEmitted = true;
-      }
+      const chunks = geminiChat.convertChunk(parsed, opts.model, geminiStreamUsage(parsed, fallback));
+      for (const chunk of chunks) events.push(...chatCompletionsStreamChunkToResponsesEvents(chunk, state));
     } catch (err) {
       return fail(err instanceof Error ? err : new Error(String(err)));
     }
   }
   try {
     events.push(...hosted.finalize(state));
+    const tail = geminiChat.finalize(opts.model);
+    for (const chunk of tail) events.push(...chatCompletionsStreamChunkToResponsesEvents(chunk, state));
   } catch (err) {
     return fail(err instanceof Error ? err : new Error(String(err)));
   }
