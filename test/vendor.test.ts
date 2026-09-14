@@ -665,3 +665,123 @@ test("original xAI ConvertImageRequest JSON, ConvertClaudeRequest not available,
     globalThis.fetch = origFetch;
   }
 });
+
+test("original xAIHandler HTTP JSON rewrites completion_tokens and text_tokens", async () => {
+  const { e, auth, sk } = await boot();
+  const add = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "xai-usage",
+        type: CHANNEL_TYPE_XAI,
+        key: "xk",
+        models: "grok-3",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(add.body.success, true, String(add.body.message));
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, _init?: RequestInit) => {
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl-xai",
+        object: "chat.completion",
+        created: 1,
+        model: "grok-3",
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 1,
+          total_tokens: 25,
+          completion_tokens_details: {
+            reasoning_tokens: 5,
+            audio_tokens: 0,
+            accepted_prediction_tokens: 0,
+            rejected_prediction_tokens: 0,
+          },
+        },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const chat = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "grok-3",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chat.res.status, 200, chat.text);
+    const usage = chat.body.usage as Record<string, unknown>;
+    assert.equal(usage.prompt_tokens, 10);
+    assert.equal(usage.completion_tokens, 15);
+    assert.equal(usage.total_tokens, 25);
+    assert.equal((usage.completion_tokens_details as Record<string, unknown>).text_tokens, 10);
+    assert.equal((usage.completion_tokens_details as Record<string, unknown>).reasoning_tokens, 5);
+    assert.equal(chat.body.system_fingerprint, "");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original xAIStreamHandler HTTP SSE rewrites completion_tokens without text_tokens", async () => {
+  const { e, auth, sk } = await boot();
+  const add = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "xai-stream",
+        type: CHANNEL_TYPE_XAI,
+        key: "xk",
+        models: "grok-3",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(add.body.success, true, String(add.body.message));
+
+  const sse = [
+    'data: {"id":"chatcmpl-xai","object":"chat.completion.chunk","created":1,"model":"grok-3","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+    "",
+    'data: {"id":"chatcmpl-xai","object":"chat.completion.chunk","created":1,"model":"grok-3","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":25,"completion_tokens_details":{"reasoning_tokens":5,"text_tokens":1,"audio_tokens":0,"image_tokens":0}}}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+  try {
+    const stream = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "grok-3",
+          messages: [{ role: "user", content: "hi" }],
+          stream: true,
+        }),
+      }),
+      e,
+    );
+    assert.equal(stream.res.status, 200, stream.text);
+    assert.match(stream.text, /data: \[DONE\]/);
+    assert.match(stream.text, /"completion_tokens":15/);
+    assert.match(stream.text, /"text_tokens":1/);
+    assert.equal(stream.res.headers.get("content-type"), "text/event-stream; charset=utf-8");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

@@ -13,6 +13,8 @@ import {
   convertOpenAIAdaptorGeminiRequest,
   convertVolcClaudeRequest,
   convertDeepSeekClaudeRequest,
+  openaiFromXaiResponse,
+  xaiSseToOpenAIChat,
   nativeClaudeGeminiConvertError,
   estimatePromptTokens,
   extractGeminiModelAction,
@@ -782,6 +784,14 @@ async function convertInbound(
   if (usesOpenAIAdaptor(opts.channelType || 0) && client === "gemini") {
     return openaiChatToGeminiResponse(upstreamJson);
   }
+  if (
+    client === "openai" &&
+    opts.channelType === CHANNEL_TYPE_XAI &&
+    opts.relayMode !== "images" &&
+    opts.relayMode !== "responses"
+  ) {
+    return openaiFromXaiResponse(upstreamJson);
+  }
   return upstreamJson;
 }
 
@@ -1449,6 +1459,36 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             clientFormat === "anthropic"
               ? oaiChatSseToClaudeSse(text, { estimatePromptTokens: promptEst })
               : oaiChatSseToGeminiSse(text, { estimatePromptTokens: promptEst });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          return openaiError(500, message, "bad_response_body");
+        }
+        const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
+        extra.cachedTokens = usage.cachedTokens;
+        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        ctx?.waitUntil(
+          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
+        );
+        return new Response(converted.sse, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            "x-oneapi-request-id": rid,
+          },
+        });
+      }
+      if (
+        clientFormat === "openai" &&
+        channel.type === CHANNEL_TYPE_XAI &&
+        mode !== "images" &&
+        mode !== "responses"
+      ) {
+        const text = await res.text();
+        let converted: { sse: string; usageBody: Record<string, unknown> };
+        try {
+          converted = xaiSseToOpenAIChat(text);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);

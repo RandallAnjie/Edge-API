@@ -16,6 +16,8 @@ import {
   convertVolcClaudeRequest,
   convertDeepSeekClaudeRequest,
   convertXaiImageRequest,
+  openaiFromXaiResponse,
+  xaiSseToOpenAIChat,
   nativeClaudeGeminiConvertError,
   usesClaudeAdaptorForClaudeRequest,
   openaiChatToClaudeResponse,
@@ -2210,6 +2212,80 @@ test("original xAI/Jimeng/Replicate/Submodel/Coze ConvertClaudeRequest and Conve
   assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_ALI, "gemini"), "not implemented");
   assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_OLLAMA, "gemini"), "not implemented");
   assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_AWS, "gemini"), "not implemented");
+});
+
+test("original xAIHandler and xAIStreamHandler usage JSON", () => {
+  const out = openaiFromXaiResponse({
+    id: "chatcmpl-x",
+    object: "chat.completion",
+    created: 1,
+    model: "grok-3",
+    choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    usage: {
+      prompt_tokens: 10,
+      completion_tokens: 1,
+      total_tokens: 25,
+      completion_tokens_details: {
+        reasoning_tokens: 5,
+        audio_tokens: 0,
+        accepted_prediction_tokens: 0,
+        rejected_prediction_tokens: 0,
+      },
+    },
+    extra_dropped: true,
+  });
+  assert.equal(out.id, "chatcmpl-x");
+  assert.equal(out.object, "chat.completion");
+  assert.equal(out.created, 1);
+  assert.equal(out.model, "grok-3");
+  assert.equal(out.system_fingerprint, "");
+  assert.equal("extra_dropped" in out, false);
+  const usage = out.usage as Record<string, unknown>;
+  assert.equal(usage.prompt_tokens, 10);
+  assert.equal(usage.completion_tokens, 15);
+  assert.equal(usage.total_tokens, 25);
+  assert.equal(usage.input_tokens, 0);
+  assert.equal(usage.output_tokens, 0);
+  assert.equal(usage.claude_cache_creation_5_m_tokens, 0);
+  assert.equal(usage.claude_cache_creation_1_h_tokens, 0);
+  assert.equal(usage.input_tokens_details, null);
+  const details = usage.completion_tokens_details as Record<string, unknown>;
+  assert.equal(details.text_tokens, 10);
+  assert.equal(details.reasoning_tokens, 5);
+  const promptDetails = usage.prompt_tokens_details as Record<string, unknown>;
+  assert.equal(promptDetails.cached_tokens, 0);
+  assert.equal(promptDetails.text_tokens, 0);
+
+  const missingUsage = openaiFromXaiResponse({
+    id: "chatcmpl-empty",
+    object: "chat.completion",
+    created: 2,
+    model: "grok-3",
+    choices: [],
+  });
+  assert.equal(missingUsage.usage, null);
+  assert.equal(missingUsage.system_fingerprint, "");
+
+  const stream = xaiSseToOpenAIChat(
+    [
+      'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"grok-3","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}',
+      "",
+      'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"grok-3","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":25,"completion_tokens_details":{"reasoning_tokens":5,"text_tokens":1,"audio_tokens":0,"image_tokens":0}}}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"),
+  );
+  assert.match(stream.sse, /data: \[DONE\]/);
+  const payloads = [...stream.sse.matchAll(/^data: (\{.*\})$/gm)].map((m) => JSON.parse(m[1]) as Record<string, unknown>);
+  assert.equal(payloads.length, 2);
+  assert.equal(payloads[0].system_fingerprint, null);
+  assert.equal(payloads[0].usage, null);
+  const streamUsage = payloads[1].usage as Record<string, unknown>;
+  assert.equal(streamUsage.completion_tokens, 15);
+  assert.equal((streamUsage.completion_tokens_details as Record<string, unknown>).text_tokens, 1);
+  assert.equal(stream.usageBody.completion_tokens, 15);
+  assert.equal(stream.usageBody.prompt_tokens, 10);
 });
 
 test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON and URLs", async () => {
