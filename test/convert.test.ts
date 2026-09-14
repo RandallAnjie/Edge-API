@@ -4729,7 +4729,7 @@ test("original OpenAI Responses → Claude Messages request/response/stream JSON
       `data: {"type":"response.output_text.delta","delta":" world"}`,
       `data: {"type":"response.completed","response":{"id":"resp_fixed","object":"response","status":"completed","model":"gpt-test","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
       ``,
-    ].join("\n"),
+    ].join("\n\n"),
     { id: "stream_fixed", model: "stream-model" },
   );
   assert.equal(sse.events[0].type, "message_start");
