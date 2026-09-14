@@ -75,8 +75,8 @@ test("original ResolveTaskBillingExpr prefers plugin override JSON", () => {
   assert.equal(plugin.expr, 'tier("plugin", u("seconds") * 1)');
   const mapped = resolveTaskBillingExpr("kling", "alias", "wan2.5", {
     pluginExprs: {},
-    modes: { wan2.5: "tiered_expr" },
-    exprs: { wan2.5: 'tier("720P", u("seconds") * 5)' },
+    modes: { "wan2.5": "tiered_expr" },
+    exprs: { "wan2.5": 'tier("720P", u("seconds") * 5)' },
   });
   assert.equal(mapped.exists, true);
   assert.equal(mapped.expr, 'tier("720P", u("seconds") * 5)');
