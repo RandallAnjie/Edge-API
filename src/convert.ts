@@ -435,6 +435,7 @@ export {
   aliImageRequestFromEditForm,
 } from "./ali-convert.js";
 export { convertOpenAIImageEditForm, detectImageMimeType, usesOpenAIImageEditAdaptor } from "./openai-image-convert.js";
+export { convertOpenAIAudioForm, formFileContentType, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
 export { convertCodexOpenAIRequest, convertCodexResponsesRequest } from "./codex-convert.js";
 export {
   convertChatCompletionsToResponsesRequest,

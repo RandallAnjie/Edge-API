@@ -12,6 +12,7 @@ import {
   supportedEndpointTypesForModel,
   advancedCustomConfigFromSettings,
 } from "../src/channel-validate.js";
+import { CHANNEL_BASE_URLS, CHANNEL_TYPES, channelDefaultBaseURLs } from "../src/catalog.js";
 import { relayErrorHandler } from "../src/http.js";
 import type { ChannelRow, Env, ExecutionContextLike } from "../src/types.js";
 
@@ -123,6 +124,7 @@ const ORIGINAL_API: { method: string; path: string }[] = [
   { method: "GET", path: "/api/channel/" },
   { method: "GET", path: "/api/channel/models" },
   { method: "GET", path: "/api/channel/models_enabled" },
+  { method: "GET", path: "/api/channel/default_base_urls" },
   { method: "GET", path: "/api/channel/ops" },
   { method: "GET", path: "/api/channel/update_balance" },
   { method: "GET", path: "/api/channel/tag/models" },
@@ -1704,6 +1706,27 @@ test("original JSON fields: perf-metrics, rankings, quota data, model sync", asy
 
   const ops = await json(new Request("http://local/api/channel/ops", { headers: auth }), e);
   assert.equal((ops.body.data as { retry_times: number }).retry_times, 0);
+
+  const defaultBases = await json(new Request("http://local/api/channel/default_base_urls", { headers: auth }), e);
+  assert.equal(defaultBases.body.success, true);
+  const bases = defaultBases.body.data as Record<string, string>;
+  assert.equal(CHANNEL_BASE_URLS.length, 62);
+  assert.deepEqual(bases, channelDefaultBaseURLs());
+  assert.equal(Object.keys(bases).length, CHANNEL_BASE_URLS.filter(Boolean).length);
+  assert.equal(bases["1"], "https://api.openai.com");
+  assert.equal(bases["4"], "http://localhost:11434");
+  assert.equal(bases["17"], "https://dashscope.aliyuncs.com");
+  assert.equal(bases["22"], "https://fastgpt.run/api/openapi");
+  assert.equal(bases["43"], "https://api.deepseek.com");
+  assert.equal(bases["3"], undefined);
+  assert.equal(bases["60"], undefined);
+  assert.equal(bases["61"], undefined);
+  assert.ok(!("3" in bases));
+  assert.ok(!("60" in bases));
+  assert.ok(!("61" in bases));
+  for (const t of CHANNEL_TYPES) {
+    assert.equal(t.base, CHANNEL_BASE_URLS[t.id] ?? "");
+  }
 
   const affinity = await json(new Request("http://local/api/option/channel_affinity_cache", { headers: auth }), e);
   const aff = affinity.body.data as Record<string, unknown>;

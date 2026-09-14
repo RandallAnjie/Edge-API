@@ -61,6 +61,82 @@ export const CHANNEL_TYPES: ChannelTypeInfo[] = [
   { id: 61, name: "Task Plugin", kind: "openai", base: "" },
 ];
 
+/** Original `constant.ChannelBaseURLs` (index = channel type). Empty values are omitted by GetChannelDefaultBaseURLs. */
+export const CHANNEL_BASE_URLS: string[] = [
+  "",
+  "https://api.openai.com",
+  "https://oa.api2d.net",
+  "",
+  "http://localhost:11434",
+  "https://api.openai-sb.com",
+  "https://api.openaimax.com",
+  "https://api.ohmygpt.com",
+  "",
+  "https://api.caipacity.com",
+  "https://api.aiproxy.io",
+  "",
+  "https://api.api2gpt.com",
+  "https://api.aigc2d.com",
+  "https://api.anthropic.com",
+  "https://aip.baidubce.com",
+  "https://open.bigmodel.cn",
+  "https://dashscope.aliyuncs.com",
+  "",
+  "https://api.360.cn",
+  "https://openrouter.ai/api",
+  "https://api.aiproxy.io",
+  "https://fastgpt.run/api/openapi",
+  "https://hunyuan.tencentcloudapi.com",
+  "https://generativelanguage.googleapis.com",
+  "https://api.moonshot.cn",
+  "https://open.bigmodel.cn",
+  "https://api.perplexity.ai",
+  "",
+  "",
+  "",
+  "https://api.lingyiwanwu.com",
+  "",
+  "",
+  "https://api.cohere.ai",
+  "https://api.minimax.chat",
+  "",
+  "https://api.dify.ai",
+  "https://api.jina.ai",
+  "https://api.cloudflare.com",
+  "https://api.siliconflow.cn",
+  "",
+  "https://api.mistral.ai",
+  "https://api.deepseek.com",
+  "https://api.moka.ai",
+  "https://ark.cn-beijing.volces.com",
+  "https://qianfan.baidubce.com",
+  "",
+  "https://api.x.ai",
+  "https://api.coze.cn",
+  "https://api.klingai.com",
+  "https://visual.volcengineapi.com",
+  "https://api.vidu.cn",
+  "https://llm.submodel.ai",
+  "https://ark.cn-beijing.volces.com",
+  "https://api.openai.com",
+  "https://api.replicate.com",
+  "https://chatgpt.com",
+  "",
+  "",
+  "",
+  "",
+];
+
+/** Original `controller.GetChannelDefaultBaseURLs` data map (JSON object keys are channel type numbers). */
+export function channelDefaultBaseURLs(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (let channelType = 0; channelType < CHANNEL_BASE_URLS.length; channelType++) {
+    const baseURL = CHANNEL_BASE_URLS[channelType];
+    if (baseURL) out[String(channelType)] = baseURL;
+  }
+  return out;
+}
+
 const BY_ID = new Map(CHANNEL_TYPES.map((c) => [c.id, c]));
 
 export function getChannelType(id: number): ChannelTypeInfo {
@@ -76,6 +152,7 @@ export function channelKind(id: number): AdapterKind {
 }
 
 export function defaultBaseUrl(id: number): string {
+  if (id >= 0 && id < CHANNEL_BASE_URLS.length) return CHANNEL_BASE_URLS[id];
   return getChannelType(id).base;
 }
 

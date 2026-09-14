@@ -51,6 +51,9 @@ import {
   supportsAliAnthropicMessages,
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
+import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
+import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
+import type { EncodedMultipart } from "./multipart-form.js";
 import { clientIp, groupAccessDeniedMessage, json, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import {
@@ -1040,9 +1043,14 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let outbound: unknown = opts.body;
     let advancedConverter: string | undefined;
     let openaiEditForm: OpenAIImageEditForm | undefined;
+    let openaiAudioForm: EncodedMultipart | undefined;
     const multipartEdits =
       mode === "images" &&
       isAliImageEdits(requestPath) &&
+      Boolean(opts.rawBody) &&
+      (opts.rawContentType || "").includes("multipart/form-data");
+    const multipartAudio =
+      (mode === "audio_transcription" || mode === "audio_translation") &&
       Boolean(opts.rawBody) &&
       (opts.rawContentType || "").includes("multipart/form-data");
     const aliMultipartEdits = multipartEdits && channel.type === CHANNEL_TYPE_ALI;
@@ -1060,6 +1068,17 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       ) {
         throw converterDoesNotSupport(String(advancedConverter), "image");
       }
+      if (
+        multipartAudio &&
+        channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM &&
+        String(advancedConverter || CONVERTER_NONE).trim() &&
+        String(advancedConverter || CONVERTER_NONE).trim() !== CONVERTER_NONE
+      ) {
+        throw converterDoesNotSupport(String(advancedConverter), "audio");
+      }
+      if (multipartAudio && (channel.type === CHANNEL_TYPE_NEW_API || channel.type === CHANNEL_TYPE_SUB2API)) {
+        newApiUnsupportedEndpoint();
+      }
       if (aliMultipartEdits) {
         outbound = convertAliFormEditFromRaw(opts.rawBody as ArrayBuffer, opts.rawContentType || "", {
           upstreamModelName: mapped,
@@ -1067,6 +1086,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         });
       } else if (multipartEdits && usesOpenAIImageEditAdaptor(channel.type, advancedConverter)) {
         openaiEditForm = convertOpenAIImageEditForm(opts.rawBody as ArrayBuffer, opts.rawContentType || "", mapped);
+        outbound = opts.body;
+      } else if (multipartAudio && usesOpenAIAudioAdaptor(channel.type, advancedConverter)) {
+        openaiAudioForm = convertOpenAIAudioForm(opts.rawBody as ArrayBuffer, opts.rawContentType || "", mapped);
         outbound = opts.body;
       } else if (opts.rawBody) {
         outbound = opts.body;
@@ -1150,6 +1172,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     if (openaiEditForm) {
       target.body = openaiEditForm.body;
       target.headers["content-type"] = openaiEditForm.contentType;
+    } else if (openaiAudioForm) {
+      target.body = openaiAudioForm.body;
+      target.headers["content-type"] = openaiAudioForm.contentType;
     } else if (opts.rawBody && !aliMultipartEdits) {
       target.body = opts.rawBody;
       if (opts.rawContentType) target.headers["content-type"] = opts.rawContentType;

@@ -133,6 +133,7 @@ import {
   fetchModels,
   getAllModels,
   getChannel,
+  getChannelDefaultBaseURLs,
   getGroups,
   getPrefillGroups,
   getTaskPluginOptions,
@@ -643,6 +644,14 @@ export function ChannelMutateDrawer({
   const channelId = currentRow?.id ?? null
   const sensitiveLocked = isEditing && !canEditSensitive
 
+  const { data: defaultBaseURLs } = useQuery({
+    queryKey: channelsQueryKeys.defaultBaseURLs(),
+    // Optional hints must not trigger the global error-page redirect.
+    queryFn: () => getChannelDefaultBaseURLs().catch(() => null),
+    enabled: open,
+    staleTime: 5 * 60 * 1000,
+  })
+
   // Fetch channel details if editing
   const { data: channelData, isLoading: isChannelLoading } = useQuery({
     queryKey: channelsQueryKeys.detail(channelId || 0),
@@ -689,6 +698,8 @@ export function ChannelMutateDrawer({
   const keyMode = form.watch('key_mode')
   const currentGroups = form.watch('group')
   const currentType = form.watch('type')
+  const baseUrlPlaceholder =
+    defaultBaseURLs?.[currentType] || t(FIELD_PLACEHOLDERS.BASE_URL)
   const currentStatus = form.watch('status')
   const currentBaseUrl = form.watch('base_url')
   const currentTaskPluginKey = form.watch('task_plugin_key')
@@ -2436,9 +2447,7 @@ export function ChannelMutateDrawer({
                                     </FormLabel>
                                     <FormControl>
                                       <Input
-                                        placeholder={t(
-                                          'e.g., https://fastgpt.run/api/openapi'
-                                        )}
+                                        placeholder={baseUrlPlaceholder}
                                         {...field}
                                       />
                                     </FormControl>
@@ -2776,9 +2785,7 @@ export function ChannelMutateDrawer({
                                     <FormLabel>{t('API Base URL *')}</FormLabel>
                                     <FormControl>
                                       <Input
-                                        placeholder={t(
-                                          'e.g., https://ark.cn-beijing.volces.com'
-                                        )}
+                                        placeholder={baseUrlPlaceholder}
                                         {...field}
                                       />
                                     </FormControl>
@@ -2828,9 +2835,7 @@ export function ChannelMutateDrawer({
                                     </FormLabel>
                                     <FormControl>
                                       <Input
-                                        placeholder={t(
-                                          FIELD_PLACEHOLDERS.BASE_URL
-                                        )}
+                                        placeholder={baseUrlPlaceholder}
                                         {...field}
                                       />
                                     </FormControl>

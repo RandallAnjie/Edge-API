@@ -2,7 +2,7 @@
 
 import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
 import { CONVERTER_NONE } from "./advanced-custom-convert.js";
-import { parseMultipartForm, type MultipartFilePart, type ParsedMultipart } from "./multipart-form.js";
+import { encodeMultipartForm, parseMultipartForm, type MultipartFilePart, type ParsedMultipart } from "./multipart-form.js";
 
 export type OpenAIImageEditForm = {
   body: Uint8Array;
@@ -38,47 +38,6 @@ function collectImageFiles(files: MultipartFilePart[]): MultipartFilePart[] {
   if (imageFiles.length === 0) imageFiles = files.filter((file) => file.name.startsWith("image["));
   if (imageFiles.length === 0) throw new Error("image is required");
   return imageFiles;
-}
-
-function randomBoundary(): string {
-  const buf = new Uint8Array(30);
-  crypto.getRandomValues(buf);
-  let hex = "";
-  for (let i = 0; i < buf.length; i++) hex += buf[i].toString(16).padStart(2, "0");
-  return hex;
-}
-
-function concatBytes(parts: Uint8Array[]): Uint8Array {
-  let n = 0;
-  for (const part of parts) n += part.length;
-  const out = new Uint8Array(n);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
-}
-
-function encodeForm(fields: { name: string; value: string }[], files: { name: string; filename: string; mime: string; data: Uint8Array }[]): OpenAIImageEditForm {
-  const boundary = randomBoundary();
-  const latin1 = new TextEncoder();
-  const chunks: Uint8Array[] = [];
-  const push = (s: string | Uint8Array) => {
-    chunks.push(typeof s === "string" ? latin1.encode(s) : s);
-  };
-  for (const field of fields) {
-    push(`--${boundary}\r\nContent-Disposition: form-data; name="${field.name}"\r\n\r\n${field.value}\r\n`);
-  }
-  for (const file of files) {
-    push(
-      `--${boundary}\r\nContent-Disposition: form-data; name="${file.name}"; filename="${file.filename}"\r\nContent-Type: ${file.mime}\r\n\r\n`,
-    );
-    push(file.data);
-    push("\r\n");
-  }
-  push(`--${boundary}--\r\n`);
-  return { body: concatBytes(chunks), contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
 /**
@@ -118,7 +77,7 @@ export function convertOpenAIImageEditForm(
       data: mask.data,
     });
   }
-  return encodeForm(fields, outFiles);
+  return encodeMultipartForm(fields, outFiles);
 }
 
 /**

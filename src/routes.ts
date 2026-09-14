@@ -23,7 +23,7 @@ import {
   parseJson,
 } from "./constants.js";
 import { canWithPolicies, permissionDeltas, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
-import { CHANNEL_TYPES, defaultBaseUrl } from "./catalog.js";
+import { CHANNEL_TYPES, channelDefaultBaseURLs, defaultBaseUrl } from "./catalog.js";
 import {
   appendChannelKeys,
   channelHasSensitiveChanges,
@@ -888,6 +888,13 @@ export function adminRouter(): Router<Env> {
     const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     return apiOk(await s.enabledModelsAll());
+  });
+
+  r.get("/api/channel/default_base_urls", async (c) => {
+    const s = store(c);
+    const u = await requireChannel(c, s, "read");
+    if (isResponse(u)) return u;
+    return apiOk(channelDefaultBaseURLs());
   });
 
   r.get("/api/channel/ops", async (c) => {

@@ -47,3 +47,50 @@ export function parseMultipartForm(rawBody: ArrayBuffer, contentType: string): P
   }
   return { values, files };
 }
+
+export type EncodedMultipart = { body: Uint8Array; contentType: string };
+
+function randomBoundary(): string {
+  const buf = new Uint8Array(30);
+  crypto.getRandomValues(buf);
+  let hex = "";
+  for (let i = 0; i < buf.length; i++) hex += buf[i].toString(16).padStart(2, "0");
+  return hex;
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  let n = 0;
+  for (const part of parts) n += part.length;
+  const out = new Uint8Array(n);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+/** MIME multipart writer used by original openai ConvertImageRequest / ConvertAudioRequest. */
+export function encodeMultipartForm(
+  fields: { name: string; value: string }[],
+  files: { name: string; filename: string; mime: string; data: Uint8Array }[],
+): EncodedMultipart {
+  const boundary = randomBoundary();
+  const latin1 = new TextEncoder();
+  const chunks: Uint8Array[] = [];
+  const push = (s: string | Uint8Array) => {
+    chunks.push(typeof s === "string" ? latin1.encode(s) : s);
+  };
+  for (const field of fields) {
+    push(`--${boundary}\r\nContent-Disposition: form-data; name="${field.name}"\r\n\r\n${field.value}\r\n`);
+  }
+  for (const file of files) {
+    push(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${file.name}"; filename="${file.filename}"\r\nContent-Type: ${file.mime}\r\n\r\n`,
+    );
+    push(file.data);
+    push("\r\n");
+  }
+  push(`--${boundary}--\r\n`);
+  return { body: concatBytes(chunks), contentType: `multipart/form-data; boundary=${boundary}` };
+}
