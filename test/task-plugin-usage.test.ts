@@ -15,6 +15,7 @@ import {
   estimateBillingValidated,
   extractUsageFactsValidated,
   quotaFromFloat,
+  validateResolvedUsageRequest,
 } from "../src/task-plugin-usage.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
@@ -475,4 +476,129 @@ test("original native RelayTask immediate FAILURE persists zero quota JSON", asy
 test("original duration ceiling is 3600 for undeclared ratios", () => {
   assert.equal(MAX_TASK_DURATION_SECONDS, 3600);
   assert.equal(MAX_IMAGE_N, 128);
+});
+
+const boundedUsagePlugin = `
+export const meta = {
+  apiVersion: 1, key: "bounded-usage", name: "Bounded Usage", version: "1.0.0",
+  author: {name: "Test"}, models: ["model"], fetchMode: "per_task",
+  usageSchema: {
+    duration: {type: "number", unit: "second"},
+    count: {type: "number", unit: "count"},
+    tokens: {type: "number", unit: "token"},
+    mode: {enum: ["std", "pro"]},
+  },
+  usageExamples: [{label: "std · 1s", facts: {duration: 1, count: 1, tokens: 1, mode: "std"}}],
+};
+export function buildSubmitRequest(ctx) { return {url: ctx.baseUrl + "/submit", method: "POST", body: {}}; }
+export function parseSubmitResponse() { return {taskId: "1"}; }
+export function buildQueryRequest() { return {url: "https://example.com"}; }
+export function parseTaskResult() { return {status: "SUCCESS"}; }
+export function extractUsage(ctx) {
+  const entries = (ctx.requestBody || {}).hookUsageEntries || [];
+  const facts = {};
+  entries.forEach(function(entry) { facts[entry.name] = entry.value; });
+  return facts;
+}
+export function extractUsageOnSubmit(ctx, data) { return (data || {}).usage || {}; }
+export function extractUsageOnComplete(task, result, body) { return (body || {}).completionUsage || {}; }
+`;
+
+test("original ValidateRequestAndSetAction bounds native usage request JSON", () => {
+  const loaded = compilePlugin(boundedUsagePlugin, { key: "bounded-usage", version: "1.0.0" });
+  const meta = loaded.meta;
+  const reject = [
+    { metadata: { duration: MAX_TASK_DURATION_SECONDS + 1 } },
+    { metadata: { count: MAX_IMAGE_N + 1 } },
+    { metadata: { mode: "turbo" } },
+    { durationSeconds: MAX_TASK_DURATION_SECONDS + 1 },
+    { image_count: MAX_IMAGE_N + 1 },
+    { duration: -1 },
+    { duration: Number.POSITIVE_INFINITY },
+    { duration: MAX_TASK_DURATION_SECONDS, metadata: { duration: MAX_TASK_DURATION_SECONDS + 1 } },
+    { metadata: { parameters: { duration: MAX_TASK_DURATION_SECONDS + 1 } } },
+  ];
+  for (const body of reject) {
+    const err = validateResolvedUsageRequest(body, "", meta);
+    assert.equal(typeof err, "string", JSON.stringify(body));
+  }
+  assert.equal(
+    validateResolvedUsageRequest(
+      { metadata: { duration: "5", count: "2", mode: "std" } },
+      "",
+      meta,
+    ),
+    null,
+  );
+  const hookErr = estimateBillingValidated(
+    loaded.engine,
+    { requestBody: { hookUsageEntries: [{ name: "duration", value: "5" }] } },
+    "model",
+  );
+  assert.equal("error" in hookErr, true);
+});
+
+test("original native submit rejects over-limit usage request before upstream JSON", async () => {
+  const { e, auth, sk } = await boot();
+  const source = `
+export const meta = {apiVersion:1,key:"bounded-http",name:"Bounded Usage",version:"1.0.0",author:{name:"Test"},models:["model"],fetchMode:"per_task",channelTypes:[${CHANNEL_TYPE_OPENAI}],usageSchema:{duration:{type:"number",unit:"second"}},routes:[{method:"POST",path:"/vendor/jobs",type:"submit",decode:"decode",render:"created"}]};
+export const native = {decode:function(ctx){return {kind:"submit",model:"model",requestBody:ctx.body.value};},created:function(ctx,task){return {data:{task_id:task.task_id}};}};
+export function buildSubmitRequest(ctx){return {url:ctx.baseUrl+"/submit"};}
+export function parseSubmitResponse(){return {taskId:"1"};}
+export function buildQueryRequest(){return {url:"https://provider.example.test/query"};}
+export function parseTaskResult(){return {status:"SUCCESS"};}
+`;
+  const registered = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ source }),
+    }),
+    e,
+  );
+  assert.equal(registered.body.success, true, String(registered.body.message));
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "ModelRatio", value: JSON.stringify({ model: 1 }) }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "bounded-http",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-test",
+        models: "model",
+        group: "default",
+        base_url: "https://provider.example.test",
+      }),
+    }),
+    e,
+  );
+  let fetched = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).includes("provider.example.test")) fetched += 1;
+    return origFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "model", metadata: { duration: MAX_TASK_DURATION_SECONDS + 1 } }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 400, hit.text);
+    assert.equal(hit.body.code, "invalid_request");
+    assert.equal(fetched, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });

@@ -204,6 +204,59 @@ export function validateUsageValue(
   return { number: parsed.number };
 }
 
+/** Original `TaskAdaptor.validateUsageLimit`. */
+export function validateUsageLimit(value: unknown, limit: number, allowNumericString: boolean): string | null {
+  const parsed = usageNumber(value, allowNumericString);
+  if (!parsed.numeric) return "plugin usage value must be a number";
+  return validateUsageNumberLimit(parsed.number, limit);
+}
+
+/** Original `TaskAdaptor.validateResolvedUsageValue`. */
+export function validateResolvedUsageValue(
+  value: unknown,
+  usageSchema: Record<string, UsageFieldSchema>,
+): string | null {
+  if (isPlainObject(value)) {
+    for (const [key, item] of Object.entries(value)) {
+      if (Object.prototype.hasOwnProperty.call(usageSchema, key)) {
+        const checked = validateUsageValue(item, usageSchema[key], true);
+        if ("error" in checked) return checked.error;
+      } else {
+        const canonical = canonicalUsageLimit(key);
+        if (canonical.canonical) {
+          const err = validateUsageLimit(item, canonical.limit, true);
+          if (err) return err;
+        }
+      }
+      const nested = validateResolvedUsageValue(item, usageSchema);
+      if (nested) return nested;
+    }
+    return null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = validateResolvedUsageValue(item, usageSchema);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+/** Original `TaskAdaptor.validateResolvedUsageRequest`. */
+export function validateResolvedUsageRequest(
+  request: unknown,
+  modelName: string,
+  meta: Record<string, unknown>,
+): string | null {
+  return validateResolvedUsageValue(request, fieldSchemaMap(pluginUsageForModel(meta, modelName).usageSchema));
+}
+
+/** Original ValidateRequestAndSetAction usage-profile gate. */
+export function pluginHasUsageProfiles(engine: PluginEngine): boolean {
+  const profiles = pluginMeta(engine).usageProfiles;
+  return Array.isArray(profiles) && profiles.length > 0;
+}
+
 /** Original `TaskAdaptor.validatedUsageRatios`. Mutates `facts` like the Go map. */
 export function validatedUsageRatios(
   facts: Record<string, unknown>,

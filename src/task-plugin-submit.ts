@@ -43,7 +43,9 @@ import {
   applyOtherRatiosToFloat,
   applyRelayTaskSubmitBilling,
   estimateBillingValidated,
+  pluginHasUsageProfiles,
   quotaFromFloat,
+  validateResolvedUsageRequest,
 } from "./task-plugin-usage.js";
 
 export const MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES = 1 << 20;
@@ -653,6 +655,12 @@ async function relayTaskSubmitOnce(opts: {
     info,
     originTasks: opts.prepared.origin.tasks,
   });
+  const hasRequest = opts.prepared.requestBody != null;
+  const hasProfiles = pluginHasUsageProfiles(opts.engine);
+  if (hasRequest && !hasProfiles) {
+    const usageErr = validateResolvedUsageRequest(opts.prepared.requestBody, "", pluginMeta(opts.engine));
+    if (usageErr) return taskErr("plugin_usage_invalid", usageErr, 400, true);
+  }
   const descriptor = buildNativeSubmitDescriptor(opts.engine, submitContext, info.channelBaseUrl);
   if ("statusCode" in descriptor) return descriptor;
   if (descriptor.action) info.action = descriptor.action;
@@ -661,6 +669,14 @@ async function relayTaskSubmitOnce(opts: {
   submitContext.action = info.action;
   submitContext.model = info.originModelName;
   submitContext.upstreamModel = info.upstreamModelName;
+  if (hasRequest && hasProfiles) {
+    const usageErr = validateResolvedUsageRequest(
+      opts.prepared.requestBody,
+      info.upstreamModelName || info.originModelName,
+      pluginMeta(opts.engine),
+    );
+    if (usageErr) return taskErr("plugin_usage_invalid", usageErr, 400, true);
+  }
 
   const priced = await modelPriceHelperPerCall(
     opts.store,
