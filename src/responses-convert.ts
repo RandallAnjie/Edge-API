@@ -49,10 +49,82 @@ function chatCreatedAt(created: unknown): number {
   return Math.floor(Date.now() / 1000);
 }
 
+function hasOpenAIUsageTokens(src: Record<string, unknown>): boolean {
+  if (
+    asInt(src.prompt_tokens) ||
+    asInt(src.completion_tokens) ||
+    asInt(src.total_tokens) ||
+    asInt(src.input_tokens) ||
+    asInt(src.output_tokens) ||
+    asInt(src.prompt_cache_hit_tokens) ||
+    asInt(src.claude_cache_creation_5_m_tokens) ||
+    asInt(src.claude_cache_creation_1_h_tokens)
+  ) {
+    return true;
+  }
+  const promptDetails = asObj(src.prompt_tokens_details);
+  const completionDetails = asObj(src.completion_tokens_details);
+  return Boolean(
+    asInt(promptDetails.cached_tokens) ||
+      asInt(promptDetails.cached_creation_tokens) ||
+      asInt(promptDetails.cache_write_tokens) ||
+      asInt(promptDetails.text_tokens) ||
+      asInt(promptDetails.audio_tokens) ||
+      asInt(promptDetails.image_tokens) ||
+      asInt(completionDetails.reasoning_tokens) ||
+      asInt(completionDetails.text_tokens) ||
+      asInt(completionDetails.audio_tokens) ||
+      asInt(completionDetails.image_tokens),
+  );
+}
+
+function newOpenAIChatBillingUsage(src: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!hasOpenAIUsageTokens(src)) return undefined;
+  const snapshot = emptyOpenAIUsage();
+  snapshot.prompt_tokens = asInt(src.prompt_tokens);
+  snapshot.completion_tokens = asInt(src.completion_tokens);
+  snapshot.total_tokens = asInt(src.total_tokens);
+  snapshot.input_tokens = asInt(src.input_tokens);
+  snapshot.output_tokens = asInt(src.output_tokens);
+  snapshot.claude_cache_creation_5_m_tokens = asInt(src.claude_cache_creation_5_m_tokens);
+  snapshot.claude_cache_creation_1_h_tokens = asInt(src.claude_cache_creation_1_h_tokens);
+  const details = asObj(src.prompt_tokens_details);
+  snapshot.prompt_tokens_details.cached_tokens = asInt(details.cached_tokens);
+  snapshot.prompt_tokens_details.text_tokens = asInt(details.text_tokens);
+  snapshot.prompt_tokens_details.audio_tokens = asInt(details.audio_tokens);
+  snapshot.prompt_tokens_details.image_tokens = asInt(details.image_tokens);
+  if (asInt(details.cached_creation_tokens)) snapshot.prompt_tokens_details.cached_creation_tokens = asInt(details.cached_creation_tokens);
+  if (asInt(details.cache_write_tokens)) snapshot.prompt_tokens_details.cache_write_tokens = asInt(details.cache_write_tokens);
+  const completionDetails = asObj(src.completion_tokens_details);
+  snapshot.completion_tokens_details.reasoning_tokens = asInt(completionDetails.reasoning_tokens);
+  snapshot.completion_tokens_details.text_tokens = asInt(completionDetails.text_tokens);
+  snapshot.completion_tokens_details.audio_tokens = asInt(completionDetails.audio_tokens);
+  snapshot.completion_tokens_details.image_tokens = asInt(completionDetails.image_tokens);
+  if (src.input_tokens_details == null) snapshot.input_tokens_details = null;
+  else snapshot.input_tokens_details = asObj(src.input_tokens_details) as OpenAIUsage["input_tokens_details"];
+  return { source: "oai_chat", semantic: "openai", openai_usage: openAIUsageToJson(snapshot) };
+}
+
+function copyInputDetails(src: Record<string, unknown>): OpenAIUsage["input_tokens_details"] {
+  const details: NonNullable<OpenAIUsage["input_tokens_details"]> = {
+    cached_tokens: asInt(src.cached_tokens),
+    text_tokens: asInt(src.text_tokens),
+    audio_tokens: asInt(src.audio_tokens),
+    image_tokens: asInt(src.image_tokens),
+  };
+  if (asInt(src.cached_creation_tokens)) details.cached_creation_tokens = asInt(src.cached_creation_tokens);
+  if (asInt(src.cache_write_tokens)) details.cache_write_tokens = asInt(src.cache_write_tokens);
+  return details;
+}
+
 /** Original `oaichat.UsageFromChatUsage`. */
 export function usageFromChatUsage(src: Record<string, unknown> | null | undefined): OpenAIUsage {
   const usage = emptyOpenAIUsage();
   if (!src) return usage;
+  if (typeof src.usage_semantic === "string" && src.usage_semantic) usage.usage_semantic = src.usage_semantic;
+  if (typeof src.usage_source === "string" && src.usage_source) usage.usage_source = src.usage_source;
+  if (src.billing_usage && typeof src.billing_usage === "object") usage.billing_usage = asObj(src.billing_usage);
+  else usage.billing_usage = newOpenAIChatBillingUsage(src);
   const prompt = asInt(src.prompt_tokens);
   const completion = asInt(src.completion_tokens);
   if (prompt) {
@@ -65,7 +137,7 @@ export function usageFromChatUsage(src: Record<string, unknown> | null | undefin
   }
   const total = asInt(src.total_tokens);
   usage.total_tokens = total || usage.input_tokens + usage.output_tokens;
-  const promptDetails = asObj(src.prompt_tokens_details || src.input_tokens_details);
+  const promptDetails = asObj(src.prompt_tokens_details);
   if (
     asInt(promptDetails.cached_tokens) ||
     asInt(promptDetails.image_tokens) ||
@@ -74,16 +146,7 @@ export function usageFromChatUsage(src: Record<string, unknown> | null | undefin
     asInt(promptDetails.cache_write_tokens) ||
     asInt(promptDetails.text_tokens)
   ) {
-    usage.prompt_tokens_details.cached_tokens = asInt(promptDetails.cached_tokens);
-    usage.prompt_tokens_details.text_tokens = asInt(promptDetails.text_tokens);
-    usage.prompt_tokens_details.audio_tokens = asInt(promptDetails.audio_tokens);
-    usage.prompt_tokens_details.image_tokens = asInt(promptDetails.image_tokens);
-    if (asInt(promptDetails.cached_creation_tokens)) {
-      usage.prompt_tokens_details.cached_creation_tokens = asInt(promptDetails.cached_creation_tokens);
-    }
-    if (asInt(promptDetails.cache_write_tokens)) {
-      usage.prompt_tokens_details.cache_write_tokens = asInt(promptDetails.cache_write_tokens);
-    }
+    usage.input_tokens_details = copyInputDetails(promptDetails);
   }
   const completionDetails = asObj(src.completion_tokens_details);
   if (
@@ -97,9 +160,6 @@ export function usageFromChatUsage(src: Record<string, unknown> | null | undefin
     usage.completion_tokens_details.audio_tokens = asInt(completionDetails.audio_tokens);
     usage.completion_tokens_details.image_tokens = asInt(completionDetails.image_tokens);
   }
-  if (src.billing_usage && typeof src.billing_usage === "object") usage.billing_usage = asObj(src.billing_usage);
-  if (typeof src.usage_semantic === "string" && src.usage_semantic) usage.usage_semantic = src.usage_semantic;
-  if (typeof src.usage_source === "string" && src.usage_source) usage.usage_source = src.usage_source;
   usage.claude_cache_creation_5_m_tokens = asInt(src.claude_cache_creation_5_m_tokens);
   usage.claude_cache_creation_1_h_tokens = asInt(src.claude_cache_creation_1_h_tokens);
   return usage;
@@ -190,7 +250,7 @@ function outputStatus(status: string): string {
   return status === "incomplete" ? "incomplete" : "completed";
 }
 
-/** Original `oaichat.ChatCompletionsResponseToResponsesResponse`. */
+/** Original `oaichat.ChatCompletionsResponseToResponsesResponse` + `dto.OpenAIResponsesResponse` JSON. */
 export function chatCompletionToResponsesResponse(
   resp: Record<string, unknown>,
   id: string,
@@ -201,9 +261,22 @@ export function chatCompletionToResponsesResponse(
     object: "response",
     created_at: chatCreatedAt(resp.created),
     status: "completed",
+    instructions: null,
+    max_output_tokens: 0,
     model: str(resp.model),
     output: [] as Record<string, unknown>[],
+    parallel_tool_calls: false,
+    previous_response_id: null,
+    reasoning: null,
+    store: false,
+    temperature: 0,
+    tool_choice: null,
+    tools: null,
+    top_p: 0,
+    truncation: null,
     usage: openAIUsageToJson(usage),
+    user: null,
+    metadata: null,
   };
   const choices = asArr(resp.choices);
   if (!choices.length) return out;
@@ -220,20 +293,23 @@ export function chatCompletionToResponsesResponse(
       type: "reasoning",
       id: `${id}_reasoning_0`,
       status,
+      role: "",
+      content: null,
+      quality: "",
+      size: "",
       summary: [{ type: "summary_text", text: reasoning }],
     });
   }
   const text = stringContent(message.content);
   if (text) {
-    const content: Record<string, unknown> = { type: "output_text", text };
-    const annotations = chatAnnotationsToResponses(message.annotations);
-    if (annotations.length) content.annotations = annotations;
     output.push({
       type: "message",
       id: `${id}_msg_0`,
       status,
       role: "assistant",
-      content: [content],
+      content: [{ type: "output_text", text, annotations: chatAnnotationsToResponses(message.annotations) }],
+      quality: "",
+      size: "",
     });
   }
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
@@ -250,6 +326,10 @@ export function chatCompletionToResponsesResponse(
         type: "function_call",
         id: callId,
         status,
+        role: "",
+        content: null,
+        quality: "",
+        size: "",
         call_id: callId,
         name,
         arguments: args,
@@ -260,6 +340,10 @@ export function chatCompletionToResponsesResponse(
       type,
       id: callId,
       status,
+      role: "",
+      content: null,
+      quality: "",
+      size: "",
       call_id: callId,
       arguments: tc.custom,
     });

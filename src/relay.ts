@@ -21,6 +21,7 @@ import {
   extractGeminiModelAction,
   geminiToOpenAIChat,
   openaiFromAnthropicResponse,
+  chatCompletionToResponsesResponse,
   openaiFromGeminiEmbedding,
   openaiFromGeminiResponse,
   openaiChatToClaudeResponse,
@@ -778,7 +779,13 @@ async function convertInbound(
       fallbackPromptTokens: opts.fallbackPromptTokens,
     });
   }
-  if (client === "openai" && kind === "anthropic") return openaiFromAnthropicResponse(upstreamJson, model);
+  if (client === "openai" && kind === "anthropic") {
+    const chat = openaiFromAnthropicResponse(upstreamJson, model);
+    if (opts.relayMode === "responses") {
+      return chatCompletionToResponsesResponse(chat, opts.requestId || String(chat.id || ""));
+    }
+    return chat;
+  }
   if (client === "openai" && kind === "gemini") {
     if (model.startsWith("imagen")) return openaiFromImagenResponse(upstreamJson, { created: opts.created });
     if (opts.relayMode === "embeddings") {
@@ -953,6 +960,21 @@ async function openaiClientFromProvider(
   }
   if (useClaude) {
     const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
+    if (opts.relayMode === "responses" && opts.channelType === CHANNEL_TYPE_ANTHROPIC) {
+      const responseId = opts.requestId || String(out.json?.id || "");
+      if (stream) {
+        const chatSse = out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, ""));
+        const converted = oaiChatSseToResponsesSse(chatSse, {
+          id: responseId,
+          model: mapped,
+          created: opts.created,
+          fallbackPromptTokens: opts.fallbackPromptTokens,
+        });
+        return { body: converted.sse, usageBody: converted.usageBody };
+      }
+      const json = chatCompletionToResponsesResponse(out.json || {}, responseId);
+      return { body: JSON.stringify(json), usageBody: json };
+    }
     if (stream) {
       return {
         body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),

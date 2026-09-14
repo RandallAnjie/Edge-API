@@ -207,6 +207,134 @@ test("original Claude DoResponse JSON matches claude_to_openai golden fields", (
   assert.equal(claudeStopReasonToOpenAIFinishReason("refusal"), "content_filter");
 });
 
+test("original Claude Messages → OpenAI Responses composed JSON fields", () => {
+  const chat = openaiFromAnthropicResponse(
+    {
+      id: "msg_fixed",
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        { type: "text", text: "The answer is 42." },
+        { type: "tool_use", id: "toolu_abc", name: "get_weather", input: { city: "Paris" } },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3, cache_creation_input_tokens: 2 },
+    },
+    "ignored",
+  );
+  const o = chatCompletionToResponsesResponse(chat, "msg_fixed");
+  assert.equal(o.id, "msg_fixed");
+  assert.equal(o.object, "response");
+  assert.equal(o.status, "completed");
+  assert.equal(o.model, "claude-test");
+  assert.equal(o.instructions, null);
+  assert.equal(o.max_output_tokens, 0);
+  assert.equal(o.parallel_tool_calls, false);
+  assert.equal(o.previous_response_id, null);
+  assert.equal(o.reasoning, null);
+  assert.equal(o.store, false);
+  assert.equal(o.temperature, 0);
+  assert.equal(o.tool_choice, null);
+  assert.equal(o.tools, null);
+  assert.equal(o.top_p, 0);
+  assert.equal(o.truncation, null);
+  assert.equal(o.user, null);
+  assert.equal(o.metadata, null);
+  const output = o.output as {
+    type: string;
+    id: string;
+    status: string;
+    role: string;
+    quality: string;
+    size: string;
+    content?: { type: string; text?: string; annotations?: unknown[] }[] | null;
+    call_id?: string;
+    name?: string;
+    arguments?: string;
+  }[];
+  assert.equal(output[0].type, "message");
+  assert.equal(output[0].id, "msg_fixed_msg_0");
+  assert.equal(output[0].status, "completed");
+  assert.equal(output[0].role, "assistant");
+  assert.equal(output[0].quality, "");
+  assert.equal(output[0].size, "");
+  assert.equal(output[0].content?.[0].type, "output_text");
+  assert.equal(output[0].content?.[0].text, "The answer is 42.");
+  assert.deepEqual(output[0].content?.[0].annotations, []);
+  assert.equal(output[1].type, "function_call");
+  assert.equal(output[1].id, "toolu_abc");
+  assert.equal(output[1].call_id, "toolu_abc");
+  assert.equal(output[1].name, "get_weather");
+  assert.equal(output[1].arguments, '{"city":"Paris"}');
+  assert.equal(output[1].content, null);
+  const usage = o.usage as {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    usage_semantic: string;
+    usage_source: string;
+    input_tokens: number;
+    output_tokens: number;
+    claude_cache_creation_5_m_tokens: number;
+    prompt_tokens_details: { cached_tokens: number };
+    input_tokens_details: { cached_tokens: number; cached_creation_tokens: number; cache_write_tokens: number };
+    billing_usage: { source: string; semantic: string; claude_usage: { input_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number; output_tokens: number } };
+  };
+  assert.equal(usage.prompt_tokens, 15);
+  assert.equal(usage.completion_tokens, 5);
+  assert.equal(usage.total_tokens, 20);
+  assert.equal(usage.usage_semantic, "openai");
+  assert.equal(usage.usage_source, "anthropic");
+  assert.equal(usage.input_tokens, 15);
+  assert.equal(usage.output_tokens, 5);
+  assert.equal(usage.claude_cache_creation_5_m_tokens, 2);
+  assert.equal(usage.prompt_tokens_details.cached_tokens, 0);
+  assert.equal(usage.input_tokens_details.cached_tokens, 3);
+  assert.equal(usage.input_tokens_details.cached_creation_tokens, 2);
+  assert.equal(usage.input_tokens_details.cache_write_tokens, 2);
+  assert.equal(usage.billing_usage.source, "claude_messages");
+  assert.equal(usage.billing_usage.semantic, "anthropic");
+  assert.equal(usage.billing_usage.claude_usage.input_tokens, 10);
+  assert.equal(usage.billing_usage.claude_usage.cache_creation_input_tokens, 2);
+  assert.equal(usage.billing_usage.claude_usage.cache_read_input_tokens, 3);
+  assert.equal(usage.billing_usage.claude_usage.output_tokens, 5);
+
+  const thinkingChat = openaiFromAnthropicResponse({
+    id: "msg_think",
+    model: "claude-3-7-sonnet",
+    content: [
+      { type: "thinking", thinking: "Deep thought." },
+      { type: "text", text: "42" },
+    ],
+    stop_reason: "end_turn",
+    usage: { input_tokens: 1, output_tokens: 1 },
+  });
+  const thinkingResp = chatCompletionToResponsesResponse(thinkingChat, "msg_think");
+  const thinkingOut = thinkingResp.output as { type: string; summary?: { text: string }[]; content?: { text?: string }[] }[];
+  assert.equal(thinkingOut[0].type, "reasoning");
+  assert.equal(thinkingOut[0].summary?.[0].text, "Deep thought.");
+  assert.equal(thinkingOut[1].type, "message");
+  assert.equal(thinkingOut[1].content?.[0].text, "42");
+
+  const stream = oaiChatSseToResponsesSse(
+    [
+      `data: ${JSON.stringify({ id: "stream_fixed", object: "chat.completion.chunk", created: 0, model: "stream-model", choices: [{ index: 0, delta: { role: "assistant", content: "Hello world" } }] })}`,
+      `data: ${JSON.stringify({ id: "stream_fixed", object: "chat.completion.chunk", created: 0, model: "stream-model", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}`,
+      `data: ${JSON.stringify({ id: "stream_fixed", object: "chat.completion.chunk", created: 0, model: "stream-model", choices: [], usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 } })}`,
+      `data: [DONE]`,
+      ``,
+    ].join("\n"),
+    { id: "stream_fixed", model: "stream-model", created: 0 },
+  );
+  assert.match(stream.sse, /event: response\.created/);
+  assert.match(stream.sse, /"object":"response"/);
+  assert.match(stream.sse, /event: response\.output_text\.delta/);
+  assert.match(stream.sse, /"delta":"Hello world"/);
+  assert.match(stream.sse, /event: response\.completed/);
+  assert.match(stream.sse, /"sequence_number"/);
+});
+
 test("original Claude thinking block becomes message.reasoning_content", () => {
   const o = openaiFromAnthropicResponse({
     id: "msg_think",
