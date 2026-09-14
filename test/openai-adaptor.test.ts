@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHANNEL_TYPE_AZURE, CHANNEL_TYPE_OPENAI } from "../src/constants.js";
+import { CHANNEL_TYPE_AZURE, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_SILICONFLOW } from "../src/constants.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
@@ -342,6 +342,133 @@ test("original openai.Adaptor stream ConvertResponse Claude/Gemini SSE JSON", as
     assert.match(gemini.text, /"promptTokenCount":5/);
     assert.match(gemini.text, /"candidatesTokenCount":2/);
     assert.match(gemini.text, /"role":"model"/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original SiliconFlow/Perplexity ConvertClaudeRequest HTTP JSON and URLs", async () => {
+  const { e, auth, sk } = await boot();
+  const sfAdd = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "siliconflow",
+        type: CHANNEL_TYPE_SILICONFLOW,
+        key: "sfk",
+        models: "Qwen/Qwen2-7B-Instruct",
+        group: "default",
+        base_url: "https://api.siliconflow.cn",
+      }),
+    }),
+    e,
+  );
+  assert.equal(sfAdd.body.success, true, String(sfAdd.body.message));
+  const pplxAdd = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "perplexity",
+        type: CHANNEL_TYPE_PERPLEXITY,
+        key: "pplx",
+        models: "sonar",
+        group: "default",
+        base_url: "https://api.perplexity.ai",
+      }),
+    }),
+    e,
+  );
+  assert.equal(pplxAdd.body.success, true, String(pplxAdd.body.message));
+
+  const origFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const raw = init?.body;
+    if (raw instanceof FormData || raw instanceof Uint8Array || raw instanceof ArrayBuffer) {
+      throw new Error("unexpected delegated claude body");
+    }
+    const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    calls.push({ url, body: parsed });
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl_sf",
+        model: parsed.model,
+        choices: [
+          {
+            index: 0,
+            finish_reason: "tool_calls",
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [{ id: "call_1", type: "function", function: { name: "lookup", arguments: '{"q":"x"}' } }],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 4, completion_tokens: 6, total_tokens: 10 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const claudeBody = {
+      model: "Qwen/Qwen2-7B-Instruct",
+      max_tokens: 32,
+      tools: [{ name: "lookup", description: "find", input_schema: { type: "object", properties: { q: { type: "string" } } } }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "hi" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: "YWE=" } },
+          ],
+        },
+      ],
+    };
+    const sf = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify(claudeBody),
+      }),
+      e,
+    );
+    assert.equal(sf.res.status, 200, sf.text);
+    assert.equal(calls[0].url, "https://api.siliconflow.cn/v1/messages");
+    assert.equal(calls[0].body.model, "Qwen/Qwen2-7B-Instruct");
+    assert.deepEqual((calls[0].body.messages as Record<string, unknown>[])[0].content, [
+      { type: "text", text: "hi" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,YWE=" } },
+    ]);
+    assert.equal(sf.body.type, "message");
+    assert.equal(sf.body.stop_reason, "tool_use");
+    assert.deepEqual(sf.body.content, [{ type: "tool_use", id: "call_1", name: "lookup", input: { q: "x" } }]);
+
+    const pplx = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ ...claudeBody, model: "sonar" }),
+      }),
+      e,
+    );
+    assert.equal(pplx.res.status, 200, pplx.text);
+    assert.equal(calls[1].url, "https://api.perplexity.ai/chat/completions");
+    assert.equal(pplx.body.type, "message");
+    assert.equal(pplx.body.stop_reason, "tool_use");
+
+    const gemini = await json(
+      new Request("http://local/v1beta/models/sonar:generateContent", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(gemini.res.status, 500, gemini.text);
+    assert.match(gemini.text, /not implemented/);
   } finally {
     globalThis.fetch = origFetch;
   }

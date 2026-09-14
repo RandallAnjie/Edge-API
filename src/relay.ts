@@ -57,7 +57,7 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-import { usesOpenAIAdaptor } from "./openai-adaptor.js";
+import { delegatesClaudeToOpenAIAdaptor, usesOpenAIAdaptor } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import { clientIp, groupAccessDeniedMessage, json, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
@@ -346,6 +346,19 @@ async function convertOutbound(
       relayMode: mode,
       isStream: extras.isStream,
     });
+  }
+  if (delegatesClaudeToOpenAIAdaptor(channelType) && client === "anthropic") {
+    return convertOpenAIAdaptorClaudeRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+      isStream: extras.isStream,
+    });
+  }
+  if (delegatesClaudeToOpenAIAdaptor(channelType) && client === "gemini") {
+    throw new Error("not implemented");
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_OLLAMA && mode === "embeddings") {
     return convertOllamaEmbeddingRequest(o, { upstreamModelName: upstream });
@@ -716,7 +729,7 @@ async function convertInbound(
       fallbackPromptTokens: opts.fallbackPromptTokens,
     });
   }
-  if (usesOpenAIAdaptor(opts.channelType || 0) && client === "anthropic") {
+  if ((usesOpenAIAdaptor(opts.channelType || 0) || delegatesClaudeToOpenAIAdaptor(opts.channelType || 0)) && client === "anthropic") {
     return openaiChatToClaudeResponse(upstreamJson);
   }
   if (usesOpenAIAdaptor(opts.channelType || 0) && client === "gemini") {
@@ -1376,7 +1389,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       (channel.type === CHANNEL_TYPE_CLOUDFLARE && mode === "responses") ||
       (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM && advancedCustomOpenaiShapedInbound(advancedConverter || "none"));
     if (isSSE && res.body) {
-      if (usesOpenAIAdaptor(channel.type) && (clientFormat === "anthropic" || clientFormat === "gemini")) {
+      if (
+        (usesOpenAIAdaptor(channel.type) || (delegatesClaudeToOpenAIAdaptor(channel.type) && clientFormat === "anthropic")) &&
+        (clientFormat === "anthropic" || (usesOpenAIAdaptor(channel.type) && clientFormat === "gemini"))
+      ) {
         const text = await res.text();
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {

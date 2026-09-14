@@ -66,6 +66,7 @@ import {
   streamResponseOpenAI2Gemini,
   oaiChatSseToGeminiSse,
   newClaudeStreamMeta,
+  delegatesClaudeToOpenAIAdaptor,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason, openaiFinishReasonToClaudeStopReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
@@ -797,6 +798,88 @@ test("original openai.Adaptor StreamResponseOpenAI2Claude / StreamResponseOpenAI
   assert.match(geminiSse.sse, /"text":"hello"/);
   assert.match(geminiSse.sse, /"finishReason":"STOP"/);
   assert.match(geminiSse.sse, /"promptTokenCount":5/);
+});
+
+test("original SiliconFlow/Perplexity ConvertClaudeRequest delegates to openai.Adaptor JSON", () => {
+  assert.equal(delegatesClaudeToOpenAIAdaptor(CHANNEL_TYPE_SILICONFLOW), true);
+  assert.equal(delegatesClaudeToOpenAIAdaptor(CHANNEL_TYPE_PERPLEXITY), true);
+  assert.equal(delegatesClaudeToOpenAIAdaptor(CHANNEL_TYPE_BAIDU_V2), true);
+  assert.equal(delegatesClaudeToOpenAIAdaptor(CHANNEL_TYPE_OPENAI), false);
+  assert.equal(usesOpenAIAdaptor(CHANNEL_TYPE_SILICONFLOW), false);
+
+  const claudeReq = {
+    model: "customer-claude",
+    max_tokens: 32,
+    stop_sequences: ["END"],
+    stream: true,
+    tools: [
+      {
+        name: "lookup",
+        description: "find",
+        input_schema: { type: "object", properties: { q: { type: "string" } } },
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "hi" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "YWE=" } },
+        ],
+      },
+    ],
+  };
+  const sf = convertOpenAIAdaptorClaudeRequest(claudeReq, {
+    channelType: CHANNEL_TYPE_SILICONFLOW,
+    originModelName: "customer-claude",
+    upstreamModelName: "Qwen/Qwen2-7B-Instruct",
+    isStream: true,
+  });
+  assert.equal(sf.model, "Qwen/Qwen2-7B-Instruct");
+  assert.equal(sf.stream, true);
+  assert.equal("stream_options" in sf, false);
+  assert.equal(sf.stop, "END");
+  assert.deepEqual((sf.messages as Record<string, unknown>[])[0].content, [
+    { type: "text", text: "hi" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,YWE=" } },
+  ]);
+  assert.deepEqual(sf.tools, [
+    {
+      type: "function",
+      function: {
+        name: "lookup",
+        description: "find",
+        parameters: { type: "object", properties: { q: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const pplx = convertOpenAIAdaptorClaudeRequest(claudeReq, {
+    channelType: CHANNEL_TYPE_PERPLEXITY,
+    originModelName: "customer-claude",
+    upstreamModelName: "sonar",
+    isStream: true,
+  });
+  assert.equal(pplx.model, "sonar");
+  assert.equal(pplx.stream, true);
+  assert.equal("stream_options" in pplx, false);
+  assert.equal(Array.isArray(pplx.tools), true);
+
+  const sfCh = testChannel({ type: CHANNEL_TYPE_SILICONFLOW, key: "sfk", base_url: "https://api.siliconflow.cn", models: "Qwen/Qwen2-7B-Instruct" });
+  assert.equal(
+    buildUpstream(sfCh, "messages", "/v1/messages", "Qwen/Qwen2-7B-Instruct", sf, {}, "POST", { relayFormat: "claude" }).url,
+    "https://api.siliconflow.cn/v1/messages",
+  );
+  const pplxCh = testChannel({ type: CHANNEL_TYPE_PERPLEXITY, key: "pplx", base_url: "https://api.perplexity.ai", models: "sonar" });
+  assert.equal(
+    buildUpstream(pplxCh, "messages", "/v1/messages", "sonar", pplx, {}, "POST", { relayFormat: "claude" }).url,
+    "https://api.perplexity.ai/chat/completions",
+  );
+  const baiduV2Ch = testChannel({ type: CHANNEL_TYPE_BAIDU_V2, key: "tok|app", base_url: "https://qianfan.baidubce.com", models: "ernie" });
+  assert.throws(
+    () => buildUpstream(baiduV2Ch, "messages", "/v1/messages", "ernie", {}, {}, "POST", { relayFormat: "claude" }),
+    /unsupported relay mode/,
+  );
 });
 
 test("original ConvertOpenAIRequest sampling, suffixes, OpenRouter, Moonshot, and Ali JSON", () => {
