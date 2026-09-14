@@ -66,6 +66,8 @@ import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
 import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
 import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
 import { fetchUpstreamRatios, validateFetchRequest } from "./ratio-sync.js";
+import { dryRunPlugin } from "./jsplugin.js";
+import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { rpFromRequest } from "./passkey.js";
 import { passkeyDomainHttpError, passkeySettingsSnapshot, selectPasskeyBeginRpIDs } from "./passkey-domains.js";
 import {
@@ -1208,13 +1210,24 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { hook?: string; member?: string; args?: unknown[] };
+    const raw = await c.req.text();
+    const parsed = goUnmarshalJSON(raw || "{}");
+    if (!parsed.ok) return apiFail(parsed.message);
+    if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+      return apiFail(`json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type controller.taskPluginDryRunRequest`);
+    }
+    const body = parsed.value as { hook?: string; member?: string; args?: unknown[] };
     if (!body.hook) {
       return apiFail("Key: 'taskPluginDryRunRequest.Hook' Error:Field validation for 'Hook' failed on the 'required' tag");
     }
+    if (body.args != null && !Array.isArray(body.args)) {
+      return apiFail(`json: cannot unmarshal ${goJSONKind(body.args)} into Go value of type []json.RawMessage`);
+    }
     const resolved = await resolveTaskPluginSource(s, c.params.key);
     if (!resolved) return apiFail("task plugin not found");
-    return apiFail("jsplugin: goja runtime is not available on workerd");
+    const result = dryRunPlugin(resolved.source, { hook: body.hook, member: body.member, args: body.args }, { key: c.params.key });
+    if (!result.ok) return apiFail(result.message);
+    return apiOk(result.data);
   });
   r.delete("/api/plugin/task/:key/versions/:version", async (c) => {
     const s = store(c);

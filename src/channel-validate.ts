@@ -42,7 +42,7 @@ type AdvancedCustomRoute = {
 
 export type AdvancedCustomConfig = { advanced_routes?: AdvancedCustomRoute[] };
 
-function goJSONKind(v: unknown): string {
+export function goJSONKind(v: unknown): string {
   if (Array.isArray(v)) return "array";
   if (v === null) return "null";
   if (typeof v === "boolean") return "bool";
