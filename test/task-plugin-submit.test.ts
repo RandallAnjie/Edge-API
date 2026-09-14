@@ -72,7 +72,7 @@ const presenterSource = `
 export const meta = {apiVersion:1,key:"presenter-test",name:"Presenter",version:"1.0.0",author:{name:"Test"},models:["model"],fetchMode:"per_task",routes:[{method:"POST",path:"/vendor/jobs",type:"submit",decode:"decode",render:"created"}]};
 export const native = {decode:function(ctx){return {kind:"submit",model:"model",requestBody:ctx.body.value};},created:function(ctx,task){return {data:{task_id:task.task_id},upstream:task.data};}};
 export function buildSubmitRequest(){return {url:"https://provider.example/submit"}}
-export function parseSubmitResponse(){return {taskId:"upstream"}}
+export function parseSubmitResponse(ctx, resp){return {taskId:"upstream"}}
 export function buildQueryRequest(){return {url:"https://provider.example"}}
 export function parseTaskResult(){return {status:"SUCCESS"}}
 `;
