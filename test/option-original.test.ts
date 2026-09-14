@@ -270,6 +270,7 @@ test("original PUT /api/option/passkey/domains JSON", async () => {
   assert.ok(Array.isArray(statusData.passkey_rp_ids));
   assert.ok(statusData.passkey_rp_ids.includes("example.com"));
   assert.ok(statusData.passkey_rp_ids.includes("www.example.com"));
+  assert.ok(statusData.passkey_rp_ids.includes("WWW.example.com"));
 
   await json(
     new Request("http://local/api/option/", {
@@ -289,7 +290,7 @@ test("original PUT /api/option/passkey/domains JSON", async () => {
   );
   assert.equal(beginHint.body.success, true, beginHint.text);
   const beginData = beginHint.body.data as { rp_ids: string[]; options: { rpId: string } };
-  assert.deepEqual(beginData.rp_ids, ["example.com", "www.example.com"]);
+  assert.deepEqual(beginData.rp_ids, ["example.com", "www.example.com", "WWW.example.com"]);
   assert.equal(beginData.options.rpId, "www.example.com");
   const beginUnavailable = await json(
     new Request("http://local/api/user/passkey/login/begin", {
