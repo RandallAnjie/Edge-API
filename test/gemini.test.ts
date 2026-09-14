@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHANNEL_TYPE_GEMINI } from "../src/constants.js";
+import { CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_GEMINI } from "../src/constants.js";
 import { VERTEX_IMAGE_TOKENS } from "../src/vertex-convert.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
@@ -297,6 +297,179 @@ test("original GetGeminiVersionSetting uses v1 for gemini-1.0-pro GetRequestURL"
     );
     assert.equal(flash.res.status, 200, flash.text);
     assert.equal(urls[1], "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=gkey");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original Gemini ConvertClaudeRequest and Claude ConvertGeminiRequest HTTP JSON fields", async () => {
+  const { e, auth, sk } = await boot();
+  const gemini = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "gemini-claude",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey",
+        models: "gemini-2.0-flash",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(gemini.body.success, true, String(gemini.body.message));
+  const anthropic = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "anthropic-gemini",
+        type: CHANNEL_TYPE_ANTHROPIC,
+        key: "sk-ant",
+        models: "claude-3-7-sonnet",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(anthropic.body.success, true, String(anthropic.body.message));
+
+  const origFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const raw = init?.body;
+    const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    calls.push({ url, body: parsed });
+    if (url.includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              finishReason: "STOP",
+              content: {
+                role: "model",
+                parts: [
+                  { text: "hello from gemini" },
+                  { functionCall: { id: "call_1", name: "lookup", args: { q: "x" } } },
+                ],
+              },
+            },
+          ],
+          usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 6, totalTokenCount: 10 },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        id: "msg_claude",
+        type: "message",
+        role: "assistant",
+        model: "claude-3-7-sonnet",
+        content: [
+          { type: "text", text: "hello from claude" },
+          { type: "tool_use", id: "toolu_9", name: "lookup", input: { q: "y" } },
+        ],
+        stop_reason: "tool_use",
+        usage: { input_tokens: 3, output_tokens: 5 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const claudeClient = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json", "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model: "gemini-2.0-flash",
+          max_tokens: 1024,
+          system: "You are a helpful assistant.",
+          tools: [
+            {
+              name: "lookup",
+              description: "Lookup data",
+              input_schema: { type: "object", properties: { q: { type: "string" } } },
+            },
+          ],
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "What is in this image?" },
+                { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+              ],
+            },
+          ],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claudeClient.res.status, 200, claudeClient.text);
+    assert.equal(
+      calls[0].url,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=gkey",
+    );
+    const geminiBody = calls[0].body;
+    assert.equal((geminiBody.systemInstruction as { parts: { text: string }[] }).parts[0].text, "You are a helpful assistant.");
+    assert.equal((geminiBody.generationConfig as { maxOutputTokens: number }).maxOutputTokens, 1024);
+    assert.equal(
+      (geminiBody.tools as { functionDeclarations: { name: string }[] }[])[0].functionDeclarations[0].name,
+      "lookup",
+    );
+    const userParts = (geminiBody.contents as { parts: Record<string, unknown>[] }[])[0].parts;
+    assert.equal(userParts[0].text, "What is in this image?");
+    assert.deepEqual(userParts[1].inlineData, { mimeType: "image/png", data: "aGVsbG8=" });
+    assert.equal(claudeClient.body.type, "message");
+    assert.equal(claudeClient.body.role, "assistant");
+    const claudeBlocks = claudeClient.body.content as { type: string; text?: string; name?: string }[];
+    assert.ok(claudeBlocks.some((block) => block.type === "text" && block.text === "hello from gemini"));
+    assert.ok(claudeBlocks.some((block) => block.type === "tool_use" && block.name === "lookup"));
+
+    const geminiClient = await json(
+      new Request("http://local/v1beta/models/claude-3-7-sonnet:generateContent", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { text: "What is in this image?" },
+                { inlineData: { mimeType: "image/png", data: "aGVsbG8=" } },
+              ],
+            },
+          ],
+          systemInstruction: { parts: [{ text: "You are a helpful assistant." }] },
+          tools: [
+            {
+              functionDeclarations: [
+                {
+                  name: "lookup",
+                  description: "Lookup data",
+                  parameters: { type: "object", properties: { q: { type: "string" } } },
+                },
+              ],
+            },
+          ],
+        }),
+      }),
+      e,
+    );
+    assert.equal(geminiClient.res.status, 200, geminiClient.text);
+    assert.equal(calls[1].url, "https://api.anthropic.com/v1/messages");
+    const claudeBody = calls[1].body;
+    const system = claudeBody.system as { text: string }[];
+    assert.ok(system[0].text.includes("You are a helpful assistant."));
+    assert.ok(JSON.stringify(claudeBody.tools).includes("lookup"));
+    assert.ok(Number(claudeBody.max_tokens) > 0);
+    const blocks = (claudeBody.messages as { content: { type: string; source?: { type: string } }[] }[])[0].content;
+    assert.ok(blocks.some((block) => block.type === "image" || block.source?.type === "base64"));
+    const candidates = geminiClient.body.candidates as { content: { parts: Record<string, unknown>[] } }[];
+    assert.ok(candidates[0].content.parts.some((part) => part.text === "hello from claude"));
+    assert.ok(candidates[0].content.parts.some((part) => (part.functionCall as { name?: string } | undefined)?.name === "lookup"));
   } finally {
     globalThis.fetch = origFetch;
   }

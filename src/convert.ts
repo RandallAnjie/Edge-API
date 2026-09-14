@@ -499,6 +499,16 @@ export {
   convertOpenAIResponsesRequestToGeminiChat,
 } from "./responses-gemini.js";
 export {
+  CONVERTER_CLAUDE_TO_GEMINI,
+  CONVERTER_GEMINI_TO_CLAUDE,
+  convertClaudeMessagesToGeminiGenerateContent,
+  convertGeminiGenerateContentToClaudeMessages,
+  geminiResponseToClaudeMessages,
+  claudeResponseToGeminiChat,
+  geminiSseToClaudeSse,
+  claudeSseToGeminiSse,
+} from "./claude-gemini.js";
+export {
   CONVERTER_CLAUDE_TO_RESPONSES,
   applyClaudeChannelSystemPrompt,
   convertClaudeMessagesToOpenAIResponses,
@@ -598,7 +608,10 @@ export function convertAdvancedCustomClaudeRequest(
     });
   }
   if (converter === CONVERTER_CLAUDE_TO_CHAT) {
-    const chat = convertClaudeMessagesToOpenAIChat(body, opts.upstreamModelName);
+    const chat = convertClaudeMessagesToOpenAIChat(body, opts.upstreamModelName, {
+      originModelName: opts.originModelName,
+      settings,
+    });
     return applyOpenAICompatibleAdaptor(chat, opts.originModelName, opts.upstreamModelName, settings);
   }
   throw converterDoesNotSupport(converter, "claude");
@@ -619,7 +632,10 @@ export function convertAdvancedCustomGeminiRequest(
     });
   }
   if (converter === CONVERTER_GEMINI_TO_CHAT) {
-    const chat = convertGeminiContentToOpenAIChat(body, opts.upstreamModelName, Boolean(opts.isStream));
+    const chat = convertGeminiContentToOpenAIChat(body, opts.upstreamModelName, Boolean(opts.isStream), {
+      originModelName: opts.originModelName,
+      settings,
+    });
     return applyOpenAICompatibleAdaptor(chat, opts.originModelName, opts.upstreamModelName, settings);
   }
   throw converterDoesNotSupport(converter, "gemini");
@@ -961,7 +977,11 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
 
 /** Original `openai.Adaptor.ConvertClaudeRequest`. */
 export function convertOpenAIAdaptorClaudeRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
-  const chat = convertClaudeMessagesToOpenAIChat(body, opts.upstreamModelName);
+  const chat = convertClaudeMessagesToOpenAIChat(body, opts.upstreamModelName, {
+    originModelName: opts.originModelName,
+    settings: opts.settings,
+    openRouterDialect: opts.channelType === CHANNEL_TYPE_OPENROUTER,
+  });
   if (opts.isStream && openaiAdaptorSupportStreamOptions(opts.channelType)) {
     chat.stream = true;
     chat.stream_options = { include_usage: true };
@@ -990,7 +1010,10 @@ export function convertVolcClaudeRequest(body: Record<string, unknown>, opts: Co
 
 /** Original `openai.Adaptor.ConvertGeminiRequest`. */
 export function convertOpenAIAdaptorGeminiRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
-  const chat = convertGeminiContentToOpenAIChat(body, opts.upstreamModelName, Boolean(opts.isStream));
+  const chat = convertGeminiContentToOpenAIChat(body, opts.upstreamModelName, Boolean(opts.isStream), {
+    originModelName: opts.originModelName,
+    settings: opts.settings,
+  });
   return convertOpenAIRequest(chat, { ...opts, relayMode: opts.relayMode || "chat" });
 }
 

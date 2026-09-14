@@ -2,7 +2,24 @@
 
 import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
-import type { ReasoningHostSettings } from "./reasoning.js";
+import {
+  applyToOpenAIChat,
+  asClientError,
+  effectiveEffort,
+  fromClaude,
+  fromGemini,
+  intentIsEmpty,
+  mergeExplicitAndSuffix,
+  parseHostModelModifiers,
+  resolveClaudeDefault,
+  resolveGeminiDefault,
+  shouldPreserveThinkingSuffix,
+  validateGeminiThinkingConfig,
+  MODE_ADAPTIVE,
+  MODE_DISABLED,
+  type ReasoningHostSettings,
+  type ReasoningIntent,
+} from "./reasoning.js";
 import { convertOpenAIResponsesRequestToGeminiChat } from "./responses-gemini.js";
 
 export const CONVERTER_NONE = "none";
@@ -444,10 +461,19 @@ export function convertResponsesToGeminiRequest(
   return convertOpenAIResponsesRequestToGeminiChat(body, opts);
 }
 
+export type ConvertClaudeMessagesToOpenAIChatOpts = {
+  originModelName?: string;
+  settings?: ReasoningHostSettings;
+  suffixIntent?: ReasoningIntent;
+  /** Original `convmeta.OptionsOf(info).OpenRouterDialect`. */
+  openRouterDialect?: boolean;
+};
+
 /** Original `claudemessages.ClaudeMessagesRequestToOpenAIChat`. */
 export function convertClaudeMessagesToOpenAIChat(
   body: Record<string, unknown>,
   upstreamModelName: string,
+  opts: ConvertClaudeMessagesToOpenAIChatOpts = {},
 ): Record<string, unknown> {
   const messages: Record<string, unknown>[] = [];
   if (typeof body.system === "string" && body.system) {
@@ -521,38 +547,233 @@ export function convertClaudeMessagesToOpenAIChat(
       },
     }));
   }
+  const origin = opts.originModelName || String(body.model || "");
+  const settings = opts.settings || {};
+  let suffix = opts.suffixIntent;
+  if (!suffix) {
+    const parsed = parseHostModelModifiers(origin !== (upstreamModelName || "") ? upstreamModelName || origin : origin, settings);
+    if (parsed.hasThinking) suffix = parsed.intent;
+  }
+  try {
+    let intent = fromClaude(body);
+    if (suffix && !intentIsEmpty(suffix)) intent = mergeExplicitAndSuffix(intent, suffix, origin);
+    intent = resolveClaudeDefault(origin, intent);
+    if (opts.openRouterDialect) {
+      const effort = asObj(body.output_config || body.outputConfig).effort;
+      if (typeof effort === "string" && effort) out.verbosity = effort;
+      if (!intentIsEmpty(intent)) {
+        const disabled = intent.mode === MODE_DISABLED || intent.effort === "none";
+        const enabled = !disabled;
+        let reasoningConfig: Record<string, unknown> = { enabled };
+        if (enabled && intent.budgetTokens != null && intent.mode !== MODE_ADAPTIVE) {
+          reasoningConfig = { enabled, max_tokens: intent.budgetTokens };
+        } else if (enabled) {
+          reasoningConfig.effort = effectiveEffort(intent);
+        }
+        if (intent.includeThoughts != null) reasoningConfig.exclude = !intent.includeThoughts;
+        out.reasoning = reasoningConfig;
+      }
+    } else {
+      applyToOpenAIChat(out, intent);
+      if (origin.endsWith("-thinking") && !String(out.model || "").endsWith("-thinking")) {
+        out.model = `${out.model}-thinking`;
+      }
+    }
+  } catch (err) {
+    throw asClientError(err);
+  }
   return out;
 }
+
+function geminiRoleToOpenAI(role: string): string {
+  switch (role) {
+    case "user":
+      return "user";
+    case "model":
+      return "assistant";
+    case "function":
+      return "function";
+    default:
+      return "user";
+  }
+}
+
+function extractTextFromGeminiParts(parts: unknown): string {
+  const list = Array.isArray(parts) ? parts : [];
+  const texts: string[] = [];
+  for (const raw of list) {
+    const part = asObj(raw);
+    if (typeof part.text === "string" && part.text) texts.push(part.text);
+  }
+  return texts.join("\n");
+}
+
+function jsonId(value: unknown): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (typeof parsed === "string") return parsed;
+      } catch {
+        /* keep raw */
+      }
+    }
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
+}
+
+function geminiFunctionArgsJSON(args: unknown): string {
+  if (typeof args === "string") return args;
+  try {
+    return JSON.stringify(args ?? {});
+  } catch {
+    return "{}";
+  }
+}
+
+type GeminiPendingFunctionCall = { id: string; name: string };
+
+function newGeminiFunctionCallHistory(contents: Record<string, unknown>[]): {
+  add: (call: Record<string, unknown>) => string;
+  match: (response: Record<string, unknown>) => string;
+} {
+  const reservedIDs = new Set<string>();
+  const pending: GeminiPendingFunctionCall[] = [];
+  let nextID = 1;
+  for (const content of contents) {
+    const parts = Array.isArray(content.parts) ? (content.parts as unknown[]) : [];
+    for (const raw of parts) {
+      const part = asObj(raw);
+      const fc = asObj(part.functionCall || part.function_call);
+      if ((part.functionCall || part.function_call) && typeof fc.id === "string" && fc.id) reservedIDs.add(fc.id);
+      const fr = asObj(part.functionResponse || part.function_response);
+      const id = jsonId(fr.id);
+      if (id) reservedIDs.add(id);
+    }
+  }
+  const newFallbackID = (): string => {
+    for (;;) {
+      const id = `call_${nextID}`;
+      nextID += 1;
+      if (reservedIDs.has(id)) continue;
+      reservedIDs.add(id);
+      return id;
+    }
+  };
+  return {
+    add(call) {
+      let id = typeof call.id === "string" ? call.id : "";
+      if (!id) id = newFallbackID();
+      pending.push({ id, name: String(call.name || "") });
+      return id;
+    },
+    match(response) {
+      const id = jsonId(response.id);
+      if (id) {
+        const idx = pending.findIndex((call) => call.id === id);
+        if (idx >= 0) pending.splice(idx, 1);
+        return id;
+      }
+      const name = String(response.name || "");
+      const idx = pending.findIndex((call) => !name || call.name === name);
+      if (idx >= 0) {
+        const matched = pending.splice(idx, 1)[0];
+        return matched.id;
+      }
+      return newFallbackID();
+    },
+  };
+}
+
+function geminiTools(body: Record<string, unknown>): Record<string, unknown>[] | undefined {
+  const raw = body.tools;
+  let toolsIn: Record<string, unknown>[] = [];
+  if (Array.isArray(raw)) toolsIn = raw.map((item) => asObj(item));
+  else if (raw && typeof raw === "object") toolsIn = [asObj(raw)];
+  const tools: Record<string, unknown>[] = [];
+  for (const tool of toolsIn) {
+    const decls = tool.functionDeclarations || tool.function_declarations;
+    if (!Array.isArray(decls)) continue;
+    for (const rawFn of decls) {
+      const fn = asObj(rawFn);
+      tools.push({
+        type: "function",
+        function: {
+          name: fn.name,
+          description: fn.description,
+          parameters: fn.parameters,
+        },
+      });
+    }
+  }
+  return tools.length ? tools : undefined;
+}
+
+export type ConvertGeminiContentToOpenAIChatOpts = {
+  originModelName?: string;
+  settings?: ReasoningHostSettings;
+  suffixIntent?: ReasoningIntent;
+};
 
 /** Original `geminichat.GeminiGenerateContentRequestToOpenAIChat`. */
 export function convertGeminiContentToOpenAIChat(
   body: Record<string, unknown>,
   upstreamModelName: string,
   isStream = false,
+  opts: ConvertGeminiContentToOpenAIChatOpts = {},
 ): Record<string, unknown> {
-  const messages: Record<string, unknown>[] = [];
-  const sys = (body.systemInstruction || body.systemInstructions) as { parts?: { text?: string }[] } | undefined;
-  if (sys?.parts?.length) {
-    messages.push({ role: "system", content: sys.parts.map((p) => p.text || "").join("") });
-  }
+  const settings = opts.settings || {};
+  const origin = opts.originModelName || upstreamModelName;
   const contents = Array.isArray(body.contents) ? (body.contents as Record<string, unknown>[]) : [];
+  const callHistory = newGeminiFunctionCallHistory(contents);
+  const messages: Record<string, unknown>[] = [];
   for (const content of contents) {
     const c = asObj(content);
-    const role = String(c.role || "user") === "model" ? "assistant" : String(c.role || "user");
-    const parts = Array.isArray(c.parts) ? (c.parts as Record<string, unknown>[]) : [];
-    const texts: string[] = [];
+    const role = geminiRoleToOpenAI(String(c.role || "user"));
+    const parts = Array.isArray(c.parts) ? (c.parts as unknown[]) : [];
+    const media: Record<string, unknown>[] = [];
     const toolCalls: Record<string, unknown>[] = [];
-    for (const part of parts) {
-      const p = asObj(part);
+    const reasoningTexts: string[] = [];
+    for (const rawPart of parts) {
+      const p = asObj(rawPart);
+      if (typeof p.text === "string" && p.text) {
+        if (p.thought) {
+          reasoningTexts.push(p.text);
+          continue;
+        }
+        media.push({ type: "text", text: p.text });
+        continue;
+      }
+      const inline = asObj(p.inlineData || p.inline_data);
+      if (p.inlineData || p.inline_data) {
+        const mime = String(inline.mimeType || inline.mime_type || "image/png");
+        media.push({
+          type: "image_url",
+          image_url: { url: `data:${mime};base64,${inline.data || ""}`, detail: "auto", mime_type: mime },
+        });
+        continue;
+      }
+      const file = asObj(p.fileData || p.file_data);
+      if (p.fileData || p.file_data) {
+        media.push({
+          type: "image_url",
+          image_url: {
+            url: String(file.fileUri || file.file_uri || ""),
+            detail: "auto",
+            mime_type: file.mimeType || file.mime_type,
+          },
+        });
+        continue;
+      }
       if (p.functionCall || p.function_call) {
         const fc = asObj(p.functionCall || p.function_call);
         toolCalls.push({
-          id: fc.id,
+          id: callHistory.add(fc),
           type: "function",
-          function: {
-            name: fc.name,
-            arguments: typeof fc.args === "string" ? fc.args : JSON.stringify(fc.args ?? fc.arguments ?? {}),
-          },
+          function: { name: fc.name, arguments: geminiFunctionArgsJSON(fc.args ?? fc.arguments) },
         });
         continue;
       }
@@ -560,23 +781,61 @@ export function convertGeminiContentToOpenAIChat(
         const fr = asObj(p.functionResponse || p.function_response);
         messages.push({
           role: "tool",
-          name: fr.name,
-          tool_call_id: fr.id,
+          tool_call_id: callHistory.match(fr),
           content: jsonString(fr.response),
         });
-        continue;
       }
-      if (typeof p.text === "string" && p.text && !p.thought) texts.push(p.text);
     }
-    const msg: Record<string, unknown> = { role, content: texts.join("") };
+    const msg: Record<string, unknown> = { role };
     if (toolCalls.length) msg.tool_calls = toolCalls;
-    if (texts.join("") || toolCalls.length) messages.push(msg);
+    else if (media.length === 1 && media[0].type === "text") msg.content = media[0].text;
+    else if (media.length) msg.content = media;
+    if (reasoningTexts.length) msg.reasoning_content = reasoningTexts.join("\n");
+    const hasContent = msg.content != null && msg.content !== "";
+    if (hasContent || toolCalls.length || msg.reasoning_content) messages.push(msg);
   }
+
   const gc = asObj(body.generationConfig || body.generation_config);
   const out: Record<string, unknown> = { model: upstreamModelName, messages, stream: isStream };
   if (gc.temperature != null) out.temperature = gc.temperature;
-  if (gc.topP != null) out.top_p = gc.topP;
-  if (gc.maxOutputTokens != null) out.max_tokens = gc.maxOutputTokens;
+  if (gc.topP != null || gc.top_p != null) out.top_p = gc.topP ?? gc.top_p;
+  if (gc.topK != null || gc.top_k != null) out.top_k = Number(gc.topK ?? gc.top_k);
+  if (gc.maxOutputTokens != null || gc.max_output_tokens != null) out.max_tokens = gc.maxOutputTokens ?? gc.max_output_tokens;
+  const stops = gc.stopSequences ?? gc.stop_sequences;
+  if (Array.isArray(stops) && stops.length) out.stop = stops.slice(0, 4);
+  if (gc.candidateCount != null || gc.candidate_count != null) out.n = gc.candidateCount ?? gc.candidate_count;
+  const tools = geminiTools(body);
+  if (tools) out.tools = tools;
+
+  const sys = (body.systemInstruction || body.systemInstructions || body.system_instruction) as { parts?: unknown[] } | undefined;
+  if (sys?.parts?.length) {
+    const text = extractTextFromGeminiParts(sys.parts);
+    out.messages = [{ role: "system", content: text }, ...(out.messages as unknown[])];
+  }
+
+  try {
+    let intent = fromGemini(body);
+    const sourceModel = origin || upstreamModelName;
+    const preserveSuffix = shouldPreserveThinkingSuffix(sourceModel, settings) || shouldPreserveThinkingSuffix(upstreamModelName, settings);
+    let suffix = opts.suffixIntent;
+    if (!suffix && !preserveSuffix) {
+      const originParsed = parseHostModelModifiers(origin, settings);
+      let selected = originParsed;
+      if (upstreamModelName !== origin) selected = parseHostModelModifiers(upstreamModelName, settings);
+      if (selected.hasThinking) suffix = selected.intent;
+    }
+    if (!preserveSuffix && suffix && !intentIsEmpty(suffix)) {
+      intent = mergeExplicitAndSuffix(intent, suffix, sourceModel);
+    }
+    const thinkingConfig = asObj(gc.thinkingConfig || gc.thinking_config);
+    if (gc.thinkingConfig || gc.thinking_config) {
+      validateGeminiThinkingConfig(sourceModel, thinkingConfig);
+    }
+    intent = resolveGeminiDefault(sourceModel, intent);
+    applyToOpenAIChat(out, intent);
+  } catch (err) {
+    throw asClientError(err);
+  }
   return out;
 }
 

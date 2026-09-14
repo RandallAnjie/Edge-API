@@ -1605,6 +1605,53 @@ export type GeminiRender = {
   effectiveEffort: string;
 };
 
+/** Original `reasoning.ValidateGeminiThinkingConfig`. */
+export function validateGeminiThinkingConfig(model: string, config: Record<string, unknown> | null | undefined): string {
+  if (!config) return "";
+  const intent = fromGemini({ generationConfig: { thinkingConfig: config } });
+  const capabilities = geminiCapabilitiesFor(model);
+  if (capabilities.kind === "not_configurable") {
+    if (!intentHasStrength(intent) && capabilities.supportsIncludeThoughts) return EFFORT_HIGH;
+    throw new Error(`model ${JSON.stringify(model)} does not support configurable thinking`);
+  }
+  if (capabilities.kind === "unknown") return effectiveEffort(intent);
+  if (capabilities.kind === "budget") {
+    const level = String(config.thinkingLevel || config.thinking_level || "");
+    if (level) throw new Error(`Gemini 2.5 model ${JSON.stringify(model)} requires thinkingBudget, not thinkingLevel`);
+    const budget = config.thinkingBudget ?? config.thinking_budget;
+    if (budget != null) validateGeminiBudget(model, Number(budget), capabilities);
+    return effectiveEffort(intent);
+  }
+  if (config.thinkingBudget != null || config.thinking_budget != null) {
+    throw new Error(`Gemini 3 model ${JSON.stringify(model)} requires thinkingLevel, not thinkingBudget`);
+  }
+  const level = String(config.thinkingLevel || config.thinking_level || "");
+  if (level) {
+    const mapped = geminiLevelForEffort(model, intent.effort);
+    if (mapped !== level) {
+      throw new Error(`thinkingLevel ${JSON.stringify(level)} is not supported by model ${JSON.stringify(model)}`);
+    }
+    return mapped;
+  }
+  return "";
+}
+
+/** Original `reasoning.ResolveGeminiDefault`. */
+export function resolveGeminiDefault(model: string, intent: ReasoningIntent): ReasoningIntent {
+  if (intentHasStrength(intent)) return intent;
+  const capabilities = geminiCapabilitiesFor(model);
+  if (capabilities.kind === "budget") {
+    if (model.toLowerCase().startsWith("gemini-2.5-flash-lite")) {
+      return { ...intent, mode: MODE_DISABLED, effort: EFFORT_NONE, budgetTokens: 0, budgetSource: SOURCE_NATIVE };
+    }
+    return { ...intent, mode: MODE_ENABLED, budgetTokens: -1, budgetSource: SOURCE_NATIVE };
+  }
+  if (capabilities.kind !== "level") return intent;
+  const effort = geminiDefaultEffort(model);
+  if (!effort) return intent;
+  return { ...intent, mode: MODE_ENABLED, effort };
+}
+
 /** Original `reasoning.ResolveGeminiEnabledDefault`. */
 export function resolveGeminiEnabledDefault(model: string, intent: ReasoningIntent, maxOutputTokens?: number): ReasoningIntent {
   if (intent.mode !== MODE_ENABLED || intent.effort || intent.budgetTokens != null) return intent;

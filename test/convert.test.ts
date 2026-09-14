@@ -78,6 +78,14 @@ import {
   oaiChatSseToClaudeSse,
   streamResponseOpenAI2Gemini,
   oaiChatSseToGeminiSse,
+  convertClaudeMessagesToGeminiGenerateContent,
+  convertGeminiGenerateContentToClaudeMessages,
+  geminiResponseToClaudeMessages,
+  claudeResponseToGeminiChat,
+  geminiSseToClaudeSse,
+  claudeSseToGeminiSse,
+  CONVERTER_CLAUDE_TO_GEMINI,
+  CONVERTER_GEMINI_TO_CLAUDE,
   newClaudeStreamMeta,
   delegatesClaudeToOpenAIAdaptor,
   convertClaudeMessagesToOpenAIResponses,
@@ -5344,6 +5352,192 @@ test("original OpenAI Responses → Gemini generateContent request JSON fields",
     responsesUrl.url,
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent?key=gkey",
   );
+});
+
+test("original Gemini ConvertClaudeRequest and Claude ConvertGeminiRequest composed JSON fields", () => {
+  assert.equal(CONVERTER_CLAUDE_TO_GEMINI, "claude_messages_to_gemini_generate_content");
+  assert.equal(CONVERTER_GEMINI_TO_CLAUDE, "gemini_generate_content_to_claude_messages");
+
+  const geminiFromClaude = convertClaudeMessagesToGeminiGenerateContent(
+    {
+      model: "gemini-2.0-flash",
+      system: "You are a helpful assistant.",
+      max_tokens: 1024,
+      tools: [
+        {
+          name: "lookup",
+          description: "Lookup data",
+          input_schema: { type: "object", properties: { q: { type: "string" } } },
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is in this image?" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_1", name: "lookup", input: { q: "x" } }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_1", content: '{"ok":true}' }],
+        },
+      ],
+    },
+    { originModelName: "gemini-2.0-flash", upstreamModelName: "gemini-2.0-flash" },
+  );
+  const sys = geminiFromClaude.systemInstruction as { parts: { text: string }[] };
+  assert.equal(sys.parts[0].text, "You are a helpful assistant.");
+  assert.equal((geminiFromClaude.generationConfig as { maxOutputTokens: number }).maxOutputTokens, 1024);
+  const geminiTools = geminiFromClaude.tools as { functionDeclarations: { name: string }[] }[];
+  assert.equal(geminiTools[0].functionDeclarations[0].name, "lookup");
+  const contents = geminiFromClaude.contents as { role: string; parts: Record<string, unknown>[] }[];
+  assert.equal(contents[0].role, "user");
+  assert.equal(contents[0].parts[0].text, "What is in this image?");
+  assert.deepEqual(contents[0].parts[1].inlineData, { mimeType: "image/png", data: "aGVsbG8=" });
+  assert.equal(contents[1].role, "model");
+  const call = contents[1].parts[0].functionCall as { id: string; name: string; args: { q: string } };
+  assert.equal(call.id, "toolu_1");
+  assert.equal(call.name, "lookup");
+  assert.deepEqual(call.args, { q: "x" });
+  assert.equal(typeof contents[1].parts[0].thoughtSignature, "string");
+  const responsePart = contents[2].parts[0].functionResponse as { id: string; name: string; response: Record<string, unknown> };
+  assert.equal(responsePart.id, "toolu_1");
+  assert.equal(responsePart.name, "lookup");
+
+  const claudeFromGemini = convertGeminiGenerateContentToClaudeMessages(
+    {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: "What is in this image?" },
+            { inlineData: { mimeType: "image/png", data: "aGVsbG8=" } },
+          ],
+        },
+      ],
+      systemInstruction: { parts: [{ text: "You are a helpful assistant." }] },
+      tools: [
+        {
+          functionDeclarations: [
+            {
+              name: "lookup",
+              description: "Lookup data",
+              parameters: { type: "object", properties: { q: { type: "string" } } },
+            },
+          ],
+        },
+      ],
+    },
+    { originModelName: "claude-3-7-sonnet", upstreamModelName: "claude-3-7-sonnet" },
+  );
+  const claudeSystem = claudeFromGemini.system as { type: string; text: string }[];
+  assert.ok(claudeSystem[0].text.includes("You are a helpful assistant."));
+  assert.equal((claudeFromGemini.messages as { role: string }[])[0].role, "user");
+  const userBlocks = (claudeFromGemini.messages as { content: { type: string; source?: { type: string } }[] }[])[0].content;
+  assert.ok(userBlocks.some((block) => block.type === "image" || block.source?.type === "base64"));
+  const claudeTools = JSON.stringify(claudeFromGemini.tools);
+  assert.ok(claudeTools.includes("lookup"));
+  assert.ok(Number(claudeFromGemini.max_tokens) > 0);
+
+  const thinkingBudget = convertGeminiGenerateContentToClaudeMessages(
+    {
+      contents: [{ role: "user", parts: [{ text: "think" }] }],
+      generationConfig: { maxOutputTokens: 4096, thinkingConfig: { thinkingBudget: 1024 } },
+    },
+    { originModelName: "claude-3-7-sonnet", upstreamModelName: "claude-3-7-sonnet" },
+  );
+  const thinking = thinkingBudget.thinking as { type: string; budget_tokens: number };
+  assert.equal(thinking.type, "enabled");
+  assert.equal(thinking.budget_tokens, 1024);
+
+  assert.throws(() => convertGeminiGenerateContentToClaudeMessages(null), /request is nil/);
+
+  const claudeInbound = geminiResponseToClaudeMessages(
+    {
+      candidates: [
+        {
+          finishReason: "STOP",
+          content: {
+            role: "model",
+            parts: [
+              { text: "hello" },
+              { functionCall: { id: "call_1", name: "lookup", args: { q: "x" } } },
+            ],
+          },
+        },
+      ],
+      usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 6, totalTokenCount: 10 },
+    },
+    "gemini-2.0-flash",
+    { id: "chatcmpl_g", created: 1 },
+  );
+  assert.equal(claudeInbound.type, "message");
+  assert.equal(claudeInbound.role, "assistant");
+  assert.equal(claudeInbound.model, "gemini-2.0-flash");
+  const inboundBlocks = claudeInbound.content as { type: string; text?: string; name?: string; id?: string }[];
+  assert.ok(inboundBlocks.some((block) => block.type === "text" && block.text === "hello"));
+  assert.ok(inboundBlocks.some((block) => block.type === "tool_use" && block.name === "lookup" && block.id === "call_1"));
+  assert.equal((claudeInbound.usage as { input_tokens: number }).input_tokens, 4);
+
+  const geminiInbound = claudeResponseToGeminiChat(
+    {
+      id: "msg_1",
+      type: "message",
+      role: "assistant",
+      model: "claude-3-7-sonnet",
+      content: [
+        { type: "text", text: "ok" },
+        { type: "tool_use", id: "toolu_9", name: "lookup", input: { q: "y" } },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 3, output_tokens: 5 },
+    },
+    "claude-3-7-sonnet",
+  );
+  const candidates = geminiInbound.candidates as { content: { role: string; parts: Record<string, unknown>[] }; finishReason: string }[];
+  assert.equal(candidates[0].content.role, "model");
+  assert.ok(candidates[0].content.parts.some((part) => part.text === "ok"));
+  const inboundCall = candidates[0].content.parts.find((part) => part.functionCall) as { functionCall: { id: string; name: string } };
+  assert.equal(inboundCall.functionCall.id, "toolu_9");
+  assert.equal(inboundCall.functionCall.name, "lookup");
+
+  const geminiSse = [
+    'data: {"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"Hello Claude"}]}}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"totalTokenCount":6}}',
+    "",
+  ].join("\n");
+  const claudeSse = geminiSseToClaudeSse(geminiSse, { estimatePromptTokens: 4, id: "chatcmpl_s", created: 0, upstreamModel: "gemini-2.0-flash" });
+  assert.match(claudeSse.sse, /event: message_start/);
+  assert.match(claudeSse.sse, /Hello Claude/);
+  assert.match(claudeSse.sse, /event: message_stop/);
+
+  const anthropicSse = [
+    'event: message_start',
+    'data: {"type":"message_start","message":{"id":"msg_s","type":"message","role":"assistant","model":"claude-3-7-sonnet","content":[],"usage":{"input_tokens":4,"output_tokens":0}}}',
+    "",
+    'event: content_block_start',
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+    "",
+    'event: content_block_delta',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello Gemini"}}',
+    "",
+    'event: content_block_stop',
+    'data: {"type":"content_block_stop","index":0}',
+    "",
+    'event: message_delta',
+    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}',
+    "",
+    'event: message_stop',
+    'data: {"type":"message_stop"}',
+    "",
+  ].join("\n");
+  const geminiOutSse = claudeSseToGeminiSse(anthropicSse, { estimatePromptTokens: 4, upstreamModel: "claude-3-7-sonnet", created: 0 });
+  assert.match(geminiOutSse.sse, /"role":"model"/);
+  assert.match(geminiOutSse.sse, /Hello Gemini/);
 });
 
 

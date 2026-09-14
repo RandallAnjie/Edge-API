@@ -37,6 +37,12 @@ import {
   sseOpenAIFromText,
   usageFromOpenAI,
   type ChatMessage,
+  convertClaudeMessagesToGeminiGenerateContent,
+  convertGeminiGenerateContentToClaudeMessages,
+  geminiResponseToClaudeMessages,
+  claudeResponseToGeminiChat,
+  geminiSseToClaudeSse,
+  claudeSseToGeminiSse,
 } from "./convert.js";
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
 import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
@@ -362,6 +368,17 @@ async function convertOutbound(
   }
   if (client === "gemini" && kind === "gemini") {
     return convertGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
+  }
+  if (channelType === CHANNEL_TYPE_GEMINI && client === "anthropic") {
+    return convertClaudeMessagesToGeminiGenerateContent(o, { originModelName: origin, upstreamModelName: upstream, settings });
+  }
+  if (channelType === CHANNEL_TYPE_ANTHROPIC && client === "gemini") {
+    return convertGeminiGenerateContentToClaudeMessages(o, {
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      isStream: extras.isStream,
+    });
   }
   if (usesOpenAIAdaptor(channelType) && client === "anthropic") {
     return convertOpenAIAdaptorClaudeRequest(o, {
@@ -843,6 +860,17 @@ async function convertInbound(
   }
   if (usesOpenAIAdaptor(opts.channelType || 0) && client === "gemini") {
     return openaiChatToGeminiResponse(upstreamJson);
+  }
+  if (client === "anthropic" && opts.channelType === CHANNEL_TYPE_GEMINI) {
+    return geminiResponseToClaudeMessages(upstreamJson, model, {
+      id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
+      created: opts.created,
+      upstreamModel: model,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+  }
+  if (client === "gemini" && opts.channelType === CHANNEL_TYPE_ANTHROPIC) {
+    return claudeResponseToGeminiChat(upstreamJson, model);
   }
   if (
     client === "openai" &&
@@ -1600,6 +1628,65 @@ export async function relay(opts: RelayRequest): Promise<Response> {
                 ? oaiResponsesSseToClaudeSse(text, { estimatePromptTokens: promptEst })
                 : oaiChatSseToClaudeSse(text, { estimatePromptTokens: promptEst })
               : oaiChatSseToGeminiSse(text, { estimatePromptTokens: promptEst });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          return openaiError(500, message, "bad_response_body");
+        }
+        const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
+        extra.cachedTokens = usage.cachedTokens;
+        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        ctx?.waitUntil(
+          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
+        );
+        return new Response(converted.sse, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            "x-oneapi-request-id": rid,
+          },
+        });
+      }
+      if (channel.type === CHANNEL_TYPE_GEMINI && clientFormat === "anthropic") {
+        const text = await res.text();
+        let converted: { sse: string; usageBody: Record<string, unknown> };
+        try {
+          converted = geminiSseToClaudeSse(text, {
+            estimatePromptTokens: promptEst,
+            id: `chatcmpl-${rid}`,
+            created: Math.floor(started / 1000),
+            upstreamModel: mapped,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          return openaiError(500, message, "bad_response_body");
+        }
+        const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
+        extra.cachedTokens = usage.cachedTokens;
+        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        ctx?.waitUntil(
+          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
+        );
+        return new Response(converted.sse, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            "x-oneapi-request-id": rid,
+          },
+        });
+      }
+      if (channel.type === CHANNEL_TYPE_ANTHROPIC && clientFormat === "gemini") {
+        const text = await res.text();
+        let converted: { sse: string; usageBody: Record<string, unknown> };
+        try {
+          converted = claudeSseToGeminiSse(text, {
+            estimatePromptTokens: promptEst,
+            upstreamModel: mapped,
+            created: Math.floor(started / 1000),
+          });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
