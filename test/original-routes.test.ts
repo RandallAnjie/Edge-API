@@ -479,6 +479,18 @@ test("original JSON fields for status, models, deployments, performance, data, u
   assert.equal(typeof pkd.flow_token, "string");
   assert.equal(typeof pkd.expires_at, "number");
   assert.equal(typeof pkd.options, "object");
+  assert.equal(Array.isArray(pkd.rp_ids), true);
+  assert.ok((pkd.rp_ids as string[]).length >= 1);
+  const unavailable = await json(
+    new Request("http://local/api/user/passkey/login/begin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rp_id: "unconfigured.example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unavailable.body.success, false);
+  assert.equal(unavailable.body.code, "PASSKEY_RP_ID_UNAVAILABLE");
   assert.equal("username" in (JSON.parse("{}") as object), false);
 
   const catalog = await json(new Request("http://local/api/authz/catalog", { headers: auth }), e);
@@ -4891,6 +4903,8 @@ test("original auto-group selection, playground group, affinity TTL/usage cache,
     "oidc_enabled",
     "oidc_client_id",
     "passkey_login",
+    "passkey_rp_id",
+    "passkey_rp_ids",
     "checkin_enabled",
     "user_agreement_enabled",
     "privacy_policy_enabled",

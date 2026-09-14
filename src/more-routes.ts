@@ -36,6 +36,8 @@ import { getModelPricingSnapshot, ModelPricingError, previewModelPricingConversi
 import {
   PasskeyDomainError,
   passkeyDomainHttpError,
+  passkeySettingsSnapshot,
+  selectPasskeyBeginRpIDs,
   updatePasskeyDomainOptions,
 } from "./passkey-domains.js";
 import { buildRankingsSnapshot } from "./rankings.js";
@@ -85,6 +87,16 @@ type C = Context<Env>;
 
 function store(c: C): Store {
   return new Store(c.env.DB);
+}
+
+async function passkeyLoginBeginSelection(
+  s: Store,
+  req: Request,
+  hint: string,
+  credentialRpId = "",
+) {
+  const settings = await passkeySettingsSnapshot(s);
+  return selectPasskeyBeginRpIDs(settings, hint, rpFromRequest(req).rpId, credentialRpId);
 }
 
 async function handlePasskeyDomainUpdate(
@@ -539,6 +551,18 @@ export function registerMore(r: Router<Env>): void {
   r.post("/api/user/passkey/login/begin", async (c) => {
     const s = store(c);
     if (!(await s.optionBool("PasskeyEnabled", true))) return apiFail("管理员未启用 Passkey 登录");
+    let body: { rp_id?: string } = {};
+    try {
+      body = (await readJson(c.req)) as { rp_id?: string };
+    } catch {
+      return apiFail("无效的 Passkey 验证请求");
+    }
+    let selected: { rpId: string; rp_ids: string[] };
+    try {
+      selected = await passkeyLoginBeginSelection(s, c.req, body.rp_id || "");
+    } catch (e) {
+      return passkeyDomainHttpError(e, c.req);
+    }
     const ch = newChallenge();
     const expiresAt = nowSec() + 300;
     await s.insertAuthFlow({
@@ -553,8 +577,9 @@ export function registerMore(r: Router<Env>): void {
         challenge: ch.challenge,
         timeout: 60000,
         userVerification: "required",
-        rpId: rpFromRequest(c.req).rpId,
+        rpId: selected.rpId,
       },
+      rp_ids: selected.rp_ids,
       flow_token: ch.id,
       expires_at: expiresAt,
     });
@@ -603,7 +628,7 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/user/login/passkey/begin", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as { flow_token?: string };
+    const body = (await readJson(c.req)) as { flow_token?: string; rp_id?: string };
     if (!body.flow_token) return apiFail("参数错误");
     const flow = await s.getAuthFlow(body.flow_token);
     if (!flow || (flow.type !== "2fa_login" && flow.type !== "login_verify") || flow.expires_at < nowSec()) {
@@ -613,6 +638,12 @@ export function registerMore(r: Router<Env>): void {
     if (!user) return apiFail("用户不存在");
     const keys = await s.listPasskeys(user.id);
     if (!keys.length) return apiFail("未绑定 Passkey");
+    let selected: { rpId: string; rp_ids: string[] };
+    try {
+      selected = await passkeyLoginBeginSelection(s, c.req, body.rp_id || "", keys[0]?.rp_id || "");
+    } catch (e) {
+      return passkeyDomainHttpError(e, c.req);
+    }
     const ch = newChallenge();
     const expiresAt = nowSec() + 300;
     await s.insertAuthFlow({
@@ -620,7 +651,7 @@ export function registerMore(r: Router<Env>): void {
       type: "login_passkey",
       user_id: user.id,
       expires_at: expiresAt,
-      payload: JSON.stringify({ challenge: ch.challenge, login_flow: body.flow_token }),
+      payload: JSON.stringify({ challenge: ch.challenge, login_flow: body.flow_token, rp_id: selected.rpId }),
     });
     return apiOk({
       flow_token: ch.id,
@@ -630,7 +661,9 @@ export function registerMore(r: Router<Env>): void {
         allowCredentials: keys.map((k) => ({ type: "public-key", id: k.credential_id })),
         timeout: 60000,
         userVerification: "required",
+        rpId: selected.rpId,
       },
+      rp_ids: selected.rp_ids,
     });
   });
 

@@ -1,5 +1,6 @@
 import { START_TIME, VERSION, DEFAULT_HEADER_NAV_MODULES, DEFAULT_SIDEBAR_MODULES_ADMIN, parseJson } from "./constants.js";
 import { publicCustomOAuthStatus } from "./custom-oauth.js";
+import { effectivePasskeyRPID, passkeySettingsSnapshot, relyingPartyIDs } from "./passkey-domains.js";
 import type { Store } from "./store.js";
 import type { Env } from "./types.js";
 
@@ -22,6 +23,7 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
   const announcementsEnabled = await store.optionBool("console_setting.announcements_enabled", true);
   const faqEnabled = await store.optionBool("console_setting.faq_enabled", true);
   const chats = parseJson(await store.option("Chats"), [] as unknown[]);
+  const passkeySetting = await passkeySettingsSnapshot(store);
   const data: Record<string, unknown> = {
     version: VERSION,
     start_time: Math.floor(START_TIME / 1000),
@@ -87,7 +89,8 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
     passkey: await store.optionBool("passkey.enabled", false),
     passkey_display_name:
       (await store.option("passkey.rp_display_name")) || env.SYSTEM_NAME || (await store.option("SystemName")) || "New API",
-    passkey_rp_id: await store.option("passkey.rp_id"),
+    passkey_rp_id: effectivePasskeyRPID(passkeySetting),
+    passkey_rp_ids: relyingPartyIDs(passkeySetting),
     passkey_origins: await store.option("passkey.origins"),
     passkey_allow_insecure: await store.optionBool("passkey.allow_insecure_origin", false),
     passkey_user_verification: (await store.option("passkey.user_verification")) || "preferred",

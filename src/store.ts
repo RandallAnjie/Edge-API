@@ -2468,11 +2468,11 @@ export class Store {
     await this.db.prepare("DELETE FROM oauth_providers WHERE id = ?").bind(id).run();
   }
 
-  async listPasskeys(userId: number): Promise<{ id: number; credential_id: string; public_key: string; name: string; created_at: number; last_used_at?: number }[]> {
+  async listPasskeys(userId: number): Promise<{ id: number; credential_id: string; public_key: string; name: string; created_at: number; last_used_at?: number; rp_id?: string }[]> {
     const { results } = await this.db
       .prepare("SELECT * FROM passkeys WHERE user_id = ?")
       .bind(userId)
-      .all<{ id: number; credential_id: string; public_key: string; name: string; created_at: number; last_used_at?: number }>();
+      .all<{ id: number; credential_id: string; public_key: string; name: string; created_at: number; last_used_at?: number; rp_id?: string }>();
     return results;
   }
 

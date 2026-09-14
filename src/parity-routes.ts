@@ -56,6 +56,8 @@ import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
 import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
 import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
 import { fetchUpstreamRatios, validateFetchRequest } from "./ratio-sync.js";
+import { rpFromRequest } from "./passkey.js";
+import { passkeyDomainHttpError, passkeySettingsSnapshot, selectPasskeyBeginRpIDs } from "./passkey-domains.js";
 import {
   calcNextResetTime,
   calcPlanEndTime,
@@ -399,12 +401,23 @@ export function registerParity(r: Router<Env>): void {
     if (!identity) return json(401, { success: false, message: "当前认证方式不支持安全验证" });
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { scope?: string; context?: unknown };
+    const body = (await readJson(c.req)) as { scope?: string; context?: unknown; rp_id?: string };
     const secret = await sessionSecret(c.env, s);
     const bound = await bindVerificationOperation(secret, { scope: body.scope || "", context: body.context });
     if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
     const keys = await s.listPasskeys(u.id);
     if (!keys.length) return apiFail("该用户尚未绑定 Passkey");
+    let selected: { rpId: string; rp_ids: string[] };
+    try {
+      selected = selectPasskeyBeginRpIDs(
+        await passkeySettingsSnapshot(s),
+        body.rp_id || "",
+        rpFromRequest(c.req).rpId,
+        keys[0]?.rp_id || "",
+      );
+    } catch (e) {
+      return passkeyDomainHttpError(e, c.req);
+    }
     const { newChallenge } = await import("./passkey.js");
     const ch = newChallenge();
     const expiresAt = nowSec() + 300;
@@ -413,7 +426,12 @@ export function registerParity(r: Router<Env>): void {
       type: "passkey_verify",
       user_id: u.id,
       expires_at: expiresAt,
-      payload: JSON.stringify({ challenge: ch.challenge, scope: bound.binding.scope, context_hash: bound.binding.contextHash }),
+      payload: JSON.stringify({
+        challenge: ch.challenge,
+        scope: bound.binding.scope,
+        context_hash: bound.binding.contextHash,
+        rp_id: selected.rpId,
+      }),
       session_id: identity.sessionId,
     });
     const options = {
@@ -421,8 +439,9 @@ export function registerParity(r: Router<Env>): void {
       allowCredentials: keys.map((k) => ({ type: "public-key", id: k.credential_id })),
       timeout: 60000,
       userVerification: "preferred",
+      rpId: selected.rpId,
     };
-    return apiOk({ options, flow_token: ch.id, expires_at: expiresAt, flow_id: ch.id, publicKey: options });
+    return apiOk({ options, rp_ids: selected.rp_ids, flow_token: ch.id, expires_at: expiresAt, flow_id: ch.id, publicKey: options });
   });
 
   r.post("/api/user/passkey/verify/finish", async (c) => {

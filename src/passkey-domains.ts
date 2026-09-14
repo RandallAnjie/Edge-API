@@ -170,6 +170,50 @@ export function relyingPartyIDs(settings: PasskeySettings): string[] {
   return ids;
 }
 
+/** Original `system_setting.PasskeySettingsSnapshot`. */
+export async function passkeySettingsSnapshot(store: Store): Promise<PasskeySettings> {
+  return withPasskeyDefaults(
+    {
+      rp_id: await store.option("passkey.rp_id"),
+      legacy_rp_ids: await store.option("passkey.legacy_rp_ids"),
+      origins: await store.option("passkey.origins"),
+    },
+    await store.option("ServerAddress"),
+  );
+}
+
+export type PasskeyBeginSelection = { rpId: string; rp_ids: string[] };
+
+/**
+ * Original `service/passkey.BuildLoginWebAuthn` RP ID selection.
+ * When no configured IDs exist, fall back to the request hostname so an
+ * unconfigured site can still start a ceremony (original auto-detects Origin).
+ */
+export function selectPasskeyBeginRpIDs(
+  settings: PasskeySettings,
+  hint: string,
+  requestRpId: string,
+  credentialRpId = "",
+): PasskeyBeginSelection {
+  const requestHost = splitHostPort(requestRpId);
+  const primary = effectivePasskeyRPID(settings) || requestHost;
+  const configured: string[] = [];
+  for (const id of [primary, ...relyingPartyIDs(settings)]) {
+    if (id && !configured.includes(id)) configured.push(id);
+  }
+  const available = configured.length ? configured : requestHost ? [requestHost] : [];
+  const filtered = credentialRpId ? available.filter((id) => id === credentialRpId) : available;
+  if (!filtered.length) {
+    throw new PasskeyDomainError(ERR_PASSKEY_RPID_UNAVAILABLE, { code: "PASSKEY_RP_ID_UNAVAILABLE" });
+  }
+  let selected = credentialRpId || hint;
+  if (!selected) selected = filtered[0];
+  if (!filtered.includes(selected)) {
+    throw new PasskeyDomainError(ERR_PASSKEY_RPID_UNAVAILABLE, { code: "PASSKEY_RP_ID_UNAVAILABLE" });
+  }
+  return { rpId: selected, rp_ids: filtered };
+}
+
 async function removalConfirmation(
   sessionSecret: string,
   before: [string, string, string, string],
@@ -207,6 +251,16 @@ export function passkeyDomainHttpError(err: unknown, req: Request): Response {
       return apiFailCode(
         i18nPair(req, "通行密钥域名无效。请填写域名，不包含协议、端口、路径或通配符。", ERR_PASSKEY_RPID_INVALID),
         "PASSKEY_RP_ID_INVALID",
+      );
+    }
+    if (err.code === "PASSKEY_RP_ID_UNAVAILABLE") {
+      return apiFailCode(
+        i18nPair(
+          req,
+          "此通行密钥域名无法在当前网站使用。请前往原网站或选择其他验证方式。",
+          ERR_PASSKEY_RPID_UNAVAILABLE,
+        ),
+        "PASSKEY_RP_ID_UNAVAILABLE",
       );
     }
     return apiFail(err.message);

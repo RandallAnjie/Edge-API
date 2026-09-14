@@ -68,7 +68,6 @@ test("GetStatus matches original SystemStatus fields", async () => {
   resetSchemaFlag();
   const e = env();
   const { auth } = await boot(e);
-  void auth;
   const st = await json(new Request("http://local/api/status"), e);
   assert.equal(st.body.success, true);
   const d = st.body.data;
@@ -102,6 +101,8 @@ test("GetStatus matches original SystemStatus fields", async () => {
     "password_login_enabled",
     "oidc_enabled",
     "passkey_login",
+    "passkey_rp_id",
+    "passkey_rp_ids",
     "setup",
     "user_agreement_enabled",
     "privacy_policy_enabled",
@@ -113,6 +114,20 @@ test("GetStatus matches original SystemStatus fields", async () => {
   }
   assert.equal(d.setup, true);
   assert.equal(d.system_name, "Edge API Test");
+  assert.equal(Array.isArray(d.passkey_rp_ids), true);
+
+  const putAddr = await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "ServerAddress", value: "https://example.com" }),
+    }),
+    e,
+  );
+  assert.equal(putAddr.body.success, true, String(putAddr.body.message || putAddr.body.code));
+  const afterAddress = await json(new Request("http://local/api/status"), e);
+  assert.equal((afterAddress.body.data as { passkey_rp_id: string }).passkey_rp_id, "example.com");
+  assert.ok(((afterAddress.body.data as { passkey_rp_ids: string[] }).passkey_rp_ids || []).includes("example.com"));
 });
 
 test("login AuthBundle has original session + cookies", async () => {

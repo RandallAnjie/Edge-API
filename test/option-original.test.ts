@@ -264,6 +264,44 @@ test("original PUT /api/option/passkey/domains JSON", async () => {
   assert.equal(savedData.rp_id, "example.com");
   assert.equal(savedData.effective_rp_id, "example.com");
 
+  const statusAfter = await json(new Request("http://local/api/status"), e);
+  const statusData = statusAfter.body.data as { passkey_rp_id: string; passkey_rp_ids: string[] };
+  assert.equal(statusData.passkey_rp_id, "example.com");
+  assert.ok(Array.isArray(statusData.passkey_rp_ids));
+  assert.ok(statusData.passkey_rp_ids.includes("example.com"));
+  assert.ok(statusData.passkey_rp_ids.includes("www.example.com"));
+
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "passkey.enabled", value: "true" }),
+    }),
+    e,
+  );
+  const beginHint = await json(
+    new Request("http://local/api/user/passkey/login/begin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rp_id: "www.example.com" }),
+    }),
+    e,
+  );
+  assert.equal(beginHint.body.success, true, beginHint.text);
+  const beginData = beginHint.body.data as { rp_ids: string[]; options: { rpId: string } };
+  assert.deepEqual(beginData.rp_ids, ["example.com", "www.example.com"]);
+  assert.equal(beginData.options.rpId, "www.example.com");
+  const beginUnavailable = await json(
+    new Request("http://local/api/user/passkey/login/begin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rp_id: "unconfigured.example.com" }),
+    }),
+    e,
+  );
+  assert.equal(beginUnavailable.body.success, false);
+  assert.equal(beginUnavailable.body.code, "PASSKEY_RP_ID_UNAVAILABLE");
+
   await e.DB.prepare("INSERT INTO passkeys (user_id, credential_id, public_key, name, created_at, last_used_at, rp_id) VALUES (1, '0', 'key', '', 0, 0, 'www.example.com')").run();
   await e.DB.prepare("INSERT INTO passkeys (user_id, credential_id, public_key, name, created_at, last_used_at, rp_id) VALUES (2, '1', 'key', '', 0, 0, 'WWW.example.com')").run();
   await e.DB.prepare("INSERT INTO passkeys (user_id, credential_id, public_key, name, created_at, last_used_at, rp_id) VALUES (3, '2', 'key', '', 0, 0, '')").run();
