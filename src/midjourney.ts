@@ -633,7 +633,7 @@ async function relaySubmit(opts: {
       opts.auth.user.group || "",
     );
     if (isPriceError(priced)) return mjUpstreamError(priced.message);
-    const remain = Number((await opts.store.getUserById(opts.auth.user.id))?.quota ?? opts.auth.user.quota || 0);
+    const remain = Number((await opts.store.getUserById(opts.auth.user.id))?.quota ?? (opts.auth.user.quota || 0));
     if (consumeQuota && remain - priced.quota < 0) return mjUpstreamError("quota_not_enough");
     const base = resolveBaseUrl(originChannel.type, originChannel.base_url);
     const fullUrl = base.replace(/\/+$/, "") + mjUpstreamPath(opts.path);
@@ -675,7 +675,7 @@ async function relaySubmit(opts: {
     opts.auth.user.group || "",
   );
   if (isPriceError(priced)) return mjUpstreamError(priced.message);
-  const remain = Number((await opts.store.getUserById(opts.auth.user.id))?.quota ?? opts.auth.user.quota || 0);
+  const remain = Number((await opts.store.getUserById(opts.auth.user.id))?.quota ?? (opts.auth.user.quota || 0));
   if (consumeQuota && remain - priced.quota < 0) return mjUpstreamError("quota_not_enough");
   const channel = await pickMjChannel({ req: opts.req, env: opts.env, store: opts.store, auth: opts.auth, model: modelName });
   if (channel instanceof Response) return channel;
