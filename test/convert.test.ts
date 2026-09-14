@@ -69,6 +69,10 @@ import {
   newResponsesToChatStreamState,
   oaiChatSseToResponsesSse,
   oaiResponsesSseToChatSse,
+  convertOpenAIResponsesRequestToClaudeMessages,
+  responsesResponseToClaudeMessagesResponse,
+  ResponsesToClaudeStreamState,
+  oaiResponsesSseToClaudeSse,
   streamResponseOpenAI2Claude,
   oaiChatSseToClaudeSse,
   streamResponseOpenAI2Gemini,
@@ -4476,6 +4480,304 @@ test("original OaiChatToResponsesStreamHandler SSE events include sequence_numbe
   assert.match(out.sse, /"status":"completed"/);
   assert.match(out.sse, /"text":"ok"/);
   assert.equal((out.usageBody.usage as { total_tokens: number }).total_tokens, 3);
+});
+
+test("original OpenAI Responses → Claude Messages request/response/stream JSON fields", () => {
+  assert.throws(
+    () => convertOpenAIResponsesRequestToClaudeMessages({ input: "hello", max_output_tokens: 16 }),
+    /model is required/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIResponsesRequestToClaudeMessages({
+        model: "gpt-test",
+        input: "hello",
+        max_output_tokens: 16,
+        previous_response_id: "resp_prev",
+      }),
+    /responses to chat conversion does not support stateful fields: previous_response_id/,
+  );
+
+  const converted = convertOpenAIResponsesRequest(
+    {
+      model: "gpt-test",
+      stream: true,
+      max_output_tokens: 1024,
+      instructions: "You are a helpful assistant.",
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "What is in this image?" }],
+        },
+        { type: "function_call", call_id: "call_abc", name: "get_weather", arguments: "{\"city\":\"Paris\"}" },
+        { type: "function_call_output", call_id: "call_abc", output: "15 degrees" },
+      ],
+      tools: [
+        {
+          type: "function",
+          name: "get_weather",
+          description: "Get weather by city",
+          parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+        },
+      ],
+    },
+    {
+      channelType: CHANNEL_TYPE_ANTHROPIC,
+      originModelName: "gpt-test",
+      upstreamModelName: "gpt-test",
+    },
+  );
+  assert.equal(converted.model, "gpt-test");
+  assert.equal(converted.max_tokens, 1024);
+  assert.equal(converted.stream, true);
+  const system = converted.system as { type: string; text: string }[];
+  assert.equal(system.length, 1);
+  assert.equal(system[0].type, "text");
+  assert.equal(system[0].text, "You are a helpful assistant.");
+  const messages = converted.messages as { role: string; content: Record<string, unknown>[] }[];
+  assert.equal(messages[0].role, "user");
+  assert.equal(messages[0].content[0].type, "text");
+  assert.equal(messages[0].content[0].text, "What is in this image?");
+  assert.equal(messages[1].role, "assistant");
+  assert.equal(messages[1].content[0].type, "tool_use");
+  assert.equal(messages[1].content[0].id, "call_abc");
+  assert.equal(messages[1].content[0].name, "get_weather");
+  assert.deepEqual(messages[1].content[0].input, { city: "Paris" });
+  assert.equal(messages[2].role, "user");
+  assert.equal(messages[2].content[0].type, "tool_result");
+  assert.equal(messages[2].content[0].tool_use_id, "call_abc");
+  assert.equal(messages[2].content[0].content, "15 degrees");
+  const tools = converted.tools as { name: string; description: string; input_schema: Record<string, unknown> }[];
+  assert.equal(tools[0].name, "get_weather");
+  assert.equal(tools[0].description, "Get weather by city");
+  assert.equal(tools[0].input_schema.type, "object");
+
+  const withImage = convertOpenAIResponsesRequestToClaudeMessages(
+    {
+      model: "gpt-test",
+      max_output_tokens: 1024,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "What is in this image?" },
+            { type: "input_image", image_url: "https://example.com/cat.png" },
+          ],
+        },
+      ],
+    },
+    { resolveMedia: () => ({ data: "aGVsbG8=", mime: "image/png" }) },
+  );
+  const userParts = (withImage.messages as { content: Record<string, unknown>[] }[])[0].content;
+  assert.equal(userParts[1].type, "image");
+  assert.deepEqual(userParts[1].source, { type: "base64", media_type: "image/png", data: "aGVsbG8=" });
+
+  const prepended = convertOpenAIResponsesRequestToClaudeMessages({
+    model: "gpt-test",
+    max_output_tokens: 32,
+    input: [{ type: "function_call", call_id: "call_1", name: "lookup", arguments: "{\"q\":\"x\"}" }],
+  });
+  const prependedMessages = prepended.messages as { role: string; content: { type: string; text?: string }[] }[];
+  assert.equal(prependedMessages[0].role, "user");
+  assert.equal(prependedMessages[0].content[0].text, "...");
+  assert.equal(prependedMessages[1].role, "assistant");
+  assert.equal(prependedMessages[1].content[0].type, "tool_use");
+
+  const claudeResp = responsesResponseToClaudeMessagesResponse({
+    id: "resp_fixed",
+    object: "response",
+    model: "gpt-test",
+    status: "completed",
+    output: [
+      { type: "reasoning", summary: [{ type: "summary_text", text: "Deep thought." }] },
+      {
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [
+          {
+            type: "output_text",
+            text: "The answer is 42.",
+            annotations: [{ type: "url_citation", url: "https://example.com", title: "Doc", start_index: 4, end_index: 10 }],
+          },
+        ],
+      },
+      {
+        type: "function_call",
+        call_id: "call_abc",
+        name: "get_weather",
+        arguments: "{\"city\":\"Paris\"}",
+        status: "completed",
+      },
+    ],
+    usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+  });
+  assert.equal(claudeResp.id, "resp_fixed");
+  assert.equal(claudeResp.type, "message");
+  assert.equal(claudeResp.role, "assistant");
+  assert.equal(claudeResp.model, "gpt-test");
+  assert.equal(claudeResp.stop_reason, "tool_use");
+  const content = claudeResp.content as {
+    type: string;
+    thinking?: string;
+    text?: string;
+    citations?: { type: string; url: string; cited_text?: string }[];
+    id?: string;
+    name?: string;
+    input?: Record<string, unknown>;
+  }[];
+  assert.equal(content[0].type, "thinking");
+  assert.equal(content[0].thinking, "Deep thought.");
+  assert.equal(content[1].type, "text");
+  assert.equal(content[1].text, "The answer is 42.");
+  assert.equal(content[1].citations?.[0].type, "web_search_result_location");
+  assert.equal(content[1].citations?.[0].url, "https://example.com");
+  assert.equal(content[1].citations?.[0].cited_text, "answer");
+  assert.equal(content[2].type, "tool_use");
+  assert.equal(content[2].id, "call_abc");
+  assert.equal(content[2].name, "get_weather");
+  assert.deepEqual(content[2].input, { city: "Paris" });
+  const usage = claudeResp.usage as {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens: number;
+    cache_read_input_tokens: number;
+    billing_usage: { source: string; semantic: string; openai_usage: { prompt_tokens: number; input_tokens: number; output_tokens: number; total_tokens: number } };
+  };
+  assert.equal(usage.input_tokens, 10);
+  assert.equal(usage.output_tokens, 5);
+  assert.equal(usage.cache_creation_input_tokens, 0);
+  assert.equal(usage.cache_read_input_tokens, 0);
+  assert.equal(usage.billing_usage.source, "oai_responses");
+  assert.equal(usage.billing_usage.semantic, "openai");
+  assert.equal(usage.billing_usage.openai_usage.prompt_tokens, 0);
+  assert.equal(usage.billing_usage.openai_usage.input_tokens, 10);
+  assert.equal(usage.billing_usage.openai_usage.output_tokens, 5);
+  assert.equal(usage.billing_usage.openai_usage.total_tokens, 15);
+
+  const state = new ResponsesToClaudeStreamState("", "");
+  const argumentsText = "{\"q\":\"x\"}";
+  const reasoningItem = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "plan" }] };
+  const messageItem = {
+    type: "message",
+    id: "msg_1",
+    role: "assistant",
+    content: [{ type: "output_text", text: "hello" }],
+  };
+  const toolItem = { type: "function_call", id: "fc_1", call_id: "call_1", name: "lookup", arguments: argumentsText };
+  const events = [
+    { type: "response.created", response: { id: "resp_1", model: "gpt-test" } },
+    { type: "response.output_item.added", output_index: 0, item_id: "rs_1", item: { type: "reasoning", id: "rs_1" } },
+    { type: "response.reasoning_summary_text.delta", output_index: 0, item_id: "rs_1", delta: "plan" },
+    { type: "response.reasoning_summary_text.done", output_index: 0, item_id: "rs_1", text: "plan" },
+    { type: "response.output_item.done", output_index: 0, item_id: "rs_1", item: reasoningItem },
+    { type: "response.output_item.added", output_index: 1, item_id: "msg_1", item: { type: "message", id: "msg_1", role: "assistant" } },
+    { type: "response.output_text.delta", output_index: 1, item_id: "msg_1", delta: "hello" },
+    { type: "response.output_text.done", output_index: 1, item_id: "msg_1", text: "hello" },
+    { type: "response.output_item.done", output_index: 1, item_id: "msg_1", item: messageItem },
+    { type: "response.output_item.added", output_index: 2, item_id: "fc_1", item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "lookup" } },
+    { type: "response.function_call_arguments.delta", output_index: 2, item_id: "fc_1", delta: "{\"q\":" },
+    { type: "response.function_call_arguments.delta", output_index: 2, item_id: "fc_1", delta: "\"x\"}" },
+    { type: "response.function_call_arguments.done", output_index: 2, item_id: "fc_1", arguments: argumentsText },
+    { type: "response.output_item.done", output_index: 2, item_id: "fc_1", item: toolItem },
+    {
+      type: "response.completed",
+      response: {
+        id: "resp_1",
+        model: "gpt-test",
+        status: "completed",
+        output: [reasoningItem, messageItem, toolItem],
+        usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+      },
+    },
+  ];
+  const output: Record<string, unknown>[] = [];
+  for (const event of events) output.push(...state.convertChunk(event, 9));
+  const ofType = (type: string) => output.filter((item) => item.type === type);
+  assert.equal(ofType("message_start").length, 1);
+  assert.equal(ofType("content_block_start").length, 3);
+  assert.equal(ofType("content_block_stop").length, 3);
+  assert.equal(ofType("message_delta").length, 1);
+  assert.equal(ofType("message_stop").length, 1);
+  assert.deepEqual(
+    ofType("content_block_start").map((item) => item.index),
+    [0, 1, 2],
+  );
+  assert.deepEqual(
+    ofType("content_block_start").map((item) => (item.content_block as { type: string }).type),
+    ["thinking", "text", "tool_use"],
+  );
+  const joined = (deltaType: string) =>
+    ofType("content_block_delta")
+      .filter((item) => (item.delta as { type?: string }).type === deltaType)
+      .map((item) => {
+        const delta = item.delta as { thinking?: string; text?: string; partial_json?: string };
+        return delta.thinking || delta.text || delta.partial_json || "";
+      })
+      .join("");
+  assert.equal(joined("thinking_delta"), "plan");
+  assert.equal(joined("text_delta"), "hello");
+  assert.equal(joined("input_json_delta"), argumentsText);
+  assert.equal((ofType("message_delta")[0].delta as { stop_reason: string }).stop_reason, "tool_use");
+  assert.deepEqual(state.finalize(9), []);
+  assert.deepEqual(state.convertChunk(events[events.length - 1], 9), []);
+
+  const sse = oaiResponsesSseToClaudeSse(
+    [
+      `data: {"type":"response.output_text.delta","delta":"Hello"}`,
+      `data: {"type":"response.output_text.delta","delta":" world"}`,
+      `data: {"type":"response.completed","response":{"id":"resp_fixed","object":"response","status":"completed","model":"gpt-test","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+      ``,
+    ].join("\n"),
+    { id: "stream_fixed", model: "stream-model" },
+  );
+  assert.equal(sse.events[0].type, "message_start");
+  assert.equal((sse.events[0].message as { id: string; role: string; content: unknown[] }).id, "stream_fixed");
+  assert.equal((sse.events[0].message as { model: string }).model, "stream-model");
+  assert.equal((sse.events[0].message as { role: string }).role, "assistant");
+  assert.equal((sse.events[0].message as { usage: { input_tokens: number; output_tokens: number } }).usage.input_tokens, 0);
+  assert.equal(sse.events.some((item) => item.type === "content_block_start"), true);
+  assert.equal(sse.events.some((item) => item.type === "content_block_delta" && (item.delta as { type: string }).type === "text_delta"), true);
+  assert.equal(sse.events.some((item) => item.type === "message_delta"), true);
+  assert.equal(sse.events[sse.events.length - 1].type, "message_stop");
+  const streamDelta = sse.events.find((item) => item.type === "message_delta") as {
+    usage: { input_tokens: number; output_tokens: number; billing_usage: { source: string; openai_usage: { prompt_tokens: number; input_tokens: number } } };
+    delta: { stop_reason: string };
+  };
+  assert.equal(streamDelta.delta.stop_reason, "end_turn");
+  assert.equal(streamDelta.usage.input_tokens, 4);
+  assert.equal(streamDelta.usage.output_tokens, 2);
+  assert.equal(streamDelta.usage.billing_usage.source, "oai_responses");
+  assert.equal(streamDelta.usage.billing_usage.openai_usage.prompt_tokens, 0);
+  assert.equal(streamDelta.usage.billing_usage.openai_usage.input_tokens, 4);
+  assert.match(sse.sse, /event: message_start/);
+  assert.match(sse.sse, /"stop_reason":"end_turn"/);
+
+  const anthropicUp = buildUpstream(
+    testChannel({ type: CHANNEL_TYPE_ANTHROPIC, key: "sk-ant", base_url: "https://api.anthropic.com", models: "gpt-test" }),
+    "responses",
+    "/v1/responses",
+    "gpt-test",
+    converted,
+  );
+  assert.equal(anthropicUp.url, "https://api.anthropic.com/v1/messages");
+  assert.equal(anthropicUp.headers["x-api-key"], "sk-ant");
+  assert.equal(anthropicUp.headers["anthropic-version"], "2023-06-01");
+
+  assert.throws(
+    () =>
+      convertOpenAIResponsesRequest(
+        { model: "gpt-test", input: "hello" },
+        {
+          channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+          originModelName: "gpt-test",
+          upstreamModelName: "gpt-test",
+          converter: "openai_responses_to_claude_messages",
+        },
+      ),
+    /converter "openai_responses_to_claude_messages" does not support OpenAI Responses requests/,
+  );
 });
 
 

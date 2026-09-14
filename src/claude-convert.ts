@@ -56,14 +56,16 @@ function decodeDataURL(url: string): { data: string; mime: string } | null {
   return { mime: m[1], data: m[2].replace(/\s+/g, "") };
 }
 
-function functionParametersToInputSchema(parameters: unknown): Record<string, unknown> {
+/** Original `sharedclaude.FunctionParametersToInputSchema`. */
+export function functionParametersToInputSchema(parameters: unknown): Record<string, unknown> {
   const params = parameters && typeof parameters === "object" && !Array.isArray(parameters) ? { ...(parameters as Record<string, unknown>) } : {};
   if (params.type == null) params.type = "object";
   if (params.properties == null) params.properties = {};
   return params;
 }
 
-function mapOpenAIToolChoice(toolChoice: unknown, parallelToolCalls: unknown): Record<string, unknown> | undefined {
+/** Original `sharedclaude.MapOpenAIToolChoice`. */
+export function mapOpenAIToolChoice(toolChoice: unknown, parallelToolCalls: unknown): Record<string, unknown> | undefined {
   let choice: Record<string, unknown> | undefined;
   if (typeof toolChoice === "string") {
     if (toolChoice === "auto") choice = { type: "auto" };
@@ -138,7 +140,8 @@ function suffixFrom(opts: ConvertClaudeOpts, model: string): ReasoningIntent {
   return selected.hasThinking ? selected.intent : { mode: "", effort: "", source: "", budgetSource: "" };
 }
 
-function applyClaudeReasoning(req: Record<string, unknown>, source: ReasoningIntent, opts: ConvertClaudeOpts, crossProtocol: boolean): void {
+/** Original `sharedclaude.ApplyReasoning`. */
+export function applyClaudeReasoning(req: Record<string, unknown>, source: ReasoningIntent, opts: ConvertClaudeOpts, crossProtocol: boolean): void {
   const settings = opts.settings || {};
   const baseModel = String(req.model || "");
   let capabilityModel = baseModel;
