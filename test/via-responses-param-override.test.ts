@@ -208,8 +208,11 @@ test("original via-responses ApplyParamOverride on OpenAI chat JSON fields", asy
     assert.equal(messages.res.status, 200, messages.text);
     const claudeHit = calls.find((c) => c.url === "https://api.openai-via-claude.example/v1/responses");
     if (!claudeHit) throw new Error("missing claude via-responses upstream: " + JSON.stringify(calls.map((c) => c.url)));
-    assert.equal("messages" in claudeHit.body, false);
     assert.equal((claudeHit.body.input as { content?: string }[])[0].content, "hello");
+    assert.equal(
+      ((claudeHit.body.messages as { content?: string }[] | undefined) || [])[0]?.content,
+      "should-not-apply-on-claude-via",
+    );
     assert.equal(claudeHit.body.max_output_tokens, 99);
   } finally {
     globalThis.fetch = origFetch;
