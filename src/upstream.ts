@@ -45,6 +45,7 @@ import { applyNewApiHeaders, newApiRequestURL } from "./newapi-convert.js";
 import { jimengRequestURL } from "./jimeng-convert.js";
 import { perplexityRequestURL } from "./perplexity-convert.js";
 import { zhipuV3RequestURL, zhipuV4RequestURL } from "./zhipu-convert.js";
+import { aliRequestURL, applyAliHeaders } from "./ali-convert.js";
 import {
   buildAnthropicModelURL,
   buildGoogleModelURL,
@@ -504,8 +505,17 @@ export function buildUpstream(
       break;
     }
     case "ali": {
-      url = joinUrl(base, "/compatible-mode" + openaiPath(mode, requestPath));
+      const stream =
+        Boolean(relayInfo.isStream) || (payloadIsObject(body) && Boolean((body as { stream?: boolean }).stream));
+      url = aliRequestURL(base, mode, requestPath, upstreamModel, relayInfo.relayFormat);
       headers.authorization = `Bearer ${apiKey}`;
+      applyAliHeaders(headers, {
+        isStream: stream,
+        upstreamModel,
+        requestPath,
+        mode,
+        plugin: extraHeaders["X-DashScope-Plugin"] || extraHeaders.plugin || "",
+      });
       break;
     }
     case "volc": {

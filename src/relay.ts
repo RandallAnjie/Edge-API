@@ -1,4 +1,4 @@
-import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_PALM, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
+import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_PALM, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
@@ -42,7 +42,13 @@ import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
 import { openaiFromReplicatePrediction } from "./replicate-convert.js";
 import { applyJimengAuthorization, openaiFromJimengImage } from "./jimeng-convert.js";
 import { miniMaxTTSDoResponse, openaiFromMiniMaxImage } from "./minimax-convert.js";
-import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
+import {
+  aliImageIsSync,
+  openaiFromAliImage,
+  openaiFromAliRerank,
+  supportsAliAnthropicMessages,
+} from "./ali-convert.js";
+import { clientIp, groupAccessDeniedMessage, json, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import {
   DEFAULT_CLAUDE_MAX_TOKENS,
@@ -50,6 +56,7 @@ import {
   DEFAULT_THINKING_MODEL_BLACKLIST,
   ReasoningClientError,
   applyReasoningModelSuffix,
+  convertAliOpenAIRequest,
   type ReasoningHostSettings,
 } from "./reasoning.js";
 import {
@@ -127,6 +134,14 @@ export interface RelayRequest {
 
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+function parseAliOriginBody(rawText: string, fallback: Record<string, unknown>): unknown {
+  try {
+    return JSON.parse(rawText) as unknown;
+  } catch {
+    return fallback;
+  }
 }
 
 export function detectModel(body: unknown, path: string, url: URL): string {
@@ -246,6 +261,15 @@ function convertOutbound(
   if (channelType === CHANNEL_TYPE_OLLAMA && client === "anthropic") {
     return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
+  if (channelType === CHANNEL_TYPE_ALI && client === "anthropic") {
+    if (supportsAliAnthropicMessages(upstream)) return o;
+    const chat = anthropicToOpenAI(o);
+    if (extras.isStream) {
+      chat.stream = true;
+      chat.stream_options = { include_usage: true };
+    }
+    return convertAliOpenAIRequest(chat, upstream);
+  }
   if (channelType === CHANNEL_TYPE_CODEX && client === "openai" && mode !== "responses" && mode !== "alpha_search") {
     return convertOpenAIRequest(o, {
       channelType,
@@ -301,6 +325,16 @@ function convertOutbound(
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_MINIMAX && (mode === "images" || mode === "audio_speech")) {
     return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_ALI && (mode === "images" || mode === "rerank")) {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+      requestPath: extras.requestPath,
+    });
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_MOKA && mode === "embeddings") {
     return convertOpenAIRequest(o, {
@@ -487,6 +521,9 @@ async function convertInbound(
     channelKey?: string;
     converter?: string;
     responseFormat?: string;
+    channelBase?: string;
+    requestPath?: string;
+    upstreamStatus?: number;
   } = {},
 ): Promise<Record<string, unknown>> {
   if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM) {
@@ -560,6 +597,20 @@ async function convertInbound(
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_MINIMAX && opts.relayMode === "images") {
     return openaiFromMiniMaxImage(upstreamJson, { created: opts.created });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_ALI && opts.relayMode === "images") {
+    return openaiFromAliImage(upstreamJson, {
+      created: opts.created,
+      responseFormat: opts.responseFormat,
+      channelBase: opts.channelBase,
+      channelKey: opts.channelKey,
+      isSync: aliImageIsSync(model, opts.requestPath || ""),
+      originBody: opts.rawText ? parseAliOriginBody(opts.rawText, upstreamJson) : upstreamJson,
+      upstreamStatus: opts.upstreamStatus,
+    });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_ALI && opts.relayMode === "rerank") {
+    return openaiFromAliRerank(upstreamJson, { upstreamStatus: opts.upstreamStatus });
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_JIMENG && opts.relayMode === "images") {
     return openaiFromJimengImage(upstreamJson, { created: opts.created });
@@ -1010,6 +1061,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         {
           "anthropic-version": opts.req.headers.get("anthropic-version") || "",
           "anthropic-beta": opts.req.headers.get("anthropic-beta") || "",
+          plugin: opts.req.headers.get("plugin") || opts.req.headers.get("X-DashScope-Plugin") || "",
         },
         opts.method || opts.req.method || "POST",
         opts.stream,
@@ -1172,6 +1224,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         channel.type !== CHANNEL_TYPE_PALM &&
         !(channel.type === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(pickChannelKey(channel.key)))) ||
       channel.type === CHANNEL_TYPE_ZHIPU_V4 ||
+      (channel.type === CHANNEL_TYPE_ALI && mode !== "images" && mode !== "rerank") ||
       (channel.type === CHANNEL_TYPE_CLOUDFLARE && mode === "responses") ||
       (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM && advancedCustomOpenaiShapedInbound(advancedConverter || "none"));
     if (isSSE && res.body) {
@@ -1278,6 +1331,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         channelKey: pickChannelKey(channel.key),
         converter: advancedConverter,
         responseFormat: String(asObj(opts.body).response_format || ""),
+        channelBase: resolveBaseUrl(channel.type, channel.base_url),
+        requestPath: path,
+        upstreamStatus: res.status,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1293,6 +1349,19 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (imageType === "zhipu_image_error") {
         const code = String((err as Error & { code?: string }).code || "");
         return openaiError(res.status, message, code, "zhipu_image_error");
+      }
+      const aliHandler = err instanceof Error ? (err as Error & { aliHandler?: string }).aliHandler : undefined;
+      if (aliHandler === "rerank") {
+        const code = String((err as Error & { code?: string }).code || "");
+        const param = String((err as Error & { param?: string }).param || "");
+        const status = Number((err as Error & { status?: number }).status || res.status);
+        return json(status, { error: { message, type: String((err as Error & { type?: string }).type || code), param, code } });
+      }
+      if (aliHandler === "image") {
+        const code = String((err as Error & { code?: string }).code || "bad_response");
+        const type = String((err as Error & { type?: string }).type || "new_api_error");
+        const status = Number((err as Error & { status?: number }).status || 500);
+        return openaiError(status, message, code, type);
       }
       return openaiError(500, message, "bad_response_body");
     }

@@ -35,6 +35,14 @@ import {
   convertReplicateImageRequest,
   convertJimengImageRequest,
   requestOpenAI2Xunfei,
+  convertAliImageRequest,
+  convertAliRerankRequest,
+  openaiFromAliImage,
+  openaiFromAliRerank,
+  aliRequestURL,
+  applyAliHeaders,
+  supportsAliAnthropicMessages,
+  isAliSyncImageModel,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
@@ -2633,6 +2641,180 @@ test("original Kling Vidu Sora DoubaoVideo ConvertOpenAIRequest uses OpenAI adap
     assert.equal("stream_options" in out, false, `channel type ${channelType} must drop stream_options like openai.Adaptor`);
     assert.deepEqual(out.messages, [{ role: "user", content: "hi" }]);
   }
+});
+
+test("original Ali GetRequestURL ConvertImageRequest image DoResponse rerank JSON and DashScope headers", async () => {
+  assert.equal(isAliSyncImageModel("qwen-image-3.0-pro"), true);
+  assert.equal(isAliSyncImageModel("wanx-v1"), false);
+  assert.equal(supportsAliAnthropicMessages("qwen-plus"), true);
+  assert.equal(supportsAliAnthropicMessages("deepseek-r1"), false);
+
+  const base = "https://dashscope.aliyuncs.com";
+  assert.equal(
+    aliRequestURL(base, "images", "/v1/images/generations", "qwen-image-3.0-pro"),
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+  );
+  assert.equal(
+    aliRequestURL(base, "images", "/v1/images/generations", "wanx-v1"),
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis",
+  );
+  assert.equal(
+    aliRequestURL(base, "images", "/v1/images/edits", "wanx-v1"),
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis",
+  );
+  assert.equal(
+    aliRequestURL(base, "images", "/v1/images/edits", "wan2.6"),
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/generation",
+  );
+  assert.equal(
+    aliRequestURL(base, "rerank", "/v1/rerank", "gte-rerank-v2"),
+    "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+  );
+  assert.equal(
+    aliRequestURL(base, "messages", "/v1/messages", "qwen-plus"),
+    "https://dashscope.aliyuncs.com/apps/anthropic/v1/messages",
+  );
+  assert.equal(
+    aliRequestURL(base, "messages", "/v1/messages", "deepseek-r1"),
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+  );
+  assert.equal(
+    aliRequestURL(base, "responses", "/v1/responses", "qwen-plus"),
+    "https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1/responses",
+  );
+  assert.equal(
+    aliRequestURL(base, "chat", "/v1/chat/completions", "qwen-plus"),
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+  );
+
+  const syncHeaders: Record<string, string> = {};
+  applyAliHeaders(syncHeaders, {
+    upstreamModel: "qwen-image-3.0-pro",
+    requestPath: "/v1/images/generations",
+    mode: "images",
+  });
+  assert.equal("X-DashScope-Async" in syncHeaders, false);
+  const asyncHeaders: Record<string, string> = {};
+  applyAliHeaders(asyncHeaders, {
+    upstreamModel: "wanx-v1",
+    requestPath: "/v1/images/generations",
+    mode: "images",
+  });
+  assert.equal(asyncHeaders["X-DashScope-Async"], "enable");
+  const streamHeaders: Record<string, string> = {};
+  applyAliHeaders(streamHeaders, { isStream: true, upstreamModel: "qwen-plus", mode: "chat" });
+  assert.equal(streamHeaders["X-DashScope-SSE"], "enable");
+
+  const aliCh = testChannel({ type: CHANNEL_TYPE_ALI, key: "sk-ali", base_url: "", models: "qwen-image-3.0-pro" });
+  const mappedImage = buildUpstream(
+    aliCh,
+    "images",
+    "/v1/images/generations",
+    "customer-image-model",
+    { model: "customer-image-model", prompt: "poster" },
+    {},
+    "POST",
+    { upstreamModel: "qwen-image-3.0-pro" },
+  );
+  assert.equal(
+    mappedImage.url,
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+  );
+  assert.equal("X-DashScope-Async" in mappedImage.headers, false);
+  assert.equal(mappedImage.headers.authorization, "Bearer sk-ali");
+
+  const syncImage = convertOpenAIRequest(
+    { model: "qwen-image-3.0-pro", prompt: "poster", size: "1024x1024" },
+    {
+      channelType: CHANNEL_TYPE_ALI,
+      originModelName: "qwen-image-3.0-pro",
+      upstreamModelName: "qwen-image-3.0-pro",
+      relayMode: "images",
+      requestPath: "/v1/images/generations",
+    },
+  );
+  assert.equal(syncImage.model, "qwen-image-3.0-pro");
+  assert.deepEqual(syncImage.input, { messages: [{ role: "user", content: [{ text: "poster" }] }] });
+  assert.equal((syncImage.parameters as { n: number; size: string }).n, 1);
+  assert.equal((syncImage.parameters as { size: string }).size, "1024*1024");
+
+  const providerN = convertAliImageRequest(
+    { model: "z-image", n: 2, parameters: { n: 4 }, prompt: "poster" },
+    { upstreamModelName: "z-image", requestPath: "/v1/images/generations" },
+  );
+  assert.equal((providerN.parameters as { n: number }).n, 4);
+  const inheritN = convertAliImageRequest(
+    { model: "z-image", n: 2, parameters: {}, prompt: "poster" },
+    { upstreamModelName: "z-image", requestPath: "/v1/images/generations" },
+  );
+  assert.equal((inheritN.parameters as { n: number }).n, 2);
+  const asyncImage = convertAliImageRequest(
+    { model: "wanx-v1", prompt: "poster" },
+    { upstreamModelName: "wanx-v1", requestPath: "/v1/images/generations" },
+  );
+  assert.deepEqual(asyncImage.input, { prompt: "poster" });
+
+  const rerank = convertAliRerankRequest(
+    { model: "gte-rerank-v2", query: "q", documents: ["a", "b"], top_n: 2 },
+    { upstreamModelName: "gte-rerank-v2" },
+  );
+  assert.deepEqual(rerank, {
+    model: "gte-rerank-v2",
+    input: { query: "q", documents: ["a", "b"] },
+    parameters: { return_documents: true, top_n: 2 },
+  });
+  const rerankOut = openaiFromAliRerank({
+    output: { results: [{ index: 0, relevance_score: 0.9 }] },
+    usage: { total_tokens: 11 },
+  });
+  assert.deepEqual(rerankOut, {
+    results: [{ index: 0, relevance_score: 0.9 }],
+    usage: { prompt_tokens: 11, completion_tokens: 0, total_tokens: 11 },
+  });
+
+  const imageUrl = "https://example.com/ali.png";
+  const urlOut = await openaiFromAliImage(
+    { output: { results: [{ url: imageUrl }] } },
+    { created: 1, responseFormat: "url", isSync: true },
+  );
+  assert.equal(urlOut.created, 1);
+  assert.deepEqual(urlOut.data, [{ url: imageUrl, b64_json: "", revised_prompt: "" }]);
+  assert.deepEqual((urlOut.metadata as { output: unknown }).output, { results: [{ url: imageUrl }] });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    assert.equal(String(input), imageUrl);
+    return new Response(Uint8Array.from([97, 108, 105]), { headers: { "content-type": "image/png" } });
+  }) as typeof fetch;
+  try {
+    const b64Out = await openaiFromAliImage(
+      { output: { results: [{ url: imageUrl }] } },
+      { created: 1, responseFormat: "b64_json", isSync: true },
+    );
+    assert.equal((b64Out.data as { url: string; b64_json: string }[])[0].url, imageUrl);
+    assert.equal((b64Out.data as { b64_json: string }[])[0].b64_json, Buffer.from("ali").toString("base64"));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  const pollOut = await openaiFromAliImage(
+    { output: { task_id: "task-1" } },
+    {
+      created: 2,
+      isSync: false,
+      channelBase: base,
+      channelKey: "sk-ali",
+      sleep: async () => {},
+      fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        assert.equal(String(input), `${base}/api/v1/tasks/task-1`);
+        assert.equal(new Headers(init?.headers).get("authorization"), "Bearer sk-ali");
+        return new Response(
+          JSON.stringify({ output: { task_status: "SUCCEEDED", results: [{ url: imageUrl, b64_image: "YWE=" }] } }),
+        );
+      }) as typeof fetch,
+    },
+  );
+  assert.deepEqual(pollOut.data, [{ url: imageUrl, b64_json: "YWE=", revised_prompt: "" }]);
 });
 
 

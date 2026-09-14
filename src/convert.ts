@@ -34,6 +34,7 @@ import { convertSubmodelOpenAIRequest, submodelUnsupportedEndpoint } from "./sub
 import { convertReplicateImageRequest, convertReplicateOpenAIRequest } from "./replicate-convert.js";
 import { convertNewApiOpenAIRequest, convertNewApiResponsesRequest, newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import { convertJimengImageRequest, convertJimengOpenAIRequest } from "./jimeng-convert.js";
+import { convertAliImageRequest, convertAliRerankRequest } from "./ali-convert.js";
 import { convertCodexOpenAIRequest, convertCodexResponsesRequest, isCodexResponsesCompact } from "./codex-convert.js";
 import {
   CONVERTER_CHAT_TO_CLAUDE,
@@ -420,6 +421,16 @@ export { convertSubmodelOpenAIRequest } from "./submodel-convert.js";
 export { convertReplicateImageRequest } from "./replicate-convert.js";
 export { convertNewApiOpenAIRequest } from "./newapi-convert.js";
 export { convertJimengImageRequest, convertJimengOpenAIRequest } from "./jimeng-convert.js";
+export {
+  convertAliImageRequest,
+  convertAliRerankRequest,
+  openaiFromAliImage,
+  openaiFromAliRerank,
+  aliRequestURL,
+  applyAliHeaders,
+  supportsAliAnthropicMessages,
+  isAliSyncImageModel,
+} from "./ali-convert.js";
 export { convertCodexOpenAIRequest, convertCodexResponsesRequest } from "./codex-convert.js";
 export {
   convertChatCompletionsToResponsesRequest,
@@ -720,6 +731,15 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
     return convertMoonshotOpenAIRequest(suffixed.body, suffixed.upstreamModelName);
   }
   if (opts.channelType === CHANNEL_TYPE_ALI) {
+    if (opts.relayMode === "images") {
+      return convertAliImageRequest(suffixed.body, {
+        upstreamModelName: suffixed.upstreamModelName,
+        requestPath: opts.requestPath,
+      });
+    }
+    if (opts.relayMode === "rerank") {
+      return convertAliRerankRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+    }
     return convertAliOpenAIRequest(suffixed.body, suffixed.upstreamModelName);
   }
   if (opts.channelType === CHANNEL_TYPE_CODEX) {
