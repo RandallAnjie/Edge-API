@@ -440,6 +440,14 @@ export { convertOpenAIImageEditForm, detectImageMimeType, usesOpenAIImageEditAda
 export { convertOpenAIAudioForm, formFileContentType, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
 export { usesOpenAIAdaptor, openaiAdaptorSupportStreamOptions };
 export { openaiChatToClaudeResponse, openaiChatToGeminiResponse } from "./openai-format-convert.js";
+export {
+  streamResponseOpenAI2Claude,
+  finalizeStreamResponseOpenAI2Claude,
+  oaiChatSseToClaudeSse,
+  streamResponseOpenAI2Gemini,
+  oaiChatSseToGeminiSse,
+  newClaudeStreamMeta,
+} from "./openai-stream-convert.js";
 export { convertCodexOpenAIRequest, convertCodexResponsesRequest } from "./codex-convert.js";
 export {
   convertChatCompletionsToResponsesRequest,

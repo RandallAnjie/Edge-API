@@ -248,3 +248,101 @@ test("original Azure openai.Adaptor GetRequestURL rewrites /v1/messages to chat/
     globalThis.fetch = origFetch;
   }
 });
+
+test("original openai.Adaptor stream ConvertResponse Claude/Gemini SSE JSON", async () => {
+  const { e, auth, sk } = await boot();
+  const add = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "openai-stream",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-upstream",
+        models: "customer-claude,customer-gemini",
+        group: "default",
+        base_url: "https://api.openai.example",
+        model_mapping: JSON.stringify({
+          "customer-claude": "gpt-4o-mini",
+          "customer-gemini": "gpt-4o-mini",
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(add.body.success, true, String(add.body.message));
+
+  const openaiSse = [
+    'data: {"id":"chatcmpl_stream","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"hello from stream"},"finish_reason":null}]}',
+    "",
+    'data: {"id":"chatcmpl_stream","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const origFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const raw = init?.body;
+    if (raw instanceof FormData || raw instanceof Uint8Array || raw instanceof ArrayBuffer) {
+      throw new Error("unexpected openai adaptor stream body");
+    }
+    const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    calls.push({ url, body: parsed });
+    return new Response(openaiSse, { headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+  try {
+    const claude = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json", "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model: "customer-claude",
+          max_tokens: 32,
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 200, claude.text);
+    assert.equal(claude.res.headers.get("content-type"), "text/event-stream; charset=utf-8");
+    assert.equal(calls[0].url, "https://api.openai.example/v1/chat/completions");
+    assert.equal(calls[0].body.stream, true);
+    assert.deepEqual(calls[0].body.stream_options, { include_usage: true });
+    assert.match(claude.text, /event: message_start/);
+    assert.match(claude.text, /"type":"content_block_start"/);
+    assert.match(claude.text, /"type":"text_delta"/);
+    assert.match(claude.text, /hello from stream/);
+    assert.match(claude.text, /"stop_reason":"end_turn"/);
+    assert.match(claude.text, /event: message_stop/);
+    assert.match(claude.text, /"input_tokens":5/);
+    assert.match(claude.text, /"output_tokens":2/);
+
+    const gemini = await json(
+      new Request("http://local/v1beta/models/customer-gemini:streamGenerateContent", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer " + sk,
+          "content-type": "application/json",
+          accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "hello gemini stream" }] }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(gemini.res.status, 200, gemini.text);
+    assert.equal(calls[1].url, "https://api.openai.example/v1/chat/completions");
+    assert.equal(calls[1].body.stream, true);
+    assert.match(gemini.text, /"text":"hello from stream"/);
+    assert.match(gemini.text, /"finishReason":"STOP"/);
+    assert.match(gemini.text, /"promptTokenCount":5/);
+    assert.match(gemini.text, /"candidatesTokenCount":2/);
+    assert.match(gemini.text, /"role":"model"/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

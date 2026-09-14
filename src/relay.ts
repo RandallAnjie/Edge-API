@@ -104,6 +104,7 @@ import {
   convertAdvancedCustomInbound,
 } from "./advanced-custom-response.js";
 import { oaiChatSseToResponsesSse, oaiResponsesSseToChatSse } from "./responses-stream.js";
+import { oaiChatSseToClaudeSse, oaiChatSseToGeminiSse } from "./openai-stream-convert.js";
 import { buildCodexRelayTarget, fetchCodexChannelModels } from "./codex-models.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
@@ -1375,6 +1376,34 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       (channel.type === CHANNEL_TYPE_CLOUDFLARE && mode === "responses") ||
       (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM && advancedCustomOpenaiShapedInbound(advancedConverter || "none"));
     if (isSSE && res.body) {
+      if (usesOpenAIAdaptor(channel.type) && (clientFormat === "anthropic" || clientFormat === "gemini")) {
+        const text = await res.text();
+        let converted: { sse: string; usageBody: Record<string, unknown> };
+        try {
+          converted =
+            clientFormat === "anthropic"
+              ? oaiChatSseToClaudeSse(text, { estimatePromptTokens: promptEst })
+              : oaiChatSseToGeminiSse(text, { estimatePromptTokens: promptEst });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          return openaiError(500, message, "bad_response_body");
+        }
+        const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
+        extra.cachedTokens = usage.cachedTokens;
+        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        ctx?.waitUntil(
+          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
+        );
+        return new Response(converted.sse, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            "x-oneapi-request-id": rid,
+          },
+        });
+      }
       if (!openaiShapedInbound && clientFormat === "openai" && !ollamaResponsesPassthrough) {
         const text = await res.text();
         const includeUsage = shouldIncludeUsage(asObj(opts.body));

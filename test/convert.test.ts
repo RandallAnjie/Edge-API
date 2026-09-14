@@ -61,6 +61,11 @@ import {
   newResponsesToChatStreamState,
   oaiChatSseToResponsesSse,
   oaiResponsesSseToChatSse,
+  streamResponseOpenAI2Claude,
+  oaiChatSseToClaudeSse,
+  streamResponseOpenAI2Gemini,
+  oaiChatSseToGeminiSse,
+  newClaudeStreamMeta,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason, openaiFinishReasonToClaudeStopReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
@@ -589,6 +594,209 @@ test("original openai.Adaptor ConvertClaudeRequest / ConvertGeminiRequest / Conv
     buildUpstream(azureCh, "messages", "/v1/messages", "gpt-4o", { model: "gpt-4o" }, {}, "POST", { relayFormat: "claude" }).url,
     "https://demo.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2025-04-01-preview",
   );
+});
+
+test("original openai.Adaptor StreamResponseOpenAI2Claude / StreamResponseOpenAI2Gemini JSON fields", () => {
+  const info = newClaudeStreamMeta();
+  info.sendResponseCount = 1;
+  const textResponses = streamResponseOpenAI2Claude(
+    {
+      id: "chatcmpl_1",
+      model: "gpt-test",
+      choices: [{ delta: { content: "hello" } }],
+    },
+    info,
+  );
+  assert.equal(textResponses.length, 3);
+  assert.equal(textResponses[0].type, "message_start");
+  assert.equal(textResponses[1].type, "content_block_start");
+  assert.equal(textResponses[1].index, 0);
+  assert.equal(textResponses[2].type, "content_block_delta");
+
+  info.sendResponseCount = 2;
+  const thinkingResponses = streamResponseOpenAI2Claude(
+    {
+      id: "chatcmpl_1",
+      model: "gpt-test",
+      choices: [{ delta: { reasoning_content: "thinking" } }],
+    },
+    info,
+  );
+  assert.equal(thinkingResponses.length, 3);
+  assert.equal(thinkingResponses[0].type, "content_block_stop");
+  assert.equal(thinkingResponses[0].index, 0);
+  assert.equal(thinkingResponses[1].type, "content_block_start");
+  assert.equal(thinkingResponses[1].index, 1);
+  assert.equal((thinkingResponses[1].content_block as { type: string }).type, "thinking");
+  assert.equal(thinkingResponses[2].type, "content_block_delta");
+
+  info.sendResponseCount = 3;
+  const toolResponses = streamResponseOpenAI2Claude(
+    {
+      id: "chatcmpl_1",
+      model: "gpt-test",
+      choices: [
+        {
+          delta: {
+            tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "lookup", arguments: '{"q":"x"}' } }],
+          },
+        },
+      ],
+    },
+    info,
+  );
+  assert.equal(toolResponses.length, 3);
+  assert.equal(toolResponses[0].type, "content_block_stop");
+  assert.equal(toolResponses[0].index, 1);
+  assert.equal(toolResponses[1].type, "content_block_start");
+  assert.equal(toolResponses[1].index, 2);
+  assert.equal((toolResponses[1].content_block as { type: string }).type, "tool_use");
+  assert.equal(toolResponses[2].type, "content_block_delta");
+
+  info.sendResponseCount = 4;
+  const finishResponses = streamResponseOpenAI2Claude(
+    {
+      id: "chatcmpl_1",
+      model: "gpt-test",
+      choices: [{ finish_reason: "tool_calls" }],
+      usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+    },
+    info,
+  );
+  assert.equal(finishResponses.length, 3);
+  assert.equal(finishResponses[0].type, "content_block_stop");
+  assert.equal(finishResponses[0].index, 2);
+  assert.equal(finishResponses[1].type, "message_delta");
+  assert.equal((finishResponses[1].delta as { stop_reason: string }).stop_reason, "tool_use");
+  const finishUsage = finishResponses[1].usage as {
+    input_tokens: number;
+    output_tokens: number;
+    billing_usage: { openai_usage: { prompt_tokens: number; completion_tokens: number } };
+  };
+  assert.equal(finishUsage.input_tokens, 7);
+  assert.equal(finishUsage.output_tokens, 3);
+  assert.equal(finishUsage.billing_usage.openai_usage.prompt_tokens, 7);
+  assert.equal(finishUsage.billing_usage.openai_usage.completion_tokens, 3);
+  assert.equal(finishResponses[2].type, "message_stop");
+
+  const firstFrame = newClaudeStreamMeta({ sendResponseCount: 1, estimatePromptTokens: 32 });
+  const firstWithUsage = streamResponseOpenAI2Claude(
+    {
+      id: "chatcmpl_1",
+      model: "gpt-test",
+      choices: [{ delta: { content: "hello" } }],
+      usage: { prompt_tokens: 29, completion_tokens: 0, total_tokens: 29 },
+    },
+    firstFrame,
+  );
+  assert.equal(firstWithUsage[0].type, "message_start");
+  assert.equal(((firstWithUsage[0].message as { usage: { input_tokens: number } }).usage).input_tokens, 29);
+
+  const estimated = newClaudeStreamMeta({ sendResponseCount: 1, estimatePromptTokens: 32 });
+  const firstEstimated = streamResponseOpenAI2Claude(
+    { id: "chatcmpl_1", model: "gpt-test", choices: [{ delta: { content: "hello" } }] },
+    estimated,
+  );
+  assert.equal(((firstEstimated[0].message as { usage: { input_tokens: number } }).usage).input_tokens, 32);
+  estimated.sendResponseCount = 2;
+  const corrected = streamResponseOpenAI2Claude(
+    {
+      id: "chatcmpl_1",
+      model: "gpt-test",
+      choices: [{ finish_reason: "stop" }],
+      usage: { prompt_tokens: 29, completion_tokens: 4, total_tokens: 33 },
+    },
+    estimated,
+  );
+  const delta = corrected.find((ev) => ev.type === "message_delta");
+  assert.ok(delta);
+  assert.equal((delta?.usage as { input_tokens: number }).input_tokens, 29);
+  assert.equal((delta?.usage as { output_tokens: number }).output_tokens, 4);
+
+  const cacheInfo = newClaudeStreamMeta({ sendResponseCount: 1, estimatePromptTokens: 8 });
+  streamResponseOpenAI2Claude(
+    {
+      id: "chatcmpl_1",
+      model: "gpt-test",
+      choices: [{ delta: { content: "hello" } }],
+      usage: {
+        prompt_tokens: 40,
+        completion_tokens: 0,
+        total_tokens: 40,
+        prompt_tokens_details: { cached_tokens: 20, cached_creation_tokens: 10 },
+      },
+    },
+    cacheInfo,
+  );
+  cacheInfo.sendResponseCount = 2;
+  const cacheFinish = streamResponseOpenAI2Claude(
+    {
+      id: "chatcmpl_1",
+      model: "gpt-test",
+      choices: [{ finish_reason: "stop" }],
+      usage: { prompt_tokens: 29, completion_tokens: 4, total_tokens: 33 },
+    },
+    cacheInfo,
+  );
+  const cacheDelta = cacheFinish.find((ev) => ev.type === "message_delta");
+  assert.ok(cacheDelta);
+  const cacheUsage = cacheDelta?.usage as {
+    input_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation_input_tokens: number;
+  };
+  assert.equal(cacheUsage.input_tokens, 29);
+  assert.equal(cacheUsage.cache_read_input_tokens, 20);
+  assert.equal(cacheUsage.cache_creation_input_tokens, 10);
+
+  const geminiStream = streamResponseOpenAI2Gemini({
+    choices: [
+      {
+        index: 1,
+        finish_reason: "tool_calls",
+        delta: { tool_calls: [{ type: "function", function: { name: "lookup", arguments: '{"q":"x"}' } }] },
+      },
+    ],
+    usage: { prompt_tokens: 13, completion_tokens: 8, total_tokens: 21 },
+  });
+  assert.ok(geminiStream);
+  const geminiUsage = geminiStream?.usageMetadata as {
+    promptTokenCount: number;
+    candidatesTokenCount: number;
+    totalTokenCount: number;
+    billing_usage: { openai_usage: { prompt_tokens: number; completion_tokens: number } };
+  };
+  assert.equal(geminiUsage.promptTokenCount, 13);
+  assert.equal(geminiUsage.candidatesTokenCount, 8);
+  assert.equal(geminiUsage.totalTokenCount, 21);
+  assert.equal(geminiUsage.billing_usage.openai_usage.prompt_tokens, 13);
+  assert.equal(geminiUsage.billing_usage.openai_usage.completion_tokens, 8);
+  const geminiCandidates = geminiStream?.candidates as Record<string, unknown>[];
+  assert.equal(geminiCandidates[0].index, 1);
+  assert.equal(geminiCandidates[0].finishReason, "STOP");
+  assert.deepEqual((geminiCandidates[0].content as { parts: unknown[] }).parts, [
+    { functionCall: { name: "lookup", args: { q: "x" } } },
+  ]);
+  assert.equal(streamResponseOpenAI2Gemini({ choices: [{ delta: {}, finish_reason: null }] }), null);
+
+  const sse = [
+    'data: {"id":"chatcmpl_1","model":"gpt-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}',
+    "",
+    'data: {"id":"chatcmpl_1","model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const claudeSse = oaiChatSseToClaudeSse(sse, { estimatePromptTokens: 8 });
+  assert.match(claudeSse.sse, /event: message_start/);
+  assert.match(claudeSse.sse, /"type":"text_delta"/);
+  assert.match(claudeSse.sse, /event: message_stop/);
+  assert.equal((claudeSse.usageBody as { prompt_tokens: number }).prompt_tokens, 5);
+
+  const geminiSse = oaiChatSseToGeminiSse(sse, { estimatePromptTokens: 8 });
+  assert.match(geminiSse.sse, /"text":"hello"/);
+  assert.match(geminiSse.sse, /"finishReason":"STOP"/);
+  assert.match(geminiSse.sse, /"promptTokenCount":5/);
 });
 
 test("original ConvertOpenAIRequest sampling, suffixes, OpenRouter, Moonshot, and Ali JSON", () => {
