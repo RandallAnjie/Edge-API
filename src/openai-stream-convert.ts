@@ -1,6 +1,6 @@
 /** Original `oaichat.StreamResponseOpenAI2Claude` / `ConvertChunk` Gemini stream. Does not import convert.ts or upstream.ts. */
 
-import { openaiFinishReasonToClaudeStopReason, normalizeCacheCreationSplit } from "./claude-response.js";
+import { openaiFinishReasonToClaudeStopReason, normalizeCacheCreationSplit, chatAnnotationsToClaude } from "./claude-response.js";
 import { asInt, asObj, compactUuid, parseSseDataPayloads } from "./openai-usage.js";
 
 type LastMessageType = "" | "text" | "tools" | "thinking";
@@ -469,6 +469,26 @@ export function streamResponseOpenAI2Claude(
     }
     state.lastMessagesType = "";
   };
+  const appendCitationDeltas = (raw: unknown) => {
+    const citations = chatAnnotationsToClaude(raw, "");
+    if (!citations.length) return;
+    if (state.lastMessagesType !== "text") {
+      stopOpenBlocksAndAdvance();
+      claudeResponses.push({
+        type: "content_block_start",
+        index: state.index,
+        content_block: { type: "text", text: "" },
+      });
+      state.lastMessagesType = "text";
+    }
+    for (const citation of citations) {
+      claudeResponses.push({
+        type: "content_block_delta",
+        index: state.index,
+        delta: { type: "citations_delta", citation },
+      });
+    }
+  };
 
   const incomingUsage = parseOpenAIUsage(openAIResponse.usage);
   if (info.sendResponseCount === 1) {
@@ -615,6 +635,7 @@ export function streamResponseOpenAI2Claude(
 
   claudeResponse.index = state.index;
   if (!isEmpty && claudeResponse.delta) claudeResponses.push(claudeResponse);
+  appendCitationDeltas(delta.annotations);
 
   if (doneChunk || state.done) {
     const oaiUsage = clientVisibleClaudeStreamUsage(state, incomingUsage);

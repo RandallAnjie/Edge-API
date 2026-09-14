@@ -1,6 +1,6 @@
 /** Original `oaichat.ResponseOpenAI2Claude` / `ResponseOpenAI2Gemini`. Does not import convert.ts or upstream.ts. */
 
-import { openaiFinishReasonToClaudeStopReason } from "./claude-response.js";
+import { openaiFinishReasonToClaudeStopReason, chatAnnotationsToClaude } from "./claude-response.js";
 import { asInt, asObj } from "./openai-usage.js";
 
 function str(v: unknown): string {
@@ -110,7 +110,10 @@ export function openaiChatToClaudeResponse(openAI: Record<string, unknown>): Rec
     const tools = toolCallsOf(message);
     if (thinking) content.push({ type: "thinking", thinking });
     if (text !== "" || (!thinking && tools.length === 0)) {
-      content.push({ type: "text", text });
+      const block: Record<string, unknown> = { type: "text", text };
+      const citations = chatAnnotationsToClaude(message.annotations, text);
+      if (citations.length) block.citations = citations;
+      content.push(block);
     }
     for (const tool of tools) {
       const fn = asObj(tool.function);

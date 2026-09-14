@@ -61,6 +61,76 @@ export function openaiFinishReasonToClaudeStopReason(finishReason: string): stri
   }
 }
 
+function interface2String(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return String(value);
+    return Number.isInteger(value) ? String(value) : String(value);
+  }
+  return String(value);
+}
+
+function annotationIndex(value: unknown): { ok: true; n: number } | { ok: false } {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || !Number.isInteger(value)) return { ok: false };
+  return { ok: true, n: value };
+}
+
+function citedTextFromAnnotation(text: string, citation: Record<string, unknown>): string {
+  const start = annotationIndex(citation.start_index);
+  const end = annotationIndex(citation.end_index);
+  if (!start.ok || !end.ok || end.n <= start.n) return "";
+  const runes = [...text];
+  if (end.n > runes.length) return "";
+  return runes.slice(start.n, end.n).join("");
+}
+
+/** Original `oaichat.chatAnnotationsToClaude`. */
+export function chatAnnotationsToClaude(raw: unknown, text = ""): Record<string, unknown>[] {
+  if (raw == null) return [];
+  let annotations: unknown[];
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      annotations = parsed;
+    } catch {
+      return [];
+    }
+  } else if (Array.isArray(raw)) {
+    annotations = raw;
+  } else {
+    return [];
+  }
+  const citations: Record<string, unknown>[] = [];
+  for (const item of annotations) {
+    const annotation = asObj(item);
+    if (interface2String(annotation.type).trim() !== "url_citation") continue;
+    const nested = annotation.url_citation;
+    const citation =
+      nested && typeof nested === "object" && !Array.isArray(nested) ? (nested as Record<string, unknown>) : annotation;
+    const url = interface2String(citation.url).trim();
+    if (!url) continue;
+    const converted: Record<string, unknown> = {
+      type: "web_search_result_location",
+      url,
+      title: interface2String(citation.title).trim(),
+    };
+    const citedExplicit = interface2String(citation.cited_text);
+    if (citedExplicit) converted.cited_text = citedExplicit;
+    else {
+      const sliced = citedTextFromAnnotation(text, citation);
+      if (sliced) converted.cited_text = sliced;
+    }
+    const encrypted = interface2String(citation.encrypted_index);
+    if (encrypted) converted.encrypted_index = encrypted;
+    if (converted.title === "") delete converted.title;
+    citations.push(converted);
+  }
+  return citations;
+}
+
 /** Original `shared/claude.NormalizeCacheCreationSplit`. */
 export function normalizeCacheCreationSplit(totalTokens: number, tokens5m: number, tokens1h: number): [number, number] {
   let remainder = totalTokens - tokens5m - tokens1h;

@@ -538,6 +538,46 @@ test("original openai.Adaptor ConvertClaudeRequest / ConvertGeminiRequest / Conv
   assert.equal((claudeOut.usage as { input_tokens: number }).input_tokens, 11);
   assert.equal((claudeOut.usage as { output_tokens: number }).output_tokens, 5);
 
+  const citedOut = openaiChatToClaudeResponse({
+    id: "chatcmpl_cite",
+    model: "gpt-4o-mini",
+    choices: [
+      {
+        finish_reason: "stop",
+        message: {
+          role: "assistant",
+          content: "see this",
+          annotations: [
+            {
+              type: "url_citation",
+              url_citation: {
+                url: "https://example.com/a",
+                title: "Example",
+                start_index: 0,
+                end_index: 3,
+              },
+            },
+          ],
+        },
+      },
+    ],
+    usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 },
+  });
+  assert.deepEqual(citedOut.content, [
+    {
+      type: "text",
+      text: "see this",
+      citations: [
+        {
+          type: "web_search_result_location",
+          url: "https://example.com/a",
+          title: "Example",
+          cited_text: "see",
+        },
+      ],
+    },
+  ]);
+
   const geminiOut = openaiChatToGeminiResponse({
     id: "chatcmpl_2",
     model: "gpt-4o-mini",
@@ -786,6 +826,65 @@ test("original openai.Adaptor StreamResponseOpenAI2Claude / StreamResponseOpenAI
     { functionCall: { name: "lookup", args: { q: "x" } } },
   ]);
   assert.equal(streamResponseOpenAI2Gemini({ choices: [{ delta: {}, finish_reason: null }] }), null);
+
+  const citeInfo = newClaudeStreamMeta();
+  citeInfo.sendResponseCount = 1;
+  const citedStream = streamResponseOpenAI2Claude(
+    {
+      id: "chatcmpl_cite",
+      model: "gpt-test",
+      choices: [
+        {
+          delta: {
+            content: "see this",
+            annotations: [
+              {
+                type: "url_citation",
+                url_citation: { url: "https://example.com/a", title: "Example", cited_text: "see" },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    citeInfo,
+  );
+  const citeDelta = citedStream.find((ev) => (ev.delta as { type?: string } | undefined)?.type === "citations_delta");
+  assert.ok(citeDelta);
+  assert.equal(citeDelta?.type, "content_block_delta");
+  assert.equal(citeDelta?.index, 0);
+  assert.deepEqual((citeDelta?.delta as { citation: unknown }).citation, {
+    type: "web_search_result_location",
+    url: "https://example.com/a",
+    title: "Example",
+    cited_text: "see",
+  });
+
+  const annotOnly = newClaudeStreamMeta();
+  annotOnly.sendResponseCount = 1;
+  const annotOnlyStream = streamResponseOpenAI2Claude(
+    {
+      id: "chatcmpl_cite2",
+      model: "gpt-test",
+      choices: [
+        {
+          delta: {
+            annotations: [{ type: "url_citation", url_citation: { url: "https://example.com/b" } }],
+          },
+        },
+      ],
+    },
+    annotOnly,
+  );
+  assert.equal(
+    annotOnlyStream.some((ev) => ev.type === "content_block_start" && (ev.content_block as { type?: string })?.type === "text"),
+    true,
+  );
+  const annotDelta = annotOnlyStream.find((ev) => (ev.delta as { type?: string } | undefined)?.type === "citations_delta");
+  assert.deepEqual((annotDelta?.delta as { citation: unknown }).citation, {
+    type: "web_search_result_location",
+    url: "https://example.com/b",
+  });
 
   const sse = [
     'data: {"id":"chatcmpl_1","model":"gpt-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}',

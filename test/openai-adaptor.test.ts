@@ -473,3 +473,114 @@ test("original SiliconFlow/Perplexity ConvertClaudeRequest HTTP JSON and URLs", 
     globalThis.fetch = origFetch;
   }
 });
+
+test("original openai.Adaptor OpenAI→Claude citations and citations_delta JSON", async () => {
+  const { e, auth, sk } = await boot();
+  const add = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "openai-cite",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-upstream",
+        models: "gpt-4o-mini",
+        group: "default",
+        base_url: "https://api.openai.example",
+      }),
+    }),
+    e,
+  );
+  assert.equal(add.body.success, true, String(add.body.message));
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = init?.body;
+    const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    if (parsed.stream === true) {
+      const sse = [
+        'data: {"id":"chatcmpl_cite","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"see this","annotations":[{"type":"url_citation","url_citation":{"url":"https://example.com/a","title":"Example","cited_text":"see"}}]},"finish_reason":null}]}',
+        "",
+        'data: {"id":"chatcmpl_cite","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+      return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+    }
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl_cite",
+        model: "gpt-4o-mini",
+        choices: [
+          {
+            index: 0,
+            finish_reason: "stop",
+            message: {
+              role: "assistant",
+              content: "see this",
+              annotations: [
+                {
+                  type: "url_citation",
+                  url_citation: { url: "https://example.com/a", title: "Example", start_index: 0, end_index: 3 },
+                },
+              ],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const claude = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json", "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 200, claude.text);
+    assert.deepEqual(claude.body.content, [
+      {
+        type: "text",
+        text: "see this",
+        citations: [
+          {
+            type: "web_search_result_location",
+            url: "https://example.com/a",
+            title: "Example",
+            cited_text: "see",
+          },
+        ],
+      },
+    ]);
+
+    const stream = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json", "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          max_tokens: 32,
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(stream.res.status, 200, stream.text);
+    assert.match(stream.text, /"type":"citations_delta"/);
+    assert.match(stream.text, /"type":"web_search_result_location"/);
+    assert.match(stream.text, /https:\/\/example.com\/a/);
+    assert.match(stream.text, /"cited_text":"see"/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
