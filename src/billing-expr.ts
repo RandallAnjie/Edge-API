@@ -1,4 +1,8 @@
-/** Original `pkg/billingexpr` compile + `billing_setting.SmokeTestExpr` (workerd sandbox). */
+/**
+ * Original `pkg/billingexpr` compile + `billing_setting.SmokeTestExpr` (workerd sandbox).
+ */
+import { bytesToHex, sha256BytesSync, utf8Bytes } from "./jsplugin-sha256.js";
+import { quotaRoundChecked, type QuotaClamp } from "./task-plugin-usage.js";
 
 const TOKEN_VECTORS = [
   { p: 0, c: 0, len: 0 },
@@ -9,9 +13,83 @@ const TOKEN_VECTORS = [
 
 const FORBIDDEN = /\b(?:Function|eval|globalThis|process|constructor|import|require)\b/;
 
+const EXPR_ENV_KEYS = [
+  "image_count",
+  "p",
+  "c",
+  "len",
+  "cr",
+  "cc",
+  "cc1h",
+  "img",
+  "img_cr",
+  "img_o",
+  "ai",
+  "ao",
+  "tier",
+  "fixed",
+  "header",
+  "param",
+  "u",
+  "has",
+  "hour",
+  "minute",
+  "weekday",
+  "month",
+  "day",
+  "max",
+  "min",
+  "abs",
+  "ceil",
+  "floor",
+] as const;
+
+export type BillingUnit = "token" | "request";
+
+export type BillingSnapshot = {
+  billingMode: string;
+  modelName: string;
+  exprString: string;
+  exprHash: string;
+  groupRatio: number;
+  estimatedPromptTokens: number;
+  estimatedCompletionTokens: number;
+  estimatedQuotaBeforeGroup: number;
+  estimatedQuotaAfterGroup: number;
+  estimatedTier: string;
+  quotaPerUnit: number;
+  exprVersion: number;
+  taskUsageBilling: boolean;
+  usageFacts: Record<string, unknown>;
+};
+
+export type ExprTraceResult = {
+  cost: number;
+  matchedTier: string;
+  billingUnit: BillingUnit;
+};
+
+export type TieredResult = {
+  actualQuotaBeforeGroup: number;
+  actualQuotaAfterGroup: number;
+  matchedTier: string;
+  crossedTier: boolean;
+  clamp: QuotaClamp | null;
+};
+
 export function parseExprVersion(exprStr: string): { version: number; body: string } {
   if (exprStr.startsWith("v1:")) return { version: 1, body: exprStr.slice(3) };
   return { version: 1, body: exprStr };
+}
+
+/** Original `billingexpr.ExprVersion`. */
+export function exprVersion(exprStr: string): number {
+  return parseExprVersion(exprStr).version;
+}
+
+/** Original `billingexpr.ExprHashString`. */
+export function exprHashString(expr: string): string {
+  return bytesToHex(sha256BytesSync(utf8Bytes(expr)));
 }
 
 /** Original `billingexpr.UsedUsageKeys` (literal `u("...")` only). */
@@ -34,7 +112,11 @@ function rewriteExpr(body: string): string {
   return body.replace(/\bnil\b/g, "null").replace(/\band\b/g, "&&").replace(/\bor\b/g, "||");
 }
 
-function envFor(tokens: { p: number; c: number; len: number }, usage: Record<string, unknown> = {}) {
+function envFor(
+  tokens: { p: number; c: number; len: number },
+  usage: Record<string, unknown> = {},
+  trace?: { matchedTier: string; billingUnit: BillingUnit; cost: number },
+) {
   return {
     image_count: 1,
     p: tokens.p,
@@ -48,12 +130,29 @@ function envFor(tokens: { p: number; c: number; len: number }, usage: Record<str
     img_o: 0,
     ai: 0,
     ao: 0,
-    tier: (_name: string, value: number) => Number(value),
-    fixed: (amount: number) => Number(amount) * 1_000_000,
-    header: () => "",
+    tier: (name: string, value: number) => {
+      const cost = Number(value);
+      if (trace) {
+        trace.matchedTier = String(name);
+        trace.cost = cost;
+      }
+      return cost;
+    },
+    fixed: (amount: number) => {
+      if (trace) trace.billingUnit = "request";
+      return Number(amount) * 1_000_000;
+    },
+    header: (_key: string) => "",
     param: () => null,
-    u: (key: string) => usage[key] ?? 0,
-    has: (obj: unknown, key: string) => Boolean(obj && typeof obj === "object" && key in (obj as object)),
+    u: (key: string) => {
+      const name = String(key || "").trim();
+      if (!name || !usage || !Object.prototype.hasOwnProperty.call(usage, name)) return null;
+      return usage[name];
+    },
+    has: (source: unknown, substr: string) => {
+      if (source == null || !substr) return false;
+      return String(source).includes(String(substr));
+    },
     hour: () => 0,
     minute: () => 0,
     weekday: () => 0,
@@ -70,38 +169,126 @@ function envFor(tokens: { p: number; c: number; len: number }, usage: Record<str
 function compile(body: string): (...args: unknown[]) => number {
   if (FORBIDDEN.test(body)) throw new Error("expression validation failed");
   const rewritten = rewriteExpr(body);
-  const names = Object.keys(envFor({ p: 0, c: 0, len: 0 }));
-  return new Function(...names, `"use strict"; return (${rewritten});`) as (...args: unknown[]) => number;
+  return new Function(...EXPR_ENV_KEYS, `"use strict"; return (${rewritten});`) as (...args: unknown[]) => number;
+}
+
+function envValues(env: ReturnType<typeof envFor>): unknown[] {
+  return EXPR_ENV_KEYS.map((key) => env[key]);
 }
 
 function run(fn: (...args: unknown[]) => number, tokens: { p: number; c: number; len: number }, usage: Record<string, unknown> = {}): number {
   const env = envFor(tokens, usage);
-  const result = Number(fn(...Object.values(env)));
+  const result = Number(fn(...envValues(env)));
   if (!Number.isFinite(result) || result < 0) {
     throw new Error(`vector {p=${tokens.p}, c=${tokens.c}}: result must be finite and non-negative, got ${result}`);
   }
   return result;
 }
 
-/** Original `billing_setting.SmokeTestExpr`. */
-export function smokeTestExpr(exprStr: string): Error | null {
+/** Original `billingexpr.CompileFromCache` (workerd Function sandbox). */
+export function compileBillingExpr(exprStr: string): Error | null {
   const { body } = parseExprVersion(exprStr);
   if (!body.trim()) return new Error("billing expression is required");
-  let fn: (...args: unknown[]) => number;
   try {
-    fn = compile(body);
+    compile(body);
+    return null;
   } catch (err) {
     return new Error(`expr compile error: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/** Original `billingexpr.RunExprWithRequest`. */
+export function runExprWithRequest(
+  exprStr: string,
+  usage: Record<string, unknown> = {},
+  tokens: { p: number; c: number; len: number } = { p: 0, c: 0, len: 0 },
+): ExprTraceResult {
+  const { body } = parseExprVersion(exprStr);
+  const fn = compile(body);
+  const trace: { matchedTier: string; billingUnit: BillingUnit; cost: number } = {
+    matchedTier: "",
+    billingUnit: "token",
+    cost: 0,
+  };
+  const env = envFor(tokens, usage, trace);
+  const cost = Number(fn(...envValues(env)));
+  if (!Number.isFinite(cost)) throw new Error(`expr run error: result is ${cost}`);
+  return { cost, matchedTier: trace.matchedTier, billingUnit: trace.billingUnit };
+}
+
+function quotaConversion(exprOutput: number, snap: BillingSnapshot): number {
+  if (snap.taskUsageBilling) return exprOutput * snap.quotaPerUnit;
+  return (exprOutput / 1_000_000) * snap.quotaPerUnit;
+}
+
+/** Original `billingexpr.ComputeTieredQuotaWithRequest`. */
+export function computeTieredQuotaWithRequest(
+  snap: BillingSnapshot,
+  usage: Record<string, unknown> = {},
+): TieredResult {
+  if (snap.taskUsageBilling && usesFixedPricing(snap.exprString)) {
+    throw new Error("fixed pricing is not supported for task usage expressions");
+  }
+  const { cost, matchedTier } = runExprWithRequest(snap.exprString, usage);
+  const quotaBeforeGroup = quotaConversion(cost, snap);
+  const afterGroup = quotaRoundChecked(quotaBeforeGroup * snap.groupRatio);
+  return {
+    actualQuotaBeforeGroup: quotaBeforeGroup,
+    actualQuotaAfterGroup: afterGroup.quota,
+    matchedTier,
+    crossedTier: matchedTier !== snap.estimatedTier,
+    clamp: afterGroup.clamp,
+  };
+}
+
+/** Original `service.EvaluateTaskCompletionUsage`. */
+export function evaluateTaskCompletionUsage(
+  snap: BillingSnapshot,
+  facts: Record<string, unknown> | null | undefined,
+): { result: TieredResult; usage: Record<string, unknown> } {
+  const usage: Record<string, unknown> = { ...(snap.usageFacts || {}), ...(facts || {}) };
+  const result = computeTieredQuotaWithRequest(snap, usage);
+  if (result.actualQuotaBeforeGroup < 0 || Number.isNaN(result.actualQuotaBeforeGroup)) {
+    throw new Error("task completion expression produced an invalid cost");
+  }
+  return { result, usage };
+}
+
+/** Original BillingSnapshot JSON (`json` struct tags). */
+export function billingSnapshotJSON(snap: BillingSnapshot): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    billing_mode: snap.billingMode,
+    model_name: snap.modelName,
+    expr_string: snap.exprString,
+    expr_hash: snap.exprHash,
+    group_ratio: snap.groupRatio,
+    estimated_prompt_tokens: snap.estimatedPromptTokens,
+    estimated_completion_tokens: snap.estimatedCompletionTokens,
+    estimated_quota_before_group: snap.estimatedQuotaBeforeGroup,
+    estimated_quota_after_group: snap.estimatedQuotaAfterGroup,
+    estimated_tier: snap.estimatedTier,
+    quota_per_unit: snap.quotaPerUnit,
+    expr_version: snap.exprVersion,
+  };
+  if (snap.taskUsageBilling) out.task_usage_billing = true;
+  if (snap.usageFacts && Object.keys(snap.usageFacts).length) out.usage_facts = snap.usageFacts;
+  return out;
+}
+
+/** Original `billing_setting.SmokeTestExpr`. */
+export function smokeTestExpr(exprStr: string): Error | null {
+  const compiled = compileBillingExpr(exprStr);
+  if (compiled) return compiled;
   const keys = usedUsageKeys(exprStr);
   if (keys) {
     const sorted = Object.keys(keys).sort();
     return new Error(`expression references usage keys [${sorted.join(" ")}] but the model has no task plugin usage schema`);
   }
   try {
+    const fn = compile(parseExprVersion(exprStr).body);
     for (const vector of TOKEN_VECTORS) {
       run(fn, vector);
-      run(fn, vector); // original also runs a second request-input vector
+      run(fn, vector);
     }
   } catch (err) {
     return err instanceof Error ? err : new Error(String(err));
@@ -111,14 +298,8 @@ export function smokeTestExpr(exprStr: string): Error | null {
 
 /** Original `billing_setting.SmokeTestTaskExpr`. */
 export function smokeTestTaskExpr(exprStr: string, schema: Record<string, unknown>): Error | null {
-  const { body } = parseExprVersion(exprStr);
-  if (!body.trim()) return new Error("billing expression is required");
-  let fn: (...args: unknown[]) => number;
-  try {
-    fn = compile(body);
-  } catch (err) {
-    return new Error(`expr compile error: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  const compiled = compileBillingExpr(exprStr);
+  if (compiled) return compiled;
   if (usesFixedPricing(exprStr)) {
     return new Error("fixed pricing is not supported for task usage expressions");
   }
@@ -126,6 +307,7 @@ export function smokeTestTaskExpr(exprStr: string, schema: Record<string, unknow
     if (!(key in schema)) return new Error(`usage key ${JSON.stringify(key)} is not declared by the task plugin`);
   }
   try {
+    const fn = compile(parseExprVersion(exprStr).body);
     for (const vector of TOKEN_VECTORS) {
       run(fn, vector, Object.fromEntries(Object.keys(schema).map((k) => [k, 0])));
     }

@@ -116,6 +116,21 @@ export function quotaFromFloatChecked(value: number): { quota: number; clamp: Qu
   return { quota: Math.trunc(value), clamp: null };
 }
 
+/** Original `common.QuotaRound` / `QuotaRoundChecked`. */
+export function quotaRoundChecked(value: number): { quota: number; clamp: QuotaClamp | null } {
+  if (Number.isNaN(value)) {
+    return { quota: 0, clamp: { op: "QuotaRound", kind: "nan", original: value, clamped: 0 } };
+  }
+  const rounded = Math.round(value);
+  if (rounded > MAX_QUOTA) {
+    return { quota: MAX_QUOTA, clamp: { op: "QuotaRound", kind: "overflow", original: rounded, clamped: MAX_QUOTA } };
+  }
+  if (rounded < MIN_QUOTA) {
+    return { quota: MIN_QUOTA, clamp: { op: "QuotaRound", kind: "underflow", original: rounded, clamped: MIN_QUOTA } };
+  }
+  return { quota: rounded, clamp: null };
+}
+
 /** Original `common.QuotaFromFloat`. */
 export function quotaFromFloat(value: number): number {
   return quotaFromFloatChecked(value).quota;

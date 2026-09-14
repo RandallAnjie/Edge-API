@@ -1,4 +1,5 @@
 import { getModelPriceFromMap, hasConfiguredModelRatio } from "./ratio-setting.js";
+import { compileBillingExpr, usedUsageKeys, usesFixedPricing } from "./billing-expr.js";
 
 export const BILLING_MODE_RATIO = "ratio";
 export const BILLING_MODE_TIERED_EXPR = "tiered_expr";
@@ -59,6 +60,60 @@ export function getBillingExpr(
 }
 
 /** Original `GetBillingModeCopy` + `GetBillingExprCopy`. */
+/** Original `billing_setting.PluginBillingExprKey`. */
+export function pluginBillingExprLookupKey(pluginKey: string, model: string): string {
+  return `${pluginKey}::${model}`;
+}
+
+/** Original `billing_setting.GetPluginBillingExpr`. */
+export function getPluginBillingExpr(pluginExprs: Record<string, string>, pluginKey: string, model: string): string | undefined {
+  const key = pluginBillingExprLookupKey(pluginKey, model);
+  return Object.prototype.hasOwnProperty.call(pluginExprs, key) ? pluginExprs[key] : undefined;
+}
+
+/** Original `billing_setting.ResolveTaskBillingExpr`. */
+export function resolveTaskBillingExpr(
+  pluginKey: string,
+  model: string,
+  mappedModel: string,
+  maps: {
+    pluginExprs?: Record<string, string>;
+    modes: Record<string, string>;
+    exprs: Record<string, string>;
+    modelRatio?: Record<string, unknown> | Record<string, number>;
+    modelPrice?: Record<string, unknown> | Record<string, number>;
+  },
+): { expr: string; exists: boolean } {
+  const pluginExprs = maps.pluginExprs || {};
+  if (pluginKey) {
+    const own = getPluginBillingExpr(pluginExprs, pluginKey, model);
+    if (own != null) return { expr: own, exists: true };
+    if (mappedModel && mappedModel !== model) {
+      const mapped = getPluginBillingExpr(pluginExprs, pluginKey, mappedModel);
+      if (mapped != null) return { expr: mapped, exists: true };
+    }
+  }
+  if (getBillingMode(model, maps.modes, maps.modelRatio, maps.modelPrice) === BILLING_MODE_TIERED_EXPR) {
+    const expr = getBillingExpr(model, maps.modes, maps.exprs, maps.modelRatio, maps.modelPrice);
+    return { expr: expr || "", exists: Boolean(expr) };
+  }
+  if (mappedModel && mappedModel !== model && getBillingMode(mappedModel, maps.modes, maps.modelRatio, maps.modelPrice) === BILLING_MODE_TIERED_EXPR) {
+    const expression = getBillingExpr(mappedModel, maps.modes, maps.exprs, maps.modelRatio, maps.modelPrice);
+    return { expr: expression || "", exists: Boolean(expression && expression.trim()) };
+  }
+  return { expr: "", exists: false };
+}
+
+/** Original `billing_setting.TaskExprCompatible`. */
+export function taskExprCompatible(expression: string, schema: Record<string, unknown> | undefined): boolean {
+  if (!String(expression || "").trim()) return false;
+  if (compileBillingExpr(expression)) return false;
+  for (const key of Object.keys(usedUsageKeys(expression) || {})) {
+    if (!schema || !Object.prototype.hasOwnProperty.call(schema, key)) return false;
+  }
+  return !usesFixedPricing(expression);
+}
+
 export function billingCopies(opts: {
   billingMode?: Record<string, unknown> | Record<string, string>;
   billingExpr?: Record<string, unknown> | Record<string, string>;

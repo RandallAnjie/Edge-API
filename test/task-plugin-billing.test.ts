@@ -654,3 +654,152 @@ test("original native RelayTask QuotaClamp model_price_error JSON before PreCons
     globalThis.fetch = origFetch;
   }
 });
+
+test("original native RelayTask tiered billing consume-log JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  await registerHttpUsage(e, auth, httpUsagePlugin, "mock-tiered");
+  const expression = `tier("720P", u("seconds") * 5)`;
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "billing_setting.billing_mode", value: JSON.stringify({ "mock-v1": "tiered_expr" }) }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "billing_setting.billing_expr", value: JSON.stringify({ "mock-v1": expression }) }),
+    }),
+    e,
+  );
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://provider.example.test/submit") {
+      return new Response(JSON.stringify({ id: "upstream-tiered" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 200, hit.text);
+    const taskId = String((hit.body as { data?: { task_id?: string } }).data?.task_id);
+    const persisted = await store.getTaskByTid(taskId);
+    assert.equal(Number(persisted?.quota), 12_500_000);
+    const priv = JSON.parse(String(persisted?.private_data || "{}")) as {
+      billing_context?: {
+        other_ratios?: Record<string, number>;
+        tiered_snapshot?: {
+          billing_mode?: string;
+          estimated_tier?: string;
+          estimated_quota_after_group?: number;
+          task_usage_billing?: boolean;
+          usage_facts?: Record<string, unknown>;
+          expr_string?: string;
+        };
+      };
+    };
+    assert.equal(priv.billing_context?.tiered_snapshot?.billing_mode, "tiered_expr");
+    assert.equal(priv.billing_context?.tiered_snapshot?.estimated_tier, "720P");
+    assert.equal(priv.billing_context?.tiered_snapshot?.estimated_quota_after_group, 12_500_000);
+    assert.equal(priv.billing_context?.tiered_snapshot?.task_usage_billing, true);
+    assert.equal(priv.billing_context?.tiered_snapshot?.expr_string, expression);
+    assert.deepEqual(priv.billing_context?.tiered_snapshot?.usage_facts, { seconds: 5, mode: "pro" });
+
+    const logs = await json(new Request("http://local/api/log/?type=2", { headers: auth }), e);
+    const items = (logs.body.data as { items: { quota: number; content: string; other: string }[] }).items;
+    assert.equal(items[0].quota, 12_500_000);
+    assert.match(items[0].content, /seconds: 5/);
+    assert.match(items[0].content, /mode: pro/);
+    const other = JSON.parse(items[0].other || "{}") as Record<string, unknown>;
+    assert.equal(other.billing_mode, "tiered_expr");
+    assert.equal(other.expr_b64, Buffer.from(expression, "utf8").toString("base64"));
+    assert.equal(other.matched_tier, "720P");
+    assert.deepEqual(other.usage_facts, { seconds: 5, mode: "pro" });
+    assert.equal(other.model_price, 0);
+    assert.equal("model_ratio" in other, false);
+    const user = await store.getUserByUsername("root");
+    assert.equal(Number(user?.quota), ROOT_QUOTA - 12_500_000);
+    assert.equal(Number(user?.used_quota), 12_500_000);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original native RelayTask EvaluateTaskCompletionUsage immediate SUCCESS JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  const source = httpUsagePlugin.replace(
+    `taskData:{accepted:true,status:resp.statusCode}`,
+    `taskData:{accepted:true},immediate:{status:"SUCCESS",progress:"100%",usageFacts:{seconds:8}}`,
+  );
+  await registerHttpUsage(e, auth, source, "mock-tiered-complete");
+  const expression = `tier("base", u("seconds") * 5)`;
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "billing_setting.billing_mode", value: JSON.stringify({ "mock-v1": "tiered_expr" }) }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "billing_setting.billing_expr", value: JSON.stringify({ "mock-v1": expression }) }),
+    }),
+    e,
+  );
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://provider.example.test/submit") {
+      return new Response(JSON.stringify({ id: "upstream-complete" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 200, hit.text);
+    const taskId = String((hit.body as { data?: { task_id?: string } }).data?.task_id);
+    const persisted = await store.getTaskByTid(taskId);
+    assert.equal(Number(persisted?.quota), 20_000_000);
+    const priv = JSON.parse(String(persisted?.private_data || "{}")) as {
+      billing_context?: { tiered_snapshot?: { estimated_tier?: string; usage_facts?: Record<string, unknown> } };
+    };
+    assert.equal(priv.billing_context?.tiered_snapshot?.estimated_tier, "base");
+    assert.deepEqual(priv.billing_context?.tiered_snapshot?.usage_facts, { seconds: 8, mode: "pro" });
+    const logs = await json(new Request("http://local/api/log/?type=2", { headers: auth }), e);
+    const items = (logs.body.data as { items: { quota: number; other: string }[] }).items;
+    assert.equal(items[0].quota, 20_000_000);
+    const other = JSON.parse(items[0].other || "{}") as Record<string, unknown>;
+    assert.equal(other.matched_tier, "base");
+    assert.deepEqual(other.usage_facts, { seconds: 8, mode: "pro" });
+    const user = await store.getUserByUsername("root");
+    assert.equal(Number(user?.quota), ROOT_QUOTA - 20_000_000);
+    assert.equal(Number(user?.used_quota), 20_000_000);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

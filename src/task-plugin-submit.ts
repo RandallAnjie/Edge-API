@@ -11,6 +11,16 @@ import {
 } from "./channel-select.js";
 import { PIN_RETRY_SINGLE_ATTEMPT } from "./channel-constraint.js";
 import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_VERTEX, DEFAULT_GROUP_RATIO, parseJson, ROLE_ADMIN } from "./constants.js";
+import {
+  billingSnapshotJSON,
+  evaluateTaskCompletionUsage,
+  exprHashString,
+  exprVersion,
+  runExprWithRequest,
+  usesFixedPricing,
+  type BillingSnapshot,
+} from "./billing-expr.js";
+import { BILLING_MODE_TIERED_EXPR, getBillingMode, resolveTaskBillingExpr } from "./billing-setting.js";
 import { clientIp, json, noAvailableChannelMessage, openaiError, pluginProtocolSubmissionError, taskErrorJson, tokenModelForbiddenMessage } from "./http.js";
 import {
   logTaskConsumption,
@@ -48,9 +58,11 @@ import {
   applyOtherRatiosToFloat,
   applyRelayTaskSubmitBilling,
   estimateBillingValidated,
+  extractUsageFactsValidated,
   pluginHasUsageProfiles,
   quotaClampMessage,
   quotaFromFloatChecked,
+  quotaRoundChecked,
   validateResolvedUsageRequest,
 } from "./task-plugin-usage.js";
 
@@ -325,6 +337,23 @@ function modelPriceNotConfigured(modelName: string, userRole: number): string {
   );
 }
 
+/** Original `helper.HandleGroupRatio`. */
+export async function handleGroupRatio(
+  store: Store,
+  group: string,
+  userGroup = "",
+): Promise<{ groupRatio: number; groupSpecialRatio: number; hasSpecialRatio: boolean }> {
+  const overlay = parseJson<Record<string, Record<string, number>>>(await store.option("GroupGroupRatio"), {});
+  const nested = userGroup ? overlay[userGroup] : undefined;
+  if (nested && nested[group] != null) {
+    const groupRatio = Number(nested[group]);
+    return { groupRatio, groupSpecialRatio: groupRatio, hasSpecialRatio: true };
+  }
+  const groupRatioMap = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
+  const groupRatio = groupRatioMap[group] ?? groupRatioMap.default ?? 1;
+  return { groupRatio, groupSpecialRatio: -1, hasSpecialRatio: false };
+}
+
 /** Original `helper.HandleGroupRatio` + `helper.ModelPriceHelperPerCall` (task submit). */
 export async function modelPriceHelperPerCall(
   store: Store,
@@ -334,19 +363,7 @@ export async function modelPriceHelperPerCall(
   userSettings: unknown,
   userGroup = "",
 ): Promise<TaskPriceData | NativeTaskError> {
-  const overlay = parseJson<Record<string, Record<string, number>>>(await store.option("GroupGroupRatio"), {});
-  const nested = userGroup ? overlay[userGroup] : undefined;
-  let groupRatio: number;
-  let groupSpecialRatio = -1;
-  let hasSpecialRatio = false;
-  if (nested && nested[group] != null) {
-    groupRatio = Number(nested[group]);
-    groupSpecialRatio = groupRatio;
-    hasSpecialRatio = true;
-  } else {
-    const groupRatioMap = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
-    groupRatio = groupRatioMap[group] ?? groupRatioMap.default ?? 1;
-  }
+  const { groupRatio, groupSpecialRatio, hasSpecialRatio } = await handleGroupRatio(store, group, userGroup);
   const quotaPerUnit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
   const modelPriceMap = parseJson<Record<string, number>>(await store.option("ModelPrice"), {});
   let priced = getModelPriceFromMap(modelName, modelPriceMap);
@@ -723,6 +740,7 @@ async function persistNativeTask(opts: {
   requestPath: string;
   otherRatios: Record<string, number>;
   price: TaskPriceData;
+  snapshot?: BillingSnapshot | null;
 }): Promise<Record<string, unknown>> {
   const immediate = taskStatusFromImmediate(opts.parsed.immediate);
   const meta = pluginMeta(opts.engine);
@@ -750,6 +768,7 @@ async function persistNativeTask(opts: {
       other_ratios: opts.otherRatios,
       origin_model_name: opts.info.originModelName,
       per_call_billing: opts.price.usePrice,
+      ...(opts.snapshot ? { tiered_snapshot: billingSnapshotJSON(opts.snapshot) } : {}),
     },
   };
   if (opts.parsed.pluginState != null) privateData.plugin_state = opts.parsed.pluginState;
@@ -800,8 +819,16 @@ async function relayTaskSubmitOnce(opts: {
   store: Store;
   auth: AuthToken;
   billing: NativeTaskBillingSession;
+  pluginKey: string;
 }): Promise<
-  | { parsed: NativeSubmitParsed; info: NativeSubmitInfo; otherRatios: Record<string, number>; quota: number; price: TaskPriceData }
+  | {
+      parsed: NativeSubmitParsed;
+      info: NativeSubmitInfo;
+      otherRatios: Record<string, number>;
+      quota: number;
+      price: TaskPriceData;
+      snapshot: BillingSnapshot | null;
+    }
   | NativeTaskError
 > {
   const info = { ...opts.info };
@@ -844,27 +871,96 @@ async function relayTaskSubmitOnce(opts: {
     if (usageErr) return taskErr("plugin_usage_invalid", usageErr, 400, true);
   }
 
-  const priced = await modelPriceHelperPerCall(
-    opts.store,
-    info.originModelName,
-    info.usingGroup,
-    opts.auth.user.role || 0,
-    opts.auth.user.settings,
-    opts.auth.user.group,
-  );
-  if ("statusCode" in priced) return priced;
-  const estimated = estimateBillingValidated(
-    opts.engine,
-    submitContext,
-    info.upstreamModelName || info.originModelName,
-  );
-  if ("error" in estimated) return taskErr("plugin_usage_invalid", estimated.error, 400, true);
-  const estimatedRatios = estimated.ratios && Object.keys(estimated.ratios).length ? estimated.ratios : {};
-  let quota = priced.quota;
-  if (!priced.freeModel && Object.keys(estimatedRatios).length) {
-    const checked = quotaFromFloatChecked(applyOtherRatiosToFloat(quota, estimatedRatios));
-    quota = checked.quota;
-    if (!priced.clamp) priced.clamp = checked.clamp;
+  const modelName = info.originModelName;
+  const mappedModel = info.upstreamModelName || modelName;
+  const billingMaps = {
+    pluginExprs: parseJson<Record<string, string>>(await opts.store.option("billing_setting.plugin_billing_expr"), {}),
+    modes: parseJson<Record<string, string>>(await opts.store.option("billing_setting.billing_mode"), {}),
+    exprs: parseJson<Record<string, string>>(await opts.store.option("billing_setting.billing_expr"), {}),
+    modelRatio: parseJson<Record<string, number>>(await opts.store.option("ModelRatio"), {}),
+    modelPrice: parseJson<Record<string, number>>(await opts.store.option("ModelPrice"), {}),
+  };
+  const resolved = resolveTaskBillingExpr(opts.pluginKey, modelName, mappedModel, billingMaps);
+  const useTiered = resolved.exists || getBillingMode(modelName, billingMaps.modes, billingMaps.modelRatio, billingMaps.modelPrice) === BILLING_MODE_TIERED_EXPR;
+  let priced: TaskPriceData;
+  let estimatedRatios: Record<string, number> = {};
+  let snapshot: BillingSnapshot | null = null;
+  let quota: number;
+  if (useTiered) {
+    if (usesFixedPricing(resolved.expr)) {
+      return taskErr("model_price_error", "fixed pricing is not supported for task usage expressions", 400, false);
+    }
+    if (!resolved.exists) {
+      return taskErr("model_price_error", `task model ${modelName} has no usage expression or meter`, 400, false);
+    }
+    const factsResult = extractUsageFactsValidated(opts.engine, submitContext, mappedModel);
+    if ("error" in factsResult) return taskErr("plugin_usage_invalid", factsResult.error, 400, true);
+    const facts = factsResult.facts && Object.keys(factsResult.facts).length ? factsResult.facts : {};
+    let cost: number;
+    let matchedTier = "";
+    try {
+      const ran = runExprWithRequest(resolved.expr, facts);
+      cost = ran.cost;
+      matchedTier = ran.matchedTier;
+    } catch (err) {
+      return taskErr("model_price_error", hookMessage(err), 400, false);
+    }
+    if (cost < 0) return taskErr("model_price_error", "negative task expression result", 400, false);
+    const groupInfo = await handleGroupRatio(opts.store, info.usingGroup, opts.auth.user.group);
+    const quotaPerUnit = (await opts.store.optionNum("QuotaPerUnit", 500000)) || 500000;
+    const rounded = quotaRoundChecked(cost * quotaPerUnit * groupInfo.groupRatio);
+    quota = rounded.quota;
+    priced = {
+      quota,
+      modelPrice: 0,
+      modelRatio: 0,
+      groupRatio: groupInfo.groupRatio,
+      groupSpecialRatio: groupInfo.groupSpecialRatio,
+      hasSpecialRatio: groupInfo.hasSpecialRatio,
+      usePrice: false,
+      freeModel: false,
+      clamp: rounded.clamp,
+    };
+    snapshot = {
+      billingMode: BILLING_MODE_TIERED_EXPR,
+      modelName,
+      exprString: resolved.expr,
+      exprHash: exprHashString(resolved.expr),
+      groupRatio: groupInfo.groupRatio,
+      estimatedPromptTokens: 0,
+      estimatedCompletionTokens: 0,
+      estimatedQuotaBeforeGroup: cost * quotaPerUnit,
+      estimatedQuotaAfterGroup: quota,
+      estimatedTier: matchedTier,
+      quotaPerUnit,
+      exprVersion: exprVersion(resolved.expr),
+      taskUsageBilling: true,
+      usageFacts: facts,
+    };
+  } else {
+    const helper = await modelPriceHelperPerCall(
+      opts.store,
+      info.originModelName,
+      info.usingGroup,
+      opts.auth.user.role || 0,
+      opts.auth.user.settings,
+      opts.auth.user.group,
+    );
+    if ("statusCode" in helper) return helper;
+    priced = helper;
+    const estimated = estimateBillingValidated(
+      opts.engine,
+      submitContext,
+      info.upstreamModelName || info.originModelName,
+    );
+    if ("error" in estimated) return taskErr("plugin_usage_invalid", estimated.error, 400, true);
+    estimatedRatios = estimated.ratios && Object.keys(estimated.ratios).length ? estimated.ratios : {};
+    quota = priced.quota;
+    if (!priced.freeModel && Object.keys(estimatedRatios).length) {
+      const checked = quotaFromFloatChecked(applyOtherRatiosToFloat(quota, estimatedRatios));
+      quota = checked.quota;
+      if (!priced.clamp) priced.clamp = checked.clamp;
+    }
   }
   if (!priced.freeModel) {
     if (priced.clamp) return taskErr("model_price_error", quotaClampMessage(priced.clamp), 400, true);
@@ -883,17 +979,40 @@ async function relayTaskSubmitOnce(opts: {
     return parsed;
   }
   applyNativeSubmitCompletionUsage(opts.engine, parsed, info);
-  const billed = applyRelayTaskSubmitBilling({
-    engine: opts.engine,
-    submitContext,
-    modelName: info.upstreamModelName || info.originModelName,
-    taskData: parsed.taskData,
-    immediate: parsed.immediate,
-    quota,
-    otherRatios: estimatedRatios,
-  });
-  if (!priced.clamp) priced.clamp = billed.clamp;
-  return { parsed, info, otherRatios: billed.otherRatios, quota: billed.quota, price: priced };
+  if (parsed.immediate && String(parsed.immediate.status || "") === "FAILURE") {
+    quota = 0;
+  } else if (snapshot) {
+    const immediateFacts = isPlainObject(parsed.immediate?.usageFacts)
+      ? parsed.immediate.usageFacts
+      : isPlainObject(parsed.immediate?.usage_facts)
+        ? parsed.immediate.usage_facts
+        : null;
+    if (parsed.immediate && String(parsed.immediate.status || "") === "SUCCESS" && immediateFacts && Object.keys(immediateFacts).length) {
+      try {
+        const settled = evaluateTaskCompletionUsage(snapshot, immediateFacts);
+        quota = settled.result.actualQuotaAfterGroup;
+        snapshot.usageFacts = settled.usage;
+        snapshot.estimatedTier = settled.result.matchedTier;
+        if (!priced.clamp) priced.clamp = settled.result.clamp;
+      } catch {
+        /* original retains reserved quota when immediate usage settlement fails */
+      }
+    }
+  } else {
+    const billed = applyRelayTaskSubmitBilling({
+      engine: opts.engine,
+      submitContext,
+      modelName: info.upstreamModelName || info.originModelName,
+      taskData: parsed.taskData,
+      immediate: parsed.immediate,
+      quota,
+      otherRatios: estimatedRatios,
+    });
+    quota = billed.quota;
+    estimatedRatios = billed.otherRatios;
+    if (!priced.clamp) priced.clamp = billed.clamp;
+  }
+  return { parsed, info, otherRatios: estimatedRatios, quota, price: priced, snapshot };
 }
 
 function nativeSubmitError(prepared: SubmitKind, engine: PluginEngine, err: NativeTaskError, requestId: string): Response {
@@ -1004,6 +1123,7 @@ export async function executeNativeTaskSubmission(
     otherRatios: Record<string, number>;
     quota: number;
     price: TaskPriceData;
+    snapshot: BillingSnapshot | null;
   } | null = null;
   const billing: NativeTaskBillingSession = { preconsumed: 0, started: false };
 
@@ -1022,7 +1142,7 @@ export async function executeNativeTaskSubmission(
       usingGroup: auth.usingGroup,
       isModelMapped: false,
     };
-    const result = await relayTaskSubmitOnce({ engine, prepared, req, channel, info, store, auth, billing });
+    const result = await relayTaskSubmitOnce({ engine, prepared, req, channel, info, store, auth, billing, pluginKey: plugin.key });
     if (!("statusCode" in result)) {
       outcome = result;
       lastErr = null;
@@ -1069,6 +1189,7 @@ export async function executeNativeTaskSubmission(
       requestPath: path,
       otherRatios: outcome.otherRatios,
       price: outcome.price,
+      snapshot: outcome.snapshot,
     });
   } catch (err) {
     await refundNativeTaskBilling(store, auth, billing);
@@ -1112,6 +1233,13 @@ export async function executeNativeTaskSubmission(
         upstreamTaskId: outcome.parsed.upstreamTaskId,
         plugin: taskPluginSnapshotFromMeta(meta, plugin),
         perCall: outcome.price.usePrice,
+        tiered: outcome.snapshot
+          ? {
+              exprString: outcome.snapshot.exprString,
+              estimatedTier: outcome.snapshot.estimatedTier,
+              usageFacts: outcome.snapshot.usageFacts,
+            }
+          : null,
       },
     });
   } catch {
