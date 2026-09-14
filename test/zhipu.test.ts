@@ -119,7 +119,7 @@ test("original Zhipu, Perplexity, Cloudflare, BaiduV2, and MiniMax ConvertOpenAI
     name: "minimax",
     type: CHANNEL_TYPE_MINIMAX,
     key: "mk",
-    models: "abab6.5s-chat",
+    models: "abab6.5s-chat,image-01,speech-01-turbo",
     group: "default",
   });
 
@@ -166,6 +166,22 @@ test("original Zhipu, Perplexity, Cloudflare, BaiduV2, and MiniMax ConvertOpenAI
           model: "ernie-4.0-8k",
           choices: [{ index: 0, message: { role: "assistant", content: "hello v2" }, finish_reason: "stop" }],
           usage: { prompt_tokens: 4, completion_tokens: 5, total_tokens: 9 },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/v1/image_generation")) {
+      return new Response(
+        JSON.stringify({ data: { image_urls: ["https://example.com/minimax.png"] } }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/v1/t2a_v2")) {
+      return new Response(
+        JSON.stringify({
+          data: { audio: "48656c6c6f", status: 2 },
+          extra_info: { usage_characters: 5 },
+          base_resp: { status_code: 0, status_msg: "" },
         }),
         { headers: { "content-type": "application/json" } },
       );
@@ -342,6 +358,37 @@ test("original Zhipu, Perplexity, Cloudflare, BaiduV2, and MiniMax ConvertOpenAI
     if (!mmCall) throw new Error("missing minimax upstream");
     assert.deepEqual(mmCall.body.stream_options, { include_usage: true });
     assert.equal((mmChat.body.choices as { message: { content: string } }[])[0].message.content, "hello");
+
+    const mmImage = await json(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "image-01", prompt: "a red fox in snowfall", size: "1536x1024", n: 2 }),
+      }),
+      e,
+    );
+    assert.equal(mmImage.res.status, 200, mmImage.text);
+    const mmImageCall = calls.find((c) => c.url === "https://api.minimax.chat/v1/image_generation");
+    if (!mmImageCall) throw new Error("missing minimax image upstream");
+    assert.equal(mmImageCall.body.aspect_ratio, "3:2");
+    assert.equal(mmImage.text.includes('"url":"https://example.com/minimax.png"'), true);
+    assert.equal(mmImage.text.includes('"image_urls"'), false);
+
+    const mmSpeech = await json(
+      new Request("http://local/v1/audio/speech", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "speech-01-turbo", input: "hello", voice: "female-shaonv" }),
+      }),
+      e,
+    );
+    assert.equal(mmSpeech.res.status, 200, mmSpeech.text);
+    assert.equal(mmSpeech.res.headers.get("content-type"), "audio/mpeg");
+    assert.equal(mmSpeech.text, "Hello");
+    const mmSpeechCall = calls.find((c) => c.url === "https://api.minimax.chat/v1/t2a_v2");
+    if (!mmSpeechCall) throw new Error("missing minimax tts upstream");
+    assert.equal(mmSpeechCall.body.model, "speech-01-turbo");
+    assert.equal(mmSpeechCall.body.text, "hello");
   } finally {
     globalThis.fetch = origFetch;
   }

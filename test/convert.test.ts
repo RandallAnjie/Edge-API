@@ -26,6 +26,8 @@ import {
   openaiFromDifyResponse,
   openaiFromZhipuResponse,
   convertMiniMaxImageRequest,
+  openaiFromMiniMaxImage,
+  miniMaxTTSDoResponse,
   convertMistralOpenAIRequest,
   convertMokaEmbeddingRequest,
   convertSiliconFlowImageRequest,
@@ -1524,6 +1526,25 @@ test("original Zhipu, ZhipuV4, Perplexity, Cloudflare, BaiduV2, and MiniMax Conv
   assert.equal(mmImage.n, 2);
   assert.equal(mmImage.aspect_ratio, "3:2");
   assert.equal(mmImage.response_format, "url");
+
+  const mmImageOut = openaiFromMiniMaxImage(
+    { data: { image_urls: ["https://example.com/minimax.png"] } },
+    { created: 1700000000 },
+  );
+  assert.equal(mmImageOut.created, 1700000000);
+  assert.deepEqual(mmImageOut.data, [{ url: "https://example.com/minimax.png" }]);
+  assert.equal(JSON.stringify(mmImageOut).includes("image_urls"), false);
+
+  const mmTts = miniMaxTTSDoResponse({
+    data: { audio: "48656c6c6f", status: 2 },
+    extra_info: { usage_characters: 5 },
+    base_resp: { status_code: 0 },
+  });
+  assert.equal(mmTts.kind, "audio");
+  if (mmTts.kind === "audio") {
+    assert.equal(new TextDecoder().decode(mmTts.body), "Hello");
+    assert.equal(mmTts.contentType, "audio/mpeg");
+  }
 
   clearZhipuTokenCache();
   const jwt = await getZhipuToken("id.secret", 1_700_000_000_000);

@@ -399,7 +399,7 @@ export {
   openaiFromCloudflareResponse,
 } from "./cloudflare-convert.js";
 export { convertBaiduV2OpenAIRequest } from "./baidu-v2-convert.js";
-export { convertMiniMaxImageRequest, convertMiniMaxOpenAIRequest, convertMiniMaxTTSRequest } from "./minimax-convert.js";
+export { convertMiniMaxImageRequest, convertMiniMaxOpenAIRequest, convertMiniMaxTTSRequest, openaiFromMiniMaxImage, miniMaxTTSDoResponse } from "./minimax-convert.js";
 export {
   convertTencentOpenAIRequest,
   openaiFromTencentResponse,

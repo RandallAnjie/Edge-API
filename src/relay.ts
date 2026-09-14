@@ -41,6 +41,7 @@ import { openaiFromPalmResponse, palmUpstreamToOpenAIChat } from "./palm-convert
 import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
 import { openaiFromReplicatePrediction } from "./replicate-convert.js";
 import { applyJimengAuthorization, openaiFromJimengImage } from "./jimeng-convert.js";
+import { miniMaxTTSDoResponse, openaiFromMiniMaxImage } from "./minimax-convert.js";
 import { clientIp, groupAccessDeniedMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import {
@@ -549,6 +550,9 @@ function convertInbound(
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_REPLICATE && opts.relayMode === "images") {
     return openaiFromReplicatePrediction(upstreamJson, { created: opts.created });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_MINIMAX && opts.relayMode === "images") {
+    return openaiFromMiniMaxImage(upstreamJson, { created: opts.created });
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_JIMENG && opts.relayMode === "images") {
     return openaiFromJimengImage(upstreamJson, { created: opts.created });
@@ -1229,6 +1233,29 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         });
       }
     }
+    if (channel.type === CHANNEL_TYPE_MINIMAX && mode === "audio_speech") {
+      try {
+        const tts = miniMaxTTSDoResponse(parsed);
+        extra.cachedTokens = 0;
+        extra.promptCacheHitTokens = 0;
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, true, "", extra);
+        if (tts.kind === "redirect") {
+          return new Response(null, {
+            status: 302,
+            headers: { location: tts.url, "x-oneapi-request-id": rid },
+          });
+        }
+        return new Response(tts.body, {
+          status: 200,
+          headers: { "content-type": tts.contentType, "x-oneapi-request-id": rid },
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, message.slice(0, 2000), extra);
+        const status = message.startsWith("minimax TTS error:") || message.startsWith("no audio data") ? 400 : 500;
+        return openaiError(status, message, "bad_response");
+      }
+    }
     let converted: Record<string, unknown>;
     try {
       converted = convertInbound(kind, clientFormat, parsed, mapped, {
@@ -1246,6 +1273,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, message.slice(0, 2000), extra);
       if (message.startsWith("unsupported advanced custom converter:")) {
         return openaiError(400, message, "invalid_request");
+      }
+      const imageType = err instanceof Error ? (err as Error & { type?: string; code?: string }).type : undefined;
+      if (imageType === "minimax_image_error") {
+        const code = String((err as Error & { code?: string }).code || "");
+        return openaiError(400, message, code, "minimax_image_error");
       }
       return openaiError(500, message, "bad_response_body");
     }

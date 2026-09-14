@@ -1,4 +1,4 @@
-/** Original `relay/channel/minimax` ConvertOpenAIRequest / ConvertImageRequest / ConvertAudioRequest / GetRequestURL. */
+/** Original `relay/channel/minimax` ConvertOpenAIRequest / ConvertImageRequest / ConvertAudioRequest / GetRequestURL / DoResponse. */
 
 export type ConvertMiniMaxOpts = {
   upstreamModelName?: string;
@@ -148,4 +148,83 @@ export function convertMiniMaxTTSRequest(body: Record<string, unknown>, opts: Co
     Object.assign(out, metadata);
   }
   return out;
+}
+
+function asMiniMaxObj(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+function asMiniMaxArr(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((item) => (typeof item === "string" ? item : String(item ?? "")));
+}
+
+/** Original `minimax.responseMiniMax2OpenAIImage`. */
+export function openaiFromMiniMaxImage(
+  upstream: Record<string, unknown>,
+  opts: { created?: number } = {},
+): Record<string, unknown> {
+  const baseResp = asMiniMaxObj(upstream.base_resp);
+  const statusCode = Number(baseResp.status_code || 0);
+  if (statusCode !== 0) {
+    const err = new Error(String(baseResp.status_msg || "minimax_image_error"));
+    (err as Error & { code?: string; type?: string }).code = String(statusCode);
+    (err as Error & { type?: string }).type = "minimax_image_error";
+    throw err;
+  }
+  const data = asMiniMaxObj(upstream.data);
+  const outData: Record<string, unknown>[] = [];
+  for (const url of asMiniMaxArr(data.image_urls)) {
+    if (url) outData.push({ url });
+  }
+  for (const b64 of asMiniMaxArr(data.image_base64)) {
+    if (b64) outData.push({ b64_json: b64 });
+  }
+  const out: Record<string, unknown> = {
+    created: opts.created ?? Math.floor(Date.now() / 1000),
+    data: outData,
+  };
+  const metadata = upstream.metadata;
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata) && Object.keys(asMiniMaxObj(metadata)).length) {
+    out.metadata = metadata;
+  }
+  return out;
+}
+
+export type MiniMaxTTSResult =
+  | { kind: "redirect"; url: string; usageCharacters: number }
+  | { kind: "audio"; body: Uint8Array; contentType: string; usageCharacters: number };
+
+function decodeHexAudio(hex: string): Uint8Array {
+  const clean = hex.trim();
+  if (!clean.length || clean.length % 2 !== 0) throw new Error("failed to decode hex audio data");
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < clean.length; i += 2) {
+    const n = Number.parseInt(clean.slice(i, i + 2), 16);
+    if (!Number.isFinite(n)) throw new Error("failed to decode hex audio data: encoding/hex: invalid byte");
+    out[i / 2] = n;
+  }
+  return out;
+}
+
+/** Original `minimax.handleTTSResponse` non-stream JSON. */
+export function miniMaxTTSDoResponse(upstream: Record<string, unknown>): MiniMaxTTSResult {
+  const baseResp = asMiniMaxObj(upstream.base_resp);
+  const statusCode = Number(baseResp.status_code || 0);
+  if (statusCode !== 0) {
+    throw new Error(`minimax TTS error: ${statusCode} - ${String(baseResp.status_msg || "")}`);
+  }
+  const data = asMiniMaxObj(upstream.data);
+  const audio = String(data.audio || "");
+  if (!audio) throw new Error("no audio data in minimax TTS response");
+  const usageCharacters = Number(asMiniMaxObj(upstream.extra_info).usage_characters || 0);
+  if (audio.startsWith("http")) {
+    return { kind: "redirect", url: audio, usageCharacters };
+  }
+  return {
+    kind: "audio",
+    body: decodeHexAudio(audio),
+    contentType: "audio/mpeg",
+    usageCharacters,
+  };
 }
