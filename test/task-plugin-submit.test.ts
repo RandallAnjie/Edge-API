@@ -179,6 +179,7 @@ test("original presentTaskSubmission openai_video create uses host ToOpenAIVideo
   assert.equal(JSON.stringify(body).includes("task_id"), false);
 });
 
+test("original parseSubmitResponse must not return clientResponse JSON", () => {
   const source = presenterSource.replace(
     `return {taskId:"upstream"}`,
     `return {taskId:"upstream", clientResponse: {id: ctx.publicTaskId}}`,
