@@ -11,7 +11,12 @@ import {
 } from "./channel-select.js";
 import { PIN_RETRY_SINGLE_ATTEMPT } from "./channel-constraint.js";
 import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_VERTEX, DEFAULT_GROUP_RATIO, parseJson, ROLE_ADMIN } from "./constants.js";
-import { json, noAvailableChannelMessage, openaiError, pluginProtocolSubmissionError, taskErrorJson, tokenModelForbiddenMessage } from "./http.js";
+import { clientIp, json, noAvailableChannelMessage, openaiError, pluginProtocolSubmissionError, taskErrorJson, tokenModelForbiddenMessage } from "./http.js";
+import {
+  logTaskConsumption,
+  taskPluginSnapshotFromMeta,
+  type TaskPriceData,
+} from "./task-plugin-billing.js";
 import { type PluginEngine, validateRequestURL } from "./jsplugin.js";
 import { requestHeadersFrom } from "./param-override.js";
 import type { MatchedPlugin } from "./plugin-dispatch.js";
@@ -44,7 +49,7 @@ import {
   applyRelayTaskSubmitBilling,
   estimateBillingValidated,
   pluginHasUsageProfiles,
-  quotaFromFloat,
+  quotaFromFloatChecked,
   validateResolvedUsageRequest,
 } from "./task-plugin-usage.js";
 
@@ -89,6 +94,7 @@ export type NativeSubmitInfo = {
   channelId: number;
   channelType: number;
   usingGroup: string;
+  isModelMapped: boolean;
 };
 
 type SubmitKind = Extract<PreparedNativeRoute, { kind: "submit" }>;
@@ -190,19 +196,28 @@ function modelPriceNotConfigured(modelName: string, userRole: number): string {
   );
 }
 
-/** Original `helper.ModelPriceHelperPerCall` (task submit). */
+/** Original `helper.HandleGroupRatio` + `helper.ModelPriceHelperPerCall` (task submit). */
 export async function modelPriceHelperPerCall(
   store: Store,
   modelName: string,
   group: string,
   userRole: number,
   userSettings: unknown,
-): Promise<
-  | { quota: number; modelPrice: number; modelRatio: number; groupRatio: number; usePrice: boolean; freeModel: boolean }
-  | NativeTaskError
-> {
-  const groupRatioMap = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
-  const groupRatio = groupRatioMap[group] ?? groupRatioMap.default ?? 1;
+  userGroup = "",
+): Promise<TaskPriceData | NativeTaskError> {
+  const overlay = parseJson<Record<string, Record<string, number>>>(await store.option("GroupGroupRatio"), {});
+  const nested = userGroup ? overlay[userGroup] : undefined;
+  let groupRatio: number;
+  let groupSpecialRatio = -1;
+  let hasSpecialRatio = false;
+  if (nested && nested[group] != null) {
+    groupRatio = Number(nested[group]);
+    groupSpecialRatio = groupRatio;
+    hasSpecialRatio = true;
+  } else {
+    const groupRatioMap = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
+    groupRatio = groupRatioMap[group] ?? groupRatioMap.default ?? 1;
+  }
   const quotaPerUnit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
   const modelPriceMap = parseJson<Record<string, number>>(await store.option("ModelPrice"), {});
   let priced = getModelPriceFromMap(modelName, modelPriceMap);
@@ -229,21 +244,26 @@ export async function modelPriceHelperPerCall(
   }
   let quota: number;
   let freeModel = false;
+  let clamp: TaskPriceData["clamp"] = null;
   if (usePrice) {
-    quota = quotaFromFloat(modelPrice * quotaPerUnit * groupRatio);
+    const checked = quotaFromFloatChecked(modelPrice * quotaPerUnit * groupRatio);
+    quota = checked.quota;
+    clamp = checked.clamp;
     if (groupRatio === 0 || modelPrice === 0) {
       quota = 0;
       freeModel = true;
     }
   } else {
-    quota = quotaFromFloat((modelRatio / 2) * quotaPerUnit * groupRatio);
+    const checked = quotaFromFloatChecked((modelRatio / 2) * quotaPerUnit * groupRatio);
+    quota = checked.quota;
+    clamp = checked.clamp;
     modelPrice = -1;
     if (groupRatio === 0 || modelRatio === 0) {
       quota = 0;
       freeModel = true;
     }
   }
-  return { quota, modelPrice, modelRatio, groupRatio, usePrice, freeModel };
+  return { quota, modelPrice, modelRatio, groupRatio, groupSpecialRatio, hasSpecialRatio, usePrice, freeModel, clamp };
 }
 
 export function shouldRetryNativeTaskRelay(err: NativeTaskError, remaining: number, suppress: boolean): boolean {
@@ -573,23 +593,35 @@ async function persistNativeTask(opts: {
   requestId: string;
   requestPath: string;
   otherRatios: Record<string, number>;
+  price: TaskPriceData;
 }): Promise<Record<string, unknown>> {
   const immediate = taskStatusFromImmediate(opts.parsed.immediate);
   const meta = pluginMeta(opts.engine);
+  const snapshot = taskPluginSnapshotFromMeta(meta, opts.plugin);
   const privateData: Record<string, unknown> = {
     upstream_task_id: opts.parsed.upstreamTaskId,
+    token_id: opts.auth.token.id,
+    billing_source: "wallet",
     execution: {
       request_id: opts.requestId,
       request_path: opts.requestPath,
       task_plugin: {
-        key: opts.plugin.key,
-        name: String(meta.name || opts.plugin.key),
-        version: String(meta.version || opts.plugin.version || ""),
-        api_version: Number(meta.apiVersion ?? 1),
-        author: isPlainObject(meta.author) ? { name: String(meta.author.name || ""), url: String(meta.author.url || "") } : undefined,
+        key: snapshot.key,
+        name: snapshot.name,
+        version: snapshot.version,
+        api_version: snapshot.apiVersion,
+        generation: snapshot.generation,
+        author: snapshot.author,
       },
     },
-    billing_context: { other_ratios: opts.otherRatios, origin_model_name: opts.info.originModelName },
+    billing_context: {
+      model_price: opts.price.modelPrice,
+      group_ratio: opts.price.groupRatio,
+      model_ratio: opts.price.modelRatio,
+      other_ratios: opts.otherRatios,
+      origin_model_name: opts.info.originModelName,
+      per_call_billing: opts.price.usePrice,
+    },
   };
   if (opts.parsed.pluginState != null) privateData.plugin_state = opts.parsed.pluginState;
   if (opts.info.channelType === CHANNEL_TYPE_GEMINI || opts.info.channelType === CHANNEL_TYPE_VERTEX) {
@@ -638,7 +670,10 @@ async function relayTaskSubmitOnce(opts: {
   info: NativeSubmitInfo;
   store: Store;
   auth: AuthToken;
-}): Promise<{ parsed: NativeSubmitParsed; info: NativeSubmitInfo; otherRatios: Record<string, number>; quota: number } | NativeTaskError> {
+}): Promise<
+  | { parsed: NativeSubmitParsed; info: NativeSubmitInfo; otherRatios: Record<string, number>; quota: number; price: TaskPriceData }
+  | NativeTaskError
+> {
   const info = { ...opts.info };
   let mapped = info.originModelName;
   try {
@@ -647,6 +682,7 @@ async function relayTaskSubmitOnce(opts: {
     return taskErr("model_mapping_failed", hookMessage(err), 400, true);
   }
   info.upstreamModelName = mapped;
+  info.isModelMapped = mapped !== info.originModelName;
   const submitContext = buildNativeSubmitContext({
     engine: opts.engine,
     requestContext: opts.prepared.requestContext,
@@ -684,6 +720,7 @@ async function relayTaskSubmitOnce(opts: {
     info.usingGroup,
     opts.auth.user.role || 0,
     opts.auth.user.settings,
+    opts.auth.user.group,
   );
   if ("statusCode" in priced) return priced;
   const estimated = estimateBillingValidated(
@@ -695,7 +732,9 @@ async function relayTaskSubmitOnce(opts: {
   const estimatedRatios = estimated.ratios && Object.keys(estimated.ratios).length ? estimated.ratios : {};
   let quota = priced.quota;
   if (!priced.freeModel && Object.keys(estimatedRatios).length) {
-    quota = quotaFromFloat(applyOtherRatiosToFloat(quota, estimatedRatios));
+    const checked = quotaFromFloatChecked(applyOtherRatiosToFloat(quota, estimatedRatios));
+    quota = checked.quota;
+    if (!priced.clamp) priced.clamp = checked.clamp;
   }
 
   const upstream = await doNativeSubmitRequest(descriptor, opts.prepared.requestContext.fileContents || [], {
@@ -718,7 +757,8 @@ async function relayTaskSubmitOnce(opts: {
     quota,
     otherRatios: estimatedRatios,
   });
-  return { parsed, info, otherRatios: billed.otherRatios, quota: billed.quota };
+  if (!priced.clamp) priced.clamp = billed.clamp;
+  return { parsed, info, otherRatios: billed.otherRatios, quota: billed.quota, price: priced };
 }
 
 function nativeSubmitError(prepared: SubmitKind, engine: PluginEngine, err: NativeTaskError, requestId: string): Response {
@@ -823,8 +863,13 @@ export async function executeNativeTaskSubmission(
   const suppress = selected.pinRetryMode === PIN_RETRY_SINGLE_ATTEMPT;
   const publicTaskId = generateTaskID();
   let lastErr: NativeTaskError | null = null;
-  let outcome: { parsed: NativeSubmitParsed; info: NativeSubmitInfo; otherRatios: Record<string, number>; quota: number } | null =
-    null;
+  let outcome: {
+    parsed: NativeSubmitParsed;
+    info: NativeSubmitInfo;
+    otherRatios: Record<string, number>;
+    quota: number;
+    price: TaskPriceData;
+  } | null = null;
   let preconsumed = 0;
 
   for (let attempt = 0; attempt <= retryTimes; attempt++) {
@@ -840,6 +885,7 @@ export async function executeNativeTaskSubmission(
       channelId: channel.id,
       channelType: channel.type,
       usingGroup: auth.usingGroup,
+      isModelMapped: false,
     };
     const result = await relayTaskSubmitOnce({ engine, prepared, req, channel, info, store, auth });
     if (!("statusCode" in result)) {
@@ -895,10 +941,41 @@ export async function executeNativeTaskSubmission(
       requestId,
       requestPath: path,
       otherRatios: outcome.otherRatios,
+      price: outcome.price,
     });
   } catch (err) {
     if (preconsumed) await store.addQuota(auth.user.id, preconsumed);
     return { error: nativeSubmitError(prepared, engine, taskErr("task_insert_failed", hookMessage(err), 500, true), requestId) };
+  }
+
+  try {
+    const meta = pluginMeta(engine);
+    await logTaskConsumption({
+      store,
+      user: auth.user,
+      tokenName: auth.token.name,
+      tokenId: auth.token.id,
+      channelId: outcome.info.channelId,
+      group: outcome.info.usingGroup,
+      ip: clientIp(req),
+      requestId,
+      input: {
+        action: outcome.info.action,
+        requestPath: path,
+        originModelName: outcome.info.originModelName,
+        upstreamModelName: outcome.info.upstreamModelName,
+        isModelMapped: outcome.info.isModelMapped,
+        price: { ...outcome.price, quota: outcome.quota },
+        otherRatios: outcome.otherRatios,
+        quota: outcome.quota,
+        taskId: outcome.info.publicTaskId,
+        upstreamTaskId: outcome.parsed.upstreamTaskId,
+        plugin: taskPluginSnapshotFromMeta(meta, plugin),
+        perCall: outcome.price.usePrice,
+      },
+    });
+  } catch {
+    /* Original RecordConsumeLog failures are logged, not returned to the client. */
   }
 
   return { row, originModelName: outcome.info.originModelName, otherRatios: outcome.otherRatios, engine };

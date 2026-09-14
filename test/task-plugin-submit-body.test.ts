@@ -143,6 +143,7 @@ export function parseSubmitResponse(ctx,r){return {taskId:"1"}} export function 
       channelId: 1,
       channelType: 1,
       usingGroup: "default",
+      isModelMapped: false,
     },
   });
   const descriptor = buildNativeSubmitDescriptor(loaded.engine, submitContext, "https://provider.example");

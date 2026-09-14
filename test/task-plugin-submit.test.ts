@@ -277,6 +277,7 @@ export function parseTaskResult(){return {status:"SUCCESS"};}
       channelId: 1,
       channelType: 1,
       usingGroup: "default",
+      isModelMapped: false,
     },
   });
   const descriptor = buildNativeSubmitDescriptor(loaded.engine, submitContext, "https://provider.example");

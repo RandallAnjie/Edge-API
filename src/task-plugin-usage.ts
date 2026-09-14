@@ -161,16 +161,17 @@ export function replaceOtherRatios(ratios: Record<string, number> | null | undef
   return Object.keys(next).length ? next : null;
 }
 
-/** Original `relay.recalcQuotaFromRatios`. */
+/** Original `relay.recalcQuotaFromRatios` + `noteTaskQuotaClamp`. */
 export function recalcQuotaFromRatios(
   quota: number,
   current: Record<string, number>,
   ratios: Record<string, number>,
-): { quota: number; ratios: Record<string, number> } | null {
+): { quota: number; ratios: Record<string, number>; clamp: QuotaClamp | null } | null {
   const baseQuota = removeOtherRatiosFromFloat(quota, current);
   const replaced = replaceOtherRatios(ratios);
   if (!replaced) return null;
-  return { quota: quotaFromFloat(applyOtherRatiosToFloat(baseQuota, replaced)), ratios: replaced };
+  const checked = quotaFromFloatChecked(applyOtherRatiosToFloat(baseQuota, replaced));
+  return { quota: checked.quota, ratios: replaced, clamp: checked.clamp };
 }
 
 /** Original `TaskAdaptor.validateUsageValue`. */
@@ -402,16 +403,16 @@ export function applyRelayTaskSubmitBilling(opts: {
   immediate: Record<string, unknown> | null;
   quota: number;
   otherRatios: Record<string, number>;
-}): { quota: number; otherRatios: Record<string, number> } {
+}): { quota: number; otherRatios: Record<string, number>; clamp: QuotaClamp | null } {
   if (opts.immediate && String(opts.immediate.status || "") === "FAILURE") {
-    return { quota: 0, otherRatios: opts.otherRatios };
+    return { quota: 0, otherRatios: opts.otherRatios, clamp: null };
   }
   const adjusted = adjustBillingOnSubmit(opts.engine, opts.submitContext, opts.modelName, opts.taskData);
   if (adjusted && Object.keys(adjusted).length) {
     const recalced = recalcQuotaFromRatios(opts.quota, opts.otherRatios, adjusted);
-    if (recalced) return { quota: recalced.quota, otherRatios: recalced.ratios };
+    if (recalced) return { quota: recalced.quota, otherRatios: recalced.ratios, clamp: recalced.clamp };
   }
-  return { quota: opts.quota, otherRatios: opts.otherRatios };
+  return { quota: opts.quota, otherRatios: opts.otherRatios, clamp: null };
 }
 
 /** Original `TaskAdaptor.validatedCompletionUsageFacts`. */

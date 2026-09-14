@@ -125,6 +125,7 @@ const submitInfo: NativeSubmitInfo = {
   channelId: 1,
   channelType: 1,
   usingGroup: "default",
+  isModelMapped: false,
 };
 
 function submitContext(requestBody: Record<string, unknown> = {}): Record<string, unknown> {
