@@ -641,7 +641,7 @@ test("original Gemini grounding ConvertResponse JSON emits url_citation and web_
             ],
             groundingSupports: [
               {
-                segment: { startIndex: 0, endIndex: 18, text: "The answer is 42." },
+                segment: { startIndex: 0, endIndex: 17, text: "The answer is 42." },
                 groundingChunkIndices: [0, 1, 0],
               },
             ],
@@ -658,7 +658,7 @@ test("original Gemini grounding ConvertResponse JSON emits url_citation and web_
   assert.equal(message.annotations?.length, 2);
   assert.equal(message.annotations?.[0].type, "url_citation");
   assert.equal(message.annotations?.[0].url_citation.start_index, 0);
-  assert.equal(message.annotations?.[0].url_citation.end_index, 18);
+  assert.equal(message.annotations?.[0].url_citation.end_index, 17);
   assert.equal(message.annotations?.[0].url_citation.url, "https://example.com/42");
   assert.equal(message.annotations?.[0].url_citation.title, "The Hitchhiker");
   assert.equal(message.annotations?.[1].url_citation.url, "https://example.com/retrieved");
@@ -672,7 +672,7 @@ test("original Gemini grounding ConvertResponse JSON emits url_citation and web_
           groundingMetadata: {
             groundingChunks: [{ web: { uri: "https://example.com/42", title: "The Hitchhiker" } }],
             groundingSupports: [
-              { segment: { startIndex: 0, endIndex: 18, text: "wrong" }, groundingChunkIndices: [0] },
+              { segment: { startIndex: 0, endIndex: 17, text: "wrong" }, groundingChunkIndices: [0] },
             ],
           },
         },
@@ -692,7 +692,7 @@ test("original Gemini grounding ConvertResponse JSON emits url_citation and web_
             webSearchQueries: ["answer 42", " deep thought "],
             groundingChunks: [{ web: { uri: "https://example.com/42", title: "The Hitchhiker" } }],
             groundingSupports: [
-              { segment: { startIndex: 0, endIndex: 18, text: "The answer is 42." }, groundingChunkIndices: [0] },
+              { segment: { startIndex: 0, endIndex: 17, text: "The answer is 42." }, groundingChunkIndices: [0] },
             ],
           },
         },
@@ -714,7 +714,7 @@ test("original Gemini grounding ConvertResponse JSON emits url_citation and web_
   assert.equal(citations?.[0].url, "https://example.com/42");
   assert.equal(citations?.[0].title, "The Hitchhiker");
   assert.equal(citations?.[0].start_index, 0);
-  assert.equal(citations?.[0].end_index, 18);
+  assert.equal(citations?.[0].end_index, 17);
   assert.equal("url_citation" in (citations?.[0] || {}), false);
   assert.equal(responsesOutput[1].type, "web_search_call");
   assert.match(responsesOutput[1].id, /^ws_/);
@@ -746,7 +746,7 @@ test("original Gemini grounding ConvertResponse JSON emits url_citation and web_
 
   const stream = geminiSseToOpenAIChat(
     [
-      'data: {"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"The answer is 42."}]},"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://example.com/42","title":"The Hitchhiker"}}],"groundingSupports":[{"segment":{"startIndex":0,"endIndex":18,"text":"The answer is 42."},"groundingChunkIndices":[0]}]}}]}',
+      'data: {"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"The answer is 42."}]},"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://example.com/42","title":"The Hitchhiker"}}],"groundingSupports":[{"segment":{"startIndex":0,"endIndex":17,"text":"The answer is 42."},"groundingChunkIndices":[0]}]}}]}',
       "",
     ].join("\n"),
     { id: "chatcmpl-stream", created: 0, upstreamModel: "upstream-model" },
