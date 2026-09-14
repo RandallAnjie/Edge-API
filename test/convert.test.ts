@@ -30,7 +30,7 @@ import {
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
+import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
@@ -39,6 +39,7 @@ import { getZhipuToken, clearZhipuTokenCache } from "../src/zhipu-convert.js";
 import { applyTencentTc3Authorization, getTencentSign, tencentTokenHubBase, TENCENT_TOKENHUB_BASE } from "../src/tencent-convert.js";
 import { buildXunfeiAuthUrl, xunfeiDomain, xunfeiHostUrl } from "../src/xunfei-convert.js";
 import { applyJimengAuthorization, jimengRequestURL } from "../src/jimeng-convert.js";
+import { buildCodexRelayTarget } from "../src/codex-models.js";
 import { mapOpenAISizeToFlux } from "../src/replicate-convert.js";
 import { mapModel } from "../src/select.js";
 import { buildUpstream } from "../src/upstream.js";
@@ -352,6 +353,11 @@ test("original GetOpenAIChatCapabilities and ConvertOpenAIRequest token limits",
   const azure = applyOpenAIChatCompatibility({ model: "o3-mini", messages: [{ role: "user", content: "hi" }], max_completion_tokens: 16 }, "o3-mini", 3);
   assert.equal(azure.max_completion_tokens, 16);
   assert.equal("max_tokens" in azure, false);
+  const azureStream = convertOpenAIRequest(
+    { model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream_options: { include_usage: true } },
+    { channelType: CHANNEL_TYPE_AZURE, originModelName: "gpt-4o", upstreamModelName: "gpt-4o" },
+  );
+  assert.deepEqual(azureStream.stream_options, { include_usage: true });
 });
 
 test("original ConvertOpenAIRequest sampling, suffixes, OpenRouter, Moonshot, and Ali JSON", () => {
@@ -2039,4 +2045,137 @@ test("original Xunfei, Submodel, Replicate, Sub2API, NewAPI, and Jimeng ConvertO
   assert.equal(headers["X-Date"], "20260910T095000Z");
   assert.match(headers.authorization, /^HMAC-SHA256 Credential=ak\/20260910\/cn-north-1\/cv\/request, SignedHeaders=content-type;host;x-content-sha256;x-date, Signature=/);
   assert.equal("authorization" in buildUpstream(jimengCh, "chat", "/v1/chat/completions", "jimeng_high_aes_general_v21_L", jimeng).headers, false);
+});
+
+test("original Codex ConvertOpenAIRequest throw and ConvertOpenAIResponsesRequest JSON", () => {
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "gpt-5.1-codex", messages: [{ role: "user", content: "hi" }], stream_options: { include_usage: true } },
+        { channelType: CHANNEL_TYPE_CODEX, originModelName: "gpt-5.1-codex", upstreamModelName: "gpt-5.1-codex" },
+      ),
+    /codex channel: \/v1\/chat\/completions endpoint not supported/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "gpt-5.1-codex", input: "hi" },
+        { channelType: CHANNEL_TYPE_CODEX, originModelName: "gpt-5.1-codex", upstreamModelName: "gpt-5.1-codex", relayMode: "embeddings" },
+      ),
+    /codex channel: \/v1\/embeddings endpoint not supported/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "gpt-5.1-codex", query: "q", documents: ["a"] },
+        { channelType: CHANNEL_TYPE_CODEX, originModelName: "gpt-5.1-codex", upstreamModelName: "gpt-5.1-codex", relayMode: "rerank" },
+      ),
+    /codex channel: \/v1\/rerank endpoint not supported/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "gpt-5.1-codex", prompt: "a cat" },
+        { channelType: CHANNEL_TYPE_CODEX, originModelName: "gpt-5.1-codex", upstreamModelName: "gpt-5.1-codex", relayMode: "images" },
+      ),
+    /codex channel: endpoint not supported/,
+  );
+
+  const responses = convertOpenAIResponsesRequest(
+    {
+      model: "gpt-5-codex",
+      input: "hello",
+      max_output_tokens: 128,
+      temperature: 1,
+      frequency_penalty: 1.5,
+      presence_penalty: 1.5,
+      stream_options: { include_usage: true },
+    },
+    { channelType: CHANNEL_TYPE_CODEX, originModelName: "gpt-5-codex", upstreamModelName: "gpt-5-codex" },
+  );
+  assert.equal(responses.model, "gpt-5-codex");
+  assert.equal(responses.store, false);
+  assert.equal(responses.instructions, "");
+  assert.equal(responses.input, "hello");
+  assert.equal("max_output_tokens" in responses, false);
+  assert.equal("temperature" in responses, false);
+  assert.equal("frequency_penalty" in responses, false);
+  assert.equal("presence_penalty" in responses, false);
+  assert.deepEqual(responses.stream_options, { include_usage: true });
+
+  const compact = convertOpenAIResponsesRequest(
+    {
+      model: "gpt-5-codex",
+      input: "hello",
+      max_output_tokens: 128,
+      temperature: 1,
+      store: true,
+      frequency_penalty: 1.5,
+      presence_penalty: 1.5,
+    },
+    {
+      channelType: CHANNEL_TYPE_CODEX,
+      originModelName: "gpt-5-codex",
+      upstreamModelName: "gpt-5-codex",
+      requestPath: "/v1/responses/compact",
+    },
+  );
+  assert.equal(compact.store, true);
+  assert.equal(compact.max_output_tokens, 128);
+  assert.equal(compact.temperature, 1);
+  assert.equal(compact.frequency_penalty, 1.5);
+  assert.equal(compact.presence_penalty, 1.5);
+  assert.equal(compact.instructions, "");
+
+  const prepended = convertOpenAIResponsesRequest(
+    { model: "gpt-5-codex", input: "hello", instructions: "be brief" },
+    {
+      channelType: CHANNEL_TYPE_CODEX,
+      originModelName: "gpt-5-codex",
+      upstreamModelName: "gpt-5-codex",
+      systemPrompt: "Answer in English.",
+      systemPromptOverride: true,
+    },
+  );
+  assert.equal(prepended.instructions, "Answer in English.\nbe brief");
+  assert.equal(prepended.store, false);
+
+  const missing = convertOpenAIResponsesRequest(
+    { model: "gpt-5-codex", input: "hello" },
+    {
+      channelType: CHANNEL_TYPE_CODEX,
+      originModelName: "gpt-5-codex",
+      upstreamModelName: "gpt-5-codex",
+      systemPrompt: "Answer in English.",
+    },
+  );
+  assert.equal(missing.instructions, "Answer in English.");
+
+  const kept = convertOpenAIResponsesRequest(
+    { model: "gpt-5-codex", input: "hello", instructions: "keep me" },
+    {
+      channelType: CHANNEL_TYPE_CODEX,
+      originModelName: "gpt-5-codex",
+      upstreamModelName: "gpt-5-codex",
+      systemPrompt: "Answer in English.",
+    },
+  );
+  assert.equal(kept.instructions, "keep me");
+
+  const oauthKey = JSON.stringify({ access_token: "codex-at", account_id: "acct-1", type: "codex" });
+  const ch = testChannel({ type: CHANNEL_TYPE_CODEX, key: oauthKey, models: "gpt-5.1-codex" });
+  const up = buildCodexRelayTarget(ch, "responses", "/v1/responses", "gpt-5.1-codex", responses, false);
+  assert.equal(up.url, "https://chatgpt.com/backend-api/codex/responses");
+  assert.equal(up.headers.authorization, `Bearer ${"codex-at"}`);
+  assert.equal(up.headers["chatgpt-account-id"], "acct-1");
+  assert.equal(up.headers["openai-beta"], "responses=experimental");
+  assert.equal(up.headers.originator, "codex_cli_rs");
+  assert.equal((up.body as { store?: boolean }).store, false);
+  const compactUp = buildCodexRelayTarget(ch, "responses", "/v1/responses/compact", "gpt-5.1-codex", compact, false);
+  assert.equal(compactUp.url, "https://chatgpt.com/backend-api/codex/responses/compact");
+  assert.equal((compactUp.body as { store?: boolean }).store, true);
+  assert.equal((compactUp.body as { temperature?: number }).temperature, 1);
+  const alpha = buildCodexRelayTarget(ch, "alpha_search", "/v1/alpha/search", "gpt-5.1-codex", { model: "gpt-5.1-codex", query: "q" }, false);
+  assert.equal(alpha.url, "https://chatgpt.com/backend-api/codex/alpha/search");
+  assert.equal("store" in (alpha.body as object), false);
 });

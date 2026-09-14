@@ -1,6 +1,7 @@
 import { CHANNEL_TYPE_CODEX, parseJson } from "./constants.js";
 import { parseChannelInfo } from "./channel-info.js";
 import { defaultBaseUrl } from "./catalog.js";
+import { convertCodexResponsesRequest } from "./codex-convert.js";
 import { applyFetchModelsHeaderOverrides, applyModelMapping, joinUrl, type RelayMode, type UpstreamTarget } from "./upstream.js";
 import type { Store } from "./store.js";
 import type { ChannelRow } from "./types.js";
@@ -236,21 +237,9 @@ export function codexRelayPath(mode: RelayMode, requestPath: string): string {
   throw new Error("codex channel: only /v1/responses, /v1/responses/compact and /v1/alpha/search are supported");
 }
 
-/** Original `codex.Adaptor.ConvertOpenAIResponsesRequest`. */
-export function convertCodexResponsesRequest(body: Record<string, unknown>, compact: boolean): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...body };
-  if (out.instructions == null) out.instructions = "";
-  if (!compact) {
-    out.store = false;
-    delete out.max_output_tokens;
-    delete out.temperature;
-    delete out.frequency_penalty;
-    delete out.presence_penalty;
-  }
-  return out;
-}
+export { convertCodexResponsesRequest } from "./codex-convert.js";
 
-/** Original Codex adaptor GetRequestURL + SetupRequestHeader. */
+/** Original Codex adaptor GetRequestURL + SetupRequestHeader. ConvertOpenAIResponsesRequest JSON is applied by `convertCodexResponsesRequest`. */
 export function buildCodexRelayTarget(
   channel: ChannelRow,
   mode: RelayMode,
@@ -265,12 +254,18 @@ export function buildCodexRelayTarget(
   if (!String(oauth.access_token || "").trim()) throw new Error("codex channel: access_token is required");
   if (!String(oauth.account_id || "").trim()) throw new Error("codex channel: account_id is required");
   const path = codexRelayPath(mode, requestPath);
-  const compact = path.endsWith("/compact");
+  const compact = path.includes("/compact");
+  const isResponses = mode === "responses" || requestPath.includes("/v1/responses");
   const upstreamModel = applyModelMapping(channel, model);
   const payload =
-    body && typeof body === "object" && !Array.isArray(body)
-      ? convertCodexResponsesRequest({ ...(body as Record<string, unknown>), model: upstreamModel || (body as { model?: string }).model }, compact)
-      : body;
+    body && typeof body === "object" && !Array.isArray(body) && isResponses
+      ? convertCodexResponsesRequest(
+          { ...(body as Record<string, unknown>), model: upstreamModel || (body as { model?: string }).model },
+          { compact },
+        )
+      : body && typeof body === "object" && !Array.isArray(body)
+        ? { ...(body as Record<string, unknown>), model: upstreamModel || (body as { model?: string }).model }
+        : body;
   const headers: Record<string, string> = {
     "content-type": "application/json",
     authorization: "Bearer " + oauth.access_token,

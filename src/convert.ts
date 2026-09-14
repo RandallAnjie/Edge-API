@@ -34,6 +34,7 @@ import { convertSubmodelOpenAIRequest, submodelUnsupportedEndpoint } from "./sub
 import { convertReplicateImageRequest, convertReplicateOpenAIRequest } from "./replicate-convert.js";
 import { convertNewApiOpenAIRequest, convertNewApiResponsesRequest, newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import { convertJimengImageRequest, convertJimengOpenAIRequest } from "./jimeng-convert.js";
+import { convertCodexOpenAIRequest, convertCodexResponsesRequest, isCodexResponsesCompact } from "./codex-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 
 export type ChatMessage = {
@@ -342,6 +343,12 @@ export type ConvertOpenAIOpts = {
   cohereSafetySetting?: string;
   /** Original `info.ApiKey` used by Tencent DispatchAdaptor (native TC3 vs TokenHub). */
   channelKey?: string;
+  /** Original `info.RequestURLPath` used by Codex compact vs full responses convert. */
+  requestPath?: string;
+  /** Original `info.ChannelSetting.SystemPrompt`. */
+  systemPrompt?: string;
+  /** Original `info.ChannelSetting.SystemPromptOverride`. */
+  systemPromptOverride?: boolean;
 };
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
@@ -391,6 +398,7 @@ export { convertSubmodelOpenAIRequest } from "./submodel-convert.js";
 export { convertReplicateImageRequest } from "./replicate-convert.js";
 export { convertNewApiOpenAIRequest } from "./newapi-convert.js";
 export { convertJimengImageRequest, convertJimengOpenAIRequest } from "./jimeng-convert.js";
+export { convertCodexOpenAIRequest, convertCodexResponsesRequest } from "./codex-convert.js";
 
 /** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
@@ -560,9 +568,14 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
   if (opts.channelType === CHANNEL_TYPE_ALI) {
     return convertAliOpenAIRequest(suffixed.body, suffixed.upstreamModelName);
   }
+  if (opts.channelType === CHANNEL_TYPE_CODEX) {
+    return convertCodexOpenAIRequest(suffixed.body, {
+      relayMode: opts.relayMode,
+      upstreamModelName: suffixed.upstreamModelName,
+    });
+  }
   if (
     opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM ||
-    opts.channelType === CHANNEL_TYPE_CODEX ||
     opts.channelType === CHANNEL_TYPE_TASK_PLUGIN
   ) {
     const out = suffixed.body;
@@ -589,6 +602,14 @@ export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opt
   if (opts.channelType === CHANNEL_TYPE_JIMENG) throw new Error("not implemented");
   if (opts.channelType === CHANNEL_TYPE_NEW_API || opts.channelType === CHANNEL_TYPE_SUB2API) {
     return convertNewApiResponsesRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+  }
+  if (opts.channelType === CHANNEL_TYPE_CODEX) {
+    return convertCodexResponsesRequest(suffixed.body, {
+      compact: isCodexResponsesCompact(opts.requestPath, opts.relayMode),
+      systemPrompt: opts.systemPrompt,
+      systemPromptOverride: opts.systemPromptOverride,
+      upstreamModelName: suffixed.upstreamModelName,
+    });
   }
   const converted = convertOpenAIResponsesAdaptorRequest(
     suffixed.body,

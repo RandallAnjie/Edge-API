@@ -191,11 +191,34 @@ function convertOutbound(
   originModel = "",
   settings: ReasoningHostSettings = {},
   mode: RelayMode = "chat",
-  extras: { botId?: string; responseId?: string; cohereSafetySetting?: string; channelKey?: string } = {},
+  extras: {
+    botId?: string;
+    responseId?: string;
+    cohereSafetySetting?: string;
+    channelKey?: string;
+    requestPath?: string;
+    systemPrompt?: string;
+    systemPromptOverride?: boolean;
+  } = {},
 ): unknown {
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
   const upstream = mappedModel || String(o.model || "");
+  if (channelType === CHANNEL_TYPE_CODEX && client === "anthropic") {
+    throw new Error("codex channel: /v1/messages endpoint not supported");
+  }
+  if (channelType === CHANNEL_TYPE_CODEX && client === "gemini") {
+    throw new Error("codex channel: endpoint not supported");
+  }
+  if (channelType === CHANNEL_TYPE_CODEX && client === "openai" && mode !== "responses" && mode !== "alpha_search") {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+    });
+  }
   if ((channelType === CHANNEL_TYPE_NEW_API || channelType === CHANNEL_TYPE_SUB2API) && client === "anthropic") {
     return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
@@ -319,7 +342,15 @@ function convertOutbound(
     });
   }
   if (client === "openai" && mode === "responses") {
-    o = convertOpenAIResponsesRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings });
+    o = convertOpenAIResponsesRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      requestPath: extras.requestPath,
+      systemPrompt: extras.systemPrompt,
+      systemPromptOverride: extras.systemPromptOverride,
+    });
     if (kind === "anthropic") {
       return openaiToAnthropic(
         {
@@ -848,12 +879,16 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let outbound: unknown = opts.body;
     try {
       mapped = applyModelMapping(channel, model);
+      const channelSetting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
       outbound = opts.rawBody
         ? opts.body
         : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode, {
             botId: channel.other || "",
             responseId: `chatcmpl-${rid}`,
             channelKey: pickChannelKey(channel.key),
+            requestPath,
+            systemPrompt: String(channelSetting.system_prompt || ""),
+            systemPromptOverride: Boolean(channelSetting.system_prompt_override),
           });
       if (!opts.rawBody) {
         const convertedModel = asObj(outbound).model;

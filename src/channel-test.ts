@@ -19,10 +19,12 @@ import {
   LOG_CONSUME,
   UNSUPPORTED_CHANNEL_TEST_TYPES,
   csv,
+  parseJson,
 } from "./constants.js";
 import { channelKind, channelTypeName, resolveBaseUrl } from "./catalog.js";
 import {
   convertOpenAIRequest,
+  convertOpenAIResponsesRequest,
   isOpenAIReasoningOModel,
   openaiChatToResponses,
   openaiToAnthropic,
@@ -425,7 +427,20 @@ function buildTestTarget(
     if (kind === "image") throw new Error("codex channel: endpoint not supported");
     if (kind === "anthropic") throw new Error("codex channel: /v1/messages endpoint not supported");
     if (kind === "gemini") throw new Error("codex channel: endpoint not supported");
-    const target = buildCodexRelayTarget(channel, mode, requestPath, mappedModel, body, isStream);
+    const channelSetting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
+    const converted =
+      mode === "responses"
+        ? convertOpenAIResponsesRequest(body as Record<string, unknown>, {
+            channelType: channel.type,
+            originModelName: originModel,
+            upstreamModelName: mappedModel,
+            requestPath,
+            relayMode: mode,
+            systemPrompt: String(channelSetting.system_prompt || ""),
+            systemPromptOverride: Boolean(channelSetting.system_prompt_override),
+          })
+        : body;
+    const target = buildCodexRelayTarget(channel, mode, requestPath, mappedModel, converted, isStream);
     target.body = applyChannelParamOverride(channel, target.body, target.headers, info, pickChannelKey(channel.key), mappedModel);
     return target;
   }
