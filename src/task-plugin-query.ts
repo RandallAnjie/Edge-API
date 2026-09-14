@@ -63,6 +63,17 @@ export type NativeTaskInfo = {
   usageFacts?: Record<string, unknown>;
 };
 
+/** Original `service.BatchTaskResult`. */
+export type NativeBatchTaskResult = {
+  taskId: string;
+  action: string;
+  submitTime: number;
+  startTime: number;
+  finishTime: number;
+  data: unknown;
+  taskInfo: NativeTaskInfo;
+};
+
 export type NativeQueryError = { code: string; message: string };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -253,6 +264,131 @@ export function buildNativeQueryDescriptor(
     return { code: "plugin_query_request_invalid", message: hookMessage(err) };
   }
   return descriptor;
+}
+
+/** Original `TaskAdaptor.batchQueryContext`. */
+export function buildNativeBatchQueryContext(
+  engine: PluginEngine,
+  tasks: (Record<string, unknown> | null)[],
+  apiKey: string,
+  baseUrl: string,
+): { ctx: Record<string, unknown>; taskContexts: Record<string, unknown>[] } | NativeQueryError {
+  const taskContexts: Record<string, unknown>[] = [];
+  for (const task of tasks) {
+    const taskCtx = buildNativeQueryContext(engine, task, apiKey, baseUrl);
+    if (isNativeQueryError(taskCtx)) return taskCtx;
+    taskContexts.push(taskCtx);
+  }
+  const ctx: Record<string, unknown> = { baseUrl, tasks: taskContexts };
+  const resolved = resolvePluginAuth(pluginMeta(engine), apiKey);
+  ctx.auth = resolved.auth;
+  ctx.authHeader = resolved.auth.authHeader;
+  if (resolved.apiKey != null) ctx.apiKey = resolved.apiKey;
+  if (resolved.authError) return { code: "auth_error", message: resolved.authError };
+  return { ctx, taskContexts };
+}
+
+/** Original `TaskAdaptor.doFetchDescriptor` after `buildBatchQueryRequest`. */
+export function buildNativeBatchQueryDescriptor(
+  engine: PluginEngine,
+  batchContext: Record<string, unknown>,
+  taskContexts: Record<string, unknown>[],
+  channelBaseUrl: string,
+): NativeQueryDescriptor | NativeQueryError {
+  let value: unknown;
+  try {
+    value = engine.call("buildBatchQueryRequest", batchContext, taskContexts);
+  } catch (err) {
+    return { code: "plugin_query_request_failed", message: hookMessage(err) };
+  }
+  const object = isPlainObject(value) ? value : {};
+  const descriptor: NativeQueryDescriptor = {
+    url: String(object.url || ""),
+    method: String(object.method || ""),
+    headers: stringMap(object.headers),
+    body: Object.prototype.hasOwnProperty.call(object, "body") ? object.body : undefined,
+  };
+  try {
+    validateRequestURL(descriptor.url, channelBaseUrl, allowedHosts(pluginMeta(engine)));
+  } catch (err) {
+    return { code: "plugin_query_request_invalid", message: hookMessage(err) };
+  }
+  return descriptor;
+}
+
+function pluginStateFromBatchItem(state: unknown): unknown {
+  if (state == null) return undefined;
+  try {
+    const encoded = JSON.stringify(state);
+    if (encoded.length > MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES) return undefined;
+  } catch {
+    return undefined;
+  }
+  return state;
+}
+
+/** Original `TaskAdaptor.ParseBatchResult`. */
+export function parseNativeBatchResult(
+  engine: PluginEngine,
+  batchContext: Record<string, unknown>,
+  taskContexts: Record<string, unknown>[],
+  statusCode: number,
+  headers: Record<string, string>,
+  body: unknown,
+): Record<string, NativeBatchTaskResult> | NativeQueryError {
+  let value: unknown;
+  try {
+    value = engine.call("parseBatchResult", batchContext, body, hookHTTPResponse(statusCode, headers));
+  } catch (err) {
+    return { code: "plugin_parse_batch_failed", message: hookMessage(err) };
+  }
+  if (!Array.isArray(value)) return { code: "plugin_parse_batch_invalid", message: "plugin returned an invalid batch result" };
+  const results: Record<string, NativeBatchTaskResult> = {};
+  const hasCompletionUsage = engine.hasCallablePath("extractUsageOnComplete");
+  for (const raw of value) {
+    const item = isPlainObject(raw) ? raw : {};
+    const taskId = String(item.taskId || "").trim();
+    if (!taskId) continue;
+    const info: NativeTaskInfo = {
+      code: 0,
+      taskId,
+      status: String(item.status || ""),
+      progress: String(item.progress || ""),
+      reason: String(item.reason || ""),
+      url: String(item.url || ""),
+      remoteUrl: "",
+      completionTokens: 0,
+      totalTokens: 0,
+    };
+    const pluginState = pluginStateFromBatchItem(item.state);
+    if (pluginState !== undefined) info.pluginState = pluginState;
+    if (hasCompletionUsage) {
+      const usageBody = item.data != null ? item.data : pluginJsonValue(item);
+      let itemCtx: Record<string, unknown> = batchContext;
+      for (const taskCtx of taskContexts) {
+        if (String(taskCtx.taskId ?? "") === taskId) {
+          itemCtx = taskCtx;
+          break;
+        }
+      }
+      try {
+        const facts = engine.call("extractUsageOnComplete", itemCtx, pluginJsonValue(info), usageBody);
+        applyCompletionUsageFacts(info, facts, String(itemCtx.upstreamModel || ""));
+      } catch {
+        /* original keeps the parsed item when the completion hook fails */
+      }
+    }
+    results[taskId] = {
+      taskId,
+      action: String(item.action || ""),
+      submitTime: Number(item.submitTime || 0) || 0,
+      startTime: Number(item.startTime || 0) || 0,
+      finishTime: Number(item.finishTime || 0) || 0,
+      data: Object.prototype.hasOwnProperty.call(item, "data") ? item.data : undefined,
+      taskInfo: info,
+    };
+  }
+  return results;
 }
 
 /** Original `hookHTTPResponse`. */
@@ -563,6 +699,9 @@ export async function refreshNativeQueryTask(opts: {
   const privateData = parsePrivateData(opts.row);
   const apiKey = String(privateData.key || pickChannelKey(channel.key || ""));
   const baseUrl = resolveBaseUrl(Number(channel.type || 0), channel.base_url || "");
+  if (String(pluginMeta(opts.engine).fetchMode || "per_task") === "batch") {
+    return refreshNativeBatchQueryTask(opts, apiKey, baseUrl);
+  }
   const queryContext = buildNativeQueryContext(opts.engine, opts.row, apiKey, baseUrl);
   if (isNativeQueryError(queryContext)) {
     const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, 0, queryContext.message);
@@ -602,5 +741,71 @@ export async function refreshNativeQueryTask(opts: {
   }
   const serverAddress = opts.serverAddress ?? (await opts.store.option("ServerAddress"));
   const applied = applyNativePollToTask(opts.row, parsed, fetched.body, serverAddress);
+  return persistTaskRow(opts.store, applied);
+}
+
+async function refreshNativeBatchQueryTask(
+  opts: {
+    store: Store;
+    engine: PluginEngine;
+    row: Record<string, unknown>;
+    serverAddress?: string;
+  },
+  apiKey: string,
+  baseUrl: string,
+): Promise<Record<string, unknown>> {
+  const packed = buildNativeBatchQueryContext(opts.engine, [opts.row], apiKey, baseUrl);
+  if (isNativeQueryError(packed)) {
+    const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, 0, packed.message);
+    return persistTaskRow(opts.store, failed);
+  }
+  const descriptor = buildNativeBatchQueryDescriptor(opts.engine, packed.ctx, packed.taskContexts, baseUrl);
+  if (isNativeQueryError(descriptor)) {
+    const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, 0, descriptor.message);
+    return persistTaskRow(opts.store, failed);
+  }
+  const fetched = await fetchNativeQuery(descriptor);
+  if (isNativeQueryError(fetched)) {
+    const failed = recordPollFailure(opts.row, POLL_TRANSPORT, 0, fetched.message);
+    return persistTaskRow(opts.store, failed);
+  }
+  const httpClass = classifyPollHTTP(fetched.status);
+  if (httpClass === POLL_NOT_FOUND) {
+    return persistTaskRow(opts.store, failTaskFromPoll(opts.row, `upstream task not found (HTTP ${fetched.status})`));
+  }
+  if (httpClass === POLL_AUTH || httpClass === POLL_TRANSIENT) {
+    return persistTaskRow(opts.store, recordPollFailure(opts.row, httpClass, fetched.status, ""));
+  }
+  const parsed = parseNativeBatchResult(
+    opts.engine,
+    packed.ctx,
+    packed.taskContexts,
+    fetched.status,
+    fetched.headers,
+    fetched.body,
+  );
+  if (isNativeQueryError(parsed)) {
+    const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, fetched.status, parsed.message);
+    return persistTaskRow(opts.store, failed);
+  }
+  const upstreamId = getUpstreamTaskID(opts.row);
+  const item = parsed[upstreamId];
+  if (!item) return opts.row;
+  const info = item.taskInfo;
+  if (!info.status || info.status === TASK_STATUS_UNKNOWN || !knownPollStatus(info.status)) {
+    const failed = recordPollFailure(opts.row, POLL_UNRECOGNIZED, fetched.status, info.reason || info.status);
+    return persistTaskRow(opts.store, failed);
+  }
+  if (httpClass === POLL_OTHER_CLIENT && isNonTerminalPollStatus(info.status)) {
+    const failed = recordPollFailure(opts.row, POLL_UNRECOGNIZED, fetched.status, info.reason);
+    return persistTaskRow(opts.store, failed);
+  }
+  const serverAddress = opts.serverAddress ?? (await opts.store.option("ServerAddress"));
+  const applied = applyNativePollToTask(opts.row, info, item.data != null ? item.data : {}, serverAddress);
+  if (item.data == null) applied.data = opts.row.data;
+  if (item.submitTime) applied.submit_time = item.submitTime;
+  if (item.startTime) applied.start_time = item.startTime;
+  if (item.finishTime) applied.finish_time = item.finishTime;
+  if (item.action) applied.action = item.action;
   return persistTaskRow(opts.store, applied);
 }
