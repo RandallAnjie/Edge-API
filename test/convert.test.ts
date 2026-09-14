@@ -2203,6 +2203,13 @@ test("original xAI/Jimeng/Replicate/Submodel/Coze ConvertClaudeRequest and Conve
   assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_SUBMODEL, "anthropic"), "submodel channel: endpoint not supported");
   assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_SUBMODEL, "gemini"), "submodel channel: endpoint not supported");
   assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_MOONSHOT, "anthropic"), undefined);
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_MISTRAL, "anthropic"), "implement me");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_MISTRAL, "gemini"), "not implemented");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_PALM, "anthropic"), "implement me");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_BAIDU, "anthropic"), "implement me");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_ALI, "gemini"), "not implemented");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_OLLAMA, "gemini"), "not implemented");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_AWS, "gemini"), "not implemented");
 });
 
 test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON and URLs", async () => {

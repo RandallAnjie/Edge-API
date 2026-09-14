@@ -597,7 +597,7 @@ export function convertAdvancedCustomGeminiRequest(
 
 /**
  * Original ConvertClaudeRequest / ConvertGeminiRequest error strings for native adaptors
- * that do not convert Claude/Gemini clients (xAI, Jimeng, Replicate, Submodel, Coze).
+ * that do not convert Claude/Gemini clients.
  */
 export function nativeClaudeGeminiConvertError(channelType: number, client: string): string | undefined {
   if (client !== "anthropic" && client !== "gemini") return undefined;
@@ -614,6 +614,27 @@ export function nativeClaudeGeminiConvertError(channelType: number, client: stri
   }
   if (channelType === CHANNEL_TYPE_SUBMODEL) {
     return "submodel channel: endpoint not supported";
+  }
+  if (
+    channelType === CHANNEL_TYPE_PALM ||
+    channelType === CHANNEL_TYPE_ZHIPU ||
+    channelType === CHANNEL_TYPE_XUNFEI ||
+    channelType === CHANNEL_TYPE_TENCENT ||
+    channelType === CHANNEL_TYPE_COHERE ||
+    channelType === CHANNEL_TYPE_DIFY ||
+    channelType === CHANNEL_TYPE_JINA ||
+    channelType === CHANNEL_TYPE_CLOUDFLARE ||
+    channelType === CHANNEL_TYPE_MISTRAL ||
+    channelType === CHANNEL_TYPE_MOKA ||
+    channelType === CHANNEL_TYPE_BAIDU
+  ) {
+    return client === "anthropic" ? "implement me" : "not implemented";
+  }
+  if (
+    client === "gemini" &&
+    (channelType === CHANNEL_TYPE_ALI || channelType === CHANNEL_TYPE_OLLAMA || channelType === CHANNEL_TYPE_AWS)
+  ) {
+    return "not implemented";
   }
   return undefined;
 }

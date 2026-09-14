@@ -427,6 +427,48 @@ test("original Tencent, Mistral, Moka, Jina, SiliconFlow, and PaLM ConvertOpenAI
     assert.match(palmStream.text, /"model":"palm2"/);
     assert.match(palmStream.text, /hello palm/);
     assert.match(palmStream.text, /data: \[DONE\]/);
+
+    const mistralClaude = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "mistral-small-latest",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(mistralClaude.res.status, 500, mistralClaude.text);
+    assert.equal((mistralClaude.body.error as { message: string }).message, "implement me");
+    assert.equal((mistralClaude.body.error as { code: string }).code, "convert_request_failed");
+
+    const palmClaude = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "PaLM-2",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(palmClaude.res.status, 500, palmClaude.text);
+    assert.equal((palmClaude.body.error as { message: string }).message, "implement me");
+
+    const mistralGemini = await json(
+      new Request("http://local/v1beta/models/mistral-small-latest:generateContent", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(mistralGemini.res.status, 500, mistralGemini.text);
+    assert.equal((mistralGemini.body.error as { message: string }).message, "not implemented");
   } finally {
     globalThis.fetch = origFetch;
   }
