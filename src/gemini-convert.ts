@@ -31,7 +31,7 @@ export type ConvertGeminiOpts = {
   resolveMedia?: (url: string) => { data: string; mime: string } | null;
 };
 
-const GEMINI_MIME: Record<string, boolean> = {
+export const GEMINI_MIME: Record<string, boolean> = {
   "application/pdf": true,
   "audio/mpeg": true,
   "audio/mp3": true,
@@ -153,7 +153,7 @@ function normalizeGeminiSchemaType(schema: Record<string, unknown>): void {
   }
 }
 
-function cleanFunctionParameters(params: unknown, depth = 0): unknown {
+export function cleanFunctionParameters(params: unknown, depth = 0): unknown {
   if (params == null) return null;
   if (depth >= 64) {
     if (params && typeof params === "object" && !Array.isArray(params)) {
@@ -192,7 +192,7 @@ function cleanFunctionParameters(params: unknown, depth = 0): unknown {
   return cleaned;
 }
 
-function removeAdditionalProperties(schema: unknown, depth: number): unknown {
+export function removeAdditionalProperties(schema: unknown, depth: number): unknown {
   if (depth >= 5) return schema;
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
   const value = schema as Record<string, unknown>;
@@ -217,7 +217,7 @@ function removeAdditionalProperties(schema: unknown, depth: number): unknown {
   return value;
 }
 
-function openAIToolChoiceToConfig(toolChoice: unknown): Record<string, unknown> | undefined {
+export function openAIToolChoiceToConfig(toolChoice: unknown): Record<string, unknown> | undefined {
   if (toolChoice == null) return undefined;
   if (typeof toolChoice === "string") {
     const mode = toolChoice === "none" ? "NONE" : toolChoice === "required" ? "ANY" : "AUTO";
@@ -249,7 +249,7 @@ function suffixFrom(opts: ConvertGeminiOpts, model: string): ReasoningIntent {
   return selected.hasThinking ? selected.intent : { mode: "", effort: "", source: "", budgetSource: "" };
 }
 
-function applyGeminiThinking(req: Record<string, unknown>, opts: ConvertGeminiOpts, oaiRequest?: OpenAIChatBody): void {
+export function applyGeminiThinking(req: Record<string, unknown>, opts: ConvertGeminiOpts, oaiRequest?: OpenAIChatBody): void {
   const settings = opts.settings || {};
   let modelName = opts.upstreamModelName || "";
   let source: ReasoningIntent = { mode: "", effort: "", source: "", budgetSource: "" };
@@ -315,7 +315,7 @@ function stringContent(content: unknown): string {
   return "";
 }
 
-function hasFunctionCallContent(call: Record<string, unknown> | undefined): boolean {
+export function hasFunctionCallContent(call: Record<string, unknown> | undefined): boolean {
   if (!call) return false;
   if (String(call.name || "").trim()) return true;
   const args = call.args;
@@ -325,7 +325,7 @@ function hasFunctionCallContent(call: Record<string, unknown> | undefined): bool
   return true;
 }
 
-function attachThoughtSignature(part: Record<string, unknown>): boolean {
+export function attachThoughtSignature(part: Record<string, unknown>): boolean {
   if (part.thoughtSignature) return false;
   part.thoughtSignature = GEMINI_THOUGHT_SIGNATURE_BYPASS;
   return true;

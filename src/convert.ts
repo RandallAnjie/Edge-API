@@ -8,6 +8,7 @@ import {
 } from "./reasoning.js";
 import { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIResponsesRequestToClaudeMessages } from "./responses-claude.js";
+import { convertOpenAIResponsesRequestToGeminiChat } from "./responses-gemini.js";
 import { convertGeminiEmbeddingRequest, convertGeminiRequest, convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind, isChannelSpecialBase } from "./catalog.js";
 import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
@@ -493,6 +494,10 @@ export {
   responsesResponseToClaudeMessagesResponse,
   ResponsesToClaudeStreamState,
 } from "./responses-claude.js";
+export {
+  CONVERTER_RESPONSES_TO_GEMINI_DIRECT,
+  convertOpenAIResponsesRequestToGeminiChat,
+} from "./responses-gemini.js";
 export {
   CONVERTER_CLAUDE_TO_RESPONSES,
   applyClaudeChannelSystemPrompt,
@@ -1021,6 +1026,13 @@ export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opt
   }
   if (opts.channelType === CHANNEL_TYPE_ANTHROPIC) {
     return convertOpenAIResponsesRequestToClaudeMessages(suffixed.body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
+  }
+  if (opts.channelType === CHANNEL_TYPE_GEMINI) {
+    return convertOpenAIResponsesRequestToGeminiChat(suffixed.body, {
       originModelName: opts.originModelName,
       upstreamModelName: suffixed.upstreamModelName,
       settings,

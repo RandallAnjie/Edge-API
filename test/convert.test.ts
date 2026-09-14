@@ -70,6 +70,7 @@ import {
   oaiChatSseToResponsesSse,
   oaiResponsesSseToChatSse,
   convertOpenAIResponsesRequestToClaudeMessages,
+  convertOpenAIResponsesRequestToGeminiChat,
   responsesResponseToClaudeMessagesResponse,
   ResponsesToClaudeStreamState,
   oaiResponsesSseToClaudeSse,
@@ -90,7 +91,7 @@ import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC,
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
-import { isClientError, getGeminiVersionSetting } from "../src/reasoning.js";
+import { isClientError, getGeminiVersionSetting, GEMINI_THOUGHT_SIGNATURE_BYPASS } from "../src/reasoning.js";
 import { getZhipuToken, clearZhipuTokenCache, openaiFromZhipuV4Image } from "../src/zhipu-convert.js";
 import { applyTencentTc3Authorization, getTencentSign, tencentTokenHubBase, TENCENT_TOKENHUB_BASE } from "../src/tencent-convert.js";
 import { buildXunfeiAuthUrl, xunfeiDomain, xunfeiHostUrl } from "../src/xunfei-convert.js";
@@ -5135,6 +5136,213 @@ test("original Claude Messages → OpenAI Responses request JSON fields", () => 
       "gpt-5.6-sol",
     ),
     true,
+  );
+});
+
+test("original OpenAI Responses → Gemini generateContent request JSON fields", () => {
+  assert.throws(() => convertOpenAIResponsesRequestToGeminiChat({ input: "hello" }), /model is required/);
+  assert.throws(
+    () =>
+      convertOpenAIResponsesRequestToGeminiChat({
+        model: "gemini-test",
+        input: "hello",
+        previous_response_id: "resp_prev",
+      }),
+    /responses to chat conversion does not support stateful fields: previous_response_id/,
+  );
+
+  const instructions = convertOpenAIResponsesRequestToGeminiChat({
+    model: "gemini-test",
+    instructions: "system rules",
+    input: "hello",
+  });
+  assert.deepEqual(instructions.systemInstruction, { parts: [{ text: "system rules" }] });
+  const instructionContents = instructions.contents as { role: string; parts: { text: string }[] }[];
+  assert.equal(instructionContents.length, 1);
+  assert.equal(instructionContents[0].role, "user");
+  assert.equal(instructionContents[0].parts[0].text, "hello");
+
+  const toolsAndChoice = convertOpenAIResponsesRequestToGeminiChat({
+    model: "gemini-test",
+    input: "lookup weather",
+    tools: [
+      {
+        type: "function",
+        name: "lookup",
+        description: "Lookup data",
+        parameters: { type: "object", properties: { q: { type: "string" } } },
+      },
+      { type: "custom", name: "freeform" },
+    ],
+    tool_choice: { type: "function", name: "lookup" },
+  });
+  const geminiTools = toolsAndChoice.tools as { functionDeclarations: { name: string; description: string }[] }[];
+  assert.equal(geminiTools.length, 1);
+  assert.equal(geminiTools[0].functionDeclarations[0].name, "lookup");
+  assert.equal(geminiTools[0].functionDeclarations[0].description, "Lookup data");
+  assert.deepEqual(toolsAndChoice.toolConfig, {
+    functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["lookup"] },
+  });
+
+  const conversation = convertOpenAIResponsesRequest(
+    {
+      model: "gemini-test",
+      max_output_tokens: 256,
+      instructions: "system rules",
+      input: [
+        {
+          role: "assistant",
+          content: [{ type: "output_text", text: "I will call." }],
+        },
+        {
+          type: "function_call",
+          call_id: "call_1",
+          name: "lookup",
+          arguments: { q: "x" },
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_1",
+          output: { ok: true },
+        },
+      ],
+      tools: [
+        {
+          type: "function",
+          name: "lookup",
+          description: "Lookup data",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            propertyNames: { pattern: "^[a-z]+$" },
+            properties: {
+              q: { type: "string", exclusiveMinimum: 0 },
+              filters: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: true,
+                  properties: { name: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+      ],
+      text: { format: { type: "json_schema", name: "answer", schema: { type: "object" } } },
+    },
+    {
+      channelType: CHANNEL_TYPE_GEMINI,
+      originModelName: "gemini-test",
+      upstreamModelName: "gemini-test",
+    },
+  );
+  assert.deepEqual(conversation.systemInstruction, { parts: [{ text: "system rules" }] });
+  const gc = conversation.generationConfig as { responseMimeType: string; maxOutputTokens: number };
+  assert.equal(gc.responseMimeType, "application/json");
+  assert.equal(gc.maxOutputTokens, 256);
+  const lookupParams = (conversation.tools as { functionDeclarations: { parameters: Record<string, unknown> }[] }[])[0]
+    .functionDeclarations[0].parameters;
+  assert.equal(lookupParams.type, "OBJECT");
+  assert.equal("additionalProperties" in lookupParams, false);
+  assert.equal("propertyNames" in lookupParams, false);
+  const queryParam = (lookupParams.properties as Record<string, Record<string, unknown>>).q;
+  assert.equal(queryParam.type, "STRING");
+  assert.equal("exclusiveMinimum" in queryParam, false);
+  const filterItems = ((lookupParams.properties as Record<string, Record<string, unknown>>).filters.items as Record<string, unknown>);
+  assert.equal("additionalProperties" in filterItems, false);
+
+  const convoContents = conversation.contents as {
+    role: string;
+    parts: { functionCall?: { name: string; args: Record<string, unknown>; id?: string }; text?: string; thoughtSignature?: string; functionResponse?: { name: string; response: Record<string, unknown> } }[];
+  }[];
+  assert.equal(convoContents.length, 2);
+  assert.equal(convoContents[0].role, "model");
+  assert.equal(convoContents[0].parts.length, 2);
+  assert.equal(convoContents[0].parts[0].functionCall?.name, "lookup");
+  assert.deepEqual(convoContents[0].parts[0].functionCall?.args, { q: "x" });
+  assert.equal(convoContents[0].parts[0].functionCall?.id, "call_1");
+  assert.equal(convoContents[0].parts[0].thoughtSignature, GEMINI_THOUGHT_SIGNATURE_BYPASS);
+  assert.equal(convoContents[0].parts[1].text, "I will call.");
+  assert.equal(convoContents[1].role, "user");
+  assert.equal(convoContents[1].parts[0].functionResponse?.name, "lookup");
+  assert.deepEqual(convoContents[1].parts[0].functionResponse?.response, { ok: true });
+  assert.equal(convoContents[1].parts[0].thoughtSignature, undefined);
+
+  const skipped = convertOpenAIResponsesRequestToGeminiChat({
+    model: "gemini-test",
+    input: [
+      { role: "assistant", content: [{ type: "output_text", text: "before custom" }] },
+      { type: "custom_tool_call", call_id: "call_custom", name: "apply_patch", input: "patch body" },
+      { type: "custom_tool_call_output", call_id: "call_custom", output: "ok" },
+      { type: "function_call_output", call_id: "call_custom", output: "legacy custom output" },
+      { role: "user", content: "next turn" },
+    ],
+    tools: [
+      { type: "custom", name: "apply_patch" },
+      { type: "unknown", name: "unknown" },
+    ],
+  });
+  assert.equal(skipped.tools, undefined);
+  const skippedContents = skipped.contents as { role: string; parts: { text?: string; functionCall?: unknown; functionResponse?: unknown }[] }[];
+  assert.equal(skippedContents.length, 2);
+  assert.equal(skippedContents[0].role, "model");
+  assert.equal(skippedContents[0].parts.length, 1);
+  assert.equal(skippedContents[0].parts[0].text, "before custom");
+  assert.equal(skippedContents[0].parts[0].functionCall, undefined);
+  assert.equal(skippedContents[1].role, "user");
+  assert.equal(skippedContents[1].parts[0].text, "next turn");
+  assert.equal(skippedContents[1].parts[0].functionResponse, undefined);
+
+  const noSignature = convertOpenAIResponsesRequestToGeminiChat(
+    {
+      model: "gemini-test",
+      input: [{ type: "function_call", call_id: "call_1", name: "lookup", arguments: { q: "x" } }],
+      tools: [{ type: "function", name: "lookup", parameters: { type: "object" } }],
+    },
+    { settings: { geminiFunctionCallThoughtSignatureEnabled: false } },
+  );
+  const noSigParts = (noSignature.contents as { parts: { thoughtSignature?: string }[] }[])[0].parts;
+  assert.equal(noSigParts[0].thoughtSignature, undefined);
+
+  const inbound = geminiResponseToResponsesResponse(
+    {
+      candidates: [{ content: { role: "model", parts: [{ text: "hello" }] } }],
+      usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+    },
+    "gemini-test",
+    { id: "resp_gemini" },
+  );
+  assert.equal(inbound.object, "response");
+  assert.equal(inbound.model, "gemini-test");
+  assert.equal(JSON.stringify(inbound).includes('"candidates"'), false);
+  assert.equal(JSON.stringify(inbound).includes('"type":"output_text"'), true);
+
+  const geminiSse = [
+    'data: {"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"Hello world"}]}}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"totalTokenCount":6}}',
+    "",
+  ].join("\n");
+  const chatSse = geminiSseToOpenAIChat(geminiSse, { id: "resp_stream", created: 0, upstreamModel: "gemini-test" });
+  const responsesSse = oaiChatSseToResponsesSse(chatSse.body, {
+    id: "resp_stream",
+    model: "gemini-test",
+    created: 0,
+    fallbackPromptTokens: 4,
+  });
+  assert.match(responsesSse.sse, /event: response\.created/);
+  assert.match(responsesSse.sse, /"delta":"Hello world"/);
+  assert.match(responsesSse.sse, /event: response\.completed/);
+  assert.equal((responsesSse.usageBody.usage as { prompt_tokens: number; completion_tokens: number }).prompt_tokens, 4);
+
+  const geminiCh = testChannel({
+    type: CHANNEL_TYPE_GEMINI,
+    key: "gkey",
+    models: "gemini-test",
+  });
+  const responsesUrl = buildUpstream(geminiCh, "responses", "/v1/responses", "gemini-test", conversation);
+  assert.equal(
+    responsesUrl.url,
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent?key=gkey",
   );
 });
 

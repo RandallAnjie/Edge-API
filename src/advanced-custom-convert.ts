@@ -3,6 +3,7 @@
 import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import type { ReasoningHostSettings } from "./reasoning.js";
+import { convertOpenAIResponsesRequestToGeminiChat } from "./responses-gemini.js";
 
 export const CONVERTER_NONE = "none";
 export const CONVERTER_CHAT_TO_CLAUDE = "openai_chat_completions_to_anthropic_messages";
@@ -435,17 +436,12 @@ export function convertResponsesToChatCompletionsRequest(body: Record<string, un
   return out;
 }
 
-/** Original `oairesponses.OpenAIResponsesRequestToGeminiChat` via chat bridge JSON fields. */
+/** Original `oairesponses.OpenAIResponsesRequestToGeminiChat`. */
 export function convertResponsesToGeminiRequest(
   body: Record<string, unknown>,
   opts: { originModelName?: string; upstreamModelName?: string; settings?: ReasoningHostSettings } = {},
 ): Record<string, unknown> {
-  const chat = convertResponsesToChatCompletionsRequest(body);
-  return convertOpenAIChatToGemini(chat, {
-    originModelName: opts.originModelName,
-    upstreamModelName: opts.upstreamModelName || String(body.model || ""),
-    settings: opts.settings,
-  });
+  return convertOpenAIResponsesRequestToGeminiChat(body, opts);
 }
 
 /** Original `claudemessages.ClaudeMessagesRequestToOpenAIChat`. */

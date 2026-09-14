@@ -23,6 +23,7 @@ import {
   geminiToOpenAIChat,
   openaiFromAnthropicResponse,
   chatCompletionToResponsesResponse,
+  geminiResponseToResponsesResponse,
   responsesResponseToChatCompletion,
   shouldChatCompletionsUseResponsesPolicy,
   type ChatCompletionsToResponsesPolicy,
@@ -109,6 +110,7 @@ import {
   CONVERTER_CHAT_TO_RESPONSES,
   CONVERTER_NONE,
   CONVERTER_RESPONSES_TO_CHAT,
+  CONVERTER_RESPONSES_TO_GEMINI,
   converterDoesNotSupport,
 } from "./advanced-custom-convert.js";
 import {
@@ -580,6 +582,7 @@ async function convertOutbound(
       systemPromptOverride: extras.systemPromptOverride,
     });
     if (channelType === CHANNEL_TYPE_ANTHROPIC) return o;
+    if (channelType === CHANNEL_TYPE_GEMINI) return o;
     if (kind === "anthropic") {
       return openaiToAnthropic(
         {
@@ -817,6 +820,13 @@ async function convertInbound(
     if (opts.relayMode === "embeddings") {
       return openaiFromGeminiEmbedding(upstreamJson, model, { fallbackPromptTokens: opts.fallbackPromptTokens });
     }
+    if (opts.relayMode === "responses") {
+      return geminiResponseToResponsesResponse(upstreamJson, model, {
+        id: opts.requestId,
+        created: opts.created,
+        fallbackPromptTokens: opts.fallbackPromptTokens,
+      });
+    }
     return openaiFromGeminiResponse(upstreamJson, model, {
       id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
       created: opts.created,
@@ -896,6 +906,36 @@ async function openaiClientFromProvider(
       upstreamModel: mapped,
       fallbackPromptTokens: opts.fallbackPromptTokens,
     });
+    if (stream) {
+      return {
+        body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),
+        usageBody: out.json || {},
+      };
+    }
+    return { body: JSON.stringify(out.json), usageBody: out.json || {} };
+  }
+  if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_RESPONSES_TO_GEMINI) {
+    const out = geminiUpstreamToOpenAIChat(text, mapped, {
+      id: opts.relayMode === "responses" ? opts.requestId : `chatcmpl-${opts.requestId}`,
+      upstreamModel: mapped,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+    if (opts.relayMode === "responses") {
+      const responseId = opts.requestId || String(out.json?.id || "");
+      if (stream) {
+        const chatSse = out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, ""));
+        const converted = oaiChatSseToResponsesSse(chatSse, {
+          id: responseId,
+          model: mapped,
+          created: opts.created,
+          fallbackPromptTokens: opts.fallbackPromptTokens,
+        });
+        return { body: converted.sse, usageBody: converted.usageBody };
+      }
+      const json = chatCompletionToResponsesResponse(out.json || {}, responseId);
+      json.model = mapped;
+      return { body: JSON.stringify(json), usageBody: json };
+    }
     if (stream) {
       return {
         body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),
@@ -1011,10 +1051,26 @@ async function openaiClientFromProvider(
   }
   if (useGemini) {
     const out = geminiUpstreamToOpenAIChat(text, mapped, {
-      id: `chatcmpl-${opts.requestId}`,
+      id: opts.relayMode === "responses" ? opts.requestId : `chatcmpl-${opts.requestId}`,
       upstreamModel: mapped,
       fallbackPromptTokens: opts.fallbackPromptTokens,
     });
+    if (opts.relayMode === "responses") {
+      const responseId = opts.requestId || String(out.json?.id || "");
+      if (stream) {
+        const chatSse = out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, ""));
+        const converted = oaiChatSseToResponsesSse(chatSse, {
+          id: responseId,
+          model: mapped,
+          created: opts.created,
+          fallbackPromptTokens: opts.fallbackPromptTokens,
+        });
+        return { body: converted.sse, usageBody: converted.usageBody };
+      }
+      const json = chatCompletionToResponsesResponse(out.json || {}, responseId);
+      json.model = mapped;
+      return { body: JSON.stringify(json), usageBody: json };
+    }
     if (stream) {
       return {
         body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),

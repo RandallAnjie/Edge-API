@@ -352,6 +352,23 @@ export function fromOpenAIResponses(req: Record<string, unknown> | null | undefi
   return mergeExplicit(intent, pivotIntent, String(req.model || ""));
 }
 
+/** Original `reasoning.ApplyToOpenAIChat`. */
+export function applyToOpenAIChat(req: OpenAIChatBody | null | undefined, intent: ReasoningIntent): void {
+  if (!req) return;
+  const normalized = normalizeIntent(intent);
+  const effort = effectiveEffort(normalized);
+  if (effort) req.reasoning_effort = effort;
+  if (intentIsEmpty(normalized)) return;
+  req[REASONING_CONVERSION] = {
+    mode: normalized.mode,
+    effort: normalized.effort,
+    budgetTokens: normalized.budgetTokens,
+    includeThoughts: normalized.includeThoughts,
+    source: normalized.source,
+    budgetSource: normalized.budgetSource,
+  };
+}
+
 /** Original `reasoning.ApplyToOpenAIResponses`. */
 export function applyToOpenAIResponses(req: Record<string, unknown> | null | undefined, intent: ReasoningIntent): void {
   if (!req) return;
