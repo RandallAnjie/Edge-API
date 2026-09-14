@@ -80,11 +80,23 @@ export const native = {
   },
   jobCreated: function(ctx, task) { return task; }
 };
-export function buildSubmitRequest() { return {url: "https://example.com"}; }
+export function buildSubmitRequest(ctx) { return {url: String(ctx.baseUrl || "") + "/submit", method: "POST", body: ctx.requestBody || {}}; }
 export function parseSubmitResponse() { return {taskId: "one"}; }
 export function buildQueryRequest() { return {url: "https://example.com"}; }
 export function parseTaskResult() { return {status: "SUCCESS"}; }
 `;
+}
+
+async function priceResolvedModel(e: Env, auth: Record<string, string>) {
+  const priced = await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "ModelPrice", value: JSON.stringify({ "resolved-model": 0 }) }),
+    }),
+    e,
+  );
+  assert.equal(priced.body.success, true, String(priced.body.message));
 }
 
 async function addChannel(
@@ -264,6 +276,7 @@ test("original applyOriginTaskIntent table", async () => {
 
 test("original Distribute honors origin-task pin and token pin beats origin", async () => {
   const { e, auth, store, rootId } = await boot();
+  await priceResolvedModel(e, auth);
   const originId = await addChannel(e, auth, "origin-ch", { base_url: "https://origin.example.test" });
   const otherId = await addChannel(e, auth, "other-ch", { base_url: "https://other.example.test" });
   await insertOwnedTask(store, { taskId: "task-route", userId: rootId, channelId: originId, platform: "origin-route" });
@@ -348,6 +361,7 @@ test("original Distribute honors origin-task pin and token pin beats origin", as
 
 test("original origin pin retries same channel; token pin is single-attempt", async () => {
   const { e, auth, store, rootId } = await boot();
+  await priceResolvedModel(e, auth);
   await json(
     new Request("http://local/api/option/", {
       method: "PUT",

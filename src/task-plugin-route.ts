@@ -15,8 +15,8 @@ import { compilePlugin, HookError, type LoadedPlugin, type PluginEngine } from "
 import { hit } from "./metrics.js";
 import { applyOriginTaskIntent, type ApplyOriginTaskIntentResult, taskPluginLegacyPlatforms } from "./origin-task.js";
 import type { MatchedPlugin } from "./plugin-dispatch.js";
-import { relay } from "./relay.js";
 import { Store } from "./store.js";
+import { continueNativeSubmit as continueNativeRelayTaskSubmit } from "./task-plugin-submit.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
 
 export const TASK_PLUGIN_INVALID_ROUTE_RESULT = "plugin returned an invalid route result";
@@ -730,34 +730,9 @@ async function continueNativeSubmit(
   plugin: MatchedPlugin,
   prepared: Extract<PreparedNativeRoute, { kind: "submit" }>,
   requestId: string,
-  ctx: ExecutionContextLike,
+  _ctx: ExecutionContextLike,
 ): Promise<Response> {
-  const headers = new Headers(req.headers);
-  headers.set("content-type", "application/json");
-  headers.set("x-oneapi-request-id", requestId);
-  const reconstructed = new Request(req.url, {
-    method: req.method,
-    headers,
-    body: JSON.stringify(prepared.requestBody ?? {}),
-  });
-  return relay({
-    req: reconstructed,
-    env,
-    store,
-    auth,
-    mode: "passthrough",
-    clientFormat: "openai",
-    model: prepared.model,
-    body: prepared.requestBody ?? {},
-    stream: false,
-    path: new URL(req.url).pathname,
-    ctx,
-    method: req.method,
-    expectedTaskPluginKey: plugin.key,
-    taskPluginChannelTypes: plugin.channelTypes,
-    originPin: prepared.origin.pin,
-    originTasks: prepared.origin.tasks,
-  });
+  return continueNativeRelayTaskSubmit(req, env, store, auth, plugin, prepared, requestId);
 }
 
 export async function executeNativePluginRoute(opts: {

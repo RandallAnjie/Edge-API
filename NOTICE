@@ -57,8 +57,10 @@ Material changes from upstream:
   Task-plugin `plugin.js` hooks run through the original jsplugin contract
   (forbidden syntax, host `utils`, Call/CallMember, HookError, dry-run JSON)
   on workerd. This is not Goja/sobek; tight-loop Interrupt is the isolate CPU
-  limit. Native plugin routes run original `PrepareTaskPluginRoute`
+  limit.   Native plugin routes run original `PrepareTaskPluginRoute`
   (`native.decode` / `native.render` / `native.error` JSON) before submit
-  channel distribution.
+  channel distribution. Native submit uses original RelayTask
+  `buildSubmitRequest` / `parseSubmitResponse` / `native.render` JSON
+  (public `task_id`, no `clientResponse`, `X-New-Api-Other-Ratios`).
 
 ==== End of Notices ====
