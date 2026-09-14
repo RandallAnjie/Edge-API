@@ -122,7 +122,7 @@ npm run dev          # rrangler dev --port 8787，需本机 workerd
 控制台类型目录与 new-api `constant/channel.go` 对齐（含 OpenAI、Azure、Anthropic、Gemini、OpenRouter、DeepSeek、硅基流动、xAI 等）。  
 需要厂商 SDK 签名的渠道（部分 AWS/Vertex 服务账号）在未提供 HTTP 兼容 Key 时会返回结构化错误；配置了兼容 Base URL 的仍按 HTTP 中继。
 
-任务插件执行原版 QuantumNous `plugin.js` 契约（jsplugin Call/dry-run JSON），不是 Goja；SMTP、io.net 集群编排不在 workerd 内执行。对应能力以 D1 登记 + HTTP 探测/passthrough 或明确错误返回。Stripe/Epay/Creem/Waffo 使用 HTTP Checkout（配置密钥后启用）。邮件请配置 `ResendApiKey`。订阅可用余额或在线支付。
+任务插件执行原版 QuantumNous `plugin.js` 契约（jsplugin Call/dry-run JSON 与 native decode/render/error JSON），不是 Goja；SMTP、io.net 集群编排不在 workerd 内执行。对应能力以 D1 登记 + HTTP 探测/passthrough 或明确错误返回。Stripe/Epay/Creem/Waffo 使用 HTTP Checkout（配置密钥后启用）。邮件请配置 `ResendApiKey`。订阅可用余额或在线支付。
 
 ## 配置项（系统设置）
 

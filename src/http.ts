@@ -284,10 +284,19 @@ export function sanitizedTaskPluginError(
   return { code, message, httpStatus, retryable };
 }
 
-/** Original `middleware.abortTaskPluginRouteErrorDetail` without a Goja error renderer. */
-export function taskPluginRouteError(status: number, detail = ""): Response {
+/** Original `common.MessageWithRequestId`. */
+export function messageWithRequestId(message: string, requestId: string): string {
+  if (!requestId) return message;
+  return `${message} (request id: ${requestId})`;
+}
+
+/** Original `middleware.abortTaskPluginRouteErrorDetail` host fallback JSON. */
+export function taskPluginRouteError(status: number, detail = "", requestId = ""): Response {
   const taskErr = sanitizedTaskPluginError(status, detail);
-  return json(taskErr.httpStatus, { code: taskErr.code, message: taskErr.message, data: null });
+  const message = messageWithRequestId(taskErr.message, requestId);
+  const extra: HeadersInit = {};
+  if (requestId) extra["X-Oneapi-Request-Id"] = requestId;
+  return json(taskErr.httpStatus, { code: taskErr.code, message, data: null }, extra);
 }
 
 /** Original plugin inner Gin `NoMethod` `AbortWithStatus(405)` empty body. */

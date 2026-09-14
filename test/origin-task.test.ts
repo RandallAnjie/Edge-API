@@ -65,10 +65,26 @@ async function boot() {
 
 function pluginSource(key: string, extra: { routes?: string; protocols?: string; channelTypes?: string; models?: string } = {}) {
   const models = extra.models || `["resolved-model"]`;
-  const routes = extra.routes || `[{method:"POST",path:"/vendor/jobs",type:"submit"}]`;
+  const routes =
+    extra.routes ||
+    `[{method:"POST",path:"/vendor/jobs",type:"submit",decode:"decodeJob",render:"jobCreated"}]`;
   const protocols = extra.protocols || `[]`;
   const channelTypes = extra.channelTypes || `[${CHANNEL_TYPE_OPENAI}]`;
-  return `const meta = { apiVersion: 1, key: "${key}", name: "${key}", version: "1.0.0", author: { name: "test" }, models: ${models}, fetchMode: "per_task", routes: ${routes}, protocols: ${protocols}, channelTypes: ${channelTypes}, allowedHosts: [], auth: { type: "none" } };`;
+  return `export const meta = { apiVersion: 1, key: "${key}", name: "${key}", version: "1.0.0", author: { name: "test" }, models: ${models}, fetchMode: "per_task", routes: ${routes}, protocols: ${protocols}, channelTypes: ${channelTypes}, allowedHosts: [], auth: { type: "none" } };
+export const native = {
+  decodeJob: function(ctx) {
+    var value = ctx.body && ctx.body.value && typeof ctx.body.value === "object" && !Array.isArray(ctx.body.value) ? ctx.body.value : {};
+    var out = { kind: "submit", model: value.model, requestBody: value };
+    if (Object.prototype.hasOwnProperty.call(value, "originTaskIds")) out.originTaskIds = value.originTaskIds;
+    return out;
+  },
+  jobCreated: function(ctx, task) { return task; }
+};
+export function buildSubmitRequest() { return {url: "https://example.com"}; }
+export function parseSubmitResponse() { return {taskId: "one"}; }
+export function buildQueryRequest() { return {url: "https://example.com"}; }
+export function parseTaskResult() { return {status: "SUCCESS"}; }
+`;
 }
 
 async function addChannel(

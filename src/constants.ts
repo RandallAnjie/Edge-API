@@ -123,6 +123,8 @@ export const AZURE_API_VERSION = "2025-04-01-preview";
 export const CLAUDE_VERSION = "2023-06-01";
 /** Original `constant.MaxFileDownloadMB` default from `MAX_FILE_DOWNLOAD_MB`. */
 export const MAX_FILE_DOWNLOAD_MB = 64;
+/** Original `constant.MaxRequestBodyMB` default from `MAX_REQUEST_BODY_MB`. */
+export const MAX_REQUEST_BODY_MB = 128;
 export const ACCESS_TOKEN_TTL_SEC = 15 * 60;
 export const SECURITY_PROOF_TTL_SEC = 60;
 export const SESSION_TTL_SEC = 30 * 24 * 3600;

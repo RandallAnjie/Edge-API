@@ -14,12 +14,28 @@ export const HOST_PROTOCOL_OPERATIONS: { name: string; method: string; path: str
   { name: "openai_video", method: "HEAD", path: "/v1/videos/:task_id/content" },
 ];
 
+/** Original `jsplugin.Route` fields used by `PrepareTaskPluginRoute`. */
+export type PluginRouteSpec = {
+  method?: string;
+  path?: string;
+  type?: string;
+  action?: string;
+  decode?: string;
+  render?: string;
+  taskIdParam?: string;
+  models?: string[];
+};
+
 export type MatchedPlugin = {
   key: string;
   path: string;
   channelTypes: number[];
   kind: "route" | "endpoint";
   models: string[];
+  source?: string;
+  version?: string;
+  route?: PluginRouteSpec;
+  params?: Record<string, string>;
 };
 
 export async function matchPluginRoute(
@@ -45,7 +61,18 @@ export async function matchTaskPlugin(
     for (const r of routes) {
       if ((r.method || "POST").toUpperCase() !== method.toUpperCase()) continue;
       if (pluginRoutePathMatches(r.path || "", path)) {
-        return { key: p.key, path: r.path || path, channelTypes, kind: "route", models };
+        const params = extractPluginRouteParams(r.path || "", path) || {};
+        return {
+          key: p.key,
+          path: r.path || path,
+          channelTypes,
+          kind: "route",
+          models,
+          source: p.source,
+          version: String(meta.version || ""),
+          route: r,
+          params,
+        };
       }
     }
   }
@@ -73,13 +100,10 @@ export async function matchTaskPlugin(
   return null;
 }
 
-function pluginRoutes(
-  raw: string,
-  meta: Record<string, unknown>,
-): { method?: string; path?: string; type?: string }[] {
-  const fromCol = parseJson<{ method?: string; path?: string; type?: string }[]>(raw, []);
+function pluginRoutes(raw: string, meta: Record<string, unknown>): PluginRouteSpec[] {
+  const fromCol = parseJson<PluginRouteSpec[]>(raw, []);
   if (fromCol.length) return fromCol;
-  return Array.isArray(meta.routes) ? (meta.routes as { method?: string; path?: string; type?: string }[]) : [];
+  return Array.isArray(meta.routes) ? (meta.routes as PluginRouteSpec[]) : [];
 }
 
 function claimedProtocolNames(meta: Record<string, unknown>): string[] {
@@ -114,6 +138,28 @@ function pathMatches(pattern: string, path: string): boolean {
     si += 1;
   }
   return si === sp.length;
+}
+
+/** Original Gin `:param` values for a matched plugin route. */
+export function extractPluginRouteParams(pattern: string, path: string): Record<string, string> | null {
+  if (!pluginRoutePathMatches(pattern, path)) return null;
+  const pp = pattern.split("/").filter(Boolean);
+  const sp = path.split("/").filter(Boolean);
+  const params: Record<string, string> = {};
+  let si = 0;
+  for (let i = 0; i < pp.length; i++) {
+    if (pp[i].startsWith("*")) return params;
+    if (si >= sp.length) return params;
+    if (pp[i].startsWith(":")) {
+      try {
+        params[pp[i].slice(1)] = decodeURIComponent(sp[si]);
+      } catch {
+        params[pp[i].slice(1)] = sp[si];
+      }
+    }
+    si += 1;
+  }
+  return params;
 }
 
 /** Original plugin inner Gin `RedirectTrailingSlash = false` path match. */

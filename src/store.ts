@@ -2162,6 +2162,22 @@ export class Store {
       .first<Record<string, unknown>>();
   }
 
+  /** Original `model.GetByTaskIdsForPlatforms`. */
+  async getTasksByUserPlatformsAndIds(
+    userId: number,
+    platforms: string[],
+    taskIds: string[],
+  ): Promise<Record<string, unknown>[]> {
+    if (!platforms.length || !taskIds.length) return [];
+    const phP = platforms.map(() => "?").join(",");
+    const phT = taskIds.map(() => "?").join(",");
+    const { results } = await this.db
+      .prepare(`SELECT * FROM tasks WHERE user_id = ? AND platform IN (${phP}) AND task_id IN (${phT})`)
+      .bind(userId, ...platforms, ...taskIds)
+      .all<Record<string, unknown>>();
+    return results || [];
+  }
+
   async updateTaskByTid(taskId: string, patch: Record<string, unknown>): Promise<void> {
     const cols: string[] = [];
     const vals: unknown[] = [];

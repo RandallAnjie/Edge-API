@@ -57,6 +57,8 @@ Material changes from upstream:
   Task-plugin `plugin.js` hooks run through the original jsplugin contract
   (forbidden syntax, host `utils`, Call/CallMember, HookError, dry-run JSON)
   on workerd. This is not Goja/sobek; tight-loop Interrupt is the isolate CPU
-  limit. Matched native plugin routes still dispatch as HTTP pass-through.
+  limit. Native plugin routes run original `PrepareTaskPluginRoute`
+  (`native.decode` / `native.render` / `native.error` JSON) before submit
+  channel distribution.
 
 ==== End of Notices ====

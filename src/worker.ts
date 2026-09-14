@@ -24,6 +24,7 @@ import { Store } from "./store.js";
 import { hit } from "./metrics.js";
 import { matchPluginOwnedPath, matchPluginRoute, matchTaskPlugin, type MatchedPlugin } from "./plugin-dispatch.js";
 import { applyOriginTaskIntent, type OriginTaskRef } from "./origin-task.js";
+import { executeNativePluginRoute, handleNativePluginRoute } from "./task-plugin-route.js";
 import type { ChannelPin } from "./channel-constraint.js";
 import { taskArtifactsView, taskFetchView, openaiVideoView, taskResultURL } from "./dto.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
@@ -295,6 +296,9 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   if (!mode) {
     const plugin = await matchTaskPlugin(store, req.method, path);
     if (plugin) {
+      if (plugin.kind === "route") {
+        return executeNativePluginRoute({ req, env, store, auth, plugin, ctx });
+      }
       let body: unknown = {};
       if (req.method !== "GET" && req.method !== "HEAD") {
         try {
@@ -602,6 +606,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
             return withCors(req, relayNotFound(req.method, path));
           }
           try {
+            if (plugin.kind === "route") return withCors(req, await handleNativePluginRoute(req, env, ctx, plugin, store));
             return withCors(req, await handleRelay(req, env, ctx));
           } catch {
             return withCors(req, pluginRoutePanicError());
@@ -624,6 +629,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       if (plugin) {
         hit("relay");
         try {
+          if (plugin.kind === "route") return withCors(req, await handleNativePluginRoute(req, env, ctx, plugin, store));
           return withCors(req, await handleRelay(req, env, ctx));
         } catch {
           return withCors(req, pluginRoutePanicError());
