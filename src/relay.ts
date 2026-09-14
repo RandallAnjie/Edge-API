@@ -44,6 +44,8 @@ import { applyJimengAuthorization, openaiFromJimengImage } from "./jimeng-conver
 import { miniMaxTTSDoResponse, openaiFromMiniMaxImage } from "./minimax-convert.js";
 import {
   aliImageIsSync,
+  convertAliFormEditFromRaw,
+  isAliImageEdits,
   openaiFromAliImage,
   openaiFromAliRerank,
   supportsAliAnthropicMessages,
@@ -1034,15 +1036,27 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let mapped = model;
     let outbound: unknown = opts.body;
     let advancedConverter: string | undefined;
+    const aliMultipartEdits =
+      channel.type === CHANNEL_TYPE_ALI &&
+      mode === "images" &&
+      isAliImageEdits(requestPath) &&
+      Boolean(opts.rawBody) &&
+      (opts.rawContentType || "").includes("multipart/form-data");
     try {
       mapped = applyModelMapping(channel, model);
       const channelSetting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
       if (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
         advancedConverter = resolveAdvancedCustomConverter(channel, requestPath, model);
       }
-      outbound = opts.rawBody
-        ? opts.body
-        : await convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode, {
+      if (aliMultipartEdits) {
+        outbound = convertAliFormEditFromRaw(opts.rawBody as ArrayBuffer, opts.rawContentType || "", {
+          upstreamModelName: mapped,
+          requestPath,
+        });
+      } else if (opts.rawBody) {
+        outbound = opts.body;
+      } else {
+        outbound = await convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode, {
             botId: channel.other || "",
             responseId: `chatcmpl-${rid}`,
             channelKey: pickChannelKey(channel.key),
@@ -1053,7 +1067,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             converter: advancedConverter,
             isStream: opts.stream,
           });
-      if (!opts.rawBody) {
+      }
+      if (!opts.rawBody || aliMultipartEdits) {
         const convertedModel = asObj(outbound).model;
         if (typeof convertedModel === "string" && convertedModel) mapped = convertedModel;
         else {
@@ -1095,7 +1110,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         mode,
         path,
         model,
-        opts.rawBody ? null : outbound,
+        aliMultipartEdits || !opts.rawBody ? outbound : null,
         {
           "anthropic-version": opts.req.headers.get("anthropic-version") || "",
           "anthropic-beta": opts.req.headers.get("anthropic-beta") || "",
@@ -1117,7 +1132,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       lastStatus = 400;
       continue;
     }
-    if (opts.rawBody) {
+    if (opts.rawBody && !aliMultipartEdits) {
       target.body = opts.rawBody;
       if (opts.rawContentType) target.headers["content-type"] = opts.rawContentType;
       else delete target.headers["content-type"];

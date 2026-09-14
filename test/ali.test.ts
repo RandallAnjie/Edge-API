@@ -242,3 +242,70 @@ test("original Ali image rerank Claude URL ConvertImageRequest DoResponse JSON f
     globalThis.fetch = origFetch;
   }
 });
+
+test("original Ali multipart image edits ConvertImageRequest JSON is not rawBody passthrough", async () => {
+  const { e, auth, sk } = await boot();
+  await addChannel(e, auth, {
+    name: "ali-edit",
+    type: CHANNEL_TYPE_ALI,
+    key: "sk-ali-edit",
+    models: "qwen-image-3.0-pro,wanx-v1",
+    group: "default",
+  });
+
+  const fixture = "fixture image";
+  const expectedImage = `data:text/plain; charset=utf-8;base64,${Buffer.from(fixture).toString("base64")}`;
+  const boundary = "----AliEditBoundary";
+  const form =
+    `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nqwen-image-3.0-pro\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nedit poster\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="n"\r\n\r\n2\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="parameters"\r\n\r\n{"n":3,"prompt_extend":false}\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="input.png"\r\nContent-Type: application/octet-stream\r\n\r\n${fixture}\r\n` +
+    `--${boundary}--\r\n`;
+
+  const origFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown>; contentType: string }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    calls.push({
+      url,
+      body,
+      contentType: new Headers(init?.headers).get("content-type") || "",
+    });
+    if (url.includes("/api/v1/services/aigc/multimodal-generation/generation")) {
+      return new Response(
+        JSON.stringify({ output: { results: [{ url: "https://example.com/ali-edit.png" }] }, usage: { image_count: 3 } }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response("unexpected " + url, { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const image = await json(
+      new Request("http://local/v1/images/edits", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": `multipart/form-data; boundary=${boundary}` },
+        body: form,
+      }),
+      e,
+    );
+    assert.equal(image.res.status, 200, image.text);
+    const imageCall = calls.find((c) => c.url.includes("/multimodal-generation/generation"));
+    if (!imageCall) throw new Error("missing ali image edit upstream");
+    assert.equal(imageCall.url, "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation");
+    assert.equal(imageCall.contentType, "application/json");
+    assert.doesNotMatch(imageCall.contentType, /multipart/);
+    assert.equal((imageCall.body.parameters as { n: number; prompt_extend: boolean }).n, 3);
+    assert.equal((imageCall.body.parameters as { prompt_extend: boolean }).prompt_extend, false);
+    assert.deepEqual(imageCall.body.input, {
+      messages: [{ role: "user", content: [{ image: expectedImage }, { text: "edit poster" }] }],
+    });
+    assert.deepEqual(image.body.data, [{ url: "https://example.com/ali-edit.png", b64_json: "", revised_prompt: "" }]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

@@ -423,6 +423,7 @@ export { convertNewApiOpenAIRequest } from "./newapi-convert.js";
 export { convertJimengImageRequest, convertJimengOpenAIRequest } from "./jimeng-convert.js";
 export {
   convertAliImageRequest,
+  convertAliFormEditFromRaw,
   convertAliRerankRequest,
   openaiFromAliImage,
   openaiFromAliRerank,
@@ -430,6 +431,8 @@ export {
   applyAliHeaders,
   supportsAliAnthropicMessages,
   isAliSyncImageModel,
+  parseAliImageEditForm,
+  aliImageRequestFromEditForm,
 } from "./ali-convert.js";
 export { convertCodexOpenAIRequest, convertCodexResponsesRequest } from "./codex-convert.js";
 export {

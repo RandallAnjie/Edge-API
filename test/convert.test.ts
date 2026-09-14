@@ -37,7 +37,10 @@ import {
   convertJimengImageRequest,
   requestOpenAI2Xunfei,
   convertAliImageRequest,
+  convertAliFormEditFromRaw,
   convertAliRerankRequest,
+  parseAliImageEditForm,
+  aliImageRequestFromEditForm,
   openaiFromAliImage,
   openaiFromAliRerank,
   aliRequestURL,
@@ -2850,6 +2853,96 @@ test("original Ali GetRequestURL ConvertImageRequest image DoResponse rerank JSO
     },
   );
   assert.deepEqual(pollOut.data, [{ url: imageUrl, b64_json: "YWE=", revised_prompt: "" }]);
+});
+
+test("original Ali multipart edits ConvertImageRequest uses validated provider quantity JSON", () => {
+  const boundary = "----AliFormBoundary";
+  const fixture = "fixture image";
+  const expectedImage = `data:text/plain; charset=utf-8;base64,${Buffer.from(fixture).toString("base64")}`;
+  function form(extraFields: Record<string, string>, fileField = "image") {
+    const fields = {
+      model: "fixture-image",
+      n: "2",
+      parameters: `{"n":3,"prompt_extend":false}`,
+      ...extraFields,
+    };
+    const parts = Object.entries(fields).map(
+      ([k, v]) => `--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`,
+    );
+    parts.push(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="input.png"\r\nContent-Type: application/octet-stream\r\n\r\n${fixture}\r\n`,
+    );
+    parts.push(`--${boundary}--\r\n`);
+    const raw = parts.join("");
+    return {
+      buf: Uint8Array.from(raw, (c) => c.charCodeAt(0)).buffer,
+      ct: `multipart/form-data; boundary=${boundary}`,
+    };
+  }
+  for (const [name, model] of [
+    ["multimodal edit", "qwen-image-edit-plus"],
+    ["legacy Wan edit", "wanx-v1"],
+  ] as const) {
+    const { buf, ct } = form({});
+    const request = aliImageRequestFromEditForm(parseAliImageEditForm(buf, ct).values);
+    const converted = convertAliFormEditFromRaw(buf, ct, { upstreamModelName: model });
+    assert.equal((converted.parameters as { n: number }).n, 3, name);
+    assert.equal((converted.parameters as { prompt_extend: boolean }).prompt_extend, false, name);
+    assert.equal(request.n, 2, "conversion must preserve the incoming request");
+    if (model === "wanx-v1") {
+      assert.deepEqual(converted.input, { prompt: "", images: [expectedImage] });
+    } else {
+      assert.deepEqual(converted.input, {
+        messages: [{ role: "user", content: [{ image: expectedImage }, {}] }],
+      });
+    }
+    assert.equal(converted.model, model);
+  }
+
+  const withPrompt = form({ prompt: "edit poster" });
+  const multimodal = convertAliFormEditFromRaw(withPrompt.buf, withPrompt.ct, {
+    upstreamModelName: "qwen-image-edit-plus",
+  });
+  assert.deepEqual((multimodal.input as { messages: { content: unknown }[] }).messages[0].content, [
+    { image: expectedImage },
+    { text: "edit poster" },
+  ]);
+
+  const arrayField = form({}, "image[]");
+  const fromArray = convertAliFormEditFromRaw(arrayField.buf, arrayField.ct, {
+    upstreamModelName: "qwen-image-edit-plus",
+  });
+  assert.equal(
+    (fromArray.input as { messages: { content: { image?: string }[] }[] }).messages[0].content[0].image,
+    expectedImage,
+  );
+
+  const indexed = form({}, "image[0]");
+  const fromIndexed = convertAliFormEditFromRaw(indexed.buf, indexed.ct, {
+    upstreamModelName: "qwen-image-edit-plus",
+  });
+  assert.equal(
+    (fromIndexed.input as { messages: { content: { image?: string }[] }[] }).messages[0].content[0].image,
+    expectedImage,
+  );
+
+  const noImage =
+    `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nfixture-image\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="n"\r\n\r\n2\r\n` +
+    `--${boundary}--\r\n`;
+  const emptyBuf = Uint8Array.from(noImage, (c) => c.charCodeAt(0)).buffer;
+  const emptyCt = `multipart/form-data; boundary=${boundary}`;
+  assert.throws(
+    () => convertAliFormEditFromRaw(emptyBuf, emptyCt, { upstreamModelName: "qwen-image-edit-plus" }),
+    /convert image edit form request failed: get image base64s from form failed: image is required/,
+  );
+  assert.throws(
+    () => convertAliFormEditFromRaw(emptyBuf, emptyCt, { upstreamModelName: "wanx-v1" }),
+    (err: unknown) => {
+      assert.equal((err as Error).message, "get image base64s from form failed: image is required");
+      return true;
+    },
+  );
 });
 
 test("original ChatCompletionsStreamToResponsesEvents aggregates usage and tool args", () => {

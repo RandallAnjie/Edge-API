@@ -237,6 +237,228 @@ export function convertAliImageRequest(body: Record<string, unknown>, opts: Conv
   return out;
 }
 
+type AliFormFile = { name: string; data: Uint8Array };
+
+export type AliParsedMultipart = {
+  values: Record<string, string>;
+  files: AliFormFile[];
+};
+
+function wrapError(prefix: string, err: unknown): Error {
+  const message = err instanceof Error ? err.message : String(err);
+  return new Error(`${prefix}: ${message}`);
+}
+
+function multipartBoundary(contentType: string): string {
+  const match = /(?:^|;)\s*boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  return (match?.[1] || match?.[2] || "").trim();
+}
+
+/** Original `net/http.DetectContentType` for image-edit file bytes. */
+export function aliDetectContentType(data: Uint8Array): string {
+  const b = data.length > 512 ? data.subarray(0, 512) : data;
+  const at = (i: number): number => (i < b.length ? b[i] : -1);
+  const starts = (sig: number[]): boolean => sig.every((v, i) => at(i) === v);
+  if (starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
+  if (starts([0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (starts([0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) || starts([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])) return "image/gif";
+  if (starts([0x42, 0x4d])) return "image/bmp";
+  if (starts([0x52, 0x49, 0x46, 0x46]) && at(8) === 0x57 && at(9) === 0x45 && at(10) === 0x42 && at(11) === 0x50) {
+    return "image/webp";
+  }
+  if (starts([0x00, 0x00, 0x01, 0x00])) return "image/x-icon";
+  for (let i = 0; i < b.length; i++) {
+    const c = b[i];
+    if (c <= 0x08 || c === 0x0b || (c >= 0x0e && c <= 0x1a) || (c >= 0x1c && c <= 0x1f)) {
+      return "application/octet-stream";
+    }
+  }
+  return "text/plain; charset=utf-8";
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+/** Original gin multipart File vs Value split for `oaiFormEdit2AliImageEdit`. */
+export function parseAliImageEditForm(rawBody: ArrayBuffer, contentType: string): AliParsedMultipart {
+  const boundary = multipartBoundary(contentType);
+  if (!boundary) throw new Error("multipart boundary is required");
+  const text = new TextDecoder("latin1").decode(rawBody);
+  const delim = `--${boundary}`;
+  const start = text.indexOf(delim);
+  if (start < 0) throw new Error("multipart boundary not found");
+  const values: Record<string, string> = {};
+  const files: AliFormFile[] = [];
+  let pos = start + delim.length;
+  while (pos < text.length) {
+    if (text.startsWith("--", pos)) break;
+    if (text.startsWith("\r\n", pos)) pos += 2;
+    const next = text.indexOf(`\r\n${delim}`, pos);
+    if (next < 0) break;
+    const part = text.slice(pos, next);
+    pos = next + 2 + delim.length;
+    const headerEnd = part.indexOf("\r\n\r\n");
+    if (headerEnd < 0) continue;
+    const headers = part.slice(0, headerEnd);
+    const bodyText = part.slice(headerEnd + 4);
+    const disp = /^content-disposition:\s*(.+)$/im.exec(headers)?.[1] || "";
+    const name = /(?:^|;)\s*name="([^"]*)"/.exec(disp)?.[1] || /(?:^|;)\s*name=([^;]+)/.exec(disp)?.[1]?.trim() || "";
+    if (!name) continue;
+    const hasFilename = /(?:^|;)\s*filename=/i.test(disp);
+    const data = Uint8Array.from(bodyText, (c) => c.charCodeAt(0));
+    if (hasFilename) files.push({ name, data });
+    else values[name] = new TextDecoder("utf-8").decode(data);
+  }
+  return { values, files };
+}
+
+/**
+ * Original `GetAndValidOpenAIImageRequest` multipart edits branch + Ali `ImageCount(true)`.
+ * Does not mutate the parsed form; `n` stays the incoming top-level value.
+ */
+export function aliImageRequestFromEditForm(values: Record<string, string>): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    prompt: values.prompt || "",
+    model: values.model || "",
+  };
+  if (Object.prototype.hasOwnProperty.call(values, "n") && String(values.n).trim() !== "") {
+    const nValue = String(values.n).trim();
+    const n = Number(nValue);
+    if (!Number.isInteger(n) || n < 0 || n > MAX_IMAGE_N) {
+      throw new Error(`n must be an integer between 1 and ${MAX_IMAGE_N}`);
+    }
+    body.n = n;
+  }
+  if (values.quality) body.quality = values.quality;
+  if (values.size) body.size = values.size;
+  if (Object.prototype.hasOwnProperty.call(values, "parameters") && values.parameters !== "") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(values.parameters);
+    } catch (err) {
+      throw wrapError("invalid image parameters", err);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("invalid image parameters: json: cannot unmarshal non-object into ImageBillingParameters");
+    }
+    body.parameters = parsed;
+  }
+  if (body.n == null || body.n === 0) body.n = 1;
+  if (Object.prototype.hasOwnProperty.call(values, "watermark")) {
+    body.watermark = values.watermark === "true";
+  }
+  return body;
+}
+
+/** Original `getImageBase64sFromForm`. */
+function getImageBase64sFromForm(form: AliParsedMultipart): string[] {
+  let imageFiles = form.files.filter((file) => file.name === "image");
+  if (imageFiles.length === 0) {
+    imageFiles = form.files.filter((file) => file.name === "image[]");
+  }
+  if (imageFiles.length === 0) {
+    imageFiles = form.files.filter((file) => file.name.startsWith("image["));
+  }
+  if (imageFiles.length === 0) throw new Error("image is required");
+  return imageFiles.map((file) => {
+    const mimeType = aliDetectContentType(file.data);
+    return `data:${mimeType};base64,${bytesToBase64(file.data)}`;
+  });
+}
+
+function formImageBase64s(form: AliParsedMultipart): string[] {
+  try {
+    return getImageBase64sFromForm(form);
+  } catch (err) {
+    throw wrapError("get image base64s from form failed", err);
+  }
+}
+
+function formEditParameters(body: Record<string, unknown>, includeWatermark: boolean): Record<string, unknown> {
+  const parameters: Record<string, unknown> = { n: aliImageCount(body) };
+  if (includeWatermark && typeof body.watermark === "boolean") parameters.watermark = body.watermark;
+  const extraParams = extraParameters(body);
+  if (extraParams && "prompt_extend" in extraParams) parameters.prompt_extend = extraParams.prompt_extend;
+  return parameters;
+}
+
+/** Original `oaiFormEdit2AliImageEdit`. */
+function oaiFormEdit2AliImageEdit(
+  form: AliParsedMultipart,
+  request: Record<string, unknown>,
+  upstream: string,
+): Record<string, unknown> {
+  const imageBase64s = formImageBase64s(form);
+  const mediaContents: Record<string, string>[] = imageBase64s.map((image) => ({ image }));
+  const textPart: Record<string, string> = {};
+  const prompt = String(request.prompt || "");
+  if (prompt) textPart.text = prompt;
+  mediaContents.push(textPart);
+  const out: Record<string, unknown> = {
+    model: upstream,
+    input: { messages: [{ role: "user", content: mediaContents }] },
+    parameters: formEditParameters(request, true),
+  };
+  const format = String(request.response_format || "");
+  if (format) out.response_format = format;
+  return out;
+}
+
+/** Original `oaiFormEdit2WanxImageEdit`. */
+function oaiFormEdit2WanxImageEdit(
+  form: AliParsedMultipart,
+  request: Record<string, unknown>,
+  upstream: string,
+): Record<string, unknown> {
+  const input: Record<string, unknown> = {
+    prompt: Object.prototype.hasOwnProperty.call(form.values, "prompt") ? form.values.prompt : String(request.prompt || ""),
+    images: formImageBase64s(form),
+  };
+  if (Object.prototype.hasOwnProperty.call(form.values, "negative_prompt") && form.values.negative_prompt) {
+    input.negative_prompt = form.values.negative_prompt;
+  }
+  const out: Record<string, unknown> = {
+    model: upstream,
+    input,
+    parameters: formEditParameters(request, false),
+  };
+  const format = String(request.response_format || "");
+  if (format) out.response_format = format;
+  return out;
+}
+
+/**
+ * Original `Adaptor.ConvertImageRequest` for `RelayModeImagesEdits` + multipart/form-data.
+ * Old Wan models use `oaiFormEdit2WanxImageEdit`; others use `oaiFormEdit2AliImageEdit`.
+ */
+export function convertAliFormEditFromRaw(
+  rawBody: ArrayBuffer,
+  contentType: string,
+  opts: ConvertAliImageOpts = {},
+): Record<string, unknown> {
+  const upstream = String(opts.upstreamModelName || "");
+  let form: AliParsedMultipart;
+  try {
+    form = parseAliImageEditForm(rawBody, contentType);
+  } catch (err) {
+    const parseErr = wrapError("failed to parse image edit form request", err);
+    if (isOldWanModel(upstream)) throw parseErr;
+    throw wrapError("convert image edit form request failed", wrapError("get image base64s from form failed", parseErr));
+  }
+  const request = aliImageRequestFromEditForm(form.values);
+  if (!upstream) request.model = String(request.model || "");
+  const model = upstream || String(request.model || "");
+  if (isOldWanModel(model)) return oaiFormEdit2WanxImageEdit(form, request, model);
+  try {
+    return oaiFormEdit2AliImageEdit(form, request, model);
+  } catch (err) {
+    throw wrapError("convert image edit form request failed", err);
+  }
+}
+
 /** Original `ali.ConvertRerankRequest`. */
 export function convertAliRerankRequest(body: Record<string, unknown>, opts: ConvertAliRerankOpts = {}): Record<string, unknown> {
   const returnDocuments = body.return_documents == null ? true : Boolean(body.return_documents);
