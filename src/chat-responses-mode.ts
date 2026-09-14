@@ -60,26 +60,34 @@ function isToolLoadingMessage(msg: Record<string, unknown>): boolean {
   return true;
 }
 
-/** Original `applySystemPromptIfNeeded` for ChatCompletions via-responses. */
+/**
+ * Original `applySystemPromptIfNeeded` for ChatCompletions via-responses and
+ * TextHelper after ConvertOpenAIRequest. `systemRole` is `GetSystemRoleName`.
+ */
 export function applyChatChannelSystemPrompt(
   body: Record<string, unknown>,
   systemPrompt: string | undefined,
   override: boolean | undefined,
+  systemRole = "system",
 ): Record<string, unknown> {
   if (!systemPrompt) return body;
   const messages = Array.isArray(body.messages) ? [...(body.messages as Record<string, unknown>[])] : [];
-  const hasRealSystem = messages.some((msg) => String(msg.role || "") === "system" && !isToolLoadingMessage(msg));
+  const hasRealSystem = messages.some((msg) => String(msg.role || "") === systemRole && !isToolLoadingMessage(msg));
   if (!hasRealSystem) {
-    return { ...body, messages: [{ role: "system", content: systemPrompt }, ...messages] };
+    return { ...body, messages: [{ role: systemRole, content: systemPrompt }, ...messages] };
   }
   if (!override) return body;
-  const next = messages.map((msg) => {
-    if (String(msg.role || "") !== "system" || isToolLoadingMessage(msg)) return msg;
+  const next = messages.map((msg) => ({ ...msg }));
+  for (let i = 0; i < next.length; i++) {
+    const msg = next[i];
+    if (String(msg.role || "") !== systemRole || isToolLoadingMessage(msg)) continue;
     if (typeof msg.content === "string") {
-      return { ...msg, content: `${systemPrompt}\n${msg.content}` };
+      next[i] = { ...msg, content: `${systemPrompt}\n${msg.content}` };
+    } else {
+      const contents = Array.isArray(msg.content) ? (msg.content as unknown[]) : [];
+      next[i] = { ...msg, content: [{ type: "text", text: systemPrompt }, ...contents] };
     }
-    const contents = Array.isArray(msg.content) ? (msg.content as unknown[]) : [];
-    return { ...msg, content: [{ type: "text", text: systemPrompt }, ...contents] };
-  });
+    break;
+  }
   return { ...body, messages: next };
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_GEMINI } from "../src/constants.js";
+import { CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_OPENAI } from "../src/constants.js";
 import { VERTEX_IMAGE_TOKENS } from "../src/vertex-convert.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
@@ -470,6 +470,194 @@ test("original Gemini ConvertClaudeRequest and Claude ConvertGeminiRequest HTTP 
     const candidates = geminiClient.body.candidates as { content: { parts: Record<string, unknown>[] } }[];
     assert.ok(candidates[0].content.parts.some((part) => part.text === "hello from claude"));
     assert.ok(candidates[0].content.parts.some((part) => (part.functionCall as { name?: string } | undefined)?.name === "lookup"));
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original GeminiHelper ClaudeHelper TextHelper channel SystemPrompt HTTP JSON fields", async () => {
+  const { e, auth, sk } = await boot();
+  const gemini = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "gemini-prompt",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey",
+        models: "gemini-2.0-flash",
+        group: "default",
+        setting: JSON.stringify({ system_prompt: "Answer in English.", system_prompt_override: true }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(gemini.body.success, true, String(gemini.body.message));
+  const anthropic = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "claude-prompt",
+        type: CHANNEL_TYPE_ANTHROPIC,
+        key: "sk-ant",
+        models: "claude-3-7-sonnet",
+        group: "default",
+        setting: JSON.stringify({ system_prompt: "Answer in English.", system_prompt_override: true }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(anthropic.body.success, true, String(anthropic.body.message));
+  const openai = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "openai-prompt",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-upstream",
+        models: "gpt-4o-mini,gpt-5",
+        group: "default",
+        base_url: "https://api.openai.example",
+        setting: JSON.stringify({ system_prompt: "Answer in English.", system_prompt_override: true }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(openai.body.success, true, String(openai.body.message));
+
+  const origFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const raw = init?.body;
+    const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    calls.push({ url, body: parsed });
+    if (url.includes("generativelanguage.googleapis.com")) {
+      return new Response(
+        JSON.stringify({
+          candidates: [{ finishReason: "STOP", content: { role: "model", parts: [{ text: "ok" }] } }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("api.anthropic.com")) {
+      return new Response(
+        JSON.stringify({
+          id: "msg_sys",
+          type: "message",
+          role: "assistant",
+          model: "claude-3-7-sonnet",
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 2, output_tokens: 1 },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl_sys",
+        model: "gpt-4o-mini",
+        choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "ok" } }],
+        usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const geminiClient = await json(
+      new Request("http://local/v1beta/models/gemini-2.0-flash:generateContent", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "hi" }] }],
+          systemInstruction: { parts: [{ text: "be brief" }] },
+        }),
+      }),
+      e,
+    );
+    assert.equal(geminiClient.res.status, 200, geminiClient.text);
+    const geminiHit = calls.find((c) => c.url.includes("generativelanguage.googleapis.com") && c.url.includes("gkey"));
+    if (!geminiHit) throw new Error("missing gemini upstream");
+    assert.deepEqual(geminiHit.body.systemInstruction, { parts: [{ text: "Answer in English.\nbe brief" }] });
+
+    const claudeClient = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-3-7-sonnet",
+          max_tokens: 32,
+          system: "be brief",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claudeClient.res.status, 200, claudeClient.text);
+    const claudeHit = calls.find((c) => c.url.includes("api.anthropic.com"));
+    if (!claudeHit) throw new Error("missing claude upstream");
+    assert.equal(claudeHit.body.system, "Answer in English.\nbe brief");
+    assert.equal(claudeHit.body.max_tokens, 32);
+
+    const chat = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: "be brief" },
+            { role: "user", content: "hi" },
+          ],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chat.res.status, 200, chat.text);
+    const chatHit = calls.find((c) => c.url === "https://api.openai.example/v1/chat/completions" && (c.body.messages as { content?: string }[])?.[0]?.content?.includes("Answer in English."));
+    if (!chatHit) throw new Error("missing openai chat upstream");
+    const chatMessages = chatHit.body.messages as { role: string; content: string }[];
+    assert.equal(chatMessages[0].role, "system");
+    assert.equal(chatMessages[0].content, "Answer in English.\nbe brief");
+
+    const developer = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(developer.res.status, 200, developer.text);
+    const developerHit = calls.find((c) => c.url === "https://api.openai.example/v1/chat/completions" && (c.body.messages as { role?: string }[])?.[0]?.role === "developer");
+    if (!developerHit) throw new Error("missing gpt-5 developer upstream");
+    assert.equal((developerHit.body.messages as { role: string; content: string }[])[0].content, "Answer in English.");
+
+    const beforeGeminiChat = calls.length;
+    const openaiToGemini = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gemini-2.0-flash",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(openaiToGemini.res.status, 200, openaiToGemini.text);
+    const converted = calls[beforeGeminiChat];
+    if (!converted) throw new Error("missing openai-to-gemini upstream");
+    assert.ok(Array.isArray(converted.body.contents));
+    const convertedInstruction = converted.body.systemInstruction as { parts?: { text?: string }[] } | undefined;
+    assert.notEqual(convertedInstruction?.parts?.[0]?.text, "Answer in English.");
   } finally {
     globalThis.fetch = origFetch;
   }

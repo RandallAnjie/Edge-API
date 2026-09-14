@@ -57,6 +57,70 @@ function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
+function geminiSystemInstruction(body: Record<string, unknown>): Record<string, unknown> | undefined {
+  const camel = body.systemInstruction;
+  if (camel && typeof camel === "object" && !Array.isArray(camel)) return camel as Record<string, unknown>;
+  const snake = body.system_instruction;
+  if (snake && typeof snake === "object" && !Array.isArray(snake)) return snake as Record<string, unknown>;
+  return undefined;
+}
+
+function geminiInstructionHasText(instruction: Record<string, unknown> | undefined): boolean {
+  if (!instruction) return false;
+  const parts = Array.isArray(instruction.parts) ? (instruction.parts as Record<string, unknown>[]) : [];
+  return parts.some((part) => typeof part.text === "string" && part.text !== "");
+}
+
+/**
+ * Original GeminiHelper `SystemPrompt` merge + empty `systemInstruction` cleanup.
+ * JSON field is `systemInstruction`; `system_instruction` is accepted like the original DTO.
+ */
+export function applyGeminiChannelSystemPrompt(
+  body: Record<string, unknown>,
+  systemPrompt: string | undefined,
+  override: boolean | undefined,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...body };
+  let instruction = geminiSystemInstruction(out);
+  if (systemPrompt) {
+    if (!instruction) {
+      instruction = { parts: [{ text: systemPrompt }] };
+    } else {
+      const parts = Array.isArray(instruction.parts) ? [...(instruction.parts as Record<string, unknown>[])] : [];
+      if (parts.length === 0) {
+        instruction = { ...instruction, parts: [{ text: systemPrompt }] };
+      } else if (override) {
+        let merged = false;
+        const next = parts.map((part) => ({ ...part }));
+        for (let i = 0; i < next.length; i++) {
+          if (typeof next[i].text !== "string" || next[i].text === "") continue;
+          next[i] = { ...next[i], text: `${systemPrompt}\n${next[i].text}` };
+          merged = true;
+          break;
+        }
+        instruction = { ...instruction, parts: merged ? next : [{ text: systemPrompt }, ...parts] };
+      } else {
+        instruction = { ...instruction, parts };
+      }
+    }
+    out.systemInstruction = instruction;
+    delete out.system_instruction;
+  } else if (instruction) {
+    out.systemInstruction = { ...instruction, parts: Array.isArray(instruction.parts) ? [...(instruction.parts as unknown[])] : instruction.parts };
+    delete out.system_instruction;
+  }
+
+  const current =
+    out.systemInstruction && typeof out.systemInstruction === "object" && !Array.isArray(out.systemInstruction)
+      ? (out.systemInstruction as Record<string, unknown>)
+      : undefined;
+  if (current && !geminiInstructionHasText(current)) {
+    delete out.systemInstruction;
+    delete out.system_instruction;
+  }
+  return out;
+}
+
 function decodeDataURL(url: string): { data: string; mime: string } | null {
   const m = String(url).match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/i);
   if (!m) return null;

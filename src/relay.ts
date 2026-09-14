@@ -43,6 +43,10 @@ import {
   claudeResponseToGeminiChat,
   geminiSseToClaudeSse,
   claudeSseToGeminiSse,
+  applyGeminiChannelSystemPrompt,
+  applyClaudeChannelSystemPrompt,
+  applyChatChannelSystemPrompt,
+  getOpenAISystemRoleName,
 } from "./convert.js";
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
 import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
@@ -180,6 +184,33 @@ function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
+/** Original TextHelper `convertedRequest.(*dto.GeneralOpenAIRequest)` after ConvertOpenAIRequest. */
+function looksLikeGeneralOpenAIRequest(body: Record<string, unknown>): boolean {
+  if ("contents" in body) return false;
+  if ("instances" in body) return false;
+  if ("anthropic_version" in body) return false;
+  if (body.schemaVersion != null) return false;
+  if ("keep_alive" in body) return false;
+  if (typeof body.system === "string" || Array.isArray(body.system)) return false;
+  if (body.options && typeof body.options === "object" && !Array.isArray(body.options)) return false;
+  if (Array.isArray(body.messages)) return true;
+  return typeof body.prompt === "string" && typeof body.model === "string";
+}
+
+function applyTextHelperSystemPromptIfNeeded(
+  converted: unknown,
+  extras: { systemPrompt?: string; systemPromptOverride?: boolean },
+): unknown {
+  const body = asObj(converted);
+  if (!looksLikeGeneralOpenAIRequest(body)) return converted;
+  return applyChatChannelSystemPrompt(
+    body,
+    extras.systemPrompt,
+    extras.systemPromptOverride,
+    getOpenAISystemRoleName(String(body.model || ""), String(body.reasoning_effort || "")),
+  );
+}
+
 /** Original `compatible_handler` `ShouldIncludeUsage` (true unless `stream_options` is present). */
 function shouldIncludeUsage(body: Record<string, unknown>): boolean {
   if (!Object.prototype.hasOwnProperty.call(body, "stream_options") || body.stream_options == null) return true;
@@ -303,6 +334,12 @@ async function convertOutbound(
       systemPromptOverride: extras.systemPromptOverride,
     });
   }
+  if (client === "gemini") {
+    const embed = typeof extras.requestPath === "string" && extras.requestPath.toLowerCase().includes("embed");
+    if (!embed) o = applyGeminiChannelSystemPrompt(o, extras.systemPrompt, extras.systemPromptOverride);
+  } else if (client === "anthropic") {
+    o = applyClaudeChannelSystemPrompt(o, extras.systemPrompt, extras.systemPromptOverride);
+  }
   if (channelType === CHANNEL_TYPE_ADVANCED_CUSTOM) {
     const convertOpts = {
       channelType,
@@ -317,7 +354,7 @@ async function convertOutbound(
     if (client === "anthropic") return convertAdvancedCustomClaudeRequest(o, convertOpts);
     if (client === "gemini") return convertAdvancedCustomGeminiRequest(o, convertOpts);
     if (client === "openai" && mode === "responses") return convertOpenAIResponsesRequest(o, convertOpts);
-    return convertOpenAIRequest(o, convertOpts);
+    return applyTextHelperSystemPromptIfNeeded(convertOpenAIRequest(o, convertOpts), extras);
   }
   if (channelType === CHANNEL_TYPE_CODEX && client === "anthropic") {
     throw new Error("codex channel: /v1/messages endpoint not supported");
@@ -632,6 +669,9 @@ async function convertOutbound(
       cohereSafetySetting: extras.cohereSafetySetting,
       channelKey: extras.channelKey,
     });
+    if (kind !== "anthropic" && kind !== "gemini") {
+      o = applyTextHelperSystemPromptIfNeeded(o, extras) as Record<string, unknown>;
+    }
     if (kind === "anthropic" || kind === "gemini") return o;
     body = o;
   }

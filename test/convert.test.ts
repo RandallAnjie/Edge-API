@@ -95,6 +95,11 @@ import {
   convertTextRequestViaResponses,
   CONVERTER_CLAUDE_TO_RESPONSES,
   shouldChatCompletionsUseResponsesPolicy,
+  applyGeminiChannelSystemPrompt,
+  applyClaudeChannelSystemPrompt,
+  applyChatChannelSystemPrompt,
+  getOpenAISystemRoleName,
+  convertGeminiRequest,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason, openaiFinishReasonToClaudeStopReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
@@ -5784,6 +5789,213 @@ test("original Gemini ConvertClaudeRequest and Claude ConvertGeminiRequest compo
   const geminiOutSse = claudeSseToGeminiSse(anthropicSse, { estimatePromptTokens: 4, upstreamModel: "claude-3-7-sonnet", created: 0 });
   assert.match(geminiOutSse.sse, /"role":"model"/);
   assert.match(geminiOutSse.sse, /Hello Gemini/);
+});
+
+test("original GeminiHelper ClaudeHelper TextHelper channel SystemPrompt JSON fields", () => {
+  assert.equal(getOpenAISystemRoleName("gpt-4o"), "system");
+  assert.equal(getOpenAISystemRoleName("o1"), "developer");
+  assert.equal(getOpenAISystemRoleName("o1-mini"), "system");
+  assert.equal(getOpenAISystemRoleName("gpt-5"), "developer");
+
+  const missing = applyGeminiChannelSystemPrompt(
+    { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+    "Answer in English.",
+    false,
+  );
+  assert.deepEqual(missing.systemInstruction, { parts: [{ text: "Answer in English." }] });
+
+  const emptyParts = applyGeminiChannelSystemPrompt(
+    { systemInstruction: { parts: [] }, contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+    "Answer in English.",
+    false,
+  );
+  assert.deepEqual(emptyParts.systemInstruction, { parts: [{ text: "Answer in English." }] });
+
+  const kept = applyGeminiChannelSystemPrompt(
+    {
+      systemInstruction: { parts: [{ text: "be brief" }] },
+      contents: [{ role: "user", parts: [{ text: "hi" }] }],
+    },
+    "Answer in English.",
+    false,
+  );
+  assert.deepEqual(kept.systemInstruction, { parts: [{ text: "be brief" }] });
+
+  const prepended = applyGeminiChannelSystemPrompt(
+    {
+      systemInstruction: { parts: [{ inlineData: { mimeType: "image/png", data: "YWE=" } }, { text: "be brief" }] },
+      contents: [{ role: "user", parts: [{ text: "hi" }] }],
+    },
+    "Answer in English.",
+    true,
+  );
+  assert.deepEqual((prepended.systemInstruction as { parts: { text?: string }[] }).parts[1], {
+    text: "Answer in English.\nbe brief",
+  });
+
+  const unshift = applyGeminiChannelSystemPrompt(
+    {
+      systemInstruction: { parts: [{ inlineData: { mimeType: "image/png", data: "YWE=" } }] },
+      contents: [{ role: "user", parts: [{ text: "hi" }] }],
+    },
+    "Answer in English.",
+    true,
+  );
+  assert.equal((unshift.systemInstruction as { parts: { text?: string }[] }).parts[0].text, "Answer in English.");
+
+  const snake = applyGeminiChannelSystemPrompt(
+    {
+      system_instruction: { parts: [{ text: "be brief" }] },
+      contents: [{ role: "user", parts: [{ text: "hi" }] }],
+    },
+    "Answer in English.",
+    true,
+  );
+  assert.deepEqual(snake.systemInstruction, { parts: [{ text: "Answer in English.\nbe brief" }] });
+  assert.equal("system_instruction" in snake, false);
+
+  const cleaned = applyGeminiChannelSystemPrompt(
+    { systemInstruction: { parts: [{ text: "" }, { inlineData: { mimeType: "image/png", data: "YWE=" } }] } },
+    undefined,
+    false,
+  );
+  assert.equal("systemInstruction" in cleaned, false);
+
+  const nativeGemini = convertGeminiRequest(
+    applyGeminiChannelSystemPrompt(
+      { contents: [{ parts: [{ text: "hi" }] }] },
+      "Answer in English.",
+      false,
+    ),
+    { originModelName: "gemini-2.0-flash", upstreamModelName: "gemini-2.0-flash" },
+  );
+  assert.deepEqual(nativeGemini.systemInstruction, { parts: [{ text: "Answer in English." }] });
+  assert.equal((nativeGemini.contents as { role?: string }[])[0].role, "user");
+
+  const claudeMissing = applyClaudeChannelSystemPrompt(
+    { model: "claude-3-7-sonnet", max_tokens: 32, messages: [{ role: "user", content: "hi" }] },
+    "Answer in English.",
+    false,
+  );
+  assert.equal(claudeMissing.system, "Answer in English.");
+
+  const claudeKept = applyClaudeChannelSystemPrompt(
+    { model: "claude-3-7-sonnet", system: "be brief", max_tokens: 32, messages: [{ role: "user", content: "hi" }] },
+    "Answer in English.",
+    false,
+  );
+  assert.equal(claudeKept.system, "be brief");
+
+  const claudePrepend = applyClaudeChannelSystemPrompt(
+    { model: "claude-3-7-sonnet", system: "be brief", max_tokens: 32, messages: [{ role: "user", content: "hi" }] },
+    "Answer in English.",
+    true,
+  );
+  assert.equal(claudePrepend.system, "Answer in English.\nbe brief");
+
+  const claudeBlocks = applyClaudeChannelSystemPrompt(
+    {
+      model: "claude-3-7-sonnet",
+      system: [{ type: "text", text: "be brief" }],
+      max_tokens: 32,
+      messages: [{ role: "user", content: "hi" }],
+    },
+    "Answer in English.",
+    true,
+  );
+  assert.deepEqual(claudeBlocks.system, [
+    { type: "text", text: "Answer in English." },
+    { type: "text", text: "be brief" },
+  ]);
+
+  const wrapped = convertVertexClaudeRequest(
+    applyClaudeChannelSystemPrompt(
+      { model: "claude-3-7-sonnet", max_tokens: 32, messages: [{ role: "user", content: "hi" }] },
+      "Answer in English.",
+      false,
+    ),
+    { originModelName: "claude-3-7-sonnet", upstreamModelName: "claude-3-7-sonnet" },
+  );
+  assert.equal(wrapped.system, "Answer in English.");
+  assert.equal(wrapped.anthropic_version, VERTEX_ANTHROPIC_VERSION);
+  assert.equal("model" in wrapped, false);
+
+  const chatMissing = applyChatChannelSystemPrompt(
+    { model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] },
+    "Answer in English.",
+    false,
+  );
+  assert.deepEqual((chatMissing.messages as { role: string; content: string }[])[0], {
+    role: "system",
+    content: "Answer in English.",
+  });
+
+  const chatKept = applyChatChannelSystemPrompt(
+    {
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "be brief" },
+        { role: "user", content: "hi" },
+      ],
+    },
+    "Answer in English.",
+    false,
+  );
+  assert.equal((chatKept.messages as { content: string }[])[0].content, "be brief");
+
+  const chatPrepend = applyChatChannelSystemPrompt(
+    {
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "be brief" },
+        { role: "user", content: "hi" },
+      ],
+    },
+    "Answer in English.",
+    true,
+  );
+  assert.equal((chatPrepend.messages as { content: string }[])[0].content, "Answer in English.\nbe brief");
+
+  const toolsSkip = applyChatChannelSystemPrompt(
+    {
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", tools: [{ type: "function", function: { name: "lookup" } }] },
+        { role: "user", content: "hi" },
+      ],
+    },
+    "Answer in English.",
+    true,
+  );
+  assert.equal((toolsSkip.messages as { role: string; content?: string }[])[0].role, "system");
+  assert.equal((toolsSkip.messages as { content?: string }[])[0].content, "Answer in English.");
+
+  const developer = applyChatChannelSystemPrompt(
+    { model: "gpt-5", messages: [{ role: "user", content: "hi" }] },
+    "Answer in English.",
+    false,
+    "developer",
+  );
+  assert.equal((developer.messages as { role: string }[])[0].role, "developer");
+  assert.equal((developer.messages as { content: string }[])[0].content, "Answer in English.");
+
+  const stillChat = convertOpenAIRequest(
+    { model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] },
+    { channelType: CHANNEL_TYPE_OPENAI, originModelName: "gpt-4o-mini", upstreamModelName: "gpt-4o-mini" },
+  );
+  const afterConvert = applyChatChannelSystemPrompt(stillChat, "Answer in English.", false, getOpenAISystemRoleName(String(stillChat.model || "")));
+  assert.equal((afterConvert.messages as { role: string }[])[0].role, "system");
+
+  const geminiFromOpenAI = convertOpenAIRequest(
+    {
+      model: "gemini-2.0-flash",
+      messages: [{ role: "user", content: "hi" }],
+    },
+    { channelType: CHANNEL_TYPE_GEMINI, originModelName: "gemini-2.0-flash", upstreamModelName: "gemini-2.0-flash" },
+  );
+  assert.equal("messages" in geminiFromOpenAI, false);
+  assert.ok(Array.isArray(geminiFromOpenAI.contents));
+  assert.equal("systemInstruction" in geminiFromOpenAI, false);
 });
 
 

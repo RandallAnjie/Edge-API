@@ -323,6 +323,11 @@ export function getOpenAIChatCapabilities(modelName: string, reasoningEffort = "
   return capabilities;
 }
 
+/** Original `dto.GeneralOpenAIRequest.GetSystemRoleName`. */
+export function getOpenAISystemRoleName(modelName: string, reasoningEffort = ""): string {
+  return getOpenAIChatCapabilities(modelName, reasoningEffort).useDeveloperRole ? "developer" : "system";
+}
+
 /** Original `openai.Adaptor.ConvertOpenAIRequest` chat compatibility (token limit + sampling + developer role + stream_options). */
 export function applyOpenAIChatCompatibility(
   body: Record<string, unknown>,
@@ -387,7 +392,13 @@ export type ConvertOpenAIOpts = {
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
 export { convertVertexClaudeRequest, convertVertexGeminiRequest, wrapVertexClaude, VERTEX_ANTHROPIC_VERSION } from "./vertex-convert.js";
-export { convertGeminiRequest, convertOpenAIChatToGemini, convertGeminiEmbeddingRequest, openaiFromGeminiEmbedding } from "./gemini-convert.js";
+export {
+  convertGeminiRequest,
+  convertOpenAIChatToGemini,
+  convertGeminiEmbeddingRequest,
+  openaiFromGeminiEmbedding,
+  applyGeminiChannelSystemPrompt,
+} from "./gemini-convert.js";
 export {
   convertOllamaEmbeddingRequest,
   convertOllamaGenerateRequest,
@@ -1097,7 +1108,12 @@ export function convertTextRequestViaResponses(
       openRouterDialect: opts.channelType === CHANNEL_TYPE_OPENROUTER,
     });
   } else {
-    const chat = applyChatChannelSystemPrompt(body, opts.systemPrompt, opts.systemPromptOverride);
+    const chat = applyChatChannelSystemPrompt(
+      body,
+      opts.systemPrompt,
+      opts.systemPromptOverride,
+      getOpenAISystemRoleName(String(opts.upstreamModelName || body.model || ""), String(body.reasoning_effort || "")),
+    );
     responses = convertChatCompletionsToResponsesRequest({
       ...chat,
       model: opts.upstreamModelName || chat.model,
