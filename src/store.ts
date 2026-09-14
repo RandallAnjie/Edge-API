@@ -327,6 +327,64 @@ export class Store {
     await this.db.prepare("UPDATE users SET quota = quota + ? WHERE id = ?").bind(delta, userId).run();
   }
 
+  /** Original `model.TryReserveUserQuota` (wallet PreConsume). */
+  async tryHoldUserQuota(userId: number, quota: number): Promise<boolean> {
+    if (quota <= 0) return true;
+    const r = await this.db.prepare("UPDATE users SET quota = quota - ? WHERE id = ? AND quota >= ?").bind(quota, userId, quota).run();
+    return Number(r.meta.changes || 0) === 1;
+  }
+
+  /** Original `model.DecreaseUserQuota` (Reserve extra / Settle positive delta). */
+  async decreaseUserQuota(userId: number, quota: number): Promise<void> {
+    if (quota <= 0) return;
+    await this.db.prepare("UPDATE users SET quota = quota - ? WHERE id = ?").bind(quota, userId).run();
+  }
+
+  /** Original `model.IncreaseUserQuota` (Settle refund / BillingSession.Refund). */
+  async releaseUserQuota(userId: number, quota: number): Promise<void> {
+    if (quota <= 0) return;
+    await this.db.prepare("UPDATE users SET quota = quota + ? WHERE id = ?").bind(quota, userId).run();
+  }
+
+  /** Original `model.TryReserveTokenQuota` / `DecreaseTokenQuota`. */
+  async tryHoldTokenQuota(tokenId: number, quota: number, unlimited: boolean): Promise<boolean> {
+    if (quota <= 0) return true;
+    if (unlimited) {
+      await this.db
+        .prepare("UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ?")
+        .bind(quota, quota, nowSec(), tokenId)
+        .run();
+      return true;
+    }
+    const r = await this.db
+      .prepare(
+        "UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ? AND remain_quota >= ?",
+      )
+      .bind(quota, quota, nowSec(), tokenId, quota)
+      .run();
+    return Number(r.meta.changes || 0) === 1;
+  }
+
+  /** Original `model.IncreaseTokenQuota` (remain +=, used -=). */
+  async releaseTokenQuota(tokenId: number, quota: number): Promise<void> {
+    if (quota <= 0) return;
+    await this.db
+      .prepare("UPDATE api_tokens SET remain_quota = remain_quota + ?, used_quota = used_quota - ?, accessed_time = ? WHERE id = ?")
+      .bind(quota, quota, nowSec(), tokenId)
+      .run();
+  }
+
+  /** Original `model.UpdateUserUsedQuotaAndRequestCount`. */
+  async addUserUsedQuotaAndRequestCount(userId: number, quota: number): Promise<void> {
+    await this.db.prepare("UPDATE users SET used_quota = used_quota + ?, request_count = request_count + 1 WHERE id = ?").bind(quota, userId).run();
+  }
+
+  /** Original `model.UpdateChannelUsedQuota`. */
+  async addChannelUsedQuota(channelId: number, quota: number): Promise<void> {
+    if (!channelId) return;
+    await this.db.prepare("UPDATE channels SET used_quota = used_quota + ? WHERE id = ?").bind(quota, channelId).run();
+  }
+
   async consumeQuota(userId: number, tokenId: number | null, channelId: number | null, quota: number): Promise<void> {
     await this.db
       .prepare("UPDATE users SET quota = quota - ?, used_quota = used_quota + ?, request_count = request_count + 1 WHERE id = ?")

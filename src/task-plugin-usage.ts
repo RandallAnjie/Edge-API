@@ -121,6 +121,11 @@ export function quotaFromFloat(value: number): number {
   return quotaFromFloatChecked(value).quota;
 }
 
+/** Original `common.QuotaClamp.Error`. */
+export function quotaClampMessage(clamp: QuotaClamp): string {
+  return `quota conversion (${clamp.op}) ${clamp.kind}: original=${clamp.original}, clamped=${clamp.clamped}`;
+}
+
 /** Original `types.isValidOtherRatio`. */
 export function isValidOtherRatio(ratio: number): boolean {
   return ratio > 0 && ratio !== Number.POSITIVE_INFINITY;

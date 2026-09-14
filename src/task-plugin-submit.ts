@@ -20,7 +20,7 @@ import {
 import { type PluginEngine, validateRequestURL } from "./jsplugin.js";
 import { requestHeadersFrom } from "./param-override.js";
 import type { MatchedPlugin } from "./plugin-dispatch.js";
-import { remainingOk } from "./quota.js";
+import { formatQuotaOriginal, insufficientTokenQuotaMessage, insufficientWalletQuotaMessage } from "./quota.js";
 import { defaultModelPrice } from "./ratio-defaults.js";
 import { getModelPriceFromMap, getModelRatioFromMap } from "./ratio-setting.js";
 import { mapModel, pickChannelKey } from "./select.js";
@@ -49,6 +49,7 @@ import {
   applyRelayTaskSubmitBilling,
   estimateBillingValidated,
   pluginHasUsageProfiles,
+  quotaClampMessage,
   quotaFromFloatChecked,
   validateResolvedUsageRequest,
 } from "./task-plugin-usage.js";
@@ -97,6 +98,12 @@ export type NativeSubmitInfo = {
   isModelMapped: boolean;
 };
 
+/** Original `service.BillingSession` hold for native RelayTask. */
+export type NativeTaskBillingSession = {
+  preconsumed: number;
+  started: boolean;
+};
+
 type SubmitKind = Extract<PreparedNativeRoute, { kind: "submit" }>;
 
 /** Original `model.GenerateTaskID`. */
@@ -128,6 +135,128 @@ function hookMessage(err: unknown): string {
 
 function taskErr(code: string, message: string, statusCode: number, localError: boolean, noRetry = false): NativeTaskError {
   return { code, message, statusCode, localError, noRetry };
+}
+
+async function formatTaskQuota(store: Store, quota: number): Promise<string> {
+  const unit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
+  const display = (await store.option("general_setting.quota_display_type")) || "USD";
+  const usdRate = (await store.optionNum("USDExchangeRate", 1)) || 1;
+  const customSymbol = (await store.option("general_setting.custom_currency_symbol")) || "¤";
+  const customRate = Number(await store.option("general_setting.custom_currency_exchange_rate")) || 1;
+  return formatQuotaOriginal(quota, unit, display, usdRate, customSymbol, customRate);
+}
+
+async function refundNativeTaskBilling(store: Store, auth: AuthToken, billing: NativeTaskBillingSession | null): Promise<void> {
+  if (!billing || !billing.started || billing.preconsumed <= 0) {
+    if (billing) billing.started = false;
+    return;
+  }
+  const amount = billing.preconsumed;
+  await store.releaseUserQuota(auth.user.id, amount);
+  await store.releaseTokenQuota(auth.token.id, amount);
+  auth.user.quota += amount;
+  auth.token.remain_quota += amount;
+  auth.token.used_quota -= amount;
+  billing.preconsumed = 0;
+  billing.started = false;
+}
+
+async function preConsumeNativeTask(
+  store: Store,
+  auth: AuthToken,
+  billing: NativeTaskBillingSession,
+  quota: number,
+): Promise<NativeTaskError | null> {
+  if (billing.started) return null;
+  if (quota < 0) {
+    return taskErr("model_price_error", `pre-consume quota cannot be negative: ${quota}`, 400, true);
+  }
+  const remain = auth.user.quota;
+  const formattedRemain = await formatTaskQuota(store, remain);
+  const formattedNeed = await formatTaskQuota(store, quota);
+  if (remain <= 0) {
+    return taskErr("insufficient_user_quota", insufficientWalletQuotaMessage(remain, quota, formattedRemain, formattedNeed), 403, true);
+  }
+  if (remain < quota) {
+    return taskErr("insufficient_user_quota", insufficientWalletQuotaMessage(remain, quota, formattedRemain, formattedNeed), 403, true);
+  }
+  if (quota === 0) {
+    billing.started = true;
+    billing.preconsumed = 0;
+    return null;
+  }
+  const unlimited = Boolean(Number(auth.token.unlimited_quota));
+  if (!unlimited && auth.token.remain_quota < quota) {
+    return taskErr(
+      "insufficient_user_quota",
+      insufficientTokenQuotaMessage(await formatTaskQuota(store, auth.token.remain_quota), formattedNeed),
+      403,
+      true,
+    );
+  }
+  const tokenHeld = await store.tryHoldTokenQuota(auth.token.id, quota, unlimited);
+  if (!tokenHeld) {
+    return taskErr(
+      "insufficient_user_quota",
+      insufficientTokenQuotaMessage(await formatTaskQuota(store, auth.token.remain_quota), formattedNeed),
+      403,
+      true,
+    );
+  }
+  const userHeld = await store.tryHoldUserQuota(auth.user.id, quota);
+  if (!userHeld) {
+    await store.releaseTokenQuota(auth.token.id, quota);
+    return taskErr("insufficient_user_quota", insufficientWalletQuotaMessage(remain, quota, formattedRemain, formattedNeed), 403, true);
+  }
+  billing.started = true;
+  billing.preconsumed = quota;
+  auth.user.quota -= quota;
+  auth.token.remain_quota -= quota;
+  auth.token.used_quota += quota;
+  return null;
+}
+
+async function reserveNativeTask(
+  store: Store,
+  auth: AuthToken,
+  billing: NativeTaskBillingSession,
+  target: number,
+): Promise<NativeTaskError | null> {
+  if (!billing.started) return null;
+  const extra = target - billing.preconsumed;
+  if (extra <= 0) return null;
+  await store.decreaseUserQuota(auth.user.id, extra);
+  const tokenHeld = await store.tryHoldTokenQuota(auth.token.id, extra, Boolean(Number(auth.token.unlimited_quota)));
+  if (!tokenHeld) {
+    await store.releaseUserQuota(auth.user.id, extra);
+    return taskErr("insufficient_user_quota", "insufficient quota for adjusted task cost", 403, true);
+  }
+  billing.preconsumed += extra;
+  auth.user.quota -= extra;
+  auth.token.remain_quota -= extra;
+  auth.token.used_quota += extra;
+  return null;
+}
+
+async function settleNativeTask(store: Store, auth: AuthToken, billing: NativeTaskBillingSession, actual: number): Promise<void> {
+  if (!billing.started) return;
+  const delta = actual - billing.preconsumed;
+  if (delta === 0) return;
+  if (delta < 0) {
+    const refund = -delta;
+    await store.releaseUserQuota(auth.user.id, refund);
+    await store.releaseTokenQuota(auth.token.id, refund);
+    auth.user.quota += refund;
+    auth.token.remain_quota += refund;
+    auth.token.used_quota -= refund;
+  } else {
+    await store.tryHoldTokenQuota(auth.token.id, delta, Boolean(Number(auth.token.unlimited_quota)));
+    await store.decreaseUserQuota(auth.user.id, delta);
+    auth.user.quota -= delta;
+    auth.token.remain_quota -= delta;
+    auth.token.used_quota += delta;
+  }
+  billing.preconsumed = actual;
 }
 
 function stringMap(value: unknown): Record<string, string> {
@@ -670,6 +799,7 @@ async function relayTaskSubmitOnce(opts: {
   info: NativeSubmitInfo;
   store: Store;
   auth: AuthToken;
+  billing: NativeTaskBillingSession;
 }): Promise<
   | { parsed: NativeSubmitParsed; info: NativeSubmitInfo; otherRatios: Record<string, number>; quota: number; price: TaskPriceData }
   | NativeTaskError
@@ -735,6 +865,11 @@ async function relayTaskSubmitOnce(opts: {
     const checked = quotaFromFloatChecked(applyOtherRatiosToFloat(quota, estimatedRatios));
     quota = checked.quota;
     if (!priced.clamp) priced.clamp = checked.clamp;
+  }
+  if (!priced.freeModel) {
+    if (priced.clamp) return taskErr("model_price_error", quotaClampMessage(priced.clamp), 400, true);
+    const holdErr = await preConsumeNativeTask(opts.store, opts.auth, opts.billing, quota);
+    if (holdErr) return holdErr;
   }
 
   const upstream = await doNativeSubmitRequest(descriptor, opts.prepared.requestContext.fileContents || [], {
@@ -870,7 +1005,7 @@ export async function executeNativeTaskSubmission(
     quota: number;
     price: TaskPriceData;
   } | null = null;
-  let preconsumed = 0;
+  const billing: NativeTaskBillingSession = { preconsumed: 0, started: false };
 
   for (let attempt = 0; attempt <= retryTimes; attempt++) {
     if (!channel) break;
@@ -887,23 +1022,8 @@ export async function executeNativeTaskSubmission(
       usingGroup: auth.usingGroup,
       isModelMapped: false,
     };
-    const result = await relayTaskSubmitOnce({ engine, prepared, req, channel, info, store, auth });
+    const result = await relayTaskSubmitOnce({ engine, prepared, req, channel, info, store, auth, billing });
     if (!("statusCode" in result)) {
-      if (!preconsumed && result.quota > 0) {
-        const shortage = remainingOk(
-          auth.user.quota,
-          auth.token.remain_quota,
-          Boolean(Number(auth.token.unlimited_quota)),
-          result.quota,
-        );
-        if (shortage) {
-          lastErr = taskErr("insufficient_user_quota", shortage, 403, true);
-          break;
-        }
-        await store.consumeQuota(auth.user.id, auth.token.id, channel.id, result.quota);
-        auth.user.quota -= result.quota;
-        preconsumed = result.quota;
-      }
       outcome = result;
       lastErr = null;
       break;
@@ -921,11 +1041,18 @@ export async function executeNativeTaskSubmission(
   }
 
   if (lastErr) {
-    if (preconsumed) await store.addQuota(auth.user.id, preconsumed);
+    await refundNativeTaskBilling(store, auth, billing);
     return { error: nativeSubmitError(prepared, engine, lastErr, requestId) };
   }
   if (!outcome) {
+    await refundNativeTaskBilling(store, auth, billing);
     return { error: nativeSubmitError(prepared, engine, taskErr("task_submit_failed", "task submission returned no result", 500, true), requestId) };
+  }
+
+  const reserveErr = await reserveNativeTask(store, auth, billing, outcome.quota);
+  if (reserveErr) {
+    await refundNativeTaskBilling(store, auth, billing);
+    return { error: nativeSubmitError(prepared, engine, reserveErr, requestId) };
   }
 
   let row: Record<string, unknown>;
@@ -944,8 +1071,21 @@ export async function executeNativeTaskSubmission(
       price: outcome.price,
     });
   } catch (err) {
-    if (preconsumed) await store.addQuota(auth.user.id, preconsumed);
+    await refundNativeTaskBilling(store, auth, billing);
     return { error: nativeSubmitError(prepared, engine, taskErr("task_insert_failed", hookMessage(err), 500, true), requestId) };
+  }
+
+  try {
+    await settleNativeTask(store, auth, billing, outcome.quota);
+  } catch {
+    return {
+      error: nativeSubmitError(
+        prepared,
+        engine,
+        taskErr("task_billing_settlement_failed", "failed to settle task billing", 500, true),
+        requestId,
+      ),
+    };
   }
 
   try {

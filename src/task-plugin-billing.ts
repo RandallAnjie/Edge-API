@@ -306,6 +306,8 @@ export async function logTaskConsumption(opts: {
     usageFacts: opts.input.tiered?.usageFacts,
     perCall: opts.input.perCall,
   });
+  await opts.store.addUserUsedQuotaAndRequestCount(opts.user.id, opts.input.quota);
+  await opts.store.addChannelUsedQuota(opts.channelId, opts.input.quota);
   await recordTaskConsumptionLog({
     store: opts.store,
     user: opts.user,

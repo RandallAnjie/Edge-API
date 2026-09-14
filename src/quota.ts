@@ -41,3 +41,36 @@ export function formatQuota(quota: number, quotaPerUnit: number, displayCurrency
   const usd = quota / (quotaPerUnit || 500000);
   return `$${usd.toFixed(4)}`;
 }
+
+/** Original `logger.FormatQuota` (USD / TOKENS / CNY / custom). */
+export function formatQuotaOriginal(
+  quota: number,
+  quotaPerUnit: number,
+  displayType = "USD",
+  usdRate = 1,
+  customSymbol = "¤",
+  customRate = 1,
+): string {
+  const unit = quotaPerUnit || 500000;
+  const usd = quota / unit;
+  const type = String(displayType || "USD").toUpperCase();
+  if (type === "TOKENS") return String(quota);
+  if (type === "CNY") return `¥${(usd * (usdRate || 1)).toFixed(6)}`;
+  if (type === "CUSTOM") {
+    const rate = customRate > 0 ? customRate : 1;
+    const symbol = customSymbol || "¤";
+    return `${symbol}${(usd * rate).toFixed(6)}`;
+  }
+  return `＄${usd.toFixed(6)}`;
+}
+
+/** Original `NewBillingSession` wallet insufficient messages. */
+export function insufficientWalletQuotaMessage(remain: number, need: number, formattedRemain: string, formattedNeed: string): string {
+  if (remain <= 0) return `用户额度不足, 剩余额度: ${formattedRemain}`;
+  return `预扣费额度失败, 用户剩余额度: ${formattedRemain}, 需要预扣费额度: ${formattedNeed}`;
+}
+
+/** Original `PreConsumeTokenQuota` insufficient message. */
+export function insufficientTokenQuotaMessage(formattedRemain: string, formattedNeed: string): string {
+  return `token quota is not enough, token remain quota: ${formattedRemain}, need quota: ${formattedNeed}`;
+}

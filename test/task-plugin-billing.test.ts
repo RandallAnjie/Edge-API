@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHANNEL_TYPE_OPENAI, LOG_CONSUME } from "../src/constants.js";
-import { MAX_QUOTA } from "../src/task-plugin-usage.js";
+import { CHANNEL_TYPE_OPENAI, LOG_CONSUME, ROOT_QUOTA } from "../src/constants.js";
+import { formatQuotaOriginal, insufficientWalletQuotaMessage } from "../src/quota.js";
+import { MAX_QUOTA, quotaClampMessage } from "../src/task-plugin-usage.js";
 import {
   appendTaskPluginAuditInfo,
   attachQuotaSaturationToOther,
@@ -228,6 +229,22 @@ test("original LogOther SetPublic rejects reserved keys JSON", () => {
   assert.equal("channel_id" in logOtherSnapshot(maps), false);
 });
 
+test("original logger.FormatQuota USD JSON", () => {
+  assert.equal(formatQuotaOriginal(1000, 500000, "USD"), "＄0.002000");
+  assert.equal(formatQuotaOriginal(1250000, 500000, "USD"), "＄2.500000");
+  assert.equal(formatQuotaOriginal(1750000, 500000, "USD"), "＄3.500000");
+  assert.equal(formatQuotaOriginal(42, 500000, "TOKENS"), "42");
+  assert.equal(
+    insufficientWalletQuotaMessage(1000, 1250000, "＄0.002000", "＄2.500000"),
+    "预扣费额度失败, 用户剩余额度: ＄0.002000, 需要预扣费额度: ＄2.500000",
+  );
+  assert.equal(insufficientWalletQuotaMessage(0, 1250000, "＄0.000000", "＄2.500000"), "用户额度不足, 剩余额度: ＄0.000000");
+  assert.equal(
+    quotaClampMessage({ op: "QuotaFromFloat", kind: "overflow", original: 2.5e25, clamped: MAX_QUOTA }),
+    `quota conversion (QuotaFromFloat) overflow: original=${2.5e25}, clamped=${MAX_QUOTA}`,
+  );
+});
+
 async function boot() {
   resetSchemaFlag();
   const e: Env = { DB: createMemoryD1(), SYSTEM_NAME: "Edge API Test" };
@@ -391,13 +408,20 @@ test("original native RelayTask LogTaskConsumption consume-log JSON", async () =
     assert.equal("admin_info" in selfOther, false);
     assert.equal("root_info" in selfOther, false);
     assert.equal(selfItems[0].channel_name, "");
+
+    const user = await store.getUserByUsername("root");
+    assert.equal(Number(user?.quota), ROOT_QUOTA - 1750000);
+    assert.equal(Number(user?.used_quota), 1750000);
+    assert.equal(Number(user?.request_count), 1);
+    const token = await store.getTokenById(Number(priv.token_id));
+    assert.equal(Number(token?.used_quota), 1750000);
   } finally {
     globalThis.fetch = origFetch;
   }
 });
 
 test("original native RelayTask immediate FAILURE LogTaskConsumption zero quota JSON", async () => {
-  const { e, auth, sk } = await boot();
+  const { e, auth, store, sk } = await boot();
   const source = httpUsagePlugin.replace(
     `taskData:{accepted:true,status:resp.statusCode}`,
     `taskData:{accepted:false},immediate:{status:"FAILURE",progress:"100%",reason:"provider rejected"}`,
@@ -461,6 +485,171 @@ test("original native RelayTask immediate FAILURE LogTaskConsumption zero quota 
     const other = JSON.parse(items[0].other || "{}") as Record<string, unknown>;
     assert.equal(other.is_task, true);
     assert.equal(other.request_path, "/vendor/jobs");
+    const user = await store.getUserByUsername("root");
+    assert.equal(Number(user?.quota), ROOT_QUOTA);
+    assert.equal(Number(user?.used_quota), 0);
+    assert.equal(Number(user?.request_count), 1);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+async function registerHttpUsage(
+  e: Env,
+  auth: Record<string, string>,
+  source = httpUsagePlugin,
+  channelName = "mock-usage",
+  modelRatio: Record<string, number> = { "mock-v1": 1 },
+) {
+  const registered = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ source }),
+    }),
+    e,
+  );
+  assert.equal(registered.body.success, true, String(registered.body.message));
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "ModelRatio", value: JSON.stringify(modelRatio) }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: channelName,
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-test",
+        models: "mock-v1",
+        group: "default",
+        base_url: "https://provider.example.test",
+      }),
+    }),
+    e,
+  );
+}
+
+test("original native RelayTask PreConsume insufficient wallet JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  await registerHttpUsage(e, auth, httpUsagePlugin, "mock-short");
+  const root = await store.getUserByUsername("root");
+  assert.ok(root);
+  await store.decreaseUserQuota(root.id, Number(root.quota) - 1000);
+  const before = await store.getUserByUsername("root");
+  assert.equal(Number(before?.quota), 1000);
+
+  let submitHits = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://provider.example.test/submit") {
+      submitHits += 1;
+      return new Response(JSON.stringify({ id: "should-not-fetch" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 403, hit.text);
+    assert.equal(hit.body.code, "permission_denied");
+    assert.match(String(hit.body.message), /预扣费额度失败, 用户剩余额度: ＄0\.002000, 需要预扣费额度: ＄2\.500000/);
+    assert.equal(submitHits, 0);
+    const after = await store.getUserByUsername("root");
+    assert.equal(Number(after?.quota), 1000);
+    assert.equal(Number(after?.used_quota), Number(before?.used_quota));
+    assert.equal(Number(after?.request_count), Number(before?.request_count));
+    const logs = await json(new Request("http://local/api/log/?type=2", { headers: auth }), e);
+    const items = (logs.body.data as { items: unknown[] }).items;
+    assert.equal(items.length, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original native RelayTask Refund restores remaining after fetch 502 JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  await registerHttpUsage(e, auth, httpUsagePlugin, "mock-502");
+  const before = await store.getUserByUsername("root");
+  let submitHits = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://provider.example.test/submit") {
+      submitHits += 1;
+      return new Response("upstream boom", { status: 502 });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 502, hit.text);
+    assert.equal(hit.body.code, "server_error");
+    assert.equal(submitHits, 1);
+    const after = await store.getUserByUsername("root");
+    assert.equal(Number(after?.quota), ROOT_QUOTA);
+    assert.equal(Number(after?.used_quota), Number(before?.used_quota));
+    assert.equal(Number(after?.request_count), Number(before?.request_count));
+    const logs = await json(new Request("http://local/api/log/?type=2", { headers: auth }), e);
+    const items = (logs.body.data as { items: unknown[] }).items;
+    assert.equal(items.length, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original native RelayTask QuotaClamp model_price_error JSON before PreConsume", async () => {
+  const { e, auth, store, sk } = await boot();
+  await registerHttpUsage(e, auth, httpUsagePlugin, "mock-clamp", { "mock-v1": 1e20 });
+  let submitHits = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://provider.example.test/submit") {
+      submitHits += 1;
+      return new Response(JSON.stringify({ id: "should-not-fetch" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 400, hit.text);
+    assert.equal(hit.body.code, "invalid_request");
+    assert.match(String(hit.body.message), /quota conversion \(QuotaFromFloat\) overflow/);
+    assert.equal(submitHits, 0);
+    const after = await store.getUserByUsername("root");
+    assert.equal(Number(after?.quota), ROOT_QUOTA);
+    assert.equal(Number(after?.used_quota), 0);
+    assert.equal(Number(after?.request_count), 0);
   } finally {
     globalThis.fetch = origFetch;
   }
