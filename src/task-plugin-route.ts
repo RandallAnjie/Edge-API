@@ -18,6 +18,7 @@ import type { MatchedPlugin } from "./plugin-dispatch.js";
 import { Store } from "./store.js";
 import { continueNativeSubmit as continueNativeRelayTaskSubmit } from "./task-plugin-submit.js";
 import { refreshNativeQueryTask } from "./task-plugin-query.js";
+import type { NativeSubmitFile } from "./task-plugin-submit-body.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
 
 export const TASK_PLUGIN_INVALID_ROUTE_RESULT = "plugin returned an invalid route result";
@@ -46,6 +47,8 @@ export type RouteRequestContext = {
   query: Record<string, string[]>;
   body: Record<string, unknown>;
   files: Record<string, unknown>[];
+  /** Host-owned inbound file bytes. Original `multipart.Form.File`. */
+  fileContents?: NativeSubmitFile[];
   requestBody: unknown;
 };
 
@@ -183,6 +186,7 @@ function emptyRouteContext(method: string, path: string, params: Record<string, 
     query,
     body: { kind: BODY_NONE },
     files: [],
+    fileContents: [],
     requestBody: undefined,
   };
 }
@@ -227,7 +231,11 @@ function parseDisposition(value: string): { name: string; filename: string } {
   return { name: nameMatch?.[1] || "", filename: fileMatch?.[1] || "" };
 }
 
-function parseMultipartBody(raw: Uint8Array, boundary: string): { fields: Record<string, string[]>; files: Record<string, unknown>[] } {
+function parseMultipartBody(raw: Uint8Array, boundary: string): {
+  fields: Record<string, string[]>;
+  files: Record<string, unknown>[];
+  fileContents: NativeSubmitFile[];
+} {
   if (!boundary) throw new Error("multipart boundary is required");
   const fileLimitMB = MAX_FILE_DOWNLOAD_MB > 0 ? MAX_FILE_DOWNLOAD_MB : 64;
   const delim = new TextEncoder().encode(`\r\n--${boundary}`);
@@ -237,6 +245,7 @@ function parseMultipartBody(raw: Uint8Array, boundary: string): { fields: Record
   prefixed.set(raw, 2);
   const fields: Record<string, string[]> = {};
   const files: Record<string, unknown>[] = [];
+  const fileContents: NativeSubmitFile[] = [];
   let partCount = 0;
   let fileCount = 0;
   let fieldCount = 0;
@@ -300,6 +309,12 @@ function parseMultipartBody(raw: Uint8Array, boundary: string): { fields: Record
           mimeType: headers["content-type"] || "",
           size: body.length,
         });
+        fileContents.push({
+          field: name,
+          filename: disp.filename,
+          mimeType: headers["content-type"] || "",
+          data: new Uint8Array(body),
+        });
       }
       cursor = next;
       continue;
@@ -307,7 +322,7 @@ function parseMultipartBody(raw: Uint8Array, boundary: string): { fields: Record
     cursor = indexOfBytes(prefixed, delim, start);
   }
   validateFormFields(fields);
-  return { fields, files };
+  return { fields, files, fileContents };
 }
 
 export function buildTaskPluginRouteRequestFromParts(input: {
@@ -360,6 +375,7 @@ export function buildTaskPluginRouteRequestFromParts(input: {
     if (!boundary) throw new Error("multipart boundary is required");
     const parsedBody = parseMultipartBody(raw, boundary);
     ctx.files = parsedBody.files;
+    ctx.fileContents = parsedBody.fileContents;
     ctx.body = { kind: BODY_MULTIPART, fields: parsedBody.fields, files: parsedBody.files };
     return ctx;
   }

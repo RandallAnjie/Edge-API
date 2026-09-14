@@ -32,6 +32,11 @@ import {
 } from "./task-plugin-route.js";
 import { openaiVideoView } from "./dto.js";
 import type { AuthToken, ChannelRow, Env } from "./types.js";
+import {
+  encodeNativeSubmitBody,
+  parseNativeSubmitParts,
+  type NativeSubmitPart,
+} from "./task-plugin-submit-body.js";
 
 export const MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES = 1 << 20;
 const TASK_ID_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -55,6 +60,7 @@ export type NativeSubmitDescriptor = {
   model: string;
   rewriteModel: string;
   bodyType: string;
+  parts: NativeSubmitPart[];
 };
 
 export type NativeSubmitParsed = {
@@ -314,6 +320,7 @@ export function descriptorFromHook(value: unknown): NativeSubmitDescriptor {
     model: String(object.model || ""),
     rewriteModel: String(object.rewriteModel || ""),
     bodyType: String(object.bodyType || ""),
+    parts: parseNativeSubmitParts(object.parts),
   };
 }
 
@@ -396,23 +403,18 @@ export function parseNativeSubmitResponse(
 
 async function doNativeSubmitRequest(
   descriptor: NativeSubmitDescriptor,
+  files: { field: string; filename: string; mimeType: string; data: Uint8Array }[] = [],
 ): Promise<{ status: number; headers: Record<string, string[]>; body: unknown } | NativeTaskError> {
   const method = (descriptor.method || "POST").toUpperCase();
   const headers = new Headers();
   for (const [name, value] of Object.entries(descriptor.headers)) headers.set(name, value);
   let body: BodyInit | undefined;
-  if (descriptor.bodyType === "multipart") {
-    return taskErr("plugin_request_invalid", "multipart submit bodies are not built on this hop", 400, true);
-  }
-  if (descriptor.body != null) {
-    if (typeof descriptor.body === "string") body = descriptor.body;
-    else {
-      try {
-        body = JSON.stringify(descriptor.body);
-      } catch (err) {
-        return taskErr("build_request_failed", hookMessage(err), 500, false);
-      }
-    }
+  try {
+    const encoded = encodeNativeSubmitBody(descriptor, files);
+    if (encoded.contentType) headers.set("Content-Type", encoded.contentType);
+    if (encoded.body != null) body = encoded.body;
+  } catch (err) {
+    return taskErr("build_request_failed", hookMessage(err), 500, false);
   }
   let res: Response;
   try {
@@ -622,7 +624,7 @@ async function relayTaskSubmitOnce(opts: {
   let quota = priced.quota;
   if (!priced.freeModel && Object.keys(otherRatios).length) quota = applyOtherRatios(quota, otherRatios);
 
-  const upstream = await doNativeSubmitRequest(descriptor);
+  const upstream = await doNativeSubmitRequest(descriptor, opts.prepared.requestContext.fileContents || []);
   if ("statusCode" in upstream) return upstream;
   const parsed = parseNativeSubmitResponse(opts.engine, submitContext, upstream.status, upstream.headers, upstream.body);
   if ("statusCode" in parsed) return parsed;
