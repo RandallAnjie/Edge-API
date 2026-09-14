@@ -15,6 +15,8 @@ import {
   convertOpenAIAdaptorGeminiRequest,
   convertVolcClaudeRequest,
   convertDeepSeekClaudeRequest,
+  convertXaiImageRequest,
+  nativeClaudeGeminiConvertError,
   usesClaudeAdaptorForClaudeRequest,
   openaiChatToClaudeResponse,
   openaiChatToGeminiResponse,
@@ -2066,6 +2068,55 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () =
   assert.equal(grokMini.max_completion_tokens, 16);
   assert.equal("max_tokens" in grokMini, false);
 
+  const xaiImage = convertOpenAIRequest(
+    {
+      model: "grok-2-image",
+      prompt: "a cat",
+      n: 2,
+      size: "1024x1024",
+      quality: "hd",
+      style: "vivid",
+      user: "alice",
+      response_format: "b64_json",
+    },
+    {
+      channelType: CHANNEL_TYPE_XAI,
+      originModelName: "grok-2-image",
+      upstreamModelName: "grok-2-image",
+      relayMode: "images",
+    },
+  );
+  assert.deepEqual(xaiImage, { model: "grok-2-image", prompt: "a cat", n: 2, response_format: "b64_json" });
+  assert.deepEqual(
+    convertXaiImageRequest({ model: "grok-2-image", prompt: "a cat", size: "1024x1024", quality: "hd" }),
+    { model: "grok-2-image", prompt: "a cat", n: 1 },
+  );
+  assert.deepEqual(convertXaiImageRequest({ model: "grok-2-image", prompt: "a cat", n: 0 }), {
+    model: "grok-2-image",
+    prompt: "a cat",
+  });
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "grok-2-image", input: "hi" },
+        { channelType: CHANNEL_TYPE_XAI, originModelName: "grok-2-image", upstreamModelName: "grok-2-image", relayMode: "embeddings" },
+      ),
+    /not available/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "grok-2-image", input: "hi" },
+        { channelType: CHANNEL_TYPE_XAI, originModelName: "grok-2-image", upstreamModelName: "grok-2-image", relayMode: "audio_speech" },
+      ),
+    /not available/,
+  );
+  const xaiCh = testChannel({ type: CHANNEL_TYPE_XAI, key: "xk", models: "grok-2-image" });
+  assert.equal(
+    buildUpstream(xaiCh, "images", "/v1/images/generations", "grok-2-image", xaiImage).url,
+    "https://api.x.ai/v1/images/generations",
+  );
+
   const dsNone = convertOpenAIRequest(
     { model: "deepseek-v4-flash-none", messages: [{ role: "user", content: "hi" }] },
     { channelType: CHANNEL_TYPE_DEEPSEEK, originModelName: "deepseek-v4-flash-none", upstreamModelName: "deepseek-v4-flash-none" },
@@ -2131,6 +2182,27 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () =
     buildUpstream(moonshotCh, "chat", "/v1/chat/completions", "kimi-k2.5", { model: "kimi-k2.5" }).url,
     "https://api.moonshot.cn/v1/chat/completions",
   );
+});
+
+test("original xAI/Jimeng/Replicate/Submodel/Coze ConvertClaudeRequest and ConvertGeminiRequest error strings", () => {
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_XAI, "anthropic"), "not available");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_XAI, "gemini"), "not implemented");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_XAI, "openai"), undefined);
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_JIMENG, "anthropic"), "not implemented");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_JIMENG, "gemini"), "not implemented");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_COZE, "anthropic"), "not implemented");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_COZE, "gemini"), "not implemented");
+  assert.equal(
+    nativeClaudeGeminiConvertError(CHANNEL_TYPE_REPLICATE, "anthropic"),
+    "replicate adaptor: ConvertClaudeRequest is not implemented",
+  );
+  assert.equal(
+    nativeClaudeGeminiConvertError(CHANNEL_TYPE_REPLICATE, "gemini"),
+    "replicate adaptor: ConvertGeminiRequest is not implemented",
+  );
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_SUBMODEL, "anthropic"), "submodel channel: endpoint not supported");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_SUBMODEL, "gemini"), "submodel channel: endpoint not supported");
+  assert.equal(nativeClaudeGeminiConvertError(CHANNEL_TYPE_MOONSHOT, "anthropic"), undefined);
 });
 
 test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON and URLs", async () => {

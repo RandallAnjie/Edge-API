@@ -1,4 +1,4 @@
-import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_PALM, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
+import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_PALM, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
@@ -13,6 +13,7 @@ import {
   convertOpenAIAdaptorGeminiRequest,
   convertVolcClaudeRequest,
   convertDeepSeekClaudeRequest,
+  nativeClaudeGeminiConvertError,
   estimatePromptTokens,
   extractGeminiModelAction,
   geminiToOpenAIChat,
@@ -389,6 +390,8 @@ async function convertOutbound(
     }
     return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
+  const nativeClaudeGeminiErr = nativeClaudeGeminiConvertError(channelType, client);
+  if (nativeClaudeGeminiErr) throw new Error(nativeClaudeGeminiErr);
   if (client === "openai" && channelType === CHANNEL_TYPE_OLLAMA && mode === "embeddings") {
     return convertOllamaEmbeddingRequest(o, { upstreamModelName: upstream });
   }
@@ -424,6 +427,17 @@ async function convertOutbound(
     throw new Error("not implemented");
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_MINIMAX && (mode === "images" || mode === "audio_speech")) {
+    return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
+  }
+  if (
+    client === "openai" &&
+    channelType === CHANNEL_TYPE_XAI &&
+    (mode === "images" ||
+      mode === "embeddings" ||
+      mode === "audio_speech" ||
+      mode === "audio_transcription" ||
+      mode === "audio_translation")
+  ) {
     return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_ALI && (mode === "images" || mode === "rerank")) {

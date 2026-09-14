@@ -60,6 +60,24 @@ export function convertXaiOpenAIRequest(body: Record<string, unknown>, opts: Ven
   return out;
 }
 
+/**
+ * Original `xai.Adaptor.ConvertImageRequest`.
+ * quality, size, and style are not supported; only model/prompt/n/response_format are forwarded.
+ * `n` defaults to 1 when omitted (`lo.FromPtrOr(request.N, uint(1))`) and is omitted when 0 (`json:"n,omitempty"`).
+ */
+export function convertXaiImageRequest(body: Record<string, unknown>): Record<string, unknown> {
+  const nRaw = body.n;
+  const n = nRaw === undefined || nRaw === null ? 1 : Number(nRaw);
+  const out: Record<string, unknown> = {
+    model: body.model ?? "",
+    prompt: String(body.prompt ?? ""),
+  };
+  if (n) out.n = n;
+  const responseFormat = body.response_format;
+  if (typeof responseFormat === "string" && responseFormat) out.response_format = responseFormat;
+  return out;
+}
+
 /** Original `deepseek.Adaptor.ConvertOpenAIRequest` / `applyDeepSeekV4OpenAIThinkingSuffix`. */
 export function convertDeepSeekOpenAIRequest(body: Record<string, unknown>, opts: VendorConvertOpts): Record<string, unknown> {
   const settings = opts.settings || {};

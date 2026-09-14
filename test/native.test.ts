@@ -423,6 +423,33 @@ test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON is sent u
     assert.equal(sse.includes('"content":"ok "'), true);
     assert.equal(sse.includes('"finish_reason":"stop"'), true);
     assert.equal(sse.includes("data: [DONE]"), true);
+
+    const cozeClaude = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "moonshot-v1-8k",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(cozeClaude.res.status, 500, cozeClaude.text);
+    assert.equal((cozeClaude.body.error as { message: string }).message, "not implemented");
+    assert.equal((cozeClaude.body.error as { code: string }).code, "convert_request_failed");
+
+    const cozeGemini = await json(
+      new Request("http://local/v1beta/models/moonshot-v1-8k:generateContent", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(cozeGemini.res.status, 500, cozeGemini.text);
+    assert.equal((cozeGemini.body.error as { message: string }).message, "not implemented");
   } finally {
     globalThis.fetch = origFetch;
   }

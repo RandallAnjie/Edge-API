@@ -13,7 +13,7 @@ import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANN
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertGeminiImageFromOpenAI, convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
-import { convertDeepSeekClaudeRequest, convertDeepSeekOpenAIRequest, convertVolcOpenAIRequest, convertXaiOpenAIRequest } from "./vendor-convert.js";
+import { convertDeepSeekClaudeRequest, convertDeepSeekOpenAIRequest, convertVolcOpenAIRequest, convertXaiImageRequest, convertXaiOpenAIRequest } from "./vendor-convert.js";
 import { convertBaiduEmbeddingRequest, convertBaiduOpenAIRequest } from "./baidu-convert.js";
 import { convertCohereOpenAIRequest, convertCohereRerankRequest } from "./cohere-convert.js";
 import { convertCozeOpenAIRequest } from "./coze-convert.js";
@@ -441,7 +441,7 @@ export {
 export { convertOpenAIImageEditForm, detectImageMimeType, usesOpenAIImageEditAdaptor } from "./openai-image-convert.js";
 export { convertOpenAIAudioForm, formFileContentType, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
 export { usesOpenAIAdaptor, openaiAdaptorSupportStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest };
-export { convertDeepSeekClaudeRequest };
+export { convertDeepSeekClaudeRequest, convertXaiImageRequest };
 export { openaiChatToClaudeResponse, openaiChatToGeminiResponse } from "./openai-format-convert.js";
 export {
   streamResponseOpenAI2Claude,
@@ -595,6 +595,29 @@ export function convertAdvancedCustomGeminiRequest(
   throw converterDoesNotSupport(converter, "gemini");
 }
 
+/**
+ * Original ConvertClaudeRequest / ConvertGeminiRequest error strings for native adaptors
+ * that do not convert Claude/Gemini clients (xAI, Jimeng, Replicate, Submodel, Coze).
+ */
+export function nativeClaudeGeminiConvertError(channelType: number, client: string): string | undefined {
+  if (client !== "anthropic" && client !== "gemini") return undefined;
+  if (channelType === CHANNEL_TYPE_XAI) {
+    return client === "anthropic" ? "not available" : "not implemented";
+  }
+  if (channelType === CHANNEL_TYPE_JIMENG || channelType === CHANNEL_TYPE_COZE) {
+    return "not implemented";
+  }
+  if (channelType === CHANNEL_TYPE_REPLICATE) {
+    return client === "anthropic"
+      ? "replicate adaptor: ConvertClaudeRequest is not implemented"
+      : "replicate adaptor: ConvertGeminiRequest is not implemented";
+  }
+  if (channelType === CHANNEL_TYPE_SUBMODEL) {
+    return "submodel channel: endpoint not supported";
+  }
+  return undefined;
+}
+
 /** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
   const settings = opts.settings || {};
@@ -631,6 +654,17 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
     });
   }
   if (opts.channelType === CHANNEL_TYPE_XAI) {
+    if (opts.relayMode === "images") {
+      return convertXaiImageRequest({ ...suffixed.body, model: suffixed.upstreamModelName });
+    }
+    if (
+      opts.relayMode === "embeddings" ||
+      opts.relayMode === "audio_speech" ||
+      opts.relayMode === "audio_transcription" ||
+      opts.relayMode === "audio_translation"
+    ) {
+      throw new Error("not available");
+    }
     return convertXaiOpenAIRequest(suffixed.body, {
       originModelName: opts.originModelName,
       upstreamModelName: suffixed.upstreamModelName,

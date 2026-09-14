@@ -424,6 +424,66 @@ test("original Xunfei, Submodel, Replicate, Sub2API, NewAPI, and Jimeng ConvertO
     assert.ok(jimengCall.headers.get("X-Date"));
     assert.ok(jimengCall.headers.get("X-Content-Sha256"));
     assert.equal((jimengImage.body.data as { url: string }[])[0].url, "https://img.example/jimeng.png");
+
+    const jimengClaude = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "jimeng_high_aes_general_v21_L",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(jimengClaude.res.status, 500, jimengClaude.text);
+    assert.equal((jimengClaude.body.error as { message: string }).message, "not implemented");
+    assert.equal((jimengClaude.body.error as { code: string }).code, "convert_request_failed");
+
+    const replicateClaude = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "black-forest-labs/flux-1.1-pro",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(replicateClaude.res.status, 500, replicateClaude.text);
+    assert.equal(
+      (replicateClaude.body.error as { message: string }).message,
+      "replicate adaptor: ConvertClaudeRequest is not implemented",
+    );
+
+    const submodelClaude = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "sub-1",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(submodelClaude.res.status, 500, submodelClaude.text);
+    assert.equal((submodelClaude.body.error as { message: string }).message, "submodel channel: endpoint not supported");
+
+    const jimengGemini = await json(
+      new Request("http://local/v1beta/models/jimeng_high_aes_general_v21_L:generateContent", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(jimengGemini.res.status, 500, jimengGemini.text);
+    assert.equal((jimengGemini.body.error as { message: string }).message, "not implemented");
   } finally {
     globalThis.fetch = origFetch;
     (globalThis as unknown as { WebSocket: typeof OrigWebSocket }).WebSocket = OrigWebSocket;

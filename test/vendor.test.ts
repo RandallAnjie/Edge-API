@@ -562,3 +562,106 @@ test("original Moonshot/MiniMax/DeepSeek ConvertClaudeRequest HTTP JSON and Gemi
     globalThis.fetch = origFetch;
   }
 });
+
+test("original xAI ConvertImageRequest JSON, ConvertClaudeRequest not available, and embeddings not available", async () => {
+  const { e, auth, sk } = await boot();
+  const add = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "xai-image",
+        type: CHANNEL_TYPE_XAI,
+        key: "xk",
+        models: "grok-2-image,grok-3-mini-high",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(add.body.success, true, String(add.body.message));
+
+  const origFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const raw = init?.body;
+    if (raw instanceof FormData || raw instanceof Uint8Array || raw instanceof ArrayBuffer) {
+      throw new Error("unexpected xai body");
+    }
+    const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    calls.push({ url, body: parsed });
+    return new Response(
+      JSON.stringify({ created: 1, data: [{ url: "https://img.example/xai.png", b64_json: null, revised_prompt: null }] }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const image = await json(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "grok-2-image",
+          prompt: "a cat",
+          n: 2,
+          size: "1024x1024",
+          quality: "hd",
+          style: "vivid",
+          user: "alice",
+          response_format: "url",
+        }),
+      }),
+      e,
+    );
+    assert.equal(image.res.status, 200, image.text);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://api.x.ai/v1/images/generations");
+    assert.deepEqual(calls[0].body, { model: "grok-2-image", prompt: "a cat", n: 2, response_format: "url" });
+    assert.equal((image.body.data as { url: string }[])[0].url, "https://img.example/xai.png");
+
+    const claude = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "grok-3-mini-high",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 500, claude.text);
+    assert.equal((claude.body.error as { message: string }).message, "not available");
+    assert.equal((claude.body.error as { code: string }).code, "convert_request_failed");
+    assert.equal(calls.length, 1);
+
+    const gemini = await json(
+      new Request("http://local/v1beta/models/grok-3-mini-high:generateContent", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(gemini.res.status, 500, gemini.text);
+    assert.equal((gemini.body.error as { message: string }).message, "not implemented");
+    assert.equal((gemini.body.error as { code: string }).code, "convert_request_failed");
+
+    const embed = await json(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "grok-3-mini-high", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(embed.res.status, 500, embed.text);
+    assert.equal((embed.body.error as { message: string }).message, "not available");
+    assert.equal((embed.body.error as { code: string }).code, "convert_request_failed");
+    assert.equal(calls.length, 1);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
