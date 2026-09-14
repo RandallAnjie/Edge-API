@@ -13,7 +13,7 @@ import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANN
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertGeminiImageFromOpenAI, convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
-import { convertDeepSeekOpenAIRequest, convertVolcOpenAIRequest, convertXaiOpenAIRequest } from "./vendor-convert.js";
+import { convertDeepSeekClaudeRequest, convertDeepSeekOpenAIRequest, convertVolcOpenAIRequest, convertXaiOpenAIRequest } from "./vendor-convert.js";
 import { convertBaiduEmbeddingRequest, convertBaiduOpenAIRequest } from "./baidu-convert.js";
 import { convertCohereOpenAIRequest, convertCohereRerankRequest } from "./cohere-convert.js";
 import { convertCozeOpenAIRequest } from "./coze-convert.js";
@@ -55,7 +55,7 @@ import {
   converterDoesNotSupport,
 } from "./advanced-custom-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
-import { delegatesClaudeToOpenAIAdaptor, openaiAdaptorSupportStreamOptions, usesOpenAIAdaptor } from "./openai-adaptor.js";
+import { delegatesClaudeToOpenAIAdaptor, openaiAdaptorSupportStreamOptions, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor } from "./openai-adaptor.js";
 
 export type ChatMessage = {
   role?: string;
@@ -440,7 +440,8 @@ export {
 } from "./ali-convert.js";
 export { convertOpenAIImageEditForm, detectImageMimeType, usesOpenAIImageEditAdaptor } from "./openai-image-convert.js";
 export { convertOpenAIAudioForm, formFileContentType, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-export { usesOpenAIAdaptor, openaiAdaptorSupportStreamOptions, delegatesClaudeToOpenAIAdaptor };
+export { usesOpenAIAdaptor, openaiAdaptorSupportStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest };
+export { convertDeepSeekClaudeRequest };
 export { openaiChatToClaudeResponse, openaiChatToGeminiResponse } from "./openai-format-convert.js";
 export {
   streamResponseOpenAI2Claude,

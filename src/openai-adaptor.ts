@@ -103,6 +103,22 @@ export function delegatesClaudeToOpenAIAdaptor(channelType: number): boolean {
   }
 }
 
+/**
+ * Native adaptors whose ConvertClaudeRequest / DoResponse use `claude.Adaptor`.
+ * ConvertGeminiRequest on these types is original `not implemented`.
+ */
+export function usesClaudeAdaptorForClaudeRequest(channelType: number): boolean {
+  switch (channelType) {
+    case CHANNEL_TYPE_MOONSHOT:
+    case CHANNEL_TYPE_MINIMAX:
+    case CHANNEL_TYPE_DEEPSEEK:
+    case CHANNEL_TYPE_ZHIPU_V4:
+      return true;
+    default:
+      return false;
+  }
+}
+
 /** Original `streamSupportedChannels` used by ConvertClaudeRequest `info.SupportStreamOptions`. */
 export function openaiAdaptorSupportStreamOptions(channelType: number): boolean {
   switch (channelType) {

@@ -1,5 +1,6 @@
 /** Original Volc / xAI / DeepSeek ConvertOpenAIRequest JSON (not the OpenAI adaptor). */
 
+import { convertClaudeRequest } from "./claude-convert.js";
 import { parseDeepSeekV4ThinkingSuffix, shouldPreserveThinkingSuffix, type ReasoningHostSettings } from "./reasoning.js";
 
 export type VendorConvertOpts = {
@@ -74,4 +75,25 @@ export function convertDeepSeekOpenAIRequest(body: Record<string, unknown>, opts
   out.reasoning_effort = parsed.effort;
   if (!parsed.effort) delete out.reasoning_effort;
   return out;
+}
+
+/** Original `deepseek.Adaptor.ConvertClaudeRequest` / `applyDeepSeekV4ClaudeThinkingSuffix`. */
+export function convertDeepSeekClaudeRequest(body: Record<string, unknown>, opts: VendorConvertOpts): Record<string, unknown> {
+  const settings = opts.settings || {};
+  const req = convertClaudeRequest(body, {
+    originModelName: opts.originModelName,
+    upstreamModelName: opts.upstreamModelName,
+    settings,
+  });
+  let modelName = opts.upstreamModelName || String(req.model || "");
+  if (shouldPreserveThinkingSuffix(modelName, settings) || shouldPreserveThinkingSuffix(opts.originModelName, settings)) {
+    return req;
+  }
+  const parsed = parseDeepSeekV4ThinkingSuffix(modelName);
+  if (!parsed.ok) return req;
+  req.model = parsed.base;
+  req.thinking = { type: parsed.thinkingType };
+  if (!parsed.effort) delete req.output_config;
+  else req.output_config = { effort: parsed.effort };
+  return req;
 }

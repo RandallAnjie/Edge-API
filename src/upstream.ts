@@ -98,6 +98,22 @@ export function joinUrl(base: string, path: string): string {
   return b + p;
 }
 
+/** Original `moonshot.Adaptor.GetRequestURL`. */
+export function moonshotRequestURL(base: string, mode: string, rawBaseUrl = "", relayFormat?: string): string {
+  const special = CHANNEL_SPECIAL_BASES[rawBaseUrl] || CHANNEL_SPECIAL_BASES[base];
+  const root = base.replace(/\/+$/, "");
+  const claudeFormat = relayFormat === "claude" || mode === "messages";
+  if (special) {
+    if (claudeFormat && special.claude) return `${special.claude.replace(/\/+$/, "")}/v1/messages`;
+    if (!claudeFormat && special.openai) return `${special.openai.replace(/\/+$/, "")}/chat/completions`;
+  }
+  if (claudeFormat) return `${root}/anthropic/v1/messages`;
+  if (mode === "rerank") return `${root}/v1/rerank`;
+  if (mode === "embeddings") return `${root}/v1/embeddings`;
+  if (mode === "completions") return `${root}/v1/completions`;
+  return `${root}/v1/chat/completions`;
+}
+
 function openaiPath(mode: RelayMode, requestPath: string): string {
   switch (mode) {
     case "chat":
@@ -251,6 +267,18 @@ export function buildUpstream(
       url = `${fim}/completions`;
     } else if (mode === "responses") url = `${base}/responses`;
     else url = `${base}/v1/chat/completions`;
+    headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_MOONSHOT) {
+    url = moonshotRequestURL(base, mode, channel.base_url || "", relayInfo.relayFormat);
     headers.authorization = `Bearer ${apiKey}`;
     payload = applyChannelParamOverride(channel, payload, headers, {
       ...relayInfo,

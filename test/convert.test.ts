@@ -14,6 +14,8 @@ import {
   convertOpenAIAdaptorClaudeRequest,
   convertOpenAIAdaptorGeminiRequest,
   convertVolcClaudeRequest,
+  convertDeepSeekClaudeRequest,
+  usesClaudeAdaptorForClaudeRequest,
   openaiChatToClaudeResponse,
   openaiChatToGeminiResponse,
   usesOpenAIAdaptor,
@@ -958,6 +960,74 @@ test("original VolcEngine ConvertClaudeRequest special-plan vs openai.Adaptor JS
   assert.equal("tools" in special, true);
   assert.equal((special.tools as { name: string }[])[0].name, "lookup");
   assert.equal("function" in (special.tools as Record<string, unknown>[])[0], false);
+});
+
+test("original Moonshot/MiniMax/DeepSeek ConvertClaudeRequest uses claude.Adaptor JSON", () => {
+  assert.equal(usesClaudeAdaptorForClaudeRequest(CHANNEL_TYPE_MOONSHOT), true);
+  assert.equal(usesClaudeAdaptorForClaudeRequest(CHANNEL_TYPE_MINIMAX), true);
+  assert.equal(usesClaudeAdaptorForClaudeRequest(CHANNEL_TYPE_DEEPSEEK), true);
+  assert.equal(usesClaudeAdaptorForClaudeRequest(CHANNEL_TYPE_ZHIPU_V4), true);
+  assert.equal(usesClaudeAdaptorForClaudeRequest(CHANNEL_TYPE_VOLC), false);
+
+  const claudeReq = {
+    model: "kimi-k2.5",
+    max_tokens: 32,
+    tools: [
+      {
+        name: "lookup",
+        description: "find",
+        input_schema: { type: "object", properties: { q: { type: "string" } } },
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "hi" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "YWE=" } },
+        ],
+      },
+    ],
+  };
+  const moonshot = convertClaudeRequest(claudeReq, {
+    originModelName: "kimi-k2.5",
+    upstreamModelName: "kimi-k2.5",
+  });
+  assert.equal(moonshot.max_tokens, 32);
+  assert.equal(((moonshot.messages as Record<string, unknown>[])[0].content as Record<string, unknown>[])[1].type, "image");
+  assert.equal((moonshot.tools as { name: string }[])[0].name, "lookup");
+  assert.equal("function" in (moonshot.tools as Record<string, unknown>[])[0], false);
+
+  const dsMax = convertDeepSeekClaudeRequest(
+    { model: "deepseek-v4-pro-max", max_tokens: 32, messages: [{ role: "user", content: "hi" }] },
+    { originModelName: "deepseek-v4-pro-max", upstreamModelName: "deepseek-v4-pro-max" },
+  );
+  assert.equal(dsMax.model, "deepseek-v4-pro");
+  assert.deepEqual(dsMax.thinking, { type: "enabled" });
+  assert.deepEqual(dsMax.output_config, { effort: "max" });
+
+  const dsNone = convertDeepSeekClaudeRequest(
+    { model: "deepseek-v4-flash-none", max_tokens: 32, messages: [{ role: "user", content: "hi" }] },
+    { originModelName: "deepseek-v4-flash-none", upstreamModelName: "deepseek-v4-flash-none" },
+  );
+  assert.equal(dsNone.model, "deepseek-v4-flash");
+  assert.deepEqual(dsNone.thinking, { type: "disabled" });
+  assert.equal("output_config" in dsNone, false);
+
+  const moonshotCh = testChannel({ type: CHANNEL_TYPE_MOONSHOT, key: "mk", base_url: "", models: "kimi-k2.5" });
+  assert.equal(
+    buildUpstream(moonshotCh, "messages", "/v1/messages", "kimi-k2.5", moonshot, {}, "POST", { relayFormat: "claude" }).url,
+    "https://api.moonshot.cn/anthropic/v1/messages",
+  );
+  const kimiPlan = testChannel({ type: CHANNEL_TYPE_MOONSHOT, key: "mk", base_url: "kimi-coding-plan", models: "kimi-k2.5" });
+  assert.equal(
+    buildUpstream(kimiPlan, "messages", "/v1/messages", "kimi-k2.5", moonshot, {}, "POST", { relayFormat: "claude" }).url,
+    "https://api.kimi.com/coding/v1/messages",
+  );
+  assert.equal(
+    buildUpstream(kimiPlan, "chat", "/v1/chat/completions", "kimi-k2.5", { model: "kimi-k2.5" }).url,
+    "https://api.kimi.com/coding/v1/chat/completions",
+  );
 });
 
 test("original ConvertOpenAIRequest sampling, suffixes, OpenRouter, Moonshot, and Ali JSON", () => {
@@ -2055,6 +2125,11 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () =
   assert.equal(
     buildUpstream(deepseek, "messages", "/v1/messages", "deepseek-chat", { model: "deepseek-chat" }).url,
     "https://api.deepseek.com/anthropic/v1/messages",
+  );
+  const moonshotCh = testChannel({ type: CHANNEL_TYPE_MOONSHOT, key: "mk", base_url: "", models: "kimi-k2.5" });
+  assert.equal(
+    buildUpstream(moonshotCh, "chat", "/v1/chat/completions", "kimi-k2.5", { model: "kimi-k2.5" }).url,
+    "https://api.moonshot.cn/v1/chat/completions",
   );
 });
 

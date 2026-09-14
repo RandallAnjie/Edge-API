@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI } from "../src/constants.js";
+import { CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
@@ -377,6 +377,179 @@ test("original VolcEngine ConvertClaudeRequest HTTP JSON, URLs, and Gemini not i
 
     const gemini = await json(
       new Request("http://local/v1beta/models/doubao-pro:generateContent", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(gemini.res.status, 500, gemini.text);
+    assert.match(gemini.text, /not implemented/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original Moonshot/MiniMax/DeepSeek ConvertClaudeRequest HTTP JSON and Gemini not implemented", async () => {
+  const { e, auth, sk } = await boot();
+  const adds = await Promise.all([
+    json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          name: "moonshot",
+          type: CHANNEL_TYPE_MOONSHOT,
+          key: "mk",
+          models: "kimi-k2.5",
+          group: "default",
+        }),
+      }),
+      e,
+    ),
+    json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          name: "minimax",
+          type: CHANNEL_TYPE_MINIMAX,
+          key: "mmk",
+          models: "abab6.5s-chat",
+          group: "default",
+        }),
+      }),
+      e,
+    ),
+    json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          name: "deepseek-claude",
+          type: CHANNEL_TYPE_DEEPSEEK,
+          key: "dk",
+          models: "deepseek-v4-pro-max",
+          group: "default",
+        }),
+      }),
+      e,
+    ),
+    json(
+      new Request("http://local/api/channel/", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({
+          name: "zhipu-v4",
+          type: CHANNEL_TYPE_ZHIPU_V4,
+          key: "zk",
+          models: "glm-4",
+          group: "default",
+        }),
+      }),
+      e,
+    ),
+  ]);
+  for (const add of adds) assert.equal(add.body.success, true, String(add.body.message));
+
+  const origFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const raw = init?.body;
+    if (raw instanceof FormData || raw instanceof Uint8Array || raw instanceof ArrayBuffer) {
+      throw new Error("unexpected native claude body");
+    }
+    const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    calls.push({ url, body: parsed });
+    return new Response(
+      JSON.stringify({
+        id: "msg_native",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 3, output_tokens: 2 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const claudeBody = {
+      max_tokens: 32,
+      tools: [{ name: "lookup", description: "find", input_schema: { type: "object", properties: { q: { type: "string" } } } }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "hi" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: "YWE=" } },
+          ],
+        },
+      ],
+    };
+    const moonshot = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ ...claudeBody, model: "kimi-k2.5" }),
+      }),
+      e,
+    );
+    assert.equal(moonshot.res.status, 200, moonshot.text);
+    assert.equal(calls[0].url, "https://api.moonshot.cn/anthropic/v1/messages");
+    assert.equal(((calls[0].body.messages as Record<string, unknown>[])[0].content as Record<string, unknown>[])[1].type, "image");
+    assert.equal((calls[0].body.tools as { name: string }[])[0].name, "lookup");
+    assert.equal("function" in (calls[0].body.tools as Record<string, unknown>[])[0], false);
+    assert.equal(moonshot.body.type, "message");
+    assert.deepEqual(moonshot.body.content, [{ type: "text", text: "ok" }]);
+
+    const minimax = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ ...claudeBody, model: "abab6.5s-chat" }),
+      }),
+      e,
+    );
+    assert.equal(minimax.res.status, 200, minimax.text);
+    assert.equal(calls[1].url, "https://api.minimax.chat/anthropic/v1/messages");
+    assert.equal(((calls[1].body.messages as Record<string, unknown>[])[0].content as Record<string, unknown>[])[1].type, "image");
+    assert.equal(minimax.body.type, "message");
+
+    const deepseek = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "deepseek-v4-pro-max",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(deepseek.res.status, 200, deepseek.text);
+    assert.equal(calls[2].url, "https://api.deepseek.com/anthropic/v1/messages");
+    assert.equal(calls[2].body.model, "deepseek-v4-pro");
+    assert.deepEqual(calls[2].body.thinking, { type: "enabled" });
+    assert.deepEqual(calls[2].body.output_config, { effort: "max" });
+
+    const zhipu = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ ...claudeBody, model: "glm-4" }),
+      }),
+      e,
+    );
+    assert.equal(zhipu.res.status, 200, zhipu.text);
+    assert.equal(calls[3].url, "https://open.bigmodel.cn/api/anthropic/v1/messages");
+    assert.equal(((calls[3].body.messages as Record<string, unknown>[])[0].content as Record<string, unknown>[])[1].type, "image");
+    assert.equal(zhipu.body.type, "message");
+
+    const gemini = await json(
+      new Request("http://local/v1beta/models/kimi-k2.5:generateContent", {
         method: "POST",
         headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
         body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
