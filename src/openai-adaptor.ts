@@ -119,6 +119,58 @@ export function usesClaudeAdaptorForClaudeRequest(channelType: number): boolean 
   }
 }
 
+/** Original `constant.ForceStreamOption` (`FORCE_STREAM_OPTION`, default true). */
+export const FORCE_STREAM_OPTION = true;
+
+/**
+ * Original TextHelper helpers: chat/completions/moderations (the default
+ * `relayHandler` path). ResponsesHelper, ImageHelper, EmbeddingHelper,
+ * AudioHelper, RerankHelper, AlphaSearchHelper, and GeminiHelper do not mutate
+ * `stream_options` this way. Via-responses is still TextHelper, so it does.
+ */
+export function usesTextHelperStreamOptions(client: string, mode: string, viaResponses = false): boolean {
+  if (client !== "openai") return false;
+  if (viaResponses) return true;
+  switch (mode) {
+    case "responses":
+    case "images":
+    case "audio_speech":
+    case "audio_transcription":
+    case "audio_translation":
+    case "rerank":
+    case "embeddings":
+    case "engines_embeddings":
+    case "alpha_search":
+    case "video":
+    case "passthrough":
+    case "realtime":
+    case "gemini":
+    case "models":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original TextHelper StreamOptions mutation before ConvertOpenAIRequest /
+ * via-responses. `request.Stream` is the JSON `stream` field (not Accept).
+ */
+export function applyTextHelperStreamOptions(
+  body: Record<string, unknown>,
+  channelType: number,
+  forceStreamOption = FORCE_STREAM_OPTION,
+): Record<string, unknown> {
+  const out = { ...body };
+  const isStream = out.stream === true;
+  if (!openaiAdaptorSupportStreamOptions(channelType) || !isStream) {
+    delete out.stream_options;
+    return out;
+  }
+  if (forceStreamOption) out.stream_options = { include_usage: true };
+  return out;
+}
+
 /** Original `streamSupportedChannels` used by ConvertClaudeRequest `info.SupportStreamOptions`. */
 export function openaiAdaptorSupportStreamOptions(channelType: number): boolean {
   switch (channelType) {

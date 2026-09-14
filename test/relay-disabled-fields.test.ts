@@ -239,6 +239,19 @@ test("original RemoveDisabledFields TextHelper ClaudeHelper ResponsesHelper Gemi
         { headers: { "content-type": "application/json" } },
       );
     }
+    if (parsed.stream === true) {
+      return new Response(
+        [
+          'data: {"id":"chatcmpl_stream","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+          "",
+          'data: {"id":"chatcmpl_stream","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}',
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
     return new Response(
       JSON.stringify({
         id: "chatcmpl_1",
@@ -276,7 +289,28 @@ test("original RemoveDisabledFields TextHelper ClaudeHelper ResponsesHelper Gemi
     assert.equal("speed" in chatHit.body, false);
     assert.equal("safety_identifier" in chatHit.body, false);
     assert.equal(chatHit.body.store, true);
-    assert.deepEqual(chatHit.body.stream_options, { include_usage: true });
+    assert.equal("stream_options" in chatHit.body, false);
+
+    const streamChat = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          stream: true,
+          stream_options: { include_usage: false, include_obfuscation: false },
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(streamChat.res.status, 200, streamChat.text);
+    const streamHit = calls.find(
+      (c) => c.url === "https://api.openai.example/v1/chat/completions" && c.body.stream === true,
+    );
+    if (!streamHit) throw new Error("missing openai stream upstream");
+    assert.deepEqual(streamHit.body.stream_options, { include_usage: true });
+    assert.equal("include_obfuscation" in (streamHit.body.stream_options as object), false);
 
     const allowed = await json(
       new Request("http://local/v1/chat/completions", {

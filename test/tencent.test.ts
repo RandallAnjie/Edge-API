@@ -368,7 +368,7 @@ test("original Tencent, Mistral, Moka, Jina, SiliconFlow, and PaLM ConvertOpenAI
     if (!sfCall) throw new Error("missing siliconflow upstream");
     assert.deepEqual(sfCall.body.messages, [{ role: "user", content: "" }]);
     assert.equal(sfCall.body.prefix, "def ");
-    assert.deepEqual(sfCall.body.stream_options, { include_usage: true });
+    assert.equal("stream_options" in sfCall.body, false);
 
     const sfRerank = await json(
       new Request("http://local/v1/rerank", {
@@ -407,7 +407,7 @@ test("original Tencent, Mistral, Moka, Jina, SiliconFlow, and PaLM ConvertOpenAI
     assert.equal(palmCall.url, "https://generativelanguage.googleapis.com/v1beta2/models/chat-bison-001:generateMessage");
     assert.equal(palmCall.headers.get("x-goog-api-key"), "palm-key");
     assert.equal(palmCall.headers.get("authorization"), null);
-    assert.deepEqual(palmCall.body.stream_options, { include_usage: true });
+    assert.equal("stream_options" in palmCall.body, false);
     assert.equal((palmChat.body.choices as { message: { content: string }; finish_reason: string }[])[0].message.content, "hello palm");
     assert.equal((palmChat.body.choices as { finish_reason: string }[])[0].finish_reason, "stop");
 

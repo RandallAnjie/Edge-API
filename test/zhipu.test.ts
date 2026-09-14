@@ -353,7 +353,7 @@ test("original Zhipu, Perplexity, Cloudflare, BaiduV2, and MiniMax ConvertOpenAI
     const cfCall = calls.find((c) => c.url.includes("/ai/v1/chat/completions"));
     if (!cfCall) throw new Error("missing cloudflare upstream");
     assert.equal(cfCall.url, "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/v1/chat/completions");
-    assert.deepEqual(cfCall.body.stream_options, { include_usage: true });
+    assert.equal("stream_options" in cfCall.body, false);
     assert.equal(cfChat.body.model, "llama-3");
     assert.match(String(cfChat.body.id), /^chatcmpl-/);
     assert.equal((cfChat.body.choices as { message: { content: string } }[])[0].message.content, "hello cf");
@@ -400,7 +400,7 @@ test("original Zhipu, Perplexity, Cloudflare, BaiduV2, and MiniMax ConvertOpenAI
     assert.equal(mmChat.res.status, 200, mmChat.text);
     const mmCall = calls.find((c) => c.url === "https://api.minimax.chat/v1/text/chatcompletion_v2");
     if (!mmCall) throw new Error("missing minimax upstream");
-    assert.deepEqual(mmCall.body.stream_options, { include_usage: true });
+    assert.equal("stream_options" in mmCall.body, false);
     assert.equal((mmChat.body.choices as { message: { content: string } }[])[0].message.content, "hello");
 
     const mmImage = await json(

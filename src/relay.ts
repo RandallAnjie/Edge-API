@@ -79,7 +79,7 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-import { delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor } from "./openai-adaptor.js";
+import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import { clientIp, groupAccessDeniedMessage, json, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
@@ -323,6 +323,9 @@ async function convertOutbound(
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
   const upstream = mappedModel || String(o.model || "");
+  if (usesTextHelperStreamOptions(client, mode, Boolean(extras.viaResponses))) {
+    o = applyTextHelperStreamOptions(o, channelType);
+  }
   if (extras.viaResponses && (client === "anthropic" || client === "openai")) {
     return convertTextRequestViaResponses(o, client, {
       channelType,

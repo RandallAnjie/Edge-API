@@ -291,7 +291,7 @@ test("original Xunfei, Submodel, Replicate, Sub2API, NewAPI, and Jimeng ConvertO
     assert.equal(subChat.res.status, 200, subChat.text);
     const subCall = calls.find((c) => c.url === "https://llm.submodel.ai/v1/chat/completions");
     if (!subCall) throw new Error("missing submodel upstream");
-    assert.deepEqual(subCall.body.stream_options, { include_usage: true });
+    assert.equal("stream_options" in subCall.body, false);
     assert.equal(subCall.headers.get("authorization"), "Bearer sk-sub");
 
     const subEmbed = await json(
@@ -356,7 +356,7 @@ test("original Xunfei, Submodel, Replicate, Sub2API, NewAPI, and Jimeng ConvertO
     assert.equal(newChat.res.status, 200, newChat.text);
     const newCall = calls.find((c) => c.url === "https://newapi.example/v1/chat/completions");
     if (!newCall) throw new Error("missing newapi upstream");
-    assert.deepEqual(newCall.body.stream_options, { include_usage: true });
+    assert.equal("stream_options" in newCall.body, false);
     assert.equal(newCall.headers.get("authorization"), "Bearer sk-new");
     assert.equal(newCall.headers.get("x-api-key"), null);
 

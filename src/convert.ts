@@ -57,7 +57,7 @@ import {
   converterDoesNotSupport,
 } from "./advanced-custom-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
-import { delegatesClaudeToOpenAIAdaptor, openaiAdaptorSupportStreamOptions, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor } from "./openai-adaptor.js";
+import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, FORCE_STREAM_OPTION, openaiAdaptorSupportStreamOptions, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import {
   applyClaudeChannelSystemPrompt,
   convertClaudeMessagesToOpenAIResponses,
@@ -464,7 +464,15 @@ export {
 } from "./ali-convert.js";
 export { convertOpenAIImageEditForm, detectImageMimeType, usesOpenAIImageEditAdaptor } from "./openai-image-convert.js";
 export { convertOpenAIAudioForm, formFileContentType, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-export { usesOpenAIAdaptor, openaiAdaptorSupportStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest };
+export {
+  usesOpenAIAdaptor,
+  openaiAdaptorSupportStreamOptions,
+  applyTextHelperStreamOptions,
+  usesTextHelperStreamOptions,
+  FORCE_STREAM_OPTION,
+  delegatesClaudeToOpenAIAdaptor,
+  usesClaudeAdaptorForClaudeRequest,
+};
 export { convertDeepSeekClaudeRequest, convertXaiImageRequest, openaiFromXaiResponse, xaiSseToOpenAIChat };
 export { openaiChatToClaudeResponse, openaiChatToGeminiResponse } from "./openai-format-convert.js";
 export {

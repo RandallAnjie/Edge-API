@@ -137,7 +137,7 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON is sent upstrea
     assert.equal(captured.url, "https://ark.cn-beijing.volces.com/api/v3/chat/completions");
     assert.equal(captured.body.model, "deepseek-v3");
     assert.deepEqual(captured.body.thinking, { type: "enabled" });
-    assert.deepEqual(captured.body.stream_options, { include_usage: true });
+    assert.equal("stream_options" in captured.body, false);
 
     const search = await json(
       new Request("http://local/v1/chat/completions", {

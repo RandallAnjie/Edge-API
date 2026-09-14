@@ -202,7 +202,7 @@ test("original AdvancedCustom ConvertOpenAIRequest converter JSON", async () => 
     assert.equal((none.body.choices as { message: { content: string } }[])[0].message.content, "ok");
     const noneHit = calls.find((c) => c.url === "https://upstream.example/v1/chat/completions" && c.body.model === "gpt-test");
     if (!noneHit) throw new Error("missing none converter upstream");
-    assert.deepEqual(noneHit.body.stream_options, { include_usage: true });
+    assert.equal("stream_options" in noneHit.body, false);
     assert.equal(noneHit.headers.get("authorization"), "Bearer sk-adv");
 
     const claude = await json(

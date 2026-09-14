@@ -24,6 +24,9 @@ import {
   openaiChatToClaudeResponse,
   openaiChatToGeminiResponse,
   usesOpenAIAdaptor,
+  applyTextHelperStreamOptions,
+  usesTextHelperStreamOptions,
+  FORCE_STREAM_OPTION,
   convertClaudeRequest,
   convertVertexClaudeRequest,
   convertVertexGeminiRequest,
@@ -559,6 +562,60 @@ test("original GetOpenAIChatCapabilities and ConvertOpenAIRequest token limits",
     { channelType: CHANNEL_TYPE_AZURE, originModelName: "gpt-4o", upstreamModelName: "gpt-4o" },
   );
   assert.deepEqual(azureStream.stream_options, { include_usage: true });
+});
+
+test("original TextHelper ForceStreamOption stream_options JSON fields", () => {
+  assert.equal(FORCE_STREAM_OPTION, true);
+  assert.equal(usesTextHelperStreamOptions("openai", "chat"), true);
+  assert.equal(usesTextHelperStreamOptions("openai", "completions"), true);
+  assert.equal(usesTextHelperStreamOptions("openai", "responses"), false);
+  assert.equal(usesTextHelperStreamOptions("openai", "embeddings"), false);
+  assert.equal(usesTextHelperStreamOptions("anthropic", "messages"), false);
+  assert.equal(usesTextHelperStreamOptions("gemini", "gemini"), false);
+  assert.equal(usesTextHelperStreamOptions("openai", "chat", true), true);
+
+  const nonStream = applyTextHelperStreamOptions(
+    {
+      model: "gpt-4o",
+      stream_options: { include_usage: false, include_obfuscation: false },
+      messages: [{ role: "user", content: "hi" }],
+    },
+    CHANNEL_TYPE_OPENAI,
+  );
+  assert.equal("stream_options" in nonStream, false);
+
+  const forced = applyTextHelperStreamOptions(
+    {
+      model: "gpt-4o",
+      stream: true,
+      stream_options: { include_usage: false, include_obfuscation: false },
+      messages: [{ role: "user", content: "hi" }],
+    },
+    CHANNEL_TYPE_OPENAI,
+  );
+  assert.deepEqual(forced.stream_options, { include_usage: true });
+
+  const unsupported = applyTextHelperStreamOptions(
+    {
+      model: "sonar",
+      stream: true,
+      stream_options: { include_usage: false },
+      messages: [{ role: "user", content: "hi" }],
+    },
+    CHANNEL_TYPE_PERPLEXITY,
+  );
+  assert.equal("stream_options" in unsupported, false);
+
+  const disabledForce = applyTextHelperStreamOptions(
+    {
+      model: "gpt-4o",
+      stream: true,
+      stream_options: { include_usage: false, include_obfuscation: false },
+    },
+    CHANNEL_TYPE_OPENAI,
+    false,
+  );
+  assert.deepEqual(disabledForce.stream_options, { include_usage: false, include_obfuscation: false });
 });
 
 test("original openai.Adaptor ConvertClaudeRequest / ConvertGeminiRequest / ConvertResponse JSON fields", () => {
