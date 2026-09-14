@@ -122,9 +122,9 @@ function formatMediaType(type: string, params: Record<string, string>): string {
 
 function requestContentTypes(req: Request): string[] {
   const out: string[] = [];
-  for (const [key, value] of req.headers) {
+  req.headers.forEach((value, key) => {
     if (key.toLowerCase() === "content-type") out.push(value);
-  }
+  });
   return out;
 }
 
