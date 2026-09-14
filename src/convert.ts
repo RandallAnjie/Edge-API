@@ -393,6 +393,12 @@ export type ConvertOpenAIOpts = {
   channelOtherSettings?: ChannelDisabledFieldSettings;
   /** Original global `PassThroughRequestEnabled` or channel `PassThroughBodyEnabled`. */
   passThrough?: boolean;
+  /**
+   * Original via-responses `ApplyParamOverrideWithRelayInfo` on `*dto.GeneralOpenAIRequest`
+   * JSON after `RemoveDisabledFields` and before ConvertRequest to Responses.
+   * Ignored for Anthropic (`*ClaudeRequest` type assert fails in original).
+   */
+  applyViaResponsesChatParamOverride?: (chat: Record<string, unknown>) => Record<string, unknown>;
 };
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
@@ -1106,6 +1112,11 @@ export function openaiChatToResponses(body: Record<string, unknown>): Record<str
  * `adaptor.ConvertOpenAIResponsesRequest`. Used when
  * `ShouldChatCompletionsUseResponsesGlobal` is true. Does not go through
  * advanced-custom ConvertClaudeRequest.
+ *
+ * OpenAI (`*dto.GeneralOpenAIRequest`) applies `ApplyParamOverrideWithRelayInfo`
+ * on chat JSON after `RemoveDisabledFields` and before ConvertRequest. Claude
+ * skips that first apply (`*ClaudeRequest` type assert fails) so param
+ * override runs on converted Responses JSON instead.
  */
 export function convertTextRequestViaResponses(
   body: Record<string, unknown>,
@@ -1130,10 +1141,14 @@ export function convertTextRequestViaResponses(
       getOpenAISystemRoleName(String(opts.upstreamModelName || body.model || ""), String(body.reasoning_effort || "")),
     );
     const stripped = removeDisabledFields(chat, opts.channelOtherSettings, Boolean(opts.passThrough)) as Record<string, unknown>;
-    responses = convertChatCompletionsToResponsesRequest({
+    let chatJson: Record<string, unknown> = {
       ...stripped,
       model: opts.upstreamModelName || stripped.model,
-    });
+    };
+    if (opts.applyViaResponsesChatParamOverride) {
+      chatJson = opts.applyViaResponsesChatParamOverride(chatJson);
+    }
+    responses = convertChatCompletionsToResponsesRequest(chatJson);
   }
   return convertOpenAIResponsesRequest(responses, { ...opts, relayMode: "responses" });
 }

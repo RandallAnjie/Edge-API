@@ -5458,6 +5458,58 @@ test("original Claude Messages → OpenAI Responses request JSON fields", () => 
   );
   assert.equal("store" in viaDisableStore, false);
 
+  const viaChatOverride = convertTextRequestViaResponses(
+    {
+      model: "gpt-4o",
+      max_tokens: 16,
+      temperature: 0.9,
+      messages: [{ role: "user", content: "hello" }],
+    },
+    "openai",
+    {
+      channelType: CHANNEL_TYPE_OPENAI,
+      originModelName: "gpt-4o",
+      upstreamModelName: "gpt-4o",
+      applyViaResponsesChatParamOverride: (chat) => {
+        const messages = [...((chat.messages as Record<string, unknown>[]) || [])];
+        messages[0] = { ...messages[0], content: "overridden-chat" };
+        return { ...chat, messages, max_tokens: 32, temperature: 0.1 };
+      },
+    },
+  );
+  assert.equal(viaChatOverride.messages, undefined);
+  assert.equal((viaChatOverride.input as { content?: string }[])[0].content, "overridden-chat");
+  assert.equal(viaChatOverride.max_output_tokens, 32);
+  assert.equal("max_tokens" in viaChatOverride, false);
+  assert.equal(viaChatOverride.temperature, 0.1);
+
+  assert.doesNotThrow(() =>
+    convertTextRequestViaResponses(
+      { model: "gpt-4o", max_tokens: 16, messages: [{ role: "user", content: "hello" }] },
+      "anthropic",
+      {
+        channelType: CHANNEL_TYPE_OPENAI,
+        originModelName: "gpt-4o",
+        upstreamModelName: "gpt-4o",
+        applyViaResponsesChatParamOverride: () => {
+          throw new Error("claude via-responses must not apply chat param override");
+        },
+      },
+    ),
+  );
+  const viaClaudeSkip = convertTextRequestViaResponses(
+    { model: "gpt-4o", max_tokens: 16, messages: [{ role: "user", content: "hello" }] },
+    "anthropic",
+    {
+      channelType: CHANNEL_TYPE_OPENAI,
+      originModelName: "gpt-4o",
+      upstreamModelName: "gpt-4o",
+      applyViaResponsesChatParamOverride: (chat) => ({ ...chat, messages: [{ role: "user", content: "should-not-apply" }] }),
+    },
+  );
+  assert.equal((viaClaudeSkip.input as { content?: string }[])[0].content, "hello");
+  assert.equal(viaClaudeSkip.max_output_tokens, 16);
+
   const openaiUp = buildUpstream(
     testChannel({ type: CHANNEL_TYPE_OPENAI, key: "sk-test", base_url: "https://api.openai.com", models: "gpt-5.6-sol" }),
     "responses",

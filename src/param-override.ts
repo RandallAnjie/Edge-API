@@ -70,6 +70,11 @@ export type ParamOverrideRelayInfo = {
   isClaudeBetaQuery?: boolean;
   /** Original `model_setting.GeminiSettings.VersionSettings` for Gemini GetRequestURL. */
   geminiVersionSettings?: Record<string, string>;
+  /**
+   * Original via-responses `paramOverrideApplied`: skip `ApplyParamOverrideWithRelayInfo`
+   * on converted Responses JSON when the chat JSON already received it.
+   */
+  skipParamOverride?: boolean;
 };
 
 type JsonType = 0 | 1 | 2 | 3 | 4 | 5;
@@ -1064,6 +1069,15 @@ export function parseParamOverrideMap(raw: unknown): Record<string, unknown> {
   }
 }
 
+/** Original `len(info.ParamOverride) > 0` after affinity template merge. */
+export function channelParamOverrideMap(channel: ChannelRow, affinityTemplate?: Record<string, unknown> | null): Record<string, unknown> {
+  let paramOverride = parseParamOverrideMap(channel.param_override);
+  if (affinityTemplate && Object.keys(affinityTemplate).length) {
+    paramOverride = mergeChannelOverride(paramOverride, affinityTemplate);
+  }
+  return paramOverride;
+}
+
 /** Apply original param_override operations and header_override onto an outbound target. */
 export function applyChannelParamOverride(
   channel: ChannelRow,
@@ -1073,15 +1087,13 @@ export function applyChannelParamOverride(
   apiKey = "",
   model = "",
 ): unknown {
+  if (info.skipParamOverride) return body;
   const rawHeader = parseParamOverrideMap(channel.header_override);
   const seeded: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(rawHeader)) {
     seeded[k] = substituteHeaderValue(String(v ?? ""), apiKey, model || String(info.upstreamModel || info.originalModel || ""));
   }
-  let paramOverride = parseParamOverrideMap(channel.param_override);
-  if (info.affinityTemplate && Object.keys(info.affinityTemplate).length) {
-    paramOverride = mergeChannelOverride(paramOverride, info.affinityTemplate);
-  }
+  const paramOverride = channelParamOverrideMap(channel, info.affinityTemplate);
   const ctx = buildParamOverrideContext(
     { ...info, upstreamModel: info.upstreamModel || model, originalModel: info.originalModel || model, requestPath: info.requestPath },
     seeded,

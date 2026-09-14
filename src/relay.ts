@@ -83,7 +83,7 @@ import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaud
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import { clientIp, groupAccessDeniedMessage, json, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
-import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
+import { applyChannelParamOverride, asParamOverrideReturnError, channelParamOverrideMap, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import { removeDisabledFields, usesRemoveDisabledFields, type ChannelDisabledFieldSettings } from "./relay-disabled-fields.js";
 import {
   DEFAULT_CLAUDE_MAX_TOKENS,
@@ -318,6 +318,7 @@ async function convertOutbound(
     viaResponses?: boolean;
     channelOtherSettings?: ChannelDisabledFieldSettings;
     passThrough?: boolean;
+    applyViaResponsesChatParamOverride?: (chat: Record<string, unknown>) => Record<string, unknown>;
   } = {},
 ): Promise<unknown> {
   let o = asObj(body);
@@ -340,6 +341,7 @@ async function convertOutbound(
       systemPromptOverride: extras.systemPromptOverride,
       channelOtherSettings: extras.channelOtherSettings,
       passThrough: extras.passThrough,
+      applyViaResponsesChatParamOverride: extras.applyViaResponsesChatParamOverride,
     });
   }
   if (client === "gemini") {
@@ -1384,6 +1386,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let openaiEditForm: OpenAIImageEditForm | undefined;
     let openaiAudioForm: EncodedMultipart | undefined;
     let viaResponses = false;
+    let viaParamApplied = false;
+    const viaParamHeaders: Record<string, string> = {};
     let passThrough = passThroughGlobal;
     let channelOtherSettings: ChannelDisabledFieldSettings = {};
     const multipartEdits =
@@ -1444,20 +1448,68 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       } else if (opts.rawBody) {
         outbound = opts.body;
       } else {
-        outbound = await convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode, {
-            botId: channel.other || "",
-            responseId: `chatcmpl-${rid}`,
-            channelKey: pickChannelKey(channel.key),
-            channelBase: resolveBaseUrl(channel.type, channel.base_url),
-            requestPath,
-            systemPrompt: String(channelSetting.system_prompt || ""),
-            systemPromptOverride: Boolean(channelSetting.system_prompt_override),
-            converter: advancedConverter,
-            isStream: opts.stream,
-            viaResponses,
-            channelOtherSettings,
-            passThrough,
-          });
+        const convertExtras: {
+          botId?: string;
+          responseId?: string;
+          channelKey?: string;
+          requestPath?: string;
+          systemPrompt?: string;
+          systemPromptOverride?: boolean;
+          converter?: string;
+          isStream?: boolean;
+          channelBase?: string;
+          viaResponses?: boolean;
+          channelOtherSettings?: ChannelDisabledFieldSettings;
+          passThrough?: boolean;
+          applyViaResponsesChatParamOverride?: (chat: Record<string, unknown>) => Record<string, unknown>;
+        } = {
+          botId: channel.other || "",
+          responseId: `chatcmpl-${rid}`,
+          channelKey: pickChannelKey(channel.key),
+          channelBase: resolveBaseUrl(channel.type, channel.base_url),
+          requestPath,
+          systemPrompt: String(channelSetting.system_prompt || ""),
+          systemPromptOverride: Boolean(channelSetting.system_prompt_override),
+          converter: advancedConverter,
+          isStream: opts.stream,
+          viaResponses,
+          channelOtherSettings,
+          passThrough,
+        };
+        if (
+          viaResponses &&
+          clientFormat === "openai" &&
+          Object.keys(channelParamOverrideMap(channel, affinity?.template)).length
+        ) {
+          convertExtras.applyViaResponsesChatParamOverride = (chat) => {
+            const next = applyChannelParamOverride(
+              channel,
+              chat,
+              viaParamHeaders,
+              {
+                requestHeaders: requestHeadersFrom(opts.req),
+                userId: auth.user.id,
+                userGroup: auth.user.group,
+                tokenGroup: auth.token.group,
+                usingGroup: auth.usingGroup,
+                originalModel: model,
+                upstreamModel: mapped,
+                requestPath: path,
+                retryIndex: retry,
+                affinityTemplate: affinity?.template,
+                isStream: opts.stream,
+                relayFormat: "openai",
+                isClaudeBetaQuery: new URL(opts.req.url).searchParams.get("beta") === "true",
+                geminiVersionSettings: convertSettings.geminiVersionSettings,
+              },
+              pickChannelKey(channel.key),
+              mapped,
+            );
+            viaParamApplied = true;
+            return asObj(next);
+          };
+        }
+        outbound = await convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode, convertExtras);
       }
       if ((!opts.rawBody || aliMultipartEdits) && usesRemoveDisabledFields(clientFormat, mode, viaResponses)) {
         outbound = removeDisabledFields(outbound, channelOtherSettings, passThrough);
@@ -1499,6 +1551,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       relayFormat: clientFormat === "anthropic" ? "claude" : clientFormat === "gemini" ? "gemini" : "openai",
       isClaudeBetaQuery: new URL(opts.req.url).searchParams.get("beta") === "true",
       geminiVersionSettings: convertSettings.geminiVersionSettings,
+      skipParamOverride: viaParamApplied,
     };
     let target: UpstreamTarget;
     try {
@@ -1517,6 +1570,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         opts.stream,
         relayInfo,
       );
+      if (viaParamApplied) {
+        for (const [key, value] of Object.entries(viaParamHeaders)) {
+          target.headers[key] = value;
+        }
+      }
     } catch (err) {
       const ret = asParamOverrideReturnError(err);
       if (ret) {

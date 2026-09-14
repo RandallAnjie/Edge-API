@@ -144,4 +144,16 @@ test("original ApplyParamOverride trim/set/delete/wildcard/return_error", () => 
     { retry: { index: 0, is_retry: false } },
   );
   assert.deepEqual(roundTrip(skipped), { model: "gemini-2.5-pro" });
+
+  const skipHeaders: Record<string, string> = {};
+  const skipChannel = {
+    name: "skip-override",
+    param_override: JSON.stringify({ operations: [{ path: "model", mode: "set", value: "should-not-apply" }] }),
+    header_override: JSON.stringify({ "X-Skip": "nope" }),
+  } as ChannelRow;
+  const skipBody = { model: "gpt-4o", input: "hello" };
+  const skippedApply = applyChannelParamOverride(skipChannel, skipBody, skipHeaders, { skipParamOverride: true });
+  assert.equal(skippedApply, skipBody);
+  assert.equal((skippedApply as { model?: string }).model, "gpt-4o");
+  assert.equal(Object.keys(skipHeaders).length, 0);
 });
