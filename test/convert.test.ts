@@ -1909,7 +1909,7 @@ test("original Vertex ConvertClaudeRequest always wraps Vertex Claude JSON", () 
   const claudeMessages = claude.messages as { role: string; content: { type: string }[] }[];
   assert.equal(claudeMessages[0].content[1].type, "image");
   assert.equal(claudeMessages[1].content[0].type, "tool_use");
-  assert.equal((claudeMessages[1].content[0] as { id: string }).id, "toolu_1");
+  assert.equal((claudeMessages[1].content[0] as { type: string; id?: string }).id, "toolu_1");
 
   const geminiNamed = convertVertexClaudeRequest(
     {

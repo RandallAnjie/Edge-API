@@ -1,6 +1,6 @@
 /** Original `relay/channel/vertex` ConvertOpenAIRequest (Claude wrap, Gemini, imagen) + URL builders. */
 
-import { convertOpenAIChatToClaude, type ConvertClaudeOpts } from "./claude-convert.js";
+import { convertClaudeRequest, convertOpenAIChatToClaude, type ConvertClaudeOpts } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import type { ReasoningHostSettings } from "./reasoning.js";
 
