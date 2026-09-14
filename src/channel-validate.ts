@@ -555,6 +555,32 @@ export type AdvancedCustomRelayTarget = {
   converter: string;
 };
 
+/** Original `advancedcustom.Adaptor.resolve` converter after `MatchPathForModel`. */
+export function resolveAdvancedCustomConverter(
+  channel: ChannelRow,
+  incomingPath: string,
+  originModel: string,
+): string {
+  const path = incomingPath.split("?")[0];
+  const config = advancedCustomConfigFromSettings(channel.settings);
+  if (!config) throw new Error("advanced_custom is required");
+  const invalid = validateAdvancedCustomConfig(config);
+  if (invalid) throw invalid;
+  const route = matchAdvancedCustomPathForModel(config, path, originModel);
+  if (!route) {
+    throw new Error(`advanced custom channel does not support request path ${path} for model ${originModel}`);
+  }
+  return String(route.converter || "").trim() || "none";
+}
+
+/** Original `advancedcustom.shouldApplyClaudeHeaders`. */
+export function shouldApplyAdvancedCustomClaudeHeaders(converter: string, relayFormat?: string): boolean {
+  return (
+    converter === "openai_chat_completions_to_anthropic_messages" ||
+    (converter === "none" && relayFormat === "claude")
+  );
+}
+
 /** Original `advancedcustom.Adaptor.GetRequestURL` + `SetupRequestHeader` for a matched incoming path. */
 export function buildAdvancedCustomRelayTarget(
   channel: ChannelRow,

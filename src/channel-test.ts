@@ -23,12 +23,11 @@ import {
 } from "./constants.js";
 import { channelKind, channelTypeName, resolveBaseUrl } from "./catalog.js";
 import {
+  convertAdvancedCustomClaudeRequest,
+  convertAdvancedCustomGeminiRequest,
   convertOpenAIRequest,
   convertOpenAIResponsesRequest,
   isOpenAIReasoningOModel,
-  openaiChatToResponses,
-  openaiToAnthropic,
-  openaiToGemini,
 } from "./convert.js";
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest } from "./baidu-convert.js";
 import { applyZhipuV3Authorization } from "./zhipu-convert.js";
@@ -40,7 +39,7 @@ import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
 import { computeQuota, quotaRatios } from "./quota.js";
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
-import { buildAdvancedCustomRelayTarget } from "./channel-validate.js";
+import { buildAdvancedCustomRelayTarget, shouldApplyAdvancedCustomClaudeHeaders } from "./channel-validate.js";
 import { buildCodexRelayTarget } from "./codex-models.js";
 import { pickChannelKey } from "./select.js";
 import type { Store } from "./store.js";
@@ -271,21 +270,6 @@ export function buildTestRequest(
   return { kind: "chat", body: req };
 }
 
-function convertAdvancedCustomOpenAIChat(converter: string, body: Record<string, unknown>): unknown {
-  switch (converter) {
-    case "none":
-      return body;
-    case "openai_chat_completions_to_anthropic_messages":
-      return openaiToAnthropic(body);
-    case "openai_chat_completions_to_gemini_generate_content":
-      return openaiToGemini(body);
-    case "openai_chat_completions_to_openai_responses":
-      return openaiChatToResponses(body);
-    default:
-      throw new Error(`converter ${JSON.stringify(converter)} does not support OpenAI chat completions requests`);
-  }
-}
-
 async function fetchTarget(target: UpstreamTarget): Promise<Response> {
   const init: RequestInit = { method: target.method, headers: target.headers };
   if (target.method !== "GET" && target.method !== "HEAD" && target.body != null) {
@@ -445,16 +429,36 @@ function buildTestTarget(
     return target;
   }
   if (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
-    const target = buildAdvancedCustomRelayTarget(channel, requestPath, originModel, mappedModel, body, isStream);
+    const incoming = requestPath.split("?")[0];
+    const target = buildAdvancedCustomRelayTarget(channel, incoming, originModel, mappedModel, body, isStream);
+    const convertOpts = {
+      channelType: channel.type,
+      originModelName: originModel,
+      upstreamModelName: mappedModel,
+      converter: target.converter,
+      requestPath,
+      relayMode: mode,
+      isStream,
+    };
+    let payload: unknown = body;
     if (kind === "chat") {
-      target.body = convertAdvancedCustomOpenAIChat(target.converter, body as Record<string, unknown>);
-    } else if (target.converter !== "none") {
-      throw new Error(`converter ${JSON.stringify(target.converter)} does not support ${requestPath} requests`);
+      payload = convertOpenAIRequest(body as Record<string, unknown>, convertOpts);
+    } else if (kind === "responses" || kind === "responses-compact") {
+      payload = convertOpenAIResponsesRequest(body as Record<string, unknown>, convertOpts);
+    } else if (kind === "anthropic") {
+      payload = convertAdvancedCustomClaudeRequest(body as Record<string, unknown>, convertOpts);
+    } else if (kind === "gemini") {
+      payload = convertAdvancedCustomGeminiRequest(body as Record<string, unknown>, convertOpts);
+    } else if (kind === "embedding") {
+      payload = convertOpenAIRequest(body as Record<string, unknown>, { ...convertOpts, relayMode: "embeddings" });
+    } else if (kind === "image") {
+      payload = convertOpenAIRequest(body as Record<string, unknown>, { ...convertOpts, relayMode: "images" });
+    } else if (kind === "rerank") {
+      payload = convertOpenAIRequest(body as Record<string, unknown>, { ...convertOpts, relayMode: "rerank" });
     }
-    if (
-      target.converter === "openai_chat_completions_to_anthropic_messages" ||
-      (target.converter === "none" && requestPath === "/v1/messages")
-    ) {
+    target.body = payload;
+    const relayFormat = kind === "anthropic" ? "claude" : kind === "gemini" ? "gemini" : "openai";
+    if (shouldApplyAdvancedCustomClaudeHeaders(target.converter, relayFormat)) {
       target.headers["anthropic-version"] = CLAUDE_VERSION;
     }
     target.body = applyChannelParamOverride(channel, target.body, target.headers, info, pickChannelKey(channel.key), mappedModel);

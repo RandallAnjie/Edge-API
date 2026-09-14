@@ -2,6 +2,8 @@ import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
+  convertAdvancedCustomClaudeRequest,
+  convertAdvancedCustomGeminiRequest,
   convertClaudeRequest,
   convertGeminiRequest,
   convertOllamaEmbeddingRequest,
@@ -10,7 +12,6 @@ import {
   estimatePromptTokens,
   extractGeminiModelAction,
   geminiToOpenAIChat,
-  openaiChatToResponses,
   openaiFromAnthropicResponse,
   openaiFromGeminiResponse,
   openaiToAnthropic,
@@ -64,7 +65,12 @@ import type { OriginTaskRef } from "./origin-task.js";
 import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
 import { pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
-import { buildAdvancedCustomModelListRequest, buildAdvancedCustomRelayTarget } from "./channel-validate.js";
+import {
+  buildAdvancedCustomModelListRequest,
+  buildAdvancedCustomRelayTarget,
+  resolveAdvancedCustomConverter,
+  shouldApplyAdvancedCustomClaudeHeaders,
+} from "./channel-validate.js";
 import { buildCodexRelayTarget, fetchCodexChannelModels } from "./codex-models.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
@@ -199,11 +205,29 @@ function convertOutbound(
     requestPath?: string;
     systemPrompt?: string;
     systemPromptOverride?: boolean;
+    converter?: string;
+    isStream?: boolean;
   } = {},
 ): unknown {
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
   const upstream = mappedModel || String(o.model || "");
+  if (channelType === CHANNEL_TYPE_ADVANCED_CUSTOM) {
+    const convertOpts = {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+      converter: extras.converter || "none",
+      requestPath: extras.requestPath,
+      isStream: extras.isStream ?? Boolean(o.stream),
+    };
+    if (client === "anthropic") return convertAdvancedCustomClaudeRequest(o, convertOpts);
+    if (client === "gemini") return convertAdvancedCustomGeminiRequest(o, convertOpts);
+    if (client === "openai" && mode === "responses") return convertOpenAIResponsesRequest(o, convertOpts);
+    return convertOpenAIRequest(o, convertOpts);
+  }
   if (channelType === CHANNEL_TYPE_CODEX && client === "anthropic") {
     throw new Error("codex channel: /v1/messages endpoint not supported");
   }
@@ -400,22 +424,6 @@ function convertOutbound(
   return body;
 }
 
-function convertAdvancedCustomOpenAIChat(converter: string, body: unknown): unknown {
-  const o = asObj(body);
-  switch (converter) {
-    case "none":
-      return body;
-    case "openai_chat_completions_to_anthropic_messages":
-      return openaiToAnthropic(o);
-    case "openai_chat_completions_to_gemini_generate_content":
-      return openaiToGemini(o);
-    case "openai_chat_completions_to_openai_responses":
-      return openaiChatToResponses(o);
-    default:
-      throw new Error(`converter ${JSON.stringify(converter)} does not support OpenAI chat completions requests`);
-  }
-}
-
 function buildChannelRelayTarget(
   channel: ChannelRow,
   mode: RelayMode,
@@ -441,12 +449,8 @@ function buildChannelRelayTarget(
     const incoming = path.split("?")[0];
     const mapped = applyModelMapping(channel, model);
     const target = buildAdvancedCustomRelayTarget(channel, incoming, model, mapped, body, stream);
-    target.body = convertAdvancedCustomOpenAIChat(target.converter, body);
     applyFetchModelsHeaderOverrides(channel, pickChannelKey(channel.key), target.headers);
-    if (
-      target.converter === "openai_chat_completions_to_anthropic_messages" ||
-      (target.converter === "none" && incoming === "/v1/messages")
-    ) {
+    if (shouldApplyAdvancedCustomClaudeHeaders(target.converter, info.relayFormat)) {
       target.headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
     }
     target.body = applyChannelParamOverride(channel, target.body, target.headers, { ...info, upstreamModel: mapped }, pickChannelKey(channel.key), mapped);
@@ -889,6 +893,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             requestPath,
             systemPrompt: String(channelSetting.system_prompt || ""),
             systemPromptOverride: Boolean(channelSetting.system_prompt_override),
+            converter:
+              channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM
+                ? resolveAdvancedCustomConverter(channel, requestPath, model)
+                : undefined,
+            isStream: opts.stream,
           });
       if (!opts.rawBody) {
         const convertedModel = asObj(outbound).model;

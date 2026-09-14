@@ -11,6 +11,8 @@ import {
   convertOpenAIRequest,
   convertOpenAIResponsesRequest,
   convertClaudeRequest,
+  convertAdvancedCustomClaudeRequest,
+  convertAdvancedCustomGeminiRequest,
   convertOpenAIChatToClaude,
   convertOllamaEmbeddingRequest,
   convertBaiduEmbeddingRequest,
@@ -30,7 +32,7 @@ import {
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
@@ -2179,3 +2181,175 @@ test("original Codex ConvertOpenAIRequest throw and ConvertOpenAIResponsesReques
   assert.equal(alpha.url, "https://chatgpt.com/backend-api/codex/alpha/search");
   assert.equal("store" in (alpha.body as object), false);
 });
+
+test("original AdvancedCustom ConvertOpenAIRequest converter JSON", () => {
+  const none = convertOpenAIRequest(
+    {
+      model: "gpt-test",
+      messages: [{ role: "user", content: "hello" }],
+      stream: true,
+      stream_options: { include_usage: true },
+    },
+    {
+      channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+      originModelName: "gpt-test",
+      upstreamModelName: "gpt-test",
+      converter: "none",
+    },
+  );
+  assert.equal(none.model, "gpt-test");
+  assert.deepEqual(none.stream_options, { include_usage: true });
+  assert.deepEqual(none.messages, [{ role: "user", content: "hello" }]);
+
+  const chatToResponses = convertOpenAIRequest(
+    {
+      model: "gpt-test",
+      messages: [
+        { role: "system", content: "system rules" },
+        { role: "user", content: "hello" },
+      ],
+      prompt_cache_key: "session-1",
+      frequency_penalty: 0.5,
+      presence_penalty: 1.5,
+    },
+    {
+      channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+      originModelName: "gpt-test",
+      upstreamModelName: "gpt-test",
+      converter: "openai_chat_completions_to_openai_responses",
+    },
+  );
+  assert.equal(chatToResponses.model, "gpt-test");
+  assert.equal(chatToResponses.instructions, "system rules");
+  assert.ok(Array.isArray(chatToResponses.input) && (chatToResponses.input as unknown[]).length > 0);
+  assert.equal((chatToResponses.input as { role?: string; content?: string }[])[0].role, "user");
+  assert.equal((chatToResponses.input as { role?: string; content?: string }[])[0].content, "hello");
+  assert.equal(chatToResponses.prompt_cache_key, "session-1");
+  assert.equal(chatToResponses.frequency_penalty, 0.5);
+  assert.equal(chatToResponses.presence_penalty, 1.5);
+
+  const chatToClaude = convertOpenAIRequest(
+    { model: "claude-test", messages: [{ role: "user", content: "hello" }] },
+    {
+      channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+      originModelName: "claude-test",
+      upstreamModelName: "claude-test",
+      converter: "openai_chat_completions_to_anthropic_messages",
+    },
+  );
+  assert.equal(chatToClaude.model, "claude-test");
+  const claudeMessages = chatToClaude.messages as { role: string }[];
+  assert.equal(claudeMessages.length, 1);
+  assert.equal(claudeMessages[0].role, "user");
+
+  const chatToGemini = convertOpenAIRequest(
+    { model: "gemini-2.5-flash", messages: [{ role: "user", content: "hello" }] },
+    {
+      channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+      originModelName: "gemini-2.5-flash",
+      upstreamModelName: "gemini-2.5-flash",
+      converter: "openai_chat_completions_to_gemini_generate_content",
+    },
+  );
+  const contents = chatToGemini.contents as { role: string }[];
+  assert.equal(contents.length, 1);
+  assert.equal(contents[0].role, "user");
+
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "gpt-test", messages: [{ role: "user", content: "hello" }] },
+        {
+          channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+          originModelName: "gpt-test",
+          upstreamModelName: "gpt-test",
+          converter: "openai_responses_to_openai_chat_completions",
+        },
+      ),
+    /converter "openai_responses_to_openai_chat_completions" does not support OpenAI chat completions requests/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "gpt-test", input: ["hello"] },
+        {
+          channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+          originModelName: "gpt-test",
+          upstreamModelName: "gpt-test",
+          converter: "openai_chat_completions_to_openai_responses",
+          relayMode: "embeddings",
+        },
+      ),
+    /converter "openai_chat_completions_to_openai_responses" does not support embedding requests/,
+  );
+
+  const responsesToChat = convertOpenAIResponsesRequest(
+    { model: "gpt-test", instructions: "system rules", input: "hello" },
+    {
+      channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+      originModelName: "gpt-test",
+      upstreamModelName: "gpt-test",
+      converter: "openai_responses_to_openai_chat_completions",
+    },
+  );
+  assert.equal(responsesToChat.model, "gpt-test");
+  const chatMessages = responsesToChat.messages as { role: string; content: string }[];
+  assert.equal(chatMessages.length, 2);
+  assert.equal(chatMessages[0].role, "system");
+  assert.equal(chatMessages[0].content, "system rules");
+  assert.equal(chatMessages[1].role, "user");
+  assert.equal(chatMessages[1].content, "hello");
+
+  const responsesToGemini = convertOpenAIResponsesRequest(
+    {
+      model: "gemini-test",
+      input: [
+        { role: "user", content: "hi" },
+        { type: "function_call", call_id: "call_1", name: "glob", arguments: { query: "*" } },
+        { type: "function_call_output", call_id: "call_1", output: [{ path: "report.md" }] },
+      ],
+      tools: [{ type: "function", name: "glob", parameters: { type: "object" } }],
+    },
+    {
+      channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+      originModelName: "gemini-test",
+      upstreamModelName: "gemini-test",
+      converter: "openai_responses_to_gemini_generate_content",
+    },
+  );
+  const geminiContents = responsesToGemini.contents as { role: string; parts: Record<string, unknown>[] }[];
+  assert.equal(geminiContents.length, 3);
+  assert.ok(geminiContents[1].parts[0].functionCall);
+  assert.ok(geminiContents[1].parts[0].thoughtSignature);
+  assert.ok(geminiContents[2].parts[0].functionResponse);
+  assert.equal(geminiContents[2].parts[0].thoughtSignature, undefined);
+
+  const claudeToChat = convertAdvancedCustomClaudeRequest(
+    { model: "gpt-test", messages: [{ role: "user", content: "hello" }] },
+    {
+      channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+      originModelName: "gpt-test",
+      upstreamModelName: "gpt-test",
+      converter: "anthropic_messages_to_openai_chat_completions",
+    },
+  );
+  assert.equal(claudeToChat.model, "gpt-test");
+  const fromClaude = claudeToChat.messages as { role: string }[];
+  assert.equal(fromClaude.length, 1);
+  assert.equal(fromClaude[0].role, "user");
+
+  const geminiToChat = convertAdvancedCustomGeminiRequest(
+    { contents: [{ role: "user", parts: [{ text: "hello" }] }] },
+    {
+      channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+      originModelName: "gpt-test",
+      upstreamModelName: "gpt-test",
+      converter: "gemini_generate_content_to_openai_chat_completions",
+    },
+  );
+  assert.equal(geminiToChat.model, "gpt-test");
+  const fromGemini = geminiToChat.messages as { role: string }[];
+  assert.equal(fromGemini.length, 1);
+  assert.equal(fromGemini[0].role, "user");
+});
+

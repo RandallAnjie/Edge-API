@@ -6,8 +6,8 @@ import {
   convertOpenAIResponsesAdaptorRequest,
   type ReasoningHostSettings,
 } from "./reasoning.js";
-import { convertOpenAIChatToClaude } from "./claude-convert.js";
-import { convertOpenAIChatToGemini } from "./gemini-convert.js";
+import { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
+import { convertGeminiRequest, convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind } from "./catalog.js";
 import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
@@ -35,6 +35,24 @@ import { convertReplicateImageRequest, convertReplicateOpenAIRequest } from "./r
 import { convertNewApiOpenAIRequest, convertNewApiResponsesRequest, newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import { convertJimengImageRequest, convertJimengOpenAIRequest } from "./jimeng-convert.js";
 import { convertCodexOpenAIRequest, convertCodexResponsesRequest, isCodexResponsesCompact } from "./codex-convert.js";
+import {
+  CONVERTER_CHAT_TO_CLAUDE,
+  CONVERTER_CHAT_TO_GEMINI,
+  CONVERTER_CHAT_TO_RESPONSES,
+  CONVERTER_CLAUDE_TO_CHAT,
+  CONVERTER_GEMINI_TO_CHAT,
+  CONVERTER_NONE,
+  CONVERTER_RESPONSES_TO_CHAT,
+  CONVERTER_RESPONSES_TO_GEMINI,
+  convertAdvancedCustomChatToClaude,
+  convertAdvancedCustomChatToGemini,
+  convertChatCompletionsToResponsesRequest,
+  convertClaudeMessagesToOpenAIChat,
+  convertGeminiContentToOpenAIChat,
+  convertResponsesToChatCompletionsRequest,
+  convertResponsesToGeminiRequest,
+  converterDoesNotSupport,
+} from "./advanced-custom-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 
 export type ChatMessage = {
@@ -349,6 +367,10 @@ export type ConvertOpenAIOpts = {
   systemPrompt?: string;
   /** Original `info.ChannelSetting.SystemPromptOverride`. */
   systemPromptOverride?: boolean;
+  /** Original `advancedcustom.Adaptor.converter` from `MatchPathForModel`. */
+  converter?: string;
+  /** Original `info.IsStream` used by Gemini→OpenAI chat conversion. */
+  isStream?: boolean;
 };
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
@@ -399,6 +421,129 @@ export { convertReplicateImageRequest } from "./replicate-convert.js";
 export { convertNewApiOpenAIRequest } from "./newapi-convert.js";
 export { convertJimengImageRequest, convertJimengOpenAIRequest } from "./jimeng-convert.js";
 export { convertCodexOpenAIRequest, convertCodexResponsesRequest } from "./codex-convert.js";
+export {
+  convertChatCompletionsToResponsesRequest,
+  convertResponsesToChatCompletionsRequest,
+  convertResponsesToGeminiRequest,
+  convertClaudeMessagesToOpenAIChat,
+  convertGeminiContentToOpenAIChat,
+} from "./advanced-custom-convert.js";
+
+function applyOpenAICompatibleAdaptor(
+  body: Record<string, unknown>,
+  originModelName: string,
+  upstreamModelName: string,
+  settings: ReasoningHostSettings,
+): Record<string, unknown> {
+  const converted = convertOpenAIAdaptorReasoning(body, CHANNEL_TYPE_OPENAI, originModelName, upstreamModelName, settings);
+  return applyOpenAIChatCompatibility(converted.body, converted.upstreamModelName, CHANNEL_TYPE_OPENAI, converted.reasoningEffort);
+}
+
+/** Original `advancedcustom.Adaptor.convertOpenAICompatibleRequest` + ConvertOpenAIRequest converter switch. */
+function convertAdvancedCustomOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
+  const converter = String(opts.converter || CONVERTER_NONE).trim() || CONVERTER_NONE;
+  const settings = opts.settings || {};
+  const mode = opts.relayMode || "chat";
+  if (mode === "embeddings" || mode === "engines_embeddings") {
+    if (converter !== CONVERTER_NONE) throw converterDoesNotSupport(converter, "embedding");
+    return { ...body, model: opts.upstreamModelName };
+  }
+  if (mode === "audio_speech" || mode === "audio_transcription" || mode === "audio_translation") {
+    if (converter !== CONVERTER_NONE) throw converterDoesNotSupport(converter, "audio");
+    return { ...body, model: opts.upstreamModelName };
+  }
+  if (mode === "images") {
+    if (converter !== CONVERTER_NONE) throw converterDoesNotSupport(converter, "image");
+    return { ...body, model: opts.upstreamModelName };
+  }
+  if (mode === "rerank") {
+    return { ...body, model: opts.upstreamModelName };
+  }
+  if (converter === CONVERTER_NONE) {
+    return applyOpenAICompatibleAdaptor(body, opts.originModelName, opts.upstreamModelName, settings);
+  }
+  if (converter === CONVERTER_CHAT_TO_CLAUDE) {
+    return convertAdvancedCustomChatToClaude(body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: opts.upstreamModelName,
+      settings,
+    });
+  }
+  if (converter === CONVERTER_CHAT_TO_RESPONSES) {
+    return convertChatCompletionsToResponsesRequest({ ...body, model: opts.upstreamModelName || body.model });
+  }
+  if (converter === CONVERTER_CHAT_TO_GEMINI) {
+    return convertAdvancedCustomChatToGemini(body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: opts.upstreamModelName,
+      settings,
+    });
+  }
+  throw converterDoesNotSupport(converter, "chat");
+}
+
+/** Original `advancedcustom.Adaptor.ConvertOpenAIResponsesRequest`. */
+function convertAdvancedCustomOpenAIResponsesRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
+  const converter = String(opts.converter || CONVERTER_NONE).trim() || CONVERTER_NONE;
+  const settings = opts.settings || {};
+  if (converter === CONVERTER_NONE) {
+    return convertOpenAIResponsesAdaptorRequest(body, CHANNEL_TYPE_OPENAI, opts.originModelName, settings).body;
+  }
+  if (converter === CONVERTER_RESPONSES_TO_CHAT) {
+    const chat = convertResponsesToChatCompletionsRequest({ ...body, model: opts.upstreamModelName || body.model });
+    return applyOpenAICompatibleAdaptor(chat, opts.originModelName, opts.upstreamModelName, settings);
+  }
+  if (converter === CONVERTER_RESPONSES_TO_GEMINI) {
+    return convertResponsesToGeminiRequest(body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: opts.upstreamModelName,
+      settings,
+    });
+  }
+  throw converterDoesNotSupport(converter, "responses");
+}
+
+/** Original `advancedcustom.Adaptor.ConvertClaudeRequest`. */
+export function convertAdvancedCustomClaudeRequest(
+  body: Record<string, unknown>,
+  opts: ConvertOpenAIOpts,
+): Record<string, unknown> {
+  const converter = String(opts.converter || CONVERTER_NONE).trim() || CONVERTER_NONE;
+  const settings = opts.settings || {};
+  if (converter === CONVERTER_NONE) {
+    return convertClaudeRequest(body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: opts.upstreamModelName,
+      settings,
+    });
+  }
+  if (converter === CONVERTER_CLAUDE_TO_CHAT) {
+    const chat = convertClaudeMessagesToOpenAIChat(body, opts.upstreamModelName);
+    return applyOpenAICompatibleAdaptor(chat, opts.originModelName, opts.upstreamModelName, settings);
+  }
+  throw converterDoesNotSupport(converter, "claude");
+}
+
+/** Original `advancedcustom.Adaptor.ConvertGeminiRequest`. */
+export function convertAdvancedCustomGeminiRequest(
+  body: Record<string, unknown>,
+  opts: ConvertOpenAIOpts,
+): Record<string, unknown> {
+  const converter = String(opts.converter || CONVERTER_NONE).trim() || CONVERTER_NONE;
+  const settings = opts.settings || {};
+  if (converter === CONVERTER_NONE) {
+    return convertGeminiRequest(body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: opts.upstreamModelName,
+      settings,
+    });
+  }
+  if (converter === CONVERTER_GEMINI_TO_CHAT) {
+    const chat = convertGeminiContentToOpenAIChat(body, opts.upstreamModelName, Boolean(opts.isStream));
+    return applyOpenAICompatibleAdaptor(chat, opts.originModelName, opts.upstreamModelName, settings);
+  }
+  throw converterDoesNotSupport(converter, "gemini");
+}
 
 /** Original TextHelper: ApplyReasoningModelSuffix then adaptor ConvertOpenAIRequest. */
 export function convertOpenAIRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
@@ -574,13 +719,18 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
       upstreamModelName: suffixed.upstreamModelName,
     });
   }
-  if (
-    opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM ||
-    opts.channelType === CHANNEL_TYPE_TASK_PLUGIN
-  ) {
+  if (opts.channelType === CHANNEL_TYPE_TASK_PLUGIN) {
     const out = suffixed.body;
     out.model = suffixed.upstreamModelName;
     return out;
+  }
+  if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM) {
+    return convertAdvancedCustomOpenAIRequest(suffixed.body, {
+      ...opts,
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
   }
   const converted = convertOpenAIAdaptorReasoning(
     suffixed.body,
@@ -611,6 +761,14 @@ export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opt
       upstreamModelName: suffixed.upstreamModelName,
     });
   }
+  if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM) {
+    return convertAdvancedCustomOpenAIResponsesRequest(suffixed.body, {
+      ...opts,
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
+  }
   const converted = convertOpenAIResponsesAdaptorRequest(
     suffixed.body,
     opts.channelType,
@@ -622,10 +780,5 @@ export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opt
 
 /** Original `relayconvert` OpenAI chat → Responses request used by advanced-custom converters. */
 export function openaiChatToResponses(body: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    model: body.model,
-    input: body.messages ?? [{ role: "user", content: "hi" }],
-  };
-  if (body.stream != null) out.stream = body.stream;
-  return out;
+  return convertChatCompletionsToResponsesRequest(body);
 }
