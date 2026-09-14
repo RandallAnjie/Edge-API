@@ -30,7 +30,7 @@ import { imagenUsage, openaiFromImagenResponse, removeFunctionCallIDs, vertexReq
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest, openaiFromBaiduEmbedding, openaiFromBaiduResponse, baiduUpstreamToOpenAIChat } from "./baidu-convert.js";
 import { convertCohereRerankRequest, openaiFromCohereResponse, openaiFromCohereRerank, cohereUpstreamToOpenAIChat } from "./cohere-convert.js";
 import { completeCozeNonStreamChat, openaiFromCozeDetailResponse, cozeUpstreamToOpenAIChat, type CozeUsage } from "./coze-convert.js";
-import { openaiFromDifyResponse, difyUpstreamToOpenAIChat } from "./dify-convert.js";
+import { openaiFromDifyResponse, difyUpstreamToOpenAIChat, convertDifyOpenAIRequestWithUploads } from "./dify-convert.js";
 import { applyZhipuV3Authorization, openaiFromZhipuResponse, openaiFromZhipuV4Image, zhipuUpstreamToOpenAIChat } from "./zhipu-convert.js";
 import { cloudflareUpstreamToOpenAIChat, openaiFromCloudflareResponse } from "./cloudflare-convert.js";
 import { applyTencentTc3Authorization, openaiFromTencentResponse, tencentUpstreamToOpenAIChat, tencentUsesNativeAdaptor } from "./tencent-convert.js";
@@ -212,7 +212,7 @@ function convertRequestFailed(err: unknown): ParamOverrideReturnError {
   return new ParamOverrideReturnError(message, 500, "convert_request_failed", "new_api_error", true);
 }
 
-function convertOutbound(
+async function convertOutbound(
   kind: ReturnType<typeof channelKind>,
   client: ClientFormat,
   body: unknown,
@@ -231,8 +231,9 @@ function convertOutbound(
     systemPromptOverride?: boolean;
     converter?: string;
     isStream?: boolean;
+    channelBase?: string;
   } = {},
-): unknown {
+): Promise<unknown> {
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
   const upstream = mappedModel || String(o.model || "");
@@ -307,6 +308,13 @@ function convertOutbound(
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_BAIDU && mode === "embeddings") {
     return convertBaiduEmbeddingRequest(o);
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_DIFY) {
+    return convertDifyOpenAIRequestWithUploads(o, {
+      responseId: extras.responseId,
+      channelBase: extras.channelBase,
+      channelKey: extras.channelKey,
+    });
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_COHERE && mode === "rerank") {
     return convertCohereRerankRequest(o, { upstreamModelName: upstream });
@@ -1005,10 +1013,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       outbound = opts.rawBody
         ? opts.body
-        : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode, {
+        : await convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode, {
             botId: channel.other || "",
             responseId: `chatcmpl-${rid}`,
             channelKey: pickChannelKey(channel.key),
+            channelBase: resolveBaseUrl(channel.type, channel.base_url),
             requestPath,
             systemPrompt: String(channelSetting.system_prompt || ""),
             systemPromptOverride: Boolean(channelSetting.system_prompt_override),

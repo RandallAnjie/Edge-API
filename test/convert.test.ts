@@ -24,6 +24,7 @@ import {
   openaiFromBaiduResponse,
   openaiFromCohereResponse,
   openaiFromDifyResponse,
+  convertDifyOpenAIRequestWithUploads,
   openaiFromZhipuResponse,
   convertMiniMaxImageRequest,
   openaiFromMiniMaxImage,
@@ -1197,7 +1198,7 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () =
   );
 });
 
-test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON and URLs", () => {
+test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON and URLs", async () => {
   const cohere = convertOpenAIRequest(
     {
       model: "command-r",
@@ -1299,6 +1300,32 @@ test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON and URLs"
   assert.equal(difyNoUser.user, "chatcmpl-rid");
   assert.equal(difyNoUser.response_mode, "blocking");
   assert.deepEqual(difyNoUser.files, []);
+
+  const dataUrl = "data:image/png;base64,YWE=";
+  const difyLocal = await convertDifyOpenAIRequestWithUploads(
+    {
+      model: "dify-bot",
+      user: "alice",
+      messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: dataUrl, mime_type: "image/png" } }] }],
+    },
+    {
+      responseId: "chatcmpl-dify",
+      channelBase: "https://api.dify.ai",
+      channelKey: "dk",
+      fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        assert.equal(String(input), "https://api.dify.ai/v1/files/upload");
+        assert.equal(new Headers(init?.headers).get("authorization"), "Bearer dk");
+        assert.equal(init?.body instanceof FormData, true);
+        const form = init?.body as FormData;
+        assert.equal(form.get("user"), "alice");
+        const file = form.get("file");
+        assert.equal(file instanceof Blob, true);
+        return new Response(JSON.stringify({ id: "file-1" }), { headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+    },
+  );
+  assert.deepEqual(difyLocal.files, [{ upload_file_id: "file-1", type: "image", transfer_mode: "local_file" }]);
+  assert.equal("url" in (difyLocal.files as { url?: string }[])[0], false);
 
   const difyMapped = openaiFromDifyResponse(
     {

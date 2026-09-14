@@ -176,6 +176,9 @@ test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON is sent u
         { headers: { "content-type": "application/json" } },
       );
     }
+    if (url.includes("/v1/files/upload")) {
+      return new Response(JSON.stringify({ id: "file-local" }), { headers: { "content-type": "application/json" } });
+    }
     if (url.includes("/v1/chat-messages")) {
       return new Response(
         JSON.stringify({
@@ -296,6 +299,35 @@ test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON is sent u
     assert.equal(difyChat.body.id, "dify-conv");
     assert.equal((difyChat.body.choices as { message: { content: string } }[])[0].message.content, "hello dify");
     assert.equal((difyChat.body.usage as { total_tokens: number }).total_tokens, 5);
+
+    const difyImage = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "dify-bot",
+          user: "alice",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "see" },
+                { type: "image_url", image_url: { url: "data:image/png;base64,YWE=", mime_type: "image/png" } },
+              ],
+            },
+          ],
+        }),
+      }),
+      e,
+    );
+    assert.equal(difyImage.res.status, 200, difyImage.text);
+    const uploadCall = calls.find((c) => c.url.endsWith("/v1/files/upload"));
+    if (!uploadCall) throw new Error("missing dify file upload");
+    assert.equal(uploadCall.headers.get("authorization"), "Bearer dk");
+    const difyImageCall = [...calls].reverse().find((c) => c.url.endsWith("/v1/chat-messages"));
+    if (!difyImageCall) throw new Error("missing dify image chat upstream");
+    assert.deepEqual(difyImageCall.body.files, [{ upload_file_id: "file-local", type: "image", transfer_mode: "local_file" }]);
+    assert.equal(difyImageCall.body.query, "USER: \nsee\n");
 
     const cozeChat = await json(
       new Request("http://local/v1/chat/completions", {

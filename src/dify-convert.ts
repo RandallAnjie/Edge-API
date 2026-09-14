@@ -7,6 +7,20 @@ export type ConvertDifyOpts = {
   /** Original `constant.DifyDebug`; env default true. */
   difyDebug?: boolean;
   created?: number;
+  /** Original `info.ChannelBaseUrl` used by `uploadDifyFile`. */
+  channelBase?: string;
+  /** Original `info.ApiKey`. */
+  channelKey?: string;
+  fetchImpl?: typeof fetch;
+  /** Pre-uploaded local files in message order (ConvertOpenAIRequest without I/O). */
+  localFiles?: (DifyFile | null)[];
+};
+
+export type DifyFile = {
+  type: string;
+  transfer_mode: string;
+  url?: string;
+  upload_file_id?: string;
 };
 
 function stringContent(content: unknown): string {
@@ -57,17 +71,73 @@ function isRemoteImage(url: string): boolean {
   return url.startsWith("http");
 }
 
+function decodeDataUrlBase64(url: string): Uint8Array | null {
+  let payload = url;
+  const comma = url.indexOf(",");
+  if (comma !== -1) payload = url.slice(comma + 1);
+  try {
+    const bin = atob(payload);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function mimeFromImage(mime: string): string {
+  return mime || "image/jpeg";
+}
+
+function remoteDifyFile(image: { url: string; mime: string }): DifyFile {
+  return {
+    type: image.mime,
+    transfer_mode: "remote_url",
+    url: image.url,
+  };
+}
+
+/** Original `dify.uploadDifyFile` for `ContentTypeImageURL`. Failure returns null (file omitted). */
+export async function uploadDifyFile(
+  image: { url: string; mime: string },
+  opts: { channelBase?: string; channelKey?: string; user: string; fetchImpl?: typeof fetch },
+): Promise<DifyFile | null> {
+  const bytes = decodeDataUrlBase64(image.url);
+  if (!bytes) return null;
+  const mimeType = mimeFromImage(image.mime);
+  const ext = mimeType.replace(/^image\//, "") || "jpeg";
+  const form = new FormData();
+  form.append("user", opts.user);
+  form.append("file", new Blob([bytes], { type: mimeType }), `image.${ext}`);
+  const base = String(opts.channelBase || "").replace(/\/+$/, "");
+  const url = `${base}/v1/files/upload`;
+  const fetchImpl = opts.fetchImpl || globalThis.fetch.bind(globalThis);
+  try {
+    const resp = await fetchImpl(url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${opts.channelKey || ""}` },
+      body: form,
+    });
+    const parsed = JSON.parse(await resp.text()) as { id?: string };
+    if (!parsed.id) return null;
+    return { upload_file_id: parsed.id, type: "image", transfer_mode: "local_file" };
+  } catch {
+    return null;
+  }
+}
+
 function difyUser(body: Record<string, unknown>, responseId: string): string {
   if (typeof body.user === "string" && body.user) return body.user;
   return responseId;
 }
 
-/** Original `dify.requestOpenAI2Dify`. Local/data-URL images are omitted when upload is not available (same as original upload failure). */
+/** Original `dify.requestOpenAI2Dify`. Local files are omitted unless `localFiles` / WithUploads filled them. */
 export function convertDifyOpenAIRequest(body: Record<string, unknown>, opts: ConvertDifyOpts = {}): Record<string, unknown> {
   const responseId = opts.responseId || "chatcmpl-dify";
   const user = difyUser(body, responseId);
-  const files: Record<string, unknown>[] = [];
+  const files: DifyFile[] = [];
   let query = "";
+  let localIndex = 0;
   const messages = Array.isArray(body.messages) ? (body.messages as { role?: string; content?: unknown }[]) : [];
   for (const message of messages) {
     if (message.role === "system") {
@@ -80,11 +150,10 @@ export function convertDifyOpenAIRequest(body: Record<string, unknown>, opts: Co
           query += "USER: \n" + (media.text || "") + "\n";
         } else if (media.type === "image_url" && media.image) {
           if (isRemoteImage(media.image.url)) {
-            files.push({
-              type: media.image.mime,
-              transfer_mode: "remote_url",
-              url: media.image.url,
-            });
+            files.push(remoteDifyFile(media.image));
+          } else {
+            const local = opts.localFiles?.[localIndex++];
+            if (local) files.push(local);
           }
         }
       }
@@ -98,6 +167,32 @@ export function convertDifyOpenAIRequest(body: Record<string, unknown>, opts: Co
     auto_generate_name: false,
     files,
   };
+}
+
+/** Original `dify.requestOpenAI2Dify` including `uploadDifyFile` for non-http image URLs. */
+export async function convertDifyOpenAIRequestWithUploads(
+  body: Record<string, unknown>,
+  opts: ConvertDifyOpts = {},
+): Promise<Record<string, unknown>> {
+  const responseId = opts.responseId || "chatcmpl-dify";
+  const user = difyUser(body, responseId);
+  const localFiles: (DifyFile | null)[] = [];
+  const messages = Array.isArray(body.messages) ? (body.messages as { role?: string; content?: unknown }[]) : [];
+  for (const message of messages) {
+    if (message.role === "system" || message.role === "assistant") continue;
+    for (const media of parseContent(message.content)) {
+      if (media.type !== "image_url" || !media.image || isRemoteImage(media.image.url)) continue;
+      localFiles.push(
+        await uploadDifyFile(media.image, {
+          channelBase: opts.channelBase,
+          channelKey: opts.channelKey,
+          user,
+          fetchImpl: opts.fetchImpl,
+        }),
+      );
+    }
+  }
+  return convertDifyOpenAIRequest(body, { ...opts, localFiles });
 }
 
 function usageFromMeta(meta: Record<string, unknown>): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
