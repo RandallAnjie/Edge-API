@@ -409,6 +409,15 @@ async function convertOutbound(
       relayMode: mode,
     });
   }
+  if (client === "openai" && mode === "images" && (channelType === CHANNEL_TYPE_GEMINI || channelType === CHANNEL_TYPE_VERTEX)) {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+    });
+  }
   if (
     client === "openai" &&
     channelType === CHANNEL_TYPE_SUBMODEL &&
@@ -663,6 +672,7 @@ async function convertInbound(
   }
   if (client === "openai" && kind === "anthropic") return openaiFromAnthropicResponse(upstreamJson, model);
   if (client === "openai" && kind === "gemini") {
+    if (model.startsWith("imagen")) return openaiFromImagenResponse(upstreamJson, { created: opts.created });
     return openaiFromGeminiResponse(upstreamJson, model, {
       id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
       created: opts.created,
@@ -798,7 +808,7 @@ async function openaiClientFromProvider(
     const json = openaiFromNovaResponse(parsed, mapped, { id: `chatcmpl-${opts.requestId}` });
     return { body: stream ? sseFromOpenAIChatCompletion(json) : JSON.stringify(json), usageBody: json };
   }
-  if (mapped.startsWith("imagen") && opts.channelType === CHANNEL_TYPE_VERTEX) {
+  if (mapped.startsWith("imagen") && (opts.channelType === CHANNEL_TYPE_VERTEX || opts.channelType === CHANNEL_TYPE_GEMINI || kind === "gemini")) {
     let parsed: Record<string, unknown> = {};
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;

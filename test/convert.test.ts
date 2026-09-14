@@ -954,6 +954,144 @@ test("original Vertex ConvertOpenAIRequest Claude wrap, Gemini id strip, imagen,
   assert.equal(imagenUsage(1).prompt, VERTEX_IMAGE_TOKENS);
   assert.equal(imagenUsage(1).completion, 0);
   assert.equal(imagenUsage(1).total, VERTEX_IMAGE_TOKENS);
+  assert.throws(() => openaiFromImagenResponse({ predictions: [] }), /no images generated/);
+  assert.throws(() => openaiFromImagenResponse({}), /no images generated/);
+});
+
+test("original Gemini ConvertImageRequest JSON, :predict URL, and GeminiImageHandler fields", () => {
+  const imagen = convertOpenAIRequest(
+    { model: "imagen-3.0-generate-001", prompt: "a cat", n: 2, size: "1792x1024", quality: "hd" },
+    {
+      channelType: CHANNEL_TYPE_GEMINI,
+      originModelName: "imagen-3.0-generate-001",
+      upstreamModelName: "imagen-3.0-generate-001",
+      relayMode: "images",
+    },
+  );
+  assert.deepEqual(imagen.instances, [{ prompt: "a cat" }]);
+  assert.deepEqual(imagen.parameters, {
+    sampleCount: 2,
+    aspectRatio: "16:9",
+    personGeneration: "allow_adult",
+    imageSize: "2K",
+  });
+
+  const ratios = [
+    ["256x256", "1:1"],
+    ["512x512", "1:1"],
+    ["1024x1024", "1:1"],
+    ["1536x1024", "3:2"],
+    ["1024x1536", "2:3"],
+    ["1024x1792", "9:16"],
+    ["1792x1024", "16:9"],
+    ["9:16", "9:16"],
+    ["", "1:1"],
+    ["2048x2048", "1:1"],
+  ] as const;
+  for (const [size, aspectRatio] of ratios) {
+    const converted = convertOpenAIRequest(
+      { model: "imagen-4.0-generate-001", prompt: "sky", size },
+      {
+        channelType: CHANNEL_TYPE_GEMINI,
+        originModelName: "imagen-4.0-generate-001",
+        upstreamModelName: "imagen-4.0-generate-001",
+        relayMode: "images",
+      },
+    );
+    const parameters = converted.parameters as { sampleCount: number; aspectRatio: string; personGeneration: string; imageSize?: string };
+    assert.equal(parameters.sampleCount, 1, size);
+    assert.equal(parameters.aspectRatio, aspectRatio, size);
+    assert.equal(parameters.personGeneration, "allow_adult");
+    assert.equal("imageSize" in parameters, false, size);
+  }
+
+  const high = convertOpenAIRequest(
+    { model: "imagen-3.0-generate-001", prompt: "a dog", quality: "high" },
+    {
+      channelType: CHANNEL_TYPE_GEMINI,
+      originModelName: "imagen-3.0-generate-001",
+      upstreamModelName: "imagen-3.0-generate-001",
+      relayMode: "images",
+    },
+  );
+  assert.equal((high.parameters as { imageSize: string }).imageSize, "2K");
+  const twoK = convertOpenAIRequest(
+    { model: "imagen-3.0-generate-001", prompt: "a dog", quality: "2K" },
+    {
+      channelType: CHANNEL_TYPE_GEMINI,
+      originModelName: "imagen-3.0-generate-001",
+      upstreamModelName: "imagen-3.0-generate-001",
+      relayMode: "images",
+    },
+  );
+  assert.equal((twoK.parameters as { imageSize: string }).imageSize, "2K");
+  for (const quality of ["standard", "medium", "low", "auto", "1K", "unknown"]) {
+    const converted = convertOpenAIRequest(
+      { model: "imagen-3.0-generate-001", prompt: "a dog", quality },
+      {
+        channelType: CHANNEL_TYPE_GEMINI,
+        originModelName: "imagen-3.0-generate-001",
+        upstreamModelName: "imagen-3.0-generate-001",
+        relayMode: "images",
+      },
+    );
+    assert.equal((converted.parameters as { imageSize: string }).imageSize, "1K", quality);
+  }
+
+  const vertexImage = convertOpenAIRequest(
+    { model: "imagen-3.0-generate-001", prompt: "vertex cat", n: 3, size: "1024x1536" },
+    {
+      channelType: CHANNEL_TYPE_VERTEX,
+      originModelName: "imagen-3.0-generate-001",
+      upstreamModelName: "imagen-3.0-generate-001",
+      relayMode: "images",
+    },
+  );
+  assert.deepEqual(vertexImage.instances, [{ prompt: "vertex cat" }]);
+  assert.deepEqual(vertexImage.parameters, { sampleCount: 3, aspectRatio: "2:3", personGeneration: "allow_adult" });
+
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "gemini-2.0-flash", prompt: "a cat" },
+        {
+          channelType: CHANNEL_TYPE_GEMINI,
+          originModelName: "gemini-2.0-flash",
+          upstreamModelName: "gemini-2.0-flash",
+          relayMode: "images",
+        },
+      ),
+    /not supported model for image generation, only imagen models are supported/,
+  );
+
+  const geminiCh = testChannel({
+    type: CHANNEL_TYPE_GEMINI,
+    key: "gkey",
+    models: "imagen-3.0-generate-001,gemini-2.0-flash",
+  });
+  const imagenUrl = buildUpstream(
+    geminiCh,
+    "images",
+    "/v1/images/generations",
+    "imagen-3.0-generate-001",
+    imagen,
+  );
+  assert.equal(
+    imagenUrl.url,
+    "https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=gkey",
+  );
+  assert.equal(imagenUrl.headers["x-goog-api-key"], "gkey");
+  const chatUrl = buildUpstream(
+    geminiCh,
+    "chat",
+    "/v1/chat/completions",
+    "gemini-2.0-flash",
+    { model: "gemini-2.0-flash", contents: [] },
+  );
+  assert.equal(
+    chatUrl.url,
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=gkey",
+  );
 });
 
 test("original Ollama ConvertOpenAIRequest is /api/chat JSON not OpenAI chat completions", () => {

@@ -472,8 +472,9 @@ export function buildUpstream(
       const stream =
         requestPath.includes("streamGenerateContent") ||
         (payloadIsObject(body) && Boolean((body as { stream?: boolean }).stream));
-      const action =
-        mode === "embeddings"
+      const action = upstreamModel.startsWith("imagen")
+        ? "predict"
+        : mode === "embeddings"
           ? "embedContent"
           : stream
             ? "streamGenerateContent?alt=sse"

@@ -271,6 +271,29 @@ test("original AWS Nova and Vertex ConvertOpenAIRequest JSON is sent upstream wi
     assert.deepEqual(captured.body.parameters, { sampleCount: 1, aspectRatio: "1:1", personGeneration: "allow_adult" });
     assert.deepEqual(imagen.body.data, [{ url: "", b64_json: "YWE=", revised_prompt: "" }]);
     assert.equal(VERTEX_IMAGE_TOKENS, 258);
+
+    const imagenHttp = await json(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "imagen-3.0-generate-001",
+          prompt: "a vertex cat",
+          n: 1,
+          size: "1024x1024",
+        }),
+      }),
+      e,
+    );
+    assert.equal(imagenHttp.res.status, 200, imagenHttp.text);
+    if (!captured) throw new Error("missing vertex image ConvertImageRequest upstream");
+    assert.equal(
+      captured.url,
+      "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/imagen-3.0-generate-001:predict?key=vkey",
+    );
+    assert.deepEqual(captured.body.instances, [{ prompt: "a vertex cat" }]);
+    assert.deepEqual(captured.body.parameters, { sampleCount: 1, aspectRatio: "1:1", personGeneration: "allow_adult" });
+    assert.deepEqual(imagenHttp.body.data, [{ url: "", b64_json: "YWE=", revised_prompt: "" }]);
   } finally {
     globalThis.fetch = origFetch;
   }

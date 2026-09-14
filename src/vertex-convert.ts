@@ -139,7 +139,7 @@ export function convertGeminiImageRequest(request: {
   quality?: string;
 }): Record<string, unknown> {
   const parameters: Record<string, unknown> = {
-    sampleCount: request.n && request.n > 0 ? request.n : 1,
+    sampleCount: request.n == null || !Number.isFinite(request.n) ? 1 : request.n,
     aspectRatio: sizeToAspectRatio(request.size || ""),
     personGeneration: "allow_adult",
   };
@@ -148,6 +148,20 @@ export function convertGeminiImageRequest(request: {
     instances: [{ prompt: request.prompt }],
     parameters,
   };
+}
+
+/** Original `gemini.Adaptor.ConvertImageRequest` from OpenAI `dto.ImageRequest`. */
+export function convertGeminiImageFromOpenAI(body: Record<string, unknown>, upstreamModelName: string): Record<string, unknown> {
+  if (!upstreamModelName.startsWith("imagen")) {
+    throw new Error("not supported model for image generation, only imagen models are supported");
+  }
+  const n = body.n == null ? undefined : Number(body.n);
+  return convertGeminiImageRequest({
+    prompt: String(body.prompt || ""),
+    n: n != null && Number.isFinite(n) ? n : undefined,
+    size: typeof body.size === "string" ? body.size : undefined,
+    quality: typeof body.quality === "string" ? body.quality : undefined,
+  });
 }
 
 function openaiChatToImagen(body: Record<string, unknown>): Record<string, unknown> {
@@ -199,6 +213,7 @@ export function convertVertexOpenAIRequest(body: Record<string, unknown>, opts: 
 /** Original `GeminiImageHandler` OpenAI image JSON. */
 export function openaiFromImagenResponse(upstream: Record<string, unknown>, opts: { created?: number } = {}): Record<string, unknown> {
   const predictions = Array.isArray(upstream.predictions) ? (upstream.predictions as Record<string, unknown>[]) : [];
+  if (predictions.length === 0) throw new Error("no images generated");
   const data: Record<string, string>[] = [];
   for (const prediction of predictions) {
     if (prediction.raiFilteredReason) continue;
