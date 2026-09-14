@@ -27,6 +27,7 @@ import { applyOriginTaskIntent, type OriginTaskRef } from "./origin-task.js";
 import { executeNativePluginRoute, handleNativePluginRoute } from "./task-plugin-route.js";
 import type { ChannelPin } from "./channel-constraint.js";
 import { taskArtifactsView, taskFetchView, openaiVideoView, taskResultURL } from "./dto.js";
+import { convertOwnedTaskToOpenAIVideo } from "./task-plugin-video.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
 
 /** Original `/:mode/mj` relay group. `/api/mj` is dashboard GetAllMidjourney, not relay. */
@@ -441,9 +442,15 @@ async function serveVideoRetrieve(
   const local = await store.getTaskByTid(taskId);
   const owned = local && Number(local.user_id) === auth.user.id;
   if (owned && local) {
-    return new Response(JSON.stringify(openaiVideoView(local)), {
-      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" },
-    });
+    try {
+      const converted = await convertOwnedTaskToOpenAIVideo(store, local);
+      const body = converted || openaiVideoView(local);
+      return new Response(JSON.stringify(body), {
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" },
+      });
+    } catch {
+      return videoProxyError(500, "convert_to_openai_video_failed", "convert_to_openai_video_failed");
+    }
   }
   return relayJson(req, env, store, auth, "video", path, { id: taskId }, ctx, "GET");
 }

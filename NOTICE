@@ -65,5 +65,7 @@ Material changes from upstream:
   Native query uses original `buildQueryRequest` / `parseTaskResult` /
   `updateVideoSingleTask` JSON (`queryContext` without `requestBody`, public
   `task_id` in `native.render`, persisted `result_url` / `plugin_state`).
+  `/v1/videos/:task_id` retrieve uses original `ConvertToOpenAIVideo`
+  (`protocols.openai_video.render` + host-owned id/status/progress/model).
 
 ==== End of Notices ====
