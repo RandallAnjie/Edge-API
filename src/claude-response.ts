@@ -42,6 +42,25 @@ export function claudeStopReasonToOpenAIFinishReason(stopReason: string): string
   }
 }
 
+/** Original `reasonmap.OpenAIFinishReasonToClaudeStopReason`. */
+export function openaiFinishReasonToClaudeStopReason(finishReason: string): string {
+  switch (finishReason.toLowerCase()) {
+    case "stop":
+      return "end_turn";
+    case "stop_sequence":
+      return "stop_sequence";
+    case "length":
+    case "max_tokens":
+      return "max_tokens";
+    case "content_filter":
+      return "refusal";
+    case "tool_calls":
+      return "tool_use";
+    default:
+      return finishReason;
+  }
+}
+
 /** Original `shared/claude.NormalizeCacheCreationSplit`. */
 export function normalizeCacheCreationSplit(totalTokens: number, tokens5m: number, tokens1h: number): [number, number] {
   let remainder = totalTokens - tokens5m - tokens1h;

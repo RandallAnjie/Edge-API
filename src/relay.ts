@@ -9,12 +9,16 @@ import {
   convertOllamaEmbeddingRequest,
   convertOpenAIRequest,
   convertOpenAIResponsesRequest,
+  convertOpenAIAdaptorClaudeRequest,
+  convertOpenAIAdaptorGeminiRequest,
   estimatePromptTokens,
   extractGeminiModelAction,
   geminiToOpenAIChat,
   openaiFromAnthropicResponse,
   openaiFromGeminiEmbedding,
   openaiFromGeminiResponse,
+  openaiChatToClaudeResponse,
+  openaiChatToGeminiResponse,
   openaiToAnthropic,
   openaiToGemini,
   sseFromOpenAIChatCompletion,
@@ -53,6 +57,7 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
+import { usesOpenAIAdaptor } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import { clientIp, groupAccessDeniedMessage, json, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
@@ -320,6 +325,26 @@ async function convertOutbound(
   }
   if (client === "gemini" && kind === "gemini") {
     return convertGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
+  }
+  if (usesOpenAIAdaptor(channelType) && client === "anthropic") {
+    return convertOpenAIAdaptorClaudeRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+      isStream: extras.isStream,
+    });
+  }
+  if (usesOpenAIAdaptor(channelType) && client === "gemini") {
+    return convertOpenAIAdaptorGeminiRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+      isStream: extras.isStream,
+    });
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_OLLAMA && mode === "embeddings") {
     return convertOllamaEmbeddingRequest(o, { upstreamModelName: upstream });
@@ -689,6 +714,12 @@ async function convertInbound(
       upstreamModel: model,
       fallbackPromptTokens: opts.fallbackPromptTokens,
     });
+  }
+  if (usesOpenAIAdaptor(opts.channelType || 0) && client === "anthropic") {
+    return openaiChatToClaudeResponse(upstreamJson);
+  }
+  if (usesOpenAIAdaptor(opts.channelType || 0) && client === "gemini") {
+    return openaiChatToGeminiResponse(upstreamJson);
   }
   return upstreamJson;
 }

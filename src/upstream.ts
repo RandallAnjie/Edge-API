@@ -58,6 +58,7 @@ import {
 } from "./vertex-convert.js";
 import { CHANNEL_SPECIAL_BASES, channelKind, defaultBaseUrl, resolveBaseUrl } from "./catalog.js";
 import { isGeminiEmbeddingModel } from "./gemini-convert.js";
+import { usesOpenAIAdaptor } from "./openai-adaptor.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import type { ChannelRow } from "./types.js";
@@ -454,7 +455,11 @@ export function buildUpstream(
   switch (kind) {
     case "azure": {
       const version = channel.other || AZURE_API_VERSION;
-      const task = openaiPath(mode, requestPath).replace(/^\/v1\//, "");
+      let task = openaiPath(mode, requestPath).replace(/^\/v1\//, "");
+      if (relayInfo.relayFormat === "claude") {
+        if (task.startsWith("messages")) task = task.slice("messages".length);
+        task = "chat/completions" + task;
+      }
       url = `${base}/openai/deployments/${encodeURIComponent(upstreamModel)}/${task}?api-version=${encodeURIComponent(version)}`;
       headers["api-key"] = apiKey;
       break;
@@ -566,7 +571,11 @@ export function buildUpstream(
       break;
     }
     default: {
-      url = joinUrl(base, openaiPath(mode, requestPath));
+      const openaiAdaptorClaudeOrGemini =
+        usesOpenAIAdaptor(channel.type) &&
+        (relayInfo.relayFormat === "claude" || relayInfo.relayFormat === "gemini") &&
+        mode !== "responses";
+      url = joinUrl(base, openaiAdaptorClaudeOrGemini ? "/v1/chat/completions" : openaiPath(mode, requestPath));
       headers.authorization = `Bearer ${apiKey}`;
       if (channel.openai_organization) headers["openai-organization"] = channel.openai_organization;
       if (channel.type === CHANNEL_TYPE_OPENROUTER) {

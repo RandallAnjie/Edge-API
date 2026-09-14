@@ -11,6 +11,11 @@ import {
   getOpenAIChatCapabilities,
   convertOpenAIRequest,
   convertOpenAIResponsesRequest,
+  convertOpenAIAdaptorClaudeRequest,
+  convertOpenAIAdaptorGeminiRequest,
+  openaiChatToClaudeResponse,
+  openaiChatToGeminiResponse,
+  usesOpenAIAdaptor,
   convertClaudeRequest,
   convertAdvancedCustomClaudeRequest,
   convertAdvancedCustomGeminiRequest,
@@ -57,9 +62,9 @@ import {
   oaiChatSseToResponsesSse,
   oaiResponsesSseToChatSse,
 } from "../src/convert.js";
-import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
+import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason, openaiFinishReasonToClaudeStopReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_DOUBAO_VIDEO, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_KLING, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SORA, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VIDU, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_DOUBAO_VIDEO, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_KLING, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SORA, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VIDU, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XINFERENCE, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
@@ -387,6 +392,203 @@ test("original GetOpenAIChatCapabilities and ConvertOpenAIRequest token limits",
     { channelType: CHANNEL_TYPE_AZURE, originModelName: "gpt-4o", upstreamModelName: "gpt-4o" },
   );
   assert.deepEqual(azureStream.stream_options, { include_usage: true });
+});
+
+test("original openai.Adaptor ConvertClaudeRequest / ConvertGeminiRequest / ConvertResponse JSON fields", () => {
+  assert.equal(usesOpenAIAdaptor(CHANNEL_TYPE_OPENAI), true);
+  assert.equal(usesOpenAIAdaptor(CHANNEL_TYPE_AZURE), true);
+  assert.equal(usesOpenAIAdaptor(CHANNEL_TYPE_OPENROUTER), true);
+  assert.equal(usesOpenAIAdaptor(CHANNEL_TYPE_XINFERENCE), true);
+  assert.equal(usesOpenAIAdaptor(CHANNEL_TYPE_GEMINI), false);
+  assert.equal(usesOpenAIAdaptor(CHANNEL_TYPE_ANTHROPIC), false);
+  assert.equal(usesOpenAIAdaptor(CHANNEL_TYPE_ALI), false);
+  assert.equal(usesOpenAIAdaptor(CHANNEL_TYPE_TASK_PLUGIN), false);
+  assert.equal(usesOpenAIAdaptor(CHANNEL_TYPE_ADVANCED_CUSTOM), false);
+  assert.equal(openaiFinishReasonToClaudeStopReason("stop"), "end_turn");
+  assert.equal(openaiFinishReasonToClaudeStopReason("length"), "max_tokens");
+  assert.equal(openaiFinishReasonToClaudeStopReason("tool_calls"), "tool_use");
+  assert.equal(openaiFinishReasonToClaudeStopReason("content_filter"), "refusal");
+
+  const claudeReq = {
+    model: "customer-claude",
+    max_tokens: 32,
+    temperature: 0.2,
+    stop_sequences: ["END"],
+    stream: true,
+    tools: [
+      {
+        name: "lookup",
+        description: "find",
+        input_schema: { type: "object", properties: { q: { type: "string" } } },
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "hi" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "YWE=" } },
+        ],
+      },
+    ],
+  };
+  const openaiClaude = convertOpenAIAdaptorClaudeRequest(claudeReq, {
+    channelType: CHANNEL_TYPE_OPENAI,
+    originModelName: "customer-claude",
+    upstreamModelName: "gpt-4o-mini",
+    isStream: true,
+  });
+  assert.equal(openaiClaude.model, "gpt-4o-mini");
+  assert.equal(openaiClaude.stream, true);
+  assert.deepEqual(openaiClaude.stream_options, { include_usage: true });
+  assert.equal(openaiClaude.stop, "END");
+  assert.equal(openaiClaude.max_tokens, 32);
+  const claudeMsgs = openaiClaude.messages as Record<string, unknown>[];
+  assert.deepEqual(claudeMsgs[0].content, [
+    { type: "text", text: "hi" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,YWE=" } },
+  ]);
+  assert.deepEqual(openaiClaude.tools, [
+    {
+      type: "function",
+      function: {
+        name: "lookup",
+        description: "find",
+        parameters: { type: "object", properties: { q: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const azureClaude = convertOpenAIAdaptorClaudeRequest(claudeReq, {
+    channelType: CHANNEL_TYPE_AZURE,
+    originModelName: "customer-claude",
+    upstreamModelName: "gpt-4o",
+    isStream: true,
+  });
+  assert.deepEqual(azureClaude.stream_options, { include_usage: true });
+
+  const openRouterClaude = convertOpenAIAdaptorClaudeRequest(claudeReq, {
+    channelType: CHANNEL_TYPE_OPENROUTER,
+    originModelName: "customer-claude",
+    upstreamModelName: "openai/gpt-4o-mini",
+    isStream: true,
+  });
+  assert.equal(openRouterClaude.stream, true);
+  assert.equal("stream_options" in openRouterClaude, false);
+
+  const geminiReq = {
+    contents: [{ role: "user", parts: [{ text: "hello gemini" }] }],
+    generationConfig: { temperature: 0.4, topP: 0.9, maxOutputTokens: 64 },
+  };
+  const openaiGemini = convertOpenAIAdaptorGeminiRequest(geminiReq, {
+    channelType: CHANNEL_TYPE_OPENAI,
+    originModelName: "gemini-client",
+    upstreamModelName: "gpt-4o-mini",
+    isStream: false,
+  });
+  assert.equal(openaiGemini.model, "gpt-4o-mini");
+  assert.equal(openaiGemini.stream, false);
+  assert.equal(openaiGemini.temperature, 0.4);
+  assert.equal(openaiGemini.top_p, 0.9);
+  assert.equal(openaiGemini.max_tokens, 64);
+  assert.deepEqual(openaiGemini.messages, [{ role: "user", content: "hello gemini" }]);
+
+  const claudeOut = openaiChatToClaudeResponse({
+    id: "chatcmpl_1",
+    model: "gpt-4o-mini",
+    choices: [
+      {
+        finish_reason: "tool_calls",
+        message: {
+          role: "assistant",
+          content: "",
+          reasoning_content: "considering the request",
+          tool_calls: [
+            { id: "call_1", type: "function", function: { name: "lookup", arguments: '{"q":"x"}' } },
+            { id: "call_2", type: "function", function: { name: "broken", arguments: "{" } },
+          ],
+        },
+      },
+    ],
+    usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 },
+  });
+  assert.equal(claudeOut.type, "message");
+  assert.equal(claudeOut.role, "assistant");
+  assert.equal(claudeOut.id, "chatcmpl_1");
+  assert.equal(claudeOut.model, "gpt-4o-mini");
+  assert.equal(claudeOut.stop_reason, "tool_use");
+  assert.deepEqual(claudeOut.content, [
+    { type: "thinking", thinking: "considering the request" },
+    { type: "tool_use", id: "call_1", name: "lookup", input: { q: "x" } },
+    { type: "tool_use", id: "call_2", name: "broken", input: {} },
+  ]);
+  assert.equal((claudeOut.usage as { input_tokens: number }).input_tokens, 11);
+  assert.equal((claudeOut.usage as { output_tokens: number }).output_tokens, 5);
+
+  const geminiOut = openaiChatToGeminiResponse({
+    id: "chatcmpl_2",
+    model: "gpt-4o-mini",
+    choices: [
+      {
+        index: 0,
+        finish_reason: "stop",
+        message: { role: "assistant", content: "hello" },
+      },
+      {
+        index: 1,
+        finish_reason: "tool_calls",
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "lookup", arguments: '{"q":"x"}' } }],
+        },
+      },
+    ],
+    usage: { prompt_tokens: 3, completion_tokens: 7, total_tokens: 10 },
+  });
+  const candidates = geminiOut.candidates as Record<string, unknown>[];
+  assert.equal(candidates.length, 2);
+  assert.equal(candidates[0].finishReason, "STOP");
+  assert.deepEqual(candidates[0].safetyRatings, []);
+  assert.deepEqual(candidates[0].content, { role: "model", parts: [{ text: "hello" }] });
+  assert.equal(candidates[1].finishReason, "STOP");
+  assert.deepEqual((candidates[1].content as { parts: unknown[] }).parts, [
+    { functionCall: { id: "call_1", name: "lookup", args: { q: "x" } } },
+  ]);
+  assert.deepEqual(geminiOut.usageMetadata, {
+    promptTokenCount: 3,
+    toolUsePromptTokenCount: 0,
+    candidatesTokenCount: 7,
+    totalTokenCount: 10,
+    thoughtsTokenCount: 0,
+    cachedContentTokenCount: 0,
+  });
+
+  const openaiCh = testChannel({ type: CHANNEL_TYPE_OPENAI, base_url: "https://api.openai.com", models: "gpt-4o-mini" });
+  assert.equal(
+    buildUpstream(openaiCh, "messages", "/v1/messages", "gpt-4o-mini", { model: "gpt-4o-mini" }, {}, "POST", {
+      relayFormat: "claude",
+    }).url,
+    "https://api.openai.com/v1/chat/completions",
+  );
+  assert.equal(
+    buildUpstream(openaiCh, "gemini", "/v1beta/models/gpt-4o-mini:generateContent", "gpt-4o-mini", { contents: [] }, {}, "POST", {
+      relayFormat: "gemini",
+    }).url,
+    "https://api.openai.com/v1/chat/completions",
+  );
+
+  const azureCh = testChannel({
+    type: CHANNEL_TYPE_AZURE,
+    key: "ak",
+    base_url: "https://demo.openai.azure.com",
+    other: "2025-04-01-preview",
+    models: "gpt-4o",
+  });
+  assert.equal(
+    buildUpstream(azureCh, "messages", "/v1/messages", "gpt-4o", { model: "gpt-4o" }, {}, "POST", { relayFormat: "claude" }).url,
+    "https://demo.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2025-04-01-preview",
+  );
 });
 
 test("original ConvertOpenAIRequest sampling, suffixes, OpenRouter, Moonshot, and Ali JSON", () => {

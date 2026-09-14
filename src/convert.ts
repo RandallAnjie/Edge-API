@@ -55,6 +55,7 @@ import {
   converterDoesNotSupport,
 } from "./advanced-custom-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
+import { openaiAdaptorSupportStreamOptions, usesOpenAIAdaptor } from "./openai-adaptor.js";
 
 export type ChatMessage = {
   role?: string;
@@ -174,13 +175,14 @@ export function usageFromOpenAI(body: Record<string, unknown> | null): {
 } {
   if (!body) return { prompt: 0, completion: 0, total: 0, cachedTokens: 0, promptCacheHitTokens: 0 };
   const usage = (body.usage || {}) as Record<string, unknown>;
+  const meta = (body.usageMetadata || {}) as Record<string, unknown>;
   const promptDetails = (usage.prompt_tokens_details || usage.input_tokens_details || {}) as Record<string, unknown>;
-  const prompt = Number(usage.prompt_tokens || usage.input_tokens || 0);
-  const completion = Number(usage.completion_tokens || usage.output_tokens || 0);
+  const prompt = Number(usage.prompt_tokens || usage.input_tokens || meta.promptTokenCount || 0);
+  const completion = Number(usage.completion_tokens || usage.output_tokens || meta.candidatesTokenCount || 0);
   return {
     prompt,
     completion,
-    total: Number(usage.total_tokens || prompt + completion),
+    total: Number(usage.total_tokens || meta.totalTokenCount || prompt + completion),
     cachedTokens: Number(promptDetails.cached_tokens || 0),
     promptCacheHitTokens: Number(usage.prompt_cache_hit_tokens || 0),
   };
@@ -436,6 +438,8 @@ export {
 } from "./ali-convert.js";
 export { convertOpenAIImageEditForm, detectImageMimeType, usesOpenAIImageEditAdaptor } from "./openai-image-convert.js";
 export { convertOpenAIAudioForm, formFileContentType, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
+export { usesOpenAIAdaptor, openaiAdaptorSupportStreamOptions };
+export { openaiChatToClaudeResponse, openaiChatToGeminiResponse } from "./openai-format-convert.js";
 export { convertCodexOpenAIRequest, convertCodexResponsesRequest } from "./codex-convert.js";
 export {
   convertChatCompletionsToResponsesRequest,
@@ -792,6 +796,22 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
     settings,
   );
   return applyOpenAIChatCompatibility(converted.body, converted.upstreamModelName, opts.channelType, converted.reasoningEffort);
+}
+
+/** Original `openai.Adaptor.ConvertClaudeRequest`. */
+export function convertOpenAIAdaptorClaudeRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
+  const chat = convertClaudeMessagesToOpenAIChat(body, opts.upstreamModelName);
+  if (opts.isStream && openaiAdaptorSupportStreamOptions(opts.channelType)) {
+    chat.stream = true;
+    chat.stream_options = { include_usage: true };
+  }
+  return convertOpenAIRequest(chat, { ...opts, relayMode: opts.relayMode || "chat" });
+}
+
+/** Original `openai.Adaptor.ConvertGeminiRequest`. */
+export function convertOpenAIAdaptorGeminiRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
+  const chat = convertGeminiContentToOpenAIChat(body, opts.upstreamModelName, Boolean(opts.isStream));
+  return convertOpenAIRequest(chat, { ...opts, relayMode: opts.relayMode || "chat" });
 }
 
 /** Original `helper.ApplyReasoningModelSuffix` + `openai.Adaptor.ConvertOpenAIResponsesRequest`. */
