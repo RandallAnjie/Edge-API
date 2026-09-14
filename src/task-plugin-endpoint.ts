@@ -5,6 +5,7 @@
 import { goUnmarshalJSON } from "./channel-validate.js";
 import {
   BODY_JSON,
+  BODY_MULTIPART,
   ROUTE_SUBMIT,
   TASK_PLUGIN_INVALID_ROUTE_RESULT,
   UnsupportedTaskPluginMediaType,
