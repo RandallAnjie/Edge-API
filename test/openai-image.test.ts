@@ -58,7 +58,16 @@ async function boot() {
 }
 
 function latin1Buffer(raw: string): ArrayBuffer {
-  return Uint8Array.from(raw, (c) => c.charCodeAt(0)).buffer;
+  const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  const out = new Uint8Array(bytes.byteLength);
+  out.set(bytes);
+  return out.buffer;
+}
+
+function bytesBuffer(bytes: Uint8Array): ArrayBuffer {
+  const out = new Uint8Array(bytes.byteLength);
+  out.set(bytes);
+  return out.buffer;
 }
 
 function imageEditForm(prompt: string, model = "gpt-image-1"): { buf: ArrayBuffer; ct: string } {
@@ -86,7 +95,7 @@ test("original OpenAI ConvertImageRequest multipart edits keep form fields and f
   const { buf, ct } = imageEditForm(prompt);
   const converted = convertOpenAIImageEditForm(buf, ct, "gpt-image-1");
   assert.match(converted.contentType, /^multipart\/form-data; boundary=/);
-  const replayed = parseMultipartForm(converted.body.buffer.slice(converted.body.byteOffset, converted.body.byteOffset + converted.body.byteLength), converted.contentType);
+  const replayed = parseMultipartForm(bytesBuffer(converted.body), converted.contentType);
   assert.equal(replayed.values.model?.[0], "gpt-image-1");
   assert.equal(replayed.values.prompt?.[0], prompt);
   assert.equal(replayed.values.stream?.[0], "true");
@@ -97,16 +106,13 @@ test("original OpenAI ConvertImageRequest multipart edits keep form fields and f
   assert.equal(new TextDecoder("latin1").decode(replayed.files[0].data), "fake image");
 
   const mapped = convertOpenAIImageEditForm(buf, ct, "gpt-image-1");
-  const mappedForm = parseMultipartForm(
-    mapped.body.buffer.slice(mapped.body.byteOffset, mapped.body.byteOffset + mapped.body.byteLength),
-    mapped.contentType,
-  );
+  const mappedForm = parseMultipartForm(bytesBuffer(mapped.body), mapped.contentType);
   assert.equal(mappedForm.values.model?.[0], "gpt-image-1");
 
   const noImage =
     `------b\r\nContent-Disposition: form-data; name="model"\r\n\r\ngpt-image-1\r\n------b--\r\n`;
   assert.throws(
-    () => convertOpenAIImageEditForm(latin1Buffer(noImage), "multipart/form-data; boundary=----b"),
+    () => convertOpenAIImageEditForm(latin1Buffer(noImage), "multipart/form-data; boundary=----b", "gpt-image-1"),
     /image is required/,
   );
 });
@@ -144,7 +150,7 @@ test("original OpenAI multipart image edits ConvertImageRequest is re-serialized
     else if (raw instanceof ArrayBuffer) bytes = new Uint8Array(raw);
     else if (typeof raw === "string") bytes = new TextEncoder().encode(raw);
     else throw new Error("unexpected openai edit body " + typeof raw);
-    const sliced = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const sliced = bytesBuffer(bytes);
     const parsed = parseMultipartForm(sliced, contentType);
     calls.push({
       url,
