@@ -31,7 +31,7 @@ import { applyBaiduAccessToken, convertBaiduEmbeddingRequest, openaiFromBaiduEmb
 import { convertCohereRerankRequest, openaiFromCohereResponse, openaiFromCohereRerank, cohereUpstreamToOpenAIChat } from "./cohere-convert.js";
 import { completeCozeNonStreamChat, openaiFromCozeDetailResponse, cozeUpstreamToOpenAIChat, type CozeUsage } from "./coze-convert.js";
 import { openaiFromDifyResponse, difyUpstreamToOpenAIChat } from "./dify-convert.js";
-import { applyZhipuV3Authorization, openaiFromZhipuResponse, zhipuUpstreamToOpenAIChat } from "./zhipu-convert.js";
+import { applyZhipuV3Authorization, openaiFromZhipuResponse, openaiFromZhipuV4Image, zhipuUpstreamToOpenAIChat } from "./zhipu-convert.js";
 import { cloudflareUpstreamToOpenAIChat, openaiFromCloudflareResponse } from "./cloudflare-convert.js";
 import { applyTencentTc3Authorization, openaiFromTencentResponse, tencentUpstreamToOpenAIChat, tencentUsesNativeAdaptor } from "./tencent-convert.js";
 import { openaiFromMokaEmbedding } from "./moka-convert.js";
@@ -242,6 +242,9 @@ function convertOutbound(
   }
   if (channelType === CHANNEL_TYPE_CODEX && client === "gemini") {
     throw new Error("codex channel: endpoint not supported");
+  }
+  if (channelType === CHANNEL_TYPE_OLLAMA && client === "anthropic") {
+    return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
   if (channelType === CHANNEL_TYPE_CODEX && client === "openai" && mode !== "responses" && mode !== "alpha_search") {
     return convertOpenAIRequest(o, {
@@ -468,7 +471,7 @@ function buildChannelRelayTarget(
   return buildUpstream(channel, mode, path, model, body, extraHeaders, method, { ...info, isStream: stream });
 }
 
-function convertInbound(
+async function convertInbound(
   kind: ReturnType<typeof channelKind>,
   client: ClientFormat,
   upstreamJson: Record<string, unknown>,
@@ -483,8 +486,9 @@ function convertInbound(
     cozeUsage?: CozeUsage;
     channelKey?: string;
     converter?: string;
+    responseFormat?: string;
   } = {},
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM) {
     return convertAdvancedCustomInbound(opts.converter || "none", client, upstreamJson, model, {
       requestId: opts.requestId,
@@ -549,7 +553,10 @@ function convertInbound(
     return openaiFromSiliconFlowRerank(upstreamJson);
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_REPLICATE && opts.relayMode === "images") {
-    return openaiFromReplicatePrediction(upstreamJson, { created: opts.created });
+    return openaiFromReplicatePrediction(upstreamJson, { created: opts.created, responseFormat: opts.responseFormat });
+  }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_ZHIPU_V4 && opts.relayMode === "images") {
+    return openaiFromZhipuV4Image(upstreamJson, { created: opts.created });
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_MINIMAX && opts.relayMode === "images") {
     return openaiFromMiniMaxImage(upstreamJson, { created: opts.created });
@@ -590,7 +597,7 @@ function convertInbound(
   return upstreamJson;
 }
 
-function openaiClientFromProvider(
+async function openaiClientFromProvider(
   kind: ReturnType<typeof channelKind>,
   text: string,
   mapped: string,
@@ -604,7 +611,7 @@ function openaiClientFromProvider(
     channelKey?: string;
     converter?: string;
   },
-): { body: string; usageBody: Record<string, unknown> } {
+): Promise<{ body: string; usageBody: Record<string, unknown> }> {
   if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_CHAT_TO_CLAUDE) {
     const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
     if (stream) {
@@ -739,7 +746,7 @@ function openaiClientFromProvider(
   } catch {
     parsed = { content: text };
   }
-  const converted = convertInbound(kind, "openai", parsed, mapped, {
+  const converted = await convertInbound(kind, "openai", parsed, mapped, {
     requestId: opts.requestId,
     fallbackPromptTokens: opts.fallbackPromptTokens,
     channelType: opts.channelType,
@@ -990,6 +997,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       affinityTemplate: affinity?.template,
       isStream: opts.stream,
       relayFormat: clientFormat === "anthropic" ? "claude" : clientFormat === "gemini" ? "gemini" : "openai",
+      isClaudeBetaQuery: new URL(opts.req.url).searchParams.get("beta") === "true",
     };
     let target: UpstreamTarget;
     try {
@@ -1001,6 +1009,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         opts.rawBody ? null : outbound,
         {
           "anthropic-version": opts.req.headers.get("anthropic-version") || "",
+          "anthropic-beta": opts.req.headers.get("anthropic-beta") || "",
         },
         opts.method || opts.req.method || "POST",
         opts.stream,
@@ -1171,7 +1180,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         const includeUsage = Boolean(asObj(asObj(opts.body).stream_options).include_usage);
         let converted: { body: string; usageBody: Record<string, unknown> };
         try {
-          converted = openaiClientFromProvider(kind, text, mapped, true, {
+          converted = await openaiClientFromProvider(kind, text, mapped, true, {
             requestId: rid,
             includeUsage,
             fallbackPromptTokens: promptEst,
@@ -1258,8 +1267,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     }
     let converted: Record<string, unknown>;
     try {
-      converted = convertInbound(kind, clientFormat, parsed, mapped, {
+      converted = await convertInbound(kind, clientFormat, parsed, mapped, {
         requestId: rid,
+        created: Math.floor(started / 1000),
         fallbackPromptTokens: promptEst,
         channelType: channel.type,
         relayMode: mode,
@@ -1267,6 +1277,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         cozeUsage,
         channelKey: pickChannelKey(channel.key),
         converter: advancedConverter,
+        responseFormat: String(asObj(opts.body).response_format || ""),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1278,6 +1289,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (imageType === "minimax_image_error") {
         const code = String((err as Error & { code?: string }).code || "");
         return openaiError(400, message, code, "minimax_image_error");
+      }
+      if (imageType === "zhipu_image_error") {
+        const code = String((err as Error & { code?: string }).code || "");
+        return openaiError(res.status, message, code, "zhipu_image_error");
       }
       return openaiError(500, message, "bad_response_body");
     }

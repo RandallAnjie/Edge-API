@@ -43,12 +43,12 @@ import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
 import { isClientError } from "../src/reasoning.js";
-import { getZhipuToken, clearZhipuTokenCache } from "../src/zhipu-convert.js";
+import { getZhipuToken, clearZhipuTokenCache, openaiFromZhipuV4Image } from "../src/zhipu-convert.js";
 import { applyTencentTc3Authorization, getTencentSign, tencentTokenHubBase, TENCENT_TOKENHUB_BASE } from "../src/tencent-convert.js";
 import { buildXunfeiAuthUrl, xunfeiDomain, xunfeiHostUrl } from "../src/xunfei-convert.js";
 import { applyJimengAuthorization, jimengRequestURL } from "../src/jimeng-convert.js";
 import { buildCodexRelayTarget } from "../src/codex-models.js";
-import { mapOpenAISizeToFlux } from "../src/replicate-convert.js";
+import { mapOpenAISizeToFlux, openaiFromReplicatePrediction } from "../src/replicate-convert.js";
 import { mapModel } from "../src/select.js";
 import { buildUpstream } from "../src/upstream.js";
 import type { ChannelRow } from "../src/types.js";
@@ -1031,6 +1031,25 @@ test("original Ollama ConvertOpenAIRequest is /api/chat JSON not OpenAI chat com
     buildUpstream(ollama, "responses", "/v1/responses/compact", "llama3", { model: "llama3" }).url,
     "http://localhost:11434/v1/responses/compact",
   );
+  const ollamaClaude = buildUpstream(ollama, "messages", "/v1/messages", "llama3", { model: "llama3", messages: [] });
+  assert.equal(ollamaClaude.url, "http://localhost:11434/v1/messages");
+  assert.equal(ollamaClaude.headers.authorization, "Bearer ollama-key");
+  assert.equal(ollamaClaude.headers["anthropic-version"], "2023-06-01");
+  assert.equal(
+    buildUpstream(ollama, "messages", "/v1/messages", "llama3", { model: "llama3" }, {}, "POST", { isClaudeBetaQuery: true }).url,
+    "http://localhost:11434/v1/messages?beta=true",
+  );
+  const ollamaBetaSetting = testChannel({
+    type: CHANNEL_TYPE_OLLAMA,
+    key: "ollama-key",
+    base_url: "http://localhost:11434",
+    models: "llama3",
+    settings: JSON.stringify({ claude_beta_query: true }),
+  });
+  assert.equal(
+    buildUpstream(ollamaBetaSetting, "messages", "/v1/messages", "llama3", { model: "llama3" }).url,
+    "http://localhost:11434/v1/messages?beta=true",
+  );
 
   const compact = openaiFromOllamaChatResponse(
     '{"model":"llama3.1","created_at":"2026-05-27T12:00:00Z","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_upstream","function":{"name":"get_weather","arguments":{"city":"Paris","days":0}}}]},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":7}',
@@ -1585,6 +1604,48 @@ test("original Zhipu, ZhipuV4, Perplexity, Cloudflare, BaiduV2, and MiniMax Conv
     buildUpstream(zhipuV4Ch, "responses", "/v1/responses", "glm-4", zhipuV4).url,
     "https://open.bigmodel.cn/api/v1/responses",
   );
+  assert.equal(
+    buildUpstream(zhipuV4Ch, "images", "/v1/images/generations", "cogview-3", { model: "cogview-3", prompt: "a cat" }).url,
+    "https://open.bigmodel.cn/api/paas/v4/images/generations",
+  );
+  const zhipuImageB64 = await openaiFromZhipuV4Image(
+    {
+      created: 1700000000,
+      data: [{ url: "https://example.com/zhipu.png", image_url: "https://hidden.example/z.png", b64_json: "YWE=" }],
+    },
+    { created: 1 },
+  );
+  assert.equal(zhipuImageB64.created, 1700000000);
+  assert.deepEqual(zhipuImageB64.data, [{ b64_json: "YWE=" }]);
+  assert.equal(JSON.stringify(zhipuImageB64).includes("image_url"), false);
+  assert.equal(JSON.stringify(zhipuImageB64).includes("https://example.com"), false);
+  const zhipuImageAlias = await openaiFromZhipuV4Image(
+    { data: [{ image_url: "https://example.com/zhipu.png", b64_image: "YWI=" }] },
+    { created: 2 },
+  );
+  assert.deepEqual(zhipuImageAlias.data, [{ b64_json: "YWI=" }]);
+  const zhipuImageSkip = await openaiFromZhipuV4Image({ data: [{ b64_json: "YWE=" }] }, { created: 3 });
+  assert.equal(zhipuImageSkip.data, null);
+  await assert.rejects(
+    () => openaiFromZhipuV4Image({ error: { code: "1234", message: "sensitive content" } }),
+    (err: unknown) => {
+      assert.equal(err instanceof Error ? err.message : "", "sensitive content");
+      assert.equal((err as Error & { type?: string }).type, "zhipu_image_error");
+      assert.equal((err as Error & { code?: string }).code, "1234");
+      return true;
+    },
+  );
+  const origImageFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    assert.equal(String(input), "https://example.com/zhipu-dl.png");
+    return new Response(Uint8Array.from([1, 2, 3]), { headers: { "content-type": "image/png" } });
+  }) as typeof fetch;
+  try {
+    const downloaded = await openaiFromZhipuV4Image({ data: [{ url: "https://example.com/zhipu-dl.png" }] }, { created: 4 });
+    assert.deepEqual(downloaded.data, [{ b64_json: Buffer.from([1, 2, 3]).toString("base64") }]);
+  } finally {
+    globalThis.fetch = origImageFetch;
+  }
   const glmPlan = testChannel({ type: CHANNEL_TYPE_ZHIPU_V4, key: "sk-z", base_url: "glm-coding-plan", models: "glm-4" });
   assert.equal(
     buildUpstream(glmPlan, "chat", "/v1/chat/completions", "glm-4", zhipuV4).url,
@@ -1974,6 +2035,26 @@ test("original Xunfei, Submodel, Replicate, Sub2API, NewAPI, and Jimeng ConvertO
   assert.equal(repUp.url, "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions");
   assert.equal(repUp.headers.authorization, "Bearer r8_key");
   assert.equal(repUp.headers.Prefer, "wait");
+  const repUrlOut = await openaiFromReplicatePrediction(
+    { status: "succeeded", output: ["https://example.com/replicate.png"] },
+    { created: 5 },
+  );
+  assert.deepEqual(repUrlOut.data, [{ url: "https://example.com/replicate.png" }]);
+  const origRepFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    assert.equal(String(input), "https://example.com/replicate.png");
+    return new Response(Uint8Array.from([65]), { headers: { "content-type": "image/png" } });
+  }) as typeof fetch;
+  try {
+    const repB64 = await openaiFromReplicatePrediction(
+      { status: "succeeded", output: ["https://example.com/replicate.png"] },
+      { created: 5, responseFormat: "b64_json" },
+    );
+    assert.deepEqual(repB64.data, [{ b64_json: Buffer.from([65]).toString("base64") }]);
+    assert.equal(JSON.stringify(repB64).includes("https://example.com"), false);
+  } finally {
+    globalThis.fetch = origRepFetch;
+  }
 
   const newApi = convertOpenAIRequest(
     { model: "gpt-4o-mini", messages: [{ role: "user", content: "hi new" }], stream_options: { include_usage: true } },

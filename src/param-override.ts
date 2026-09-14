@@ -66,6 +66,8 @@ export type ParamOverrideRelayInfo = {
   isStream?: boolean;
   /** Original `relaycommon.RelayInfo.RelayFormat` (NewAPI/Sub2API SetupRequestHeader). */
   relayFormat?: "openai" | "claude" | "gemini";
+  /** Original `relaycommon.RelayInfo.IsClaudeBetaQuery` (`c.Query("beta") == "true"`). */
+  isClaudeBetaQuery?: boolean;
 };
 
 type JsonType = 0 | 1 | 2 | 3 | 4 | 5;

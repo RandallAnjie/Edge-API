@@ -391,7 +391,7 @@ export {
 export { convertCohereOpenAIRequest, convertCohereRerankRequest, openaiFromCohereResponse } from "./cohere-convert.js";
 export { convertCozeOpenAIRequest, openaiFromCozeDetailResponse } from "./coze-convert.js";
 export { convertDifyOpenAIRequest, openaiFromDifyResponse } from "./dify-convert.js";
-export { convertZhipuOpenAIRequest, convertZhipuV4OpenAIRequest, openaiFromZhipuResponse } from "./zhipu-convert.js";
+export { convertZhipuOpenAIRequest, convertZhipuV4OpenAIRequest, openaiFromZhipuResponse, openaiFromZhipuV4Image } from "./zhipu-convert.js";
 export { convertPerplexityOpenAIRequest } from "./perplexity-convert.js";
 export {
   convertCloudflareCompletionsRequest,

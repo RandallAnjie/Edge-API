@@ -1,5 +1,7 @@
 /** Original `relay/channel/replicate` ConvertOpenAIRequest / ConvertImageRequest / GetRequestURL / DoResponse. */
 
+import { getImageFromUrl } from "./image-download.js";
+
 export const REPLICATE_DEFAULT_MODEL = "black-forest-labs/flux-1.1-pro";
 export const REPLICATE_CHAT_NOT_IMPLEMENTED = "replicate adaptor: ConvertOpenAIRequest is not implemented";
 
@@ -167,11 +169,27 @@ function outputUrls(output: unknown): string[] {
   return urls;
 }
 
+/** Original `replicate.downloadImagesToBase64`. */
+async function downloadImagesToBase64(urls: string[]): Promise<string[]> {
+  const results: string[] = [];
+  for (const url of urls) {
+    if (!url.trim()) continue;
+    try {
+      results.push((await getImageFromUrl(url)).data);
+    } catch (err) {
+      throw new Error(
+        `replicate adaptor: failed to download image from ${url}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return results;
+}
+
 /** Original `replicate.Adaptor.DoResponse` image unwrap. */
-export function openaiFromReplicatePrediction(
+export async function openaiFromReplicatePrediction(
   upstream: Record<string, unknown>,
   opts: { created?: number; responseFormat?: string } = {},
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   const errMsg = predictionErrorMessage(upstream.error ?? upstream.Error);
   if (errMsg) throw new Error(errMsg);
   if (upstream.error) throw new Error("replicate adaptor: prediction error");
@@ -182,7 +200,16 @@ export function openaiFromReplicatePrediction(
   const urls = outputUrls(upstream.output);
   if (!urls.length) throw new Error("replicate adaptor: empty prediction output");
   const wantsBase64 = String(opts.responseFormat || "").toLowerCase() === "b64_json";
-  const data = wantsBase64 ? urls.map((url) => ({ b64_json: url })) : urls.map((url) => ({ url }));
+  const data: Record<string, string>[] = [];
+  if (wantsBase64) {
+    for (const content of await downloadImagesToBase64(urls)) {
+      if (content) data.push({ b64_json: content });
+    }
+  } else {
+    for (const url of urls) {
+      if (url) data.push({ url });
+    }
+  }
   if (!data.length) throw new Error("replicate adaptor: no usable image data");
   return {
     created: opts.created ?? Math.floor(Date.now() / 1000),

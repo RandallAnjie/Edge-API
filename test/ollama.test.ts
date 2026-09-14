@@ -80,6 +80,20 @@ test("original Ollama ConvertOpenAIRequest JSON is sent upstream with original U
     const url = String(input);
     const raw = typeof init?.body === "string" ? init.body : "";
     captured = { url, body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {}, headers: new Headers(init?.headers) };
+    if (url.includes("/v1/messages")) {
+      return new Response(
+        JSON.stringify({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "llama3",
+          content: [{ type: "text", text: "hello claude" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
     if (url.endsWith("/api/embed")) {
       return new Response(JSON.stringify({ embeddings: [[0.1, 0.2]], prompt_eval_count: 4, model: "nomic" }), {
         headers: { "content-type": "application/json" },
@@ -237,6 +251,36 @@ test("original Ollama ConvertOpenAIRequest JSON is sent upstream with original U
     const last = JSON.parse(frames[frames.length - 1]) as { usage?: { total_tokens: number }; choices: unknown[] };
     assert.deepEqual(last.choices, []);
     assert.equal(last.usage?.total_tokens, 4);
+
+    const claude = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer " + sk,
+          "content-type": "application/json",
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "messages-2023-12-15",
+        },
+        body: JSON.stringify({
+          model: "llama3",
+          messages: [{ role: "user", content: "hi claude" }],
+          max_tokens: 0,
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 200, claude.text);
+    if (!captured) throw new Error("missing ollama claude upstream");
+    assert.equal(captured.url, "http://localhost:11434/v1/messages");
+    assert.equal(captured.headers.get("authorization"), "Bearer ollama-key");
+    assert.equal(captured.headers.get("anthropic-version"), "2023-06-01");
+    assert.equal(captured.headers.get("anthropic-beta"), "messages-2023-12-15");
+    assert.equal(captured.body.max_tokens, 8192);
+    assert.deepEqual(captured.body.messages, [{ role: "user", content: "hi claude" }]);
+    assert.equal(claude.body.type, "message");
+    assert.equal(claude.body.role, "assistant");
+    assert.deepEqual(claude.body.content, [{ type: "text", text: "hello claude" }]);
+    assert.equal(claude.body.object, undefined);
   } finally {
     globalThis.fetch = origFetch;
   }

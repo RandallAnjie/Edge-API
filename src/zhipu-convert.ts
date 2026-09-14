@@ -2,6 +2,7 @@
 
 import { CHANNEL_SPECIAL_BASES } from "./catalog.js";
 import { hmacSha256Raw } from "./crypto.js";
+import { getImageFromUrl } from "./image-download.js";
 import { asObj, sseLine } from "./openai-usage.js";
 
 const ZHIPU_TOKEN_TTL_MS = 24 * 3600 * 1000;
@@ -279,6 +280,51 @@ export function zhipuUpstreamToOpenAIChat(
     usage,
   };
   return { json, sse };
+}
+
+function typedZhipuImageError(message: string, code: string): Error {
+  const err = new Error(message);
+  (err as Error & { type?: string; code?: string }).type = "zhipu_image_error";
+  (err as Error & { code?: string }).code = code;
+  return err;
+}
+
+function zhipuImageItem(item: unknown): Record<string, unknown> {
+  return item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>) : {};
+}
+
+/** Original `zhipu_4v.zhipu4vImageHandler` — client JSON is only `{ created, data: [{ b64_json }] }`. */
+export async function openaiFromZhipuV4Image(
+  upstream: Record<string, unknown>,
+  opts: { created?: number } = {},
+): Promise<Record<string, unknown>> {
+  const errObj = asObj(upstream.error);
+  const errMessage = String(errObj.message || "");
+  if (errMessage) {
+    throw typedZhipuImageError(errMessage, String(errObj.code || ""));
+  }
+  const createdRaw = Number(upstream.created || 0);
+  const created = createdRaw ? createdRaw : (opts.created ?? Math.floor(Date.now() / 1000));
+  const src = Array.isArray(upstream.data) ? upstream.data : [];
+  const data: { b64_json: string }[] = [];
+  for (const raw of src) {
+    const item = zhipuImageItem(raw);
+    const url = String(item.url || "") || String(item.image_url || "");
+    if (!url) continue;
+    let b64 = "";
+    if (typeof item.b64_json === "string" && item.b64_json) b64 = item.b64_json;
+    else if (typeof item.b64_image === "string" && item.b64_image) b64 = item.b64_image;
+    else {
+      try {
+        b64 = (await getImageFromUrl(url)).data;
+      } catch {
+        continue;
+      }
+    }
+    if (!b64) continue;
+    data.push({ b64_json: b64 });
+  }
+  return { created, data: data.length ? data : null };
 }
 
 function sseFromZhipuJson(json: Record<string, unknown>): string {

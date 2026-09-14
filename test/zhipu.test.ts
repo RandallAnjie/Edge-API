@@ -90,7 +90,7 @@ test("original Zhipu, Perplexity, Cloudflare, BaiduV2, and MiniMax ConvertOpenAI
     name: "zhipu-v4",
     type: CHANNEL_TYPE_ZHIPU_V4,
     key: "sk-z",
-    models: "glm-4",
+    models: "glm-4,cogview-3",
     group: "default",
   });
   await addChannel(e, auth, {
@@ -173,6 +173,20 @@ test("original Zhipu, Perplexity, Cloudflare, BaiduV2, and MiniMax ConvertOpenAI
     if (url.includes("/v1/image_generation")) {
       return new Response(
         JSON.stringify({ data: { image_urls: ["https://example.com/minimax.png"] } }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/api/paas/v4/images/generations")) {
+      if (body.prompt === "blocked") {
+        return new Response(JSON.stringify({ error: { code: "1234", message: "sensitive content" } }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          created: 1700000000,
+          data: [{ url: "https://example.com/zhipu.png", image_url: "https://hidden.example/z.png", b64_json: "YWE=" }],
+        }),
         { headers: { "content-type": "application/json" } },
       );
     }
@@ -272,6 +286,36 @@ test("original Zhipu, Perplexity, Cloudflare, BaiduV2, and MiniMax ConvertOpenAI
     assert.equal("stream_options" in zhipuV4Call.body, false);
     assert.equal("frequency_penalty" in zhipuV4Call.body, false);
     assert.equal((zhipuV4Chat.body.choices as { message: { content: string } }[])[0].message.content, "hello");
+
+    const zhipuV4Image = await json(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "cogview-3", prompt: "a red fox in snowfall" }),
+      }),
+      e,
+    );
+    assert.equal(zhipuV4Image.res.status, 200, zhipuV4Image.text);
+    const zhipuV4ImageCall = calls.find((c) => c.url === "https://open.bigmodel.cn/api/paas/v4/images/generations");
+    if (!zhipuV4ImageCall) throw new Error("missing zhipu v4 image upstream");
+    assert.equal(zhipuV4ImageCall.headers.get("authorization"), "Bearer sk-z");
+    assert.equal(zhipuV4Image.body.created, 1700000000);
+    assert.deepEqual(zhipuV4Image.body.data, [{ b64_json: "YWE=" }]);
+    assert.equal(zhipuV4Image.text.includes("image_url"), false);
+    assert.equal(zhipuV4Image.text.includes("https://example.com/zhipu.png"), false);
+
+    const zhipuV4ImageErr = await json(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "cogview-3", prompt: "blocked" }),
+      }),
+      e,
+    );
+    assert.equal(zhipuV4ImageErr.res.status, 200, zhipuV4ImageErr.text);
+    assert.equal((zhipuV4ImageErr.body.error as { type: string }).type, "zhipu_image_error");
+    assert.equal((zhipuV4ImageErr.body.error as { message: string }).message, "sensitive content");
+    assert.equal((zhipuV4ImageErr.body.error as { code: string }).code, "1234");
 
     const pplxChat = await json(
       new Request("http://local/v1/chat/completions", {

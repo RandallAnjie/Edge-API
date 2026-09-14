@@ -137,6 +137,18 @@ export function applyModelMapping(channel: ChannelRow, model: string): string {
   return mapModel(channel.model_mapping, model);
 }
 
+/** Original `claude.shouldAppendClaudeBetaQuery`. */
+export function shouldAppendClaudeBetaQuery(channel: ChannelRow, relayInfo: ParamOverrideRelayInfo = {}): boolean {
+  if (relayInfo.isClaudeBetaQuery) return true;
+  return parseJson<Record<string, unknown>>(channel.settings || "", {}).claude_beta_query === true;
+}
+
+/** Original `claude.Adaptor.GetRequestURL` (`{base}/v1/messages` + optional `?beta=true`). */
+export function claudeMessagesURL(base: string, appendBeta: boolean): string {
+  const url = `${base.replace(/\/+$/, "")}/v1/messages`;
+  return appendBeta ? `${url}?beta=true` : url;
+}
+
 export function buildUpstream(
   channel: ChannelRow,
   mode: RelayMode,
@@ -446,9 +458,11 @@ export function buildUpstream(
       break;
     }
     case "anthropic": {
-      url = joinUrl(base, "/v1/messages");
+      url = claudeMessagesURL(base, shouldAppendClaudeBetaQuery(channel, relayInfo));
       headers["x-api-key"] = apiKey;
       headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
+      if (extraHeaders["anthropic-beta"]) headers["anthropic-beta"] = extraHeaders["anthropic-beta"];
+      else delete headers["anthropic-beta"];
       delete headers.authorization;
       break;
     }
@@ -475,8 +489,12 @@ export function buildUpstream(
       else if (mode === "responses") {
         url = requestPath.includes("/v1/responses/compact") ? `${base}/v1/responses/compact` : `${base}/v1/responses`;
       } else if (mode === "completions") url = `${base}/api/generate`;
-      else if (mode === "messages") url = `${base}/v1/messages`;
-      else url = `${base}/api/chat`;
+      else if (mode === "messages") {
+        url = claudeMessagesURL(base, shouldAppendClaudeBetaQuery(channel, relayInfo));
+        headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
+        if (extraHeaders["anthropic-beta"]) headers["anthropic-beta"] = extraHeaders["anthropic-beta"];
+        else delete headers["anthropic-beta"];
+      } else url = `${base}/api/chat`;
       headers.authorization = `Bearer ${apiKey}`;
       break;
     }
