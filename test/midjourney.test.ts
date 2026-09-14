@@ -108,9 +108,21 @@ test("original checkMjTaskNeedUpdate videoUrls and fail_reason", () => {
     video_url: "",
     video_urls: "",
   };
-  assert.equal(checkMjTaskNeedUpdate(oldTask, { progress: "30%", promptEn: "a cat", status: "IN_PROGRESS" }), false);
-  assert.equal(checkMjTaskNeedUpdate(oldTask, { progress: "30%", promptEn: "a cat", status: "IN_PROGRESS", failReason: "x" }), true);
-  assert.equal(checkMjTaskNeedUpdate(oldTask, { progress: "30%", promptEn: "a cat", status: "IN_PROGRESS", videoUrls: [{ url: "https://v" }] }), true);
+  const unchanged = {
+    progress: "30%",
+    promptEn: "a cat",
+    state: "",
+    submitTime: 1,
+    startTime: 2,
+    finishTime: 0,
+    imageUrl: "",
+    status: "IN_PROGRESS",
+    failReason: "",
+    videoUrl: "",
+  };
+  assert.equal(checkMjTaskNeedUpdate(oldTask, unchanged), false);
+  assert.equal(checkMjTaskNeedUpdate(oldTask, { ...unchanged, failReason: "x" }), true);
+  assert.equal(checkMjTaskNeedUpdate(oldTask, { ...unchanged, videoUrls: [{ url: "https://v" }] }), true);
 });
 
 test("original RelayMidjourneySubmit consume-log JSON and MidjourneyDto fetch fields", async () => {
