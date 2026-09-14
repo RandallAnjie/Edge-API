@@ -84,6 +84,7 @@ import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import { clientIp, groupAccessDeniedMessage, json, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
+import { removeDisabledFields, usesRemoveDisabledFields, type ChannelDisabledFieldSettings } from "./relay-disabled-fields.js";
 import {
   DEFAULT_CLAUDE_MAX_TOKENS,
   DEFAULT_EFFORT_TAIL_MODEL_IDS,
@@ -315,6 +316,8 @@ async function convertOutbound(
     isStream?: boolean;
     channelBase?: string;
     viaResponses?: boolean;
+    channelOtherSettings?: ChannelDisabledFieldSettings;
+    passThrough?: boolean;
   } = {},
 ): Promise<unknown> {
   let o = asObj(body);
@@ -332,6 +335,8 @@ async function convertOutbound(
       isStream: extras.isStream,
       systemPrompt: extras.systemPrompt,
       systemPromptOverride: extras.systemPromptOverride,
+      channelOtherSettings: extras.channelOtherSettings,
+      passThrough: extras.passThrough,
     });
   }
   if (client === "gemini") {
@@ -1376,6 +1381,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let openaiEditForm: OpenAIImageEditForm | undefined;
     let openaiAudioForm: EncodedMultipart | undefined;
     let viaResponses = false;
+    let passThrough = passThroughGlobal;
+    let channelOtherSettings: ChannelDisabledFieldSettings = {};
     const multipartEdits =
       mode === "images" &&
       isAliImageEdits(requestPath) &&
@@ -1391,7 +1398,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       const endpointErr = nativeOpenAIConvertEndpointError(channel.type, mode);
       if (endpointErr) throw new Error(endpointErr);
       const channelSetting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
-      const passThrough = passThroughGlobal || Boolean(channelSetting.pass_through_body_enabled);
+      channelOtherSettings = parseJson<ChannelDisabledFieldSettings>(String(channel.settings || ""), {});
+      passThrough = passThroughGlobal || Boolean(channelSetting.pass_through_body_enabled);
       viaResponses =
         !passThrough &&
         !opts.rawBody &&
@@ -1444,7 +1452,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             converter: advancedConverter,
             isStream: opts.stream,
             viaResponses,
+            channelOtherSettings,
+            passThrough,
           });
+      }
+      if ((!opts.rawBody || aliMultipartEdits) && usesRemoveDisabledFields(clientFormat, mode, viaResponses)) {
+        outbound = removeDisabledFields(outbound, channelOtherSettings, passThrough);
       }
       if (!opts.rawBody || aliMultipartEdits) {
         const convertedModel = asObj(outbound).model;

@@ -63,6 +63,7 @@ import {
   convertClaudeMessagesToOpenAIResponses,
 } from "./claude-to-responses.js";
 import { applyChatChannelSystemPrompt } from "./chat-responses-mode.js";
+import { removeDisabledFields, type ChannelDisabledFieldSettings } from "./relay-disabled-fields.js";
 
 export type ChatMessage = {
   role?: string;
@@ -388,6 +389,10 @@ export type ConvertOpenAIOpts = {
   isStream?: boolean;
   /** Original `info.ChannelBaseUrl` used by Volc ConvertClaudeRequest special-plan lookup. */
   channelBase?: string;
+  /** Original `info.ChannelOtherSettings` used by via-responses `RemoveDisabledFields`. */
+  channelOtherSettings?: ChannelDisabledFieldSettings;
+  /** Original global `PassThroughRequestEnabled` or channel `PassThroughBodyEnabled`. */
+  passThrough?: boolean;
 };
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
@@ -530,6 +535,7 @@ export {
   shouldChatCompletionsUseResponsesPolicy,
   type ChatCompletionsToResponsesPolicy,
 } from "./chat-responses-mode.js";
+export { removeDisabledFields, usesRemoveDisabledFields, type ChannelDisabledFieldSettings } from "./relay-disabled-fields.js";
 
 function applyOpenAICompatibleAdaptor(
   body: Record<string, unknown>,
@@ -1101,7 +1107,8 @@ export function convertTextRequestViaResponses(
   let responses: Record<string, unknown>;
   if (client === "anthropic") {
     const claude = applyClaudeChannelSystemPrompt(body, opts.systemPrompt, opts.systemPromptOverride);
-    responses = convertClaudeMessagesToOpenAIResponses(claude, {
+    const stripped = removeDisabledFields(claude, opts.channelOtherSettings, Boolean(opts.passThrough)) as Record<string, unknown>;
+    responses = convertClaudeMessagesToOpenAIResponses(stripped, {
       originModelName: opts.originModelName,
       upstreamModelName: opts.upstreamModelName,
       settings: opts.settings,
@@ -1114,9 +1121,10 @@ export function convertTextRequestViaResponses(
       opts.systemPromptOverride,
       getOpenAISystemRoleName(String(opts.upstreamModelName || body.model || ""), String(body.reasoning_effort || "")),
     );
+    const stripped = removeDisabledFields(chat, opts.channelOtherSettings, Boolean(opts.passThrough)) as Record<string, unknown>;
     responses = convertChatCompletionsToResponsesRequest({
-      ...chat,
-      model: opts.upstreamModelName || chat.model,
+      ...stripped,
+      model: opts.upstreamModelName || stripped.model,
     });
   }
   return convertOpenAIResponsesRequest(responses, { ...opts, relayMode: "responses" });

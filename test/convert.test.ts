@@ -5353,6 +5353,54 @@ test("original Claude Messages → OpenAI Responses request JSON fields", () => 
   assert.equal((via.reasoning as { effort: string; summary: string }).effort, "high");
   assert.equal((via.reasoning as { effort: string; summary: string }).summary, "detailed");
 
+  const viaTier = convertTextRequestViaResponses(
+    {
+      model: "gpt-5.6-sol",
+      service_tier: "flex",
+      messages: [{ role: "user", content: "hello" }],
+    },
+    "anthropic",
+    {
+      channelType: CHANNEL_TYPE_OPENAI,
+      originModelName: "gpt-5.6-sol",
+      upstreamModelName: "gpt-5.6-sol",
+    },
+  );
+  assert.equal("service_tier" in viaTier, false);
+
+  const viaStore = convertTextRequestViaResponses(
+    {
+      model: "gpt-4o",
+      store: true,
+      safety_identifier: "user-123",
+      messages: [{ role: "user", content: "hi" }],
+    },
+    "openai",
+    {
+      channelType: CHANNEL_TYPE_OPENAI,
+      originModelName: "gpt-4o",
+      upstreamModelName: "gpt-4o",
+    },
+  );
+  assert.equal(viaStore.store, true);
+  assert.equal("safety_identifier" in viaStore, false);
+
+  const viaDisableStore = convertTextRequestViaResponses(
+    {
+      model: "gpt-4o",
+      store: true,
+      messages: [{ role: "user", content: "hi" }],
+    },
+    "openai",
+    {
+      channelType: CHANNEL_TYPE_OPENAI,
+      originModelName: "gpt-4o",
+      upstreamModelName: "gpt-4o",
+      channelOtherSettings: { disable_store: true },
+    },
+  );
+  assert.equal("store" in viaDisableStore, false);
+
   const openaiUp = buildUpstream(
     testChannel({ type: CHANNEL_TYPE_OPENAI, key: "sk-test", base_url: "https://api.openai.com", models: "gpt-5.6-sol" }),
     "responses",
