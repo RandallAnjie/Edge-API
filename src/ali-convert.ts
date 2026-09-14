@@ -2,6 +2,7 @@
 
 import { getImageFromUrl } from "./image-download.js";
 import { asInt, asObj } from "./openai-usage.js";
+import { parseMultipartForm } from "./multipart-form.js";
 
 export const DEFAULT_ALI_ANTHROPIC_MESSAGES_MODELS = "qwen,deepseek-v4,kimi,glm,minimax-m";
 
@@ -249,11 +250,6 @@ function wrapError(prefix: string, err: unknown): Error {
   return new Error(`${prefix}: ${message}`);
 }
 
-function multipartBoundary(contentType: string): string {
-  const match = /(?:^|;)\s*boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
-  return (match?.[1] || match?.[2] || "").trim();
-}
-
 /** Original `net/http.DetectContentType` for image-edit file bytes. */
 export function aliDetectContentType(data: Uint8Array): string {
   const b = data.length > 512 ? data.subarray(0, 512) : data;
@@ -284,35 +280,10 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 /** Original gin multipart File vs Value split for `oaiFormEdit2AliImageEdit`. */
 export function parseAliImageEditForm(rawBody: ArrayBuffer, contentType: string): AliParsedMultipart {
-  const boundary = multipartBoundary(contentType);
-  if (!boundary) throw new Error("multipart boundary is required");
-  const text = new TextDecoder("latin1").decode(rawBody);
-  const delim = `--${boundary}`;
-  const start = text.indexOf(delim);
-  if (start < 0) throw new Error("multipart boundary not found");
+  const parsed = parseMultipartForm(rawBody, contentType);
   const values: Record<string, string> = {};
-  const files: AliFormFile[] = [];
-  let pos = start + delim.length;
-  while (pos < text.length) {
-    if (text.startsWith("--", pos)) break;
-    if (text.startsWith("\r\n", pos)) pos += 2;
-    const next = text.indexOf(`\r\n${delim}`, pos);
-    if (next < 0) break;
-    const part = text.slice(pos, next);
-    pos = next + 2 + delim.length;
-    const headerEnd = part.indexOf("\r\n\r\n");
-    if (headerEnd < 0) continue;
-    const headers = part.slice(0, headerEnd);
-    const bodyText = part.slice(headerEnd + 4);
-    const disp = /^content-disposition:\s*(.+)$/im.exec(headers)?.[1] || "";
-    const name = /(?:^|;)\s*name="([^"]*)"/.exec(disp)?.[1] || /(?:^|;)\s*name=([^;]+)/.exec(disp)?.[1]?.trim() || "";
-    if (!name) continue;
-    const hasFilename = /(?:^|;)\s*filename=/i.test(disp);
-    const data = Uint8Array.from(bodyText, (c) => c.charCodeAt(0));
-    if (hasFilename) files.push({ name, data });
-    else values[name] = new TextDecoder("utf-8").decode(data);
-  }
-  return { values, files };
+  for (const [key, list] of Object.entries(parsed.values)) values[key] = list[0] ?? "";
+  return { values, files: parsed.files.map((file) => ({ name: file.name, data: file.data })) };
 }
 
 /**

@@ -434,6 +434,7 @@ export {
   parseAliImageEditForm,
   aliImageRequestFromEditForm,
 } from "./ali-convert.js";
+export { convertOpenAIImageEditForm, detectImageMimeType, usesOpenAIImageEditAdaptor } from "./openai-image-convert.js";
 export { convertCodexOpenAIRequest, convertCodexResponsesRequest } from "./codex-convert.js";
 export {
   convertChatCompletionsToResponsesRequest,
