@@ -4,10 +4,12 @@ import { convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertOpenAIChatToGemini } from "./gemini-convert.js";
 import {
   applyToOpenAIChat,
+  applyToOpenAIResponses,
   asClientError,
   effectiveEffort,
   fromClaude,
   fromGemini,
+  fromOpenAIChat,
   intentIsEmpty,
   mergeExplicitAndSuffix,
   parseHostModelModifiers,
@@ -128,7 +130,10 @@ function appendFunctionCalls(inputItems: Record<string, unknown>[], message: Rec
 }
 
 /** Original `oaichat.ChatCompletionsRequestToResponsesRequest`. */
-export function convertChatCompletionsToResponsesRequest(body: Record<string, unknown>): Record<string, unknown> {
+export function convertChatCompletionsToResponsesRequest(
+  body: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (body == null) throw new Error("request is nil");
   const model = String(body.model || "");
   if (!model) throw new Error("model is required");
   const n = Number(body.n ?? 1);
@@ -269,6 +274,11 @@ export function convertChatCompletionsToResponsesRequest(body: Record<string, un
         out.tool_choice = name ? { type: "function", name } : body.tool_choice;
       } else out.tool_choice = body.tool_choice;
     }
+  }
+  try {
+    applyToOpenAIResponses(out, fromOpenAIChat(body));
+  } catch (err) {
+    throw asClientError(err);
   }
   return out;
 }

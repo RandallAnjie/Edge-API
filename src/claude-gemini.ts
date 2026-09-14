@@ -1,6 +1,10 @@
-/** Original composed `claude_messages_to_gemini_generate_content` / `gemini_generate_content_to_claude_messages`. */
+/** Original composed Claude↔Gemini and Gemini→Responses ConvertRequest hops. */
 
-import { convertClaudeMessagesToOpenAIChat, convertGeminiContentToOpenAIChat } from "./advanced-custom-convert.js";
+import {
+  convertChatCompletionsToResponsesRequest,
+  convertClaudeMessagesToOpenAIChat,
+  convertGeminiContentToOpenAIChat,
+} from "./advanced-custom-convert.js";
 import { convertOpenAIChatToClaude, type ConvertClaudeOpts } from "./claude-convert.js";
 import { openaiFromAnthropicResponse, claudeSseToOpenAIChat } from "./claude-response.js";
 import { convertOpenAIChatToGemini, type ConvertGeminiOpts } from "./gemini-convert.js";
@@ -12,6 +16,8 @@ import { oaiChatSseToClaudeSse, oaiChatSseToGeminiSse } from "./openai-stream-co
 export const CONVERTER_CLAUDE_TO_GEMINI = "claude_messages_to_gemini_generate_content";
 /** Original `requestConverterGeminiToClaude`. Not an advanced-custom ConvertGeminiRequest ID. */
 export const CONVERTER_GEMINI_TO_CLAUDE = "gemini_generate_content_to_claude_messages";
+/** Original `requestConverterGeminiToResponses`. Not an advanced-custom ConvertGeminiRequest ID. */
+export const CONVERTER_GEMINI_TO_RESPONSES = "gemini_generate_content_to_openai_responses";
 
 export type ConvertClaudeGeminiOpts = ConvertGeminiOpts & ConvertClaudeOpts & {
   isStream?: boolean;
@@ -42,6 +48,20 @@ export function convertGeminiGenerateContentToClaudeMessages(
     suffixIntent: opts.suffixIntent,
   });
   return convertOpenAIChatToClaude(chat, opts);
+}
+
+/** Original ConvertRequest Gemini → OpenAI Responses (`gemini_generate_content_to_openai_chat_completions` then `openai_chat_completions_to_openai_responses`). */
+export function convertGeminiGenerateContentToOpenAIResponses(
+  body: Record<string, unknown> | null | undefined,
+  opts: ConvertClaudeGeminiOpts = {},
+): Record<string, unknown> {
+  if (body == null) throw new Error("request is nil");
+  const chat = convertGeminiContentToOpenAIChat(body, opts.upstreamModelName || "", Boolean(opts.isStream), {
+    originModelName: opts.originModelName,
+    settings: opts.settings,
+    suffixIntent: opts.suffixIntent,
+  });
+  return convertChatCompletionsToResponsesRequest(chat);
 }
 
 /** Original Gemini `DoResponse` Claude path: Gemini JSON → OpenAI chat → Claude messages. */

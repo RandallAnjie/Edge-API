@@ -92,6 +92,9 @@ import {
   claudeSseToGeminiSse,
   CONVERTER_CLAUDE_TO_GEMINI,
   CONVERTER_GEMINI_TO_CLAUDE,
+  CONVERTER_GEMINI_TO_RESPONSES,
+  convertGeminiGenerateContentToOpenAIResponses,
+  convertChatCompletionsToResponsesRequest,
   newClaudeStreamMeta,
   delegatesClaudeToOpenAIAdaptor,
   convertClaudeMessagesToOpenAIResponses,
@@ -6153,6 +6156,142 @@ test("original GeminiHelper ClaudeHelper TextHelper channel SystemPrompt JSON fi
   assert.equal("messages" in geminiFromOpenAI, false);
   assert.ok(Array.isArray(geminiFromOpenAI.contents));
   assert.equal("systemInstruction" in geminiFromOpenAI, false);
+});
+
+test("original Gemini ConvertRequest to OpenAI Responses composed JSON fields", () => {
+  assert.equal(CONVERTER_GEMINI_TO_RESPONSES, "gemini_generate_content_to_openai_responses");
+  assert.throws(
+    () =>
+      convertAdvancedCustomGeminiRequest(
+        { contents: [{ role: "user", parts: [{ text: "hello" }] }] },
+        {
+          channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+          originModelName: "gpt-test",
+          upstreamModelName: "gpt-test",
+          converter: CONVERTER_GEMINI_TO_RESPONSES,
+        },
+      ),
+    /converter "gemini_generate_content_to_openai_responses" does not support Gemini generateContent requests/,
+  );
+  assert.throws(() => convertGeminiGenerateContentToOpenAIResponses(null), /request is nil/);
+  assert.throws(() => convertChatCompletionsToResponsesRequest(null), /request is nil/);
+  assert.throws(
+    () =>
+      convertChatCompletionsToResponsesRequest({
+        model: "gpt-test",
+        n: 2,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    /n>1 is not supported in responses compatibility mode/,
+  );
+
+  const chatReasoning = convertChatCompletionsToResponsesRequest({
+    model: "gpt-test",
+    reasoning_effort: "high",
+    messages: [{ role: "user", content: "hello" }],
+  });
+  assert.equal(chatReasoning.model, "gpt-test");
+  assert.equal((chatReasoning.input as { content: string }[])[0].content, "hello");
+  assert.equal((chatReasoning.reasoning as { effort: string; summary: string }).effort, "high");
+  assert.equal((chatReasoning.reasoning as { effort: string; summary: string }).summary, "detailed");
+  assert.equal("reasoning_effort" in chatReasoning, false);
+  assert.equal("messages" in chatReasoning, false);
+
+  const converted = convertGeminiGenerateContentToOpenAIResponses(
+    {
+      systemInstruction: { parts: [{ text: "You are a helpful assistant." }] },
+      generationConfig: { temperature: 0.2, topP: 0.9, maxOutputTokens: 1024 },
+      tools: [
+        {
+          functionDeclarations: [
+            {
+              name: "get_weather",
+              description: "Get weather by city",
+              parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+            },
+          ],
+        },
+      ],
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: "What is in this image?" },
+            { inlineData: { mimeType: "image/png", data: "aGVsbG8=" } },
+          ],
+        },
+        {
+          role: "model",
+          parts: [{ functionCall: { id: "call_abc", name: "get_weather", args: { city: "Paris" } } }],
+        },
+        {
+          role: "user",
+          parts: [{ functionResponse: { id: "call_abc", name: "get_weather", response: { temp: "15 degrees" } } }],
+        },
+        { role: "user", parts: [{ text: "Summarize." }] },
+      ],
+    },
+    { originModelName: "gpt-test", upstreamModelName: "gpt-test", isStream: true },
+  );
+  assert.equal(converted.model, "gpt-test");
+  assert.equal(converted.instructions, "You are a helpful assistant.");
+  assert.equal(converted.max_output_tokens, 1024);
+  assert.equal(converted.temperature, 0.2);
+  assert.equal(converted.top_p, 0.9);
+  assert.equal(converted.stream, true);
+  assert.equal("contents" in converted, false);
+  assert.equal("generationConfig" in converted, false);
+  assert.equal("systemInstruction" in converted, false);
+  assert.equal("messages" in converted, false);
+  assert.equal("max_tokens" in converted, false);
+  const input = converted.input as Record<string, unknown>[];
+  assert.equal(input[0].role, "user");
+  const userParts = input[0].content as { type: string; text?: string; image_url?: string }[];
+  assert.equal(userParts[0].type, "input_text");
+  assert.equal(userParts[0].text, "What is in this image?");
+  assert.equal(userParts[1].type, "input_image");
+  assert.equal(userParts[1].image_url, "data:image/png;base64,aGVsbG8=");
+  assert.equal(input[1].role, "assistant");
+  assert.equal(input[1].content, "");
+  assert.equal(input[2].type, "function_call");
+  assert.equal(input[2].call_id, "call_abc");
+  assert.equal(input[2].name, "get_weather");
+  assert.equal(input[2].arguments, '{"city":"Paris"}');
+  assert.equal(input[3].type, "function_call_output");
+  assert.equal(input[3].call_id, "call_abc");
+  assert.equal(input[3].output, '{"temp":"15 degrees"}');
+  assert.equal(input[4].role, "user");
+  assert.equal(input[4].content, "Summarize.");
+  const tools = converted.tools as { type: string; name: string; description: string; parameters: unknown }[];
+  assert.equal(tools[0].type, "function");
+  assert.equal(tools[0].name, "get_weather");
+  assert.equal(tools[0].description, "Get weather by city");
+  assert.equal("function" in tools[0], false);
+
+  assert.throws(
+    () =>
+      convertGeminiGenerateContentToOpenAIResponses(
+        {
+          contents: [{ role: "user", parts: [{ text: "hello" }] }],
+          generationConfig: { candidateCount: 2 },
+        },
+        { originModelName: "gpt-test", upstreamModelName: "gpt-test" },
+      ),
+    /n>1 is not supported in responses compatibility mode/,
+  );
+
+  const thinking = convertGeminiGenerateContentToOpenAIResponses(
+    {
+      contents: [{ role: "user", parts: [{ text: "hello" }] }],
+    },
+    { originModelName: "gemini-2.5-flash", upstreamModelName: "gemini-2.5-flash" },
+  );
+  assert.equal(thinking.model, "gemini-2.5-flash");
+  assert.equal((thinking.input as { content: string }[])[0].content, "hello");
+  assert.equal((thinking.reasoning as { effort: string; summary: string }).effort, "high");
+  assert.equal((thinking.reasoning as { effort: string; summary: string }).summary, "detailed");
+  assert.equal("thinkingConfig" in thinking, false);
+  assert.equal("generationConfig" in thinking, false);
 });
 
 

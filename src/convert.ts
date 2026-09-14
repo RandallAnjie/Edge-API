@@ -532,8 +532,10 @@ export {
 export {
   CONVERTER_CLAUDE_TO_GEMINI,
   CONVERTER_GEMINI_TO_CLAUDE,
+  CONVERTER_GEMINI_TO_RESPONSES,
   convertClaudeMessagesToGeminiGenerateContent,
   convertGeminiGenerateContentToClaudeMessages,
+  convertGeminiGenerateContentToOpenAIResponses,
   geminiResponseToClaudeMessages,
   claudeResponseToGeminiChat,
   geminiSseToClaudeSse,
