@@ -37,6 +37,8 @@ import {
   parseNativeSubmitParts,
   type NativeSubmitPart,
 } from "./task-plugin-submit-body.js";
+import { applyCompletionUsageFacts, buildNativeQueryContext, isNativeQueryError, type NativeTaskInfo } from "./task-plugin-query.js";
+import { parseSubmitMediaType, readSubmitEvents } from "./task-plugin-submit-sse.js";
 
 export const MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES = 1 << 20;
 const TASK_ID_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -151,6 +153,10 @@ function submitResponseTypes(meta: Record<string, unknown>): string[] {
   const items = meta.submitResponseTypes;
   if (!Array.isArray(items) || !items.length) return ["json"];
   return items.map((item) => String(item));
+}
+
+function requiredCapabilities(meta: Record<string, unknown>): string[] {
+  return Array.isArray(meta.requiredCapabilities) ? meta.requiredCapabilities.map((item) => String(item)) : [];
 }
 
 function resolvePluginAuth(meta: Record<string, unknown>, apiKey: string): { auth: Record<string, unknown>; apiKey?: string; authError?: string } {
@@ -404,7 +410,8 @@ export function parseNativeSubmitResponse(
 async function doNativeSubmitRequest(
   descriptor: NativeSubmitDescriptor,
   files: { field: string; filename: string; mimeType: string; data: Uint8Array }[] = [],
-): Promise<{ status: number; headers: Record<string, string[]>; body: unknown } | NativeTaskError> {
+  opts?: { engine: PluginEngine; submitContext: Record<string, unknown> },
+): Promise<{ status: number; headers: Record<string, string[]>; body: unknown; acceptedStream: boolean } | NativeTaskError> {
   const method = (descriptor.method || "POST").toUpperCase();
   const headers = new Headers();
   for (const [name, value] of Object.entries(descriptor.headers)) headers.set(name, value);
@@ -422,23 +429,95 @@ async function doNativeSubmitRequest(
   } catch (err) {
     return taskErr("do_request_failed", hookMessage(err), 500, false);
   }
-  const mediaType = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-  if (descriptor.responseType !== "sse" && mediaType === "text/event-stream") {
-    return taskErr("plugin_submit_response_invalid", "unexpected SSE response for a JSON submission", 502, true);
+  const raw = new Uint8Array(await res.arrayBuffer());
+  if (res.status !== 200) {
+    return taskErr("fail_to_fetch_task", new TextDecoder().decode(raw), res.status, false);
   }
-  const raw = await res.arrayBuffer();
-  if (raw.byteLength > MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES + 1) {
+  const contentType = res.headers.get("content-type") || "";
+  const mediaType = parseSubmitMediaType(contentType);
+  const streaming = descriptor.responseType === "sse";
+  const acceptedStream = streaming || mediaType === "text/event-stream";
+  if (!streaming && acceptedStream) {
+    return taskErr("plugin_submit_response_invalid", "unexpected SSE response for a JSON submission", 502, true, true);
+  }
+  if (streaming) {
+    if (!opts) return taskErr("read_response_body_failed", "expected a text/event-stream submit response", 502, false, true);
+    try {
+      const parsedBody = readSubmitEvents({
+        engine: opts.engine,
+        driverContext: opts.submitContext,
+        contentType,
+        body: new TextDecoder().decode(raw),
+        requiredCapabilities: requiredCapabilities(pluginMeta(opts.engine)),
+      });
+      return { status: res.status, headers: responseHeaders(res), body: parsedBody, acceptedStream: true };
+    } catch (err) {
+      return taskErr("read_response_body_failed", hookMessage(err), 502, false, true);
+    }
+  }
+  if (raw.byteLength > MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES) {
     return taskErr("read_response_body_failed", "task submit response exceeds size limit", 502, false);
   }
   const text = new TextDecoder().decode(raw);
-  if (res.status !== 200) return taskErr("fail_to_fetch_task", text, res.status, false);
   let parsed: unknown = text;
   try {
     parsed = JSON.parse(text);
   } catch {
     parsed = text;
   }
-  return { status: res.status, headers: responseHeaders(res), body: parsed };
+  return { status: res.status, headers: responseHeaders(res), body: parsed, acceptedStream };
+}
+
+/** Original ParseResponse extractUsageOnComplete on immediate SUCCESS. */
+export function applyNativeSubmitCompletionUsage(
+  engine: PluginEngine,
+  parsed: NativeSubmitParsed,
+  info: NativeSubmitInfo,
+): void {
+  const immediate = parsed.immediate;
+  if (!immediate || String(immediate.status || "") !== "SUCCESS") return;
+  if (!engine.hasCallablePath("extractUsageOnComplete")) return;
+  const privateData: Record<string, unknown> = { upstream_task_id: parsed.upstreamTaskId };
+  if (parsed.pluginState != null) privateData.plugin_state = parsed.pluginState;
+  const queryContext = buildNativeQueryContext(
+    engine,
+    {
+      task_id: info.publicTaskId,
+      action: info.action,
+      data: parsed.taskData,
+      properties: {
+        origin_model_name: info.originModelName,
+        upstream_model_name: info.upstreamModelName,
+      },
+      private_data: privateData,
+    },
+    info.apiKey,
+    info.channelBaseUrl,
+  );
+  if (isNativeQueryError(queryContext)) return;
+  try {
+    const facts = engine.call("extractUsageOnComplete", queryContext, pluginJsonValue(immediate), parsed.taskData);
+    const result: NativeTaskInfo = {
+      code: Number(immediate.code || 0) || 0,
+      taskId: String(immediate.taskId || ""),
+      status: String(immediate.status || ""),
+      progress: String(immediate.progress || ""),
+      reason: String(immediate.reason || ""),
+      url: String(immediate.url || ""),
+      remoteUrl: String(immediate.remoteUrl || ""),
+      completionTokens: 0,
+      totalTokens: 0,
+    };
+    applyCompletionUsageFacts(result, facts, info.upstreamModelName || info.originModelName);
+    if (result.usageFacts) {
+      immediate.usageFacts = result.usageFacts;
+      immediate.usage_facts = result.usageFacts;
+      immediate.completionTokens = result.completionTokens;
+      immediate.totalTokens = result.totalTokens;
+    }
+  } catch {
+    /* original retains reserved quota when the completion hook fails */
+  }
 }
 
 function extractUsageRatios(engine: PluginEngine, submitContext: Record<string, unknown>): Record<string, number> {
@@ -624,10 +703,17 @@ async function relayTaskSubmitOnce(opts: {
   let quota = priced.quota;
   if (!priced.freeModel && Object.keys(otherRatios).length) quota = applyOtherRatios(quota, otherRatios);
 
-  const upstream = await doNativeSubmitRequest(descriptor, opts.prepared.requestContext.fileContents || []);
+  const upstream = await doNativeSubmitRequest(descriptor, opts.prepared.requestContext.fileContents || [], {
+    engine: opts.engine,
+    submitContext,
+  });
   if ("statusCode" in upstream) return upstream;
   const parsed = parseNativeSubmitResponse(opts.engine, submitContext, upstream.status, upstream.headers, upstream.body);
-  if ("statusCode" in parsed) return parsed;
+  if ("statusCode" in parsed) {
+    if (upstream.acceptedStream) parsed.noRetry = true;
+    return parsed;
+  }
+  applyNativeSubmitCompletionUsage(opts.engine, parsed, info);
   return { parsed, info, otherRatios, quota };
 }
 

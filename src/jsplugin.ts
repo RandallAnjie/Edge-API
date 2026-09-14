@@ -346,7 +346,8 @@ function jsonClone(value: unknown): unknown {
   }
 }
 
-function goJSONMarshal(value: unknown): string {
+/** Original `encoding/json` HTML-escape + sorted object keys (`common.Marshal`). */
+export function goJSONMarshal(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") return encodeGoJSONNumber(value);
@@ -363,6 +364,10 @@ function goJSONMarshal(value: unknown): string {
     return "{" + parts.join(",") + "}";
   }
   throw new Error("jwt claims must be JSON");
+}
+
+export function goJSONByteLength(value: unknown): number {
+  return utf8Bytes(goJSONMarshal(value)).length;
 }
 
 function jwtSignHS256(claims: Record<string, unknown>, secret: string): string {

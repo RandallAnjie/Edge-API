@@ -312,7 +312,8 @@ export function parseNativeTaskResult(
   return result;
 }
 
-function applyCompletionUsageFacts(result: NativeTaskInfo, facts: unknown, _modelName: string): void {
+/** Original `TaskAdaptor.applyCompletionUsageFacts` after schema validation. */
+export function applyCompletionUsageFacts(result: NativeTaskInfo, facts: unknown, _modelName: string): void {
   if (facts == null) return;
   if (!isPlainObject(facts)) return;
   const values: Record<string, unknown> = { ...facts };
