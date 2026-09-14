@@ -228,6 +228,11 @@ export function pluginProtocolError(status: number, code: string, message: strin
   return json(status, { error: { message, type: "new_api_error", code } });
 }
 
+/** Original `dto.TaskError` JSON (`code`, `message`, `data`). */
+export function taskErrorJson(status: number, code: string, message: string): Response {
+  return json(status, { code, message, data: null });
+}
+
 /** Original `middleware.sanitizedTaskPluginError`. */
 export function sanitizedTaskPluginError(
   status: number,

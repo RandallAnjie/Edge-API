@@ -141,7 +141,44 @@ test("original presentTaskSubmission fallback uses persisted public ID JSON", as
   assert.equal(res.headers.get("X-New-Api-Other-Ratios"), "{}");
 });
 
-test("original parseSubmitResponse must not return clientResponse JSON", () => {
+test("original presentTaskSubmission openai_video create uses host ToOpenAIVideo JSON", async () => {
+  const loaded = compilePlugin(presenterSource, { key: "presenter-test", version: "1.0.0" });
+  const res = presentTaskSubmission({
+    engine: loaded.engine,
+    requestContext: {
+      path: "/v1/videos",
+      method: "POST",
+      params: {},
+      query: {},
+      body: { kind: BODY_JSON, value: { model: "video-model" } },
+      files: [],
+      requestBody: { model: "video-model" },
+    },
+    render: "",
+    taskRow: {
+      task_id: "task_public",
+      status: "SUBMITTED",
+      progress: "0%",
+      created_at: 456,
+      properties: JSON.stringify({ origin_model_name: "video-model" }),
+    },
+    originModelName: "video-model",
+    protocol: "openai_video",
+    operation: "create",
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body, {
+    id: "task_public",
+    object: "video",
+    model: "video-model",
+    status: "queued",
+    progress: 0,
+    created_at: 456,
+  });
+  assert.equal(JSON.stringify(body).includes("task_id"), false);
+});
+
   const source = presenterSource.replace(
     `return {taskId:"upstream"}`,
     `return {taskId:"upstream", clientResponse: {id: ctx.publicTaskId}}`,

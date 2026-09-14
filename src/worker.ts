@@ -25,6 +25,7 @@ import { hit } from "./metrics.js";
 import { matchPluginOwnedPath, matchPluginRoute, matchTaskPlugin, type MatchedPlugin } from "./plugin-dispatch.js";
 import { applyOriginTaskIntent, type OriginTaskRef } from "./origin-task.js";
 import { executeNativePluginRoute, handleNativePluginRoute } from "./task-plugin-route.js";
+import { tryRelayOpenAIVideoCreate } from "./task-plugin-endpoint.js";
 import type { ChannelPin } from "./channel-constraint.js";
 import { taskArtifactsView, taskFetchView, openaiVideoView, taskResultURL } from "./dto.js";
 import { convertOwnedTaskToOpenAIVideo } from "./task-plugin-video.js";
@@ -291,6 +292,11 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     return new Response(JSON.stringify(taskFetchView(local)), {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
+  }
+
+  if (req.method === "POST" && path === "/v1/videos") {
+    const claimed = await tryRelayOpenAIVideoCreate({ req, env, store, auth, ctx });
+    if (claimed) return claimed;
   }
 
   const mode = relayModeFrom(path, req.method);

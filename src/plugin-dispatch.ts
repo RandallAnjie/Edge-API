@@ -5,14 +5,41 @@ import { listRoutingPlugins } from "./task-plugin-factory.js";
 import { pluginModelNames } from "./plugin-meta.js";
 
 /** Original `jsplugin.HostProtocols` operations used for endpoint pinning. */
-export const HOST_PROTOCOL_OPERATIONS: { name: string; method: string; path: string }[] = [
-  { name: "openai_responses", method: "POST", path: "/v1/responses" },
-  { name: "openai_responses", method: "GET", path: "/v1/responses/:response_id" },
-  { name: "openai_video", method: "POST", path: "/v1/videos" },
-  { name: "openai_video", method: "GET", path: "/v1/videos/:task_id" },
-  { name: "openai_video", method: "GET", path: "/v1/videos/:task_id/content" },
-  { name: "openai_video", method: "HEAD", path: "/v1/videos/:task_id/content" },
+export type HostProtocolOperation = {
+  protocol: string;
+  operation: string;
+  method: string;
+  path: string;
+  bodyKinds: string[];
+  modelField?: string;
+};
+
+export const HOST_PROTOCOL_OPERATIONS: HostProtocolOperation[] = [
+  { protocol: "openai_responses", operation: "create", method: "POST", path: "/v1/responses", bodyKinds: ["json"], modelField: "model" },
+  { protocol: "openai_responses", operation: "retrieve", method: "GET", path: "/v1/responses/:response_id", bodyKinds: ["none"] },
+  { protocol: "openai_video", operation: "create", method: "POST", path: "/v1/videos", bodyKinds: ["json", "multipart"], modelField: "model" },
+  { protocol: "openai_video", operation: "retrieve", method: "GET", path: "/v1/videos/:task_id", bodyKinds: ["none"] },
+  { protocol: "openai_video", operation: "content", method: "GET", path: "/v1/videos/:task_id/content", bodyKinds: ["none"] },
+  { protocol: "openai_video", operation: "content", method: "HEAD", path: "/v1/videos/:task_id/content", bodyKinds: ["none"] },
 ];
+
+export type EndpointCandidate = {
+  plugin: MatchedPlugin;
+  protocol: string;
+  operation: HostProtocolOperation;
+};
+
+/** Original `jsplugin.LookupHostProtocolOperation` — exact path and nonempty ModelField. */
+export function lookupHostProtocolOperation(method: string, path: string): HostProtocolOperation | null {
+  const normalized = method.toUpperCase().trim();
+  for (const operation of HOST_PROTOCOL_OPERATIONS) {
+    if (!operation.modelField) continue;
+    if (operation.path !== path) continue;
+    if (operation.method.toUpperCase() !== normalized) continue;
+    return operation;
+  }
+  return null;
+}
 
 /** Original `jsplugin.Route` fields used by `PrepareTaskPluginRoute`. */
 export type PluginRouteSpec = {
@@ -36,6 +63,9 @@ export type MatchedPlugin = {
   version?: string;
   route?: PluginRouteSpec;
   params?: Record<string, string>;
+  protocol?: string;
+  operation?: string;
+  bodyKinds?: string[];
 };
 
 export async function matchPluginRoute(
@@ -85,7 +115,7 @@ export async function matchTaskPlugin(
     const claimed = claimedProtocolNames(meta);
     if (!claimed.length) continue;
     for (const op of HOST_PROTOCOL_OPERATIONS) {
-      if (!claimed.includes(op.name)) continue;
+      if (!claimed.includes(op.protocol)) continue;
       if (op.method.toUpperCase() !== method.toUpperCase()) continue;
       if (!pathMatches(op.path, path)) continue;
       return {
@@ -94,10 +124,72 @@ export async function matchTaskPlugin(
         channelTypes: pinnedTaskPluginChannelTypes(meta.channelTypes),
         kind: "endpoint",
         models,
+        source: p.source,
+        version: String(meta.version || ""),
+        protocol: op.protocol,
+        operation: op.operation,
+        bodyKinds: op.bodyKinds,
       };
     }
   }
   return null;
+}
+
+function protocolBoundModels(meta: Record<string, unknown>, protocol: string): string[] {
+  const pluginModels = pluginModelNames(meta);
+  const raw = meta.protocols;
+  if (!Array.isArray(raw)) return [];
+  for (const item of raw) {
+    if (typeof item === "string") {
+      if (item === protocol) return pluginModels;
+      continue;
+    }
+    if (item && typeof item === "object" && typeof (item as { name?: unknown }).name === "string") {
+      if (String((item as { name: string }).name) !== protocol) continue;
+      const claimModels = Array.isArray((item as { models?: unknown }).models)
+        ? (item as { models: unknown[] }).models.map((name) => String(name)).filter(Boolean)
+        : [];
+      return claimModels.length ? claimModels : pluginModels;
+    }
+  }
+  return [];
+}
+
+/** Original `RoutingGeneration.LookupEndpointCandidates` in ascending plugin key order. */
+export async function lookupEndpointCandidates(
+  store: Store,
+  method: string,
+  path: string,
+  model: string,
+): Promise<EndpointCandidate[]> {
+  if (!model.trim()) return [];
+  const operation = lookupHostProtocolOperation(method, path);
+  if (!operation) return [];
+  const plugins = await listRoutingPlugins(store);
+  const out: EndpointCandidate[] = [];
+  for (const p of plugins) {
+    const claimed = claimedProtocolNames(p.meta);
+    if (!claimed.includes(operation.protocol)) continue;
+    if (!protocolBoundModels(p.meta, operation.protocol).includes(model)) continue;
+    out.push({
+      plugin: {
+        key: p.key,
+        path: operation.path,
+        channelTypes: pinnedTaskPluginChannelTypes(p.meta.channelTypes),
+        kind: "endpoint",
+        models: pluginModelNames(p.meta),
+        source: p.source,
+        version: String(p.meta.version || ""),
+        protocol: operation.protocol,
+        operation: operation.operation,
+        bodyKinds: operation.bodyKinds,
+      },
+      protocol: operation.protocol,
+      operation,
+    });
+  }
+  out.sort((a, b) => a.plugin.key.localeCompare(b.plugin.key));
+  return out;
 }
 
 function pluginRoutes(raw: string, meta: Record<string, unknown>): PluginRouteSpec[] {

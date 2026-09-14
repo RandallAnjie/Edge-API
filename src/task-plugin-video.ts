@@ -3,8 +3,7 @@
  */
 import { openaiVideoView } from "./dto.js";
 import { type PluginEngine } from "./jsplugin.js";
-import { factoryPluginMeta } from "./task-plugin-factory.js";
-import { resolveTaskPluginSource } from "./task-plugin-factory.js";
+import { factoryPluginMeta, resolveTaskPluginSource } from "./task-plugin-factory.js";
 import { buildTaskPluginView, loadCompiledPlugin } from "./task-plugin-route.js";
 import type { Store } from "./store.js";
 

@@ -155,6 +155,26 @@ export function routeRequestJSValue(ctx: RouteRequestContext): Record<string, un
   };
 }
 
+/** Original `pluginruntime.ProtocolRequestContext`. */
+export type ProtocolRequestContext = RouteRequestContext & {
+  protocol: string;
+  operation: string;
+  model: string;
+  upstreamModel?: string;
+  stream: boolean;
+};
+
+/** Original `ProtocolRequestContext.JSValue`. */
+export function protocolRequestJSValue(ctx: ProtocolRequestContext): Record<string, unknown> {
+  const value = routeRequestJSValue(ctx);
+  value.protocol = ctx.protocol;
+  value.operation = ctx.operation;
+  value.model = ctx.model;
+  if (ctx.upstreamModel) value.upstreamModel = ctx.upstreamModel;
+  value.stream = ctx.stream;
+  return value;
+}
+
 function emptyRouteContext(method: string, path: string, params: Record<string, string>, query: Record<string, string[]>): RouteRequestContext {
   return {
     path,
@@ -370,7 +390,7 @@ export async function buildTaskPluginRouteRequest(
   });
 }
 
-function hookDetail(err: unknown): string {
+export function hookDetail(err: unknown): string {
   if (err instanceof HookError) return err.jsMessage;
   return "";
 }
@@ -534,6 +554,9 @@ export type PreparedNativeRoute =
       engine: PluginEngine;
       requestContext: RouteRequestContext;
       origin: ApplyOriginTaskIntentResult;
+      protocol?: string;
+      operation?: string;
+      protocolContext?: ProtocolRequestContext;
     };
 
 export async function prepareTaskPluginRoute(

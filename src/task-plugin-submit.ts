@@ -11,7 +11,7 @@ import {
 } from "./channel-select.js";
 import { PIN_RETRY_SINGLE_ATTEMPT } from "./channel-constraint.js";
 import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_VERTEX, DEFAULT_GROUP_RATIO, parseJson, ROLE_ADMIN } from "./constants.js";
-import { json, noAvailableChannelMessage, openaiError, tokenModelForbiddenMessage } from "./http.js";
+import { json, noAvailableChannelMessage, openaiError, taskErrorJson, tokenModelForbiddenMessage } from "./http.js";
 import { type PluginEngine, validateRequestURL } from "./jsplugin.js";
 import { requestHeadersFrom } from "./param-override.js";
 import type { MatchedPlugin } from "./plugin-dispatch.js";
@@ -23,11 +23,14 @@ import { isAlwaysSkipRetryStatusCode } from "./status-code-ranges.js";
 import type { Store } from "./store.js";
 import {
   buildTaskPluginView,
+  protocolRequestJSValue,
   respondTaskPluginError,
   routeRequestJSValue,
   type PreparedNativeRoute,
+  type ProtocolRequestContext,
   type RouteRequestContext,
 } from "./task-plugin-route.js";
+import { openaiVideoView } from "./dto.js";
 import type { AuthToken, ChannelRow, Env } from "./types.js";
 
 export const MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES = 1 << 20;
@@ -474,6 +477,8 @@ export function presentTaskSubmission(opts: {
   taskRow: Record<string, unknown>;
   originModelName: string;
   otherRatios?: Record<string, number> | null;
+  protocol?: string;
+  operation?: string;
 }): Response {
   const otherRatios = opts.otherRatios && Object.keys(opts.otherRatios).length ? opts.otherRatios : {};
   const extra: HeadersInit = { "X-New-Api-Other-Ratios": JSON.stringify(otherRatios) };
@@ -485,6 +490,9 @@ export function presentTaskSubmission(opts: {
     } catch {
       /* host fallback */
     }
+  }
+  if (opts.protocol === "openai_video" && opts.operation === "create") {
+    return json(200, openaiVideoView(opts.taskRow), extra);
   }
   const createdAt = Number(opts.taskRow.created_at || 0) || Number(opts.taskRow.submit_time || 0);
   return json(
@@ -621,6 +629,36 @@ async function relayTaskSubmitOnce(opts: {
   return { parsed, info, otherRatios, quota };
 }
 
+function nativeSubmitError(prepared: SubmitKind, engine: PluginEngine, err: NativeTaskError, requestId: string): Response {
+  if (prepared.protocol) return taskErrorJson(err.statusCode, err.code, err.message);
+  return respondTaskPluginError(engine, prepared.requestContext, err.statusCode, err.message, requestId);
+}
+
+/** Original `TaskAdaptor.ValidateRequestAndSetAction` final protocol decode. */
+export function validateFinalProtocolDecoder(
+  engine: PluginEngine,
+  protocol: string,
+  pinnedModel: string,
+  protocolContext: ProtocolRequestContext,
+): { requestBody?: unknown; action?: string } | NativeTaskError {
+  let resolvedValue: unknown;
+  try {
+    resolvedValue = engine.callPath("protocols", [protocol, "decodeRequest"], [protocolRequestJSValue(protocolContext)]);
+  } catch (err) {
+    return taskErr("plugin_request_invalid", hookMessage(err), 400, true);
+  }
+  if (!isPlainObject(resolvedValue) || typeof resolvedValue.model !== "string" || resolvedValue.model !== pinnedModel) {
+    return taskErr("plugin_request_invalid", "final task plugin decoder rejected the pinned model", 400, true);
+  }
+  if (Object.prototype.hasOwnProperty.call(resolvedValue, "renderer")) {
+    return taskErr("plugin_request_invalid", "decoder must not return renderer", 400, true);
+  }
+  const out: { requestBody?: unknown; action?: string } = {};
+  if (Object.prototype.hasOwnProperty.call(resolvedValue, "requestBody")) out.requestBody = resolvedValue.requestBody;
+  if (typeof resolvedValue.action === "string" && resolvedValue.action.trim()) out.action = resolvedValue.action;
+  return out;
+}
+
 /** Original `controller.RelayTask` native submit after `PrepareTaskPluginRoute`. */
 export async function continueNativeSubmit(
   req: Request,
@@ -633,6 +671,12 @@ export async function continueNativeSubmit(
 ): Promise<Response> {
   const path = new URL(req.url).pathname;
   const engine = prepared.engine;
+  if (prepared.protocol && prepared.protocolContext) {
+    const decoded = validateFinalProtocolDecoder(engine, prepared.protocol, prepared.model, prepared.protocolContext);
+    if ("statusCode" in decoded) return nativeSubmitError(prepared, engine, decoded, requestId);
+    if (Object.prototype.hasOwnProperty.call(decoded, "requestBody")) prepared.requestBody = decoded.requestBody;
+    if (decoded.action) prepared.action = decoded.action;
+  }
   const model = prepared.model;
   if (!tokenAllowsModel(auth.token, model)) {
     return openaiError(403, tokenModelForbiddenMessage(req, model), "model_not_allowed");
@@ -717,10 +761,10 @@ export async function continueNativeSubmit(
 
   if (lastErr) {
     if (preconsumed) await store.addQuota(auth.user.id, preconsumed);
-    return respondTaskPluginError(engine, prepared.requestContext, lastErr.statusCode, lastErr.message, requestId);
+    return nativeSubmitError(prepared, engine, lastErr, requestId);
   }
   if (!outcome) {
-    return respondTaskPluginError(engine, prepared.requestContext, 500, "task submission returned no result", requestId);
+    return nativeSubmitError(prepared, engine, taskErr("task_submit_failed", "task submission returned no result", 500, true), requestId);
   }
 
   let row: Record<string, unknown>;
@@ -739,7 +783,7 @@ export async function continueNativeSubmit(
     });
   } catch (err) {
     if (preconsumed) await store.addQuota(auth.user.id, preconsumed);
-    return respondTaskPluginError(engine, prepared.requestContext, 500, hookMessage(err), requestId);
+    return nativeSubmitError(prepared, engine, taskErr("task_insert_failed", hookMessage(err), 500, true), requestId);
   }
 
   return presentTaskSubmission({
@@ -749,5 +793,7 @@ export async function continueNativeSubmit(
     taskRow: row,
     originModelName: outcome.info.originModelName,
     otherRatios: outcome.otherRatios,
+    protocol: prepared.protocol,
+    operation: prepared.operation,
   });
 }
