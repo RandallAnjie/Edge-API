@@ -67,6 +67,7 @@ import {
   requireUser,
   publicSelf,
   sessionResponse,
+  sessionSecret,
 } from "./auth.js";
 import { Store, publicUser, stripChannelKey } from "./store.js";
 import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, publicUserLogs, dashboardListModels, channelListModels, publicOptions, publicQuotaData, manageUserView, publicMj, publicChannel, publicRedemption } from "./dto.js";
@@ -75,6 +76,7 @@ import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
 import { requirePaymentCompliance } from "./payments.js";
 import { notifyAccountSecurityChange } from "./mail.js";
+import { isPasskeyDomainOption, PasskeyDomainError, passkeyDomainHttpError, updatePasskeyDomainOptions } from "./passkey-domains.js";
 import type { Env, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -1364,7 +1366,27 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { key?: string; value?: unknown };
     if (!body.key) return apiFail("无效的参数");
-    await s.setOption(body.key, String(body.value ?? ""));
+    const value = String(body.value ?? "");
+    if (isPasskeyDomainOption(body.key)) {
+      try {
+        const change = await updatePasskeyDomainOptions(s, await sessionSecret(c.env, s), { [body.key]: value }, false, "");
+        return apiOk(change);
+      } catch (e) {
+        if (e instanceof PasskeyDomainError) {
+          await s.audit(u.id, u.username, "option", e.code === "PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED" ? "option.passkey_domains_blocked" : "option.passkey_domains_failed", clientIp(c.req), {
+            actor_role: u.role,
+            category: "operation",
+            action: e.code === "PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED" ? "option.passkey_domains_blocked" : "option.passkey_domains_failed",
+            method: "PUT",
+            route: "/api/option/",
+            status: e.status,
+            success: false,
+          });
+        }
+        return passkeyDomainHttpError(e, c.req);
+      }
+    }
+    await s.setOption(body.key, value);
     return apiOk(null, "更新成功");
   });
 

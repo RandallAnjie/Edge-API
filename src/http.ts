@@ -106,8 +106,8 @@ export function paymentReturnPath(serverAddress: string, suffix: string): string
   return serverAddress.replace(/\/+$/, "") + suffix;
 }
 
-export function apiFailCode(message: string, code: string, status = 200): Response {
-  return json(status, { success: false, message, code, data: null });
+export function apiFailCode(message: string, code: string, status = 200, data: unknown = null): Response {
+  return json(status, { success: false, message, code, data });
 }
 
 /** Original Stripe/Epay/Creem/Waffo checkout envelope: `{message, data}` plus extra `success`. */

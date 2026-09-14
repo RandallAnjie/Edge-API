@@ -2486,12 +2486,38 @@ export class Store {
     return this.db.prepare("SELECT * FROM passkeys WHERE credential_id = ?").bind(credentialId).first<{ id: number; user_id: number; credential_id: string; public_key: string; last_used_at?: number }>();
   }
 
-  async insertPasskey(userId: number, credentialId: string, publicKey: string, name = ""): Promise<number> {
+  async insertPasskey(userId: number, credentialId: string, publicKey: string, name = "", rpId = ""): Promise<number> {
     const r = await this.db
-      .prepare("INSERT INTO passkeys (user_id, credential_id, public_key, name, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, 0)")
-      .bind(userId, credentialId, publicKey, name, nowSec())
+      .prepare("INSERT INTO passkeys (user_id, credential_id, public_key, name, created_at, last_used_at, rp_id) VALUES (?, ?, ?, ?, ?, 0, ?)")
+      .bind(userId, credentialId, publicKey, name, nowSec(), rpId)
       .run();
     return Number(r.meta.last_row_id || 0);
+  }
+
+  async countPasskeysByRemovedRpIds(removed: string[]): Promise<{ affected: number; unknown: number }> {
+    const { results } = await this.db.prepare("SELECT rp_id FROM passkeys").all<{ rp_id?: string | null }>();
+    let affected = 0;
+    let unknown = 0;
+    for (const row of results) {
+      if (row.rp_id == null || row.rp_id === "") unknown += 1;
+      else if (removed.includes(row.rp_id)) affected += 1;
+    }
+    return { affected, unknown };
+  }
+
+  async channelsForModel(model: string): Promise<{ type: number; status: number; models: string; model_mapping: string }[]> {
+    const { results } = await this.db
+      .prepare("SELECT DISTINCT channel_id FROM abilities WHERE model = ?")
+      .bind(model)
+      .all<{ channel_id: number }>();
+    const ids = results.map((r) => r.channel_id);
+    if (!ids.length) return [];
+    const ph = ids.map(() => "?").join(",");
+    const { results: channels } = await this.db
+      .prepare(`SELECT type, status, models, model_mapping FROM channels WHERE id IN (${ph})`)
+      .bind(...ids)
+      .all<{ type: number; status: number; models: string; model_mapping: string }>();
+    return channels;
   }
 
   async touchPasskey(credentialId: string): Promise<void> {

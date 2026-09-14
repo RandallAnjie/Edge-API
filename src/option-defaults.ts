@@ -88,6 +88,7 @@ export const NESTED_OPTION_DEFAULTS: Record<string, string> = {
   "passkey.enabled": "false",
   "passkey.rp_display_name": "",
   "passkey.rp_id": "",
+  "passkey.legacy_rp_ids": "",
   "passkey.origins": "",
   "passkey.allow_insecure_origin": "false",
   "passkey.user_verification": "preferred",
@@ -197,6 +198,7 @@ export const NESTED_OPTION_DEFAULTS: Record<string, string> = {
   "group_ratio_setting.group_special_usable_group": "{}",
   "billing_setting.billing_mode": "{}",
   "billing_setting.billing_expr": "{}",
+  "billing_setting.plugin_billing_expr": "{}",
   "tool_price_setting.prices": "{}",
   "task_pricing_setting.sora_size_ratio": JSON.stringify({ "1792x1024": 1.666667, "1024x1792": 1.666667 }),
   "task_pricing_setting.vertex_resolution_4k_ratio": JSON.stringify({

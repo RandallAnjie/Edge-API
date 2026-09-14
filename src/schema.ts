@@ -427,7 +427,8 @@ CREATE TABLE IF NOT EXISTS passkeys (
   public_key TEXT NOT NULL,
   name TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL DEFAULT 0,
-  last_used_at INTEGER NOT NULL DEFAULT 0
+  last_used_at INTEGER NOT NULL DEFAULT 0,
+  rp_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS model_meta (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -674,6 +675,7 @@ const USER_ALTERS = [
   "ALTER TABLE tasks ADD COLUMN quota INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE tasks ADD COLUMN data TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE tasks ADD COLUMN private_data TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE passkeys ADD COLUMN rp_id TEXT NOT NULL DEFAULT ''",
 ];
 
 import type { D1Database } from "./types.js";

@@ -138,6 +138,16 @@ export function getHardcodedCompletionModelRatio(name: string): { ratio: number;
   return { ratio: 1, locked: false };
 }
 
+/** Original `ratio_setting.ResolveCompletionRatio`. */
+export function resolveCompletionRatio(name: string, configured?: number): CompletionRatioInfo {
+  name = formatMatchingModelName(name);
+  if (name.includes("/") && configured !== undefined) return { ratio: configured, locked: false };
+  const hardCoded = getHardcodedCompletionModelRatio(name);
+  if (hardCoded.locked) return { ratio: hardCoded.ratio, locked: true };
+  if (configured !== undefined) return { ratio: configured, locked: false };
+  return { ratio: hardCoded.ratio, locked: false };
+}
+
 /** Original `ratio_setting.GetCompletionRatioInfo`. */
 export function getCompletionRatioInfo(
   name: string,

@@ -60,15 +60,37 @@ export const DEFAULT_ENDPOINT_INFO: Record<string, { path: string; method: strin
 };
 
 const RESPONSE_ONLY = ["o3-pro", "o3-deep-research", "o4-mini-deep-research"];
-const IMAGE_MODELS = ["dall-e-3", "dall-e-2", "gpt-image-1", "prefix:imagen-", "flux-", "flux.1-"];
+/** Original `common.ImageGenerationModels`. */
+const IMAGE_GENERATION_MODELS = [
+  "dall-e-3",
+  "dall-e-2",
+  "prefix:dall-e",
+  "gpt-image-",
+  "qwen-image",
+  "z-image",
+  "wan2.7-image-pro",
+  "wan2.7-image",
+  "wan2.6-image",
+  "wan2.6-t2i",
+  "wan2.5-t2i-preview",
+  "wan2.2-t2i-flash",
+  "wan2.2-t2i-plus",
+  "wanx2.1-t2i-turbo",
+  "wanx2.1-t2i-plus",
+  "wanx2.0-t2i-turbo",
+  "prefix:imagen-",
+  "flux-",
+  "flux.1-",
+];
 
 function isResponseOnly(model: string): boolean {
   return RESPONSE_ONLY.some((m) => model.includes(m));
 }
 
-function isImageModel(model: string): boolean {
-  const n = model.toLowerCase();
-  return IMAGE_MODELS.some((m) => (m.startsWith("prefix:") ? n.startsWith(m.slice(7)) : n.includes(m)));
+/** Original `common.IsImageGenerationModel`. */
+export function isImageGenerationModel(modelName: string): boolean {
+  const n = modelName.toLowerCase();
+  return IMAGE_GENERATION_MODELS.some((m) => (m.startsWith("prefix:") ? n.startsWith(m.slice(7)) : n.includes(m)));
 }
 
 export function endpointTypesForChannel(type: number, modelName: string): string[] {
@@ -104,7 +126,7 @@ export function endpointTypesForChannel(type: number, modelName: string): string
     default:
       types = isResponseOnly(modelName) ? ["openai-response"] : ["openai"];
   }
-  if (isImageModel(modelName)) types = ["image-generation", ...types];
+  if (isImageGenerationModel(modelName)) types = ["image-generation", ...types];
   return types;
 }
 

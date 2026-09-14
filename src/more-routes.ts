@@ -32,7 +32,12 @@ import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
 import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues } from "./dto.js";
 import { billingCopies } from "./billing-setting.js";
 import { DEFAULT_MODEL_RATIO_JSON } from "./ratio-defaults.js";
-import { getModelPricingSnapshot, ModelPricingError, updateModelPricing, type ModelPricingChange } from "./model-pricing.js";
+import { getModelPricingSnapshot, ModelPricingError, previewModelPricingConversion, previewModelPricingDescription, updateModelPricing, type ModelPricingChange } from "./model-pricing.js";
+import {
+  PasskeyDomainError,
+  passkeyDomainHttpError,
+  updatePasskeyDomainOptions,
+} from "./passkey-domains.js";
 import { buildRankingsSnapshot } from "./rankings.js";
 import { requirePaymentCompliance } from "./payments.js";
 import {
@@ -53,7 +58,7 @@ import {
   updateCustomOAuthProvider,
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
-import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
+import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -80,6 +85,60 @@ type C = Context<Env>;
 
 function store(c: C): Store {
   return new Store(c.env.DB);
+}
+
+async function handlePasskeyDomainUpdate(
+  c: C,
+  s: Store,
+  u: { id: number; username: string; role: number },
+  values: Record<string, string>,
+  preview: boolean,
+  confirmation: string,
+): Promise<Response> {
+  const secret = await sessionSecret(c.env, s);
+  try {
+    const change = await updatePasskeyDomainOptions(s, secret, values, preview, confirmation);
+    if (!preview) {
+      const confirmed = confirmation !== "" && change.removed_rp_ids.length > 0;
+      await s.audit(u.id, u.username, "option", confirmed ? "option.passkey_domains_confirmed" : "option.passkey_domains", clientIp(c.req), {
+        actor_role: u.role,
+        category: "operation",
+        action: confirmed ? "option.passkey_domains_confirmed" : "option.passkey_domains",
+        method: c.req.method,
+        route: c.url.pathname,
+        status: 200,
+        success: true,
+        other: JSON.stringify({
+          confirmed,
+          removed_rp_ids: change.removed_rp_ids,
+          known: change.affected_credentials,
+          unknown: change.unknown_credentials,
+          previous_rp_id: change.previous_rp_id,
+          effective_rp_id: change.effective_rp_id,
+        }),
+      });
+    }
+    return apiOk(change);
+  } catch (e) {
+    if (e instanceof PasskeyDomainError && !preview) {
+      await s.audit(u.id, u.username, "option", e.code === "PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED" ? "option.passkey_domains_blocked" : "option.passkey_domains_failed", clientIp(c.req), {
+        actor_role: u.role,
+        category: "operation",
+        action: e.code === "PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED" ? "option.passkey_domains_blocked" : "option.passkey_domains_failed",
+        method: c.req.method,
+        route: c.url.pathname,
+        status: e.status,
+        success: false,
+        other: JSON.stringify({
+          confirmed: false,
+          removed_rp_ids: e.change?.removed_rp_ids || [],
+          known: e.change?.affected_credentials || 0,
+          unknown: e.change?.unknown_credentials || 0,
+        }),
+      });
+    }
+    return passkeyDomainHttpError(e, c.req);
+  }
 }
 
 export function registerMore(r: Router<Env>): void {
@@ -468,7 +527,7 @@ export function registerMore(r: Router<Env>): void {
     const credentialId = body.credential_id || String(cred.id || cred.rawId || "");
     const publicKey = body.public_key || JSON.stringify(cred);
     if (!credentialId) return apiFail("缺少凭证");
-    await s.insertPasskey(u.id, credentialId, publicKey, body.name || "passkey");
+    await s.insertPasskey(u.id, credentialId, publicKey, body.name || "passkey", rpFromRequest(c.req).rpId);
     await s.deleteAuthFlow(flow.token);
     const user = await s.getUserById(u.id);
     if (!user) return apiOk(null, "Passkey 注册成功");
@@ -1652,6 +1711,69 @@ export function registerMore(r: Router<Env>): void {
       const err = e as ModelPricingError;
       return json(err.status || 400, { success: false, message: err.message });
     }
+  });
+
+  r.post("/api/option/model_pricing/convert", async (c) => {
+    const s = store(c);
+    const u = await requireRoot(c, s);
+    if (isResponse(u)) return u;
+    let body: { model_name?: string; pricing?: Record<string, unknown> };
+    try {
+      body = (await readJson(c.req)) as { model_name?: string; pricing?: Record<string, unknown> };
+    } catch (e) {
+      return json(400, { success: false, message: e instanceof Error ? e.message : String(e) });
+    }
+    try {
+      return apiOk(await previewModelPricingConversion(s, String(body.model_name || ""), body.pricing || null));
+    } catch (e) {
+      const err = e as ModelPricingError;
+      return json(err.status || 200, { success: false, message: err.message });
+    }
+  });
+
+  r.post("/api/option/model_pricing/preview", async (c) => {
+    const s = store(c);
+    const u = await requireRoot(c, s);
+    if (isResponse(u)) return u;
+    let body: { model_name?: string; pricing?: Record<string, unknown> };
+    try {
+      body = (await readJson(c.req)) as { model_name?: string; pricing?: Record<string, unknown> };
+    } catch (e) {
+      return json(400, { success: false, message: e instanceof Error ? e.message : String(e) });
+    }
+    try {
+      return apiOk(await previewModelPricingDescription(s, String(body.model_name || ""), body.pricing || null));
+    } catch (e) {
+      const err = e as ModelPricingError;
+      return json(err.status || 200, { success: false, message: err.message });
+    }
+  });
+
+  r.put("/api/option/passkey/domains", async (c) => {
+    const s = store(c);
+    const u = await requireRoot(c, s);
+    if (isResponse(u)) return u;
+    let body: { rp_id?: string; legacy_rp_ids?: string; origins?: string; preview?: boolean; removal_confirmation?: string };
+    try {
+      body = (await readJson(c.req)) as typeof body;
+    } catch {
+      return apiFailInvalidParams(c.req);
+    }
+    if (body.rp_id === undefined || body.legacy_rp_ids === undefined || body.origins === undefined) {
+      return apiFailInvalidParams(c.req);
+    }
+    return handlePasskeyDomainUpdate(
+      c,
+      s,
+      u,
+      {
+        "passkey.rp_id": body.rp_id,
+        "passkey.legacy_rp_ids": body.legacy_rp_ids,
+        "passkey.origins": body.origins,
+      },
+      Boolean(body.preview),
+      body.removal_confirmation || "",
+    );
   });
 
   r.post("/api/option/rest_model_ratio", async (c) => {
