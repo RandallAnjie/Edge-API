@@ -355,6 +355,7 @@ export function extractClaudeHostedResponse(response: Record<string, unknown>): 
         action: block.input,
         caller: block.caller,
         serverName: str(block.server_name),
+        errorCode: "",
       });
       continue;
     }
