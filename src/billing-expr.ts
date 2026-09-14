@@ -275,6 +275,45 @@ export function billingSnapshotJSON(snap: BillingSnapshot): Record<string, unkno
   return out;
 }
 
+function numberField(raw: unknown, fallback = 0): number {
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function stringField(raw: unknown, fallback = ""): string {
+  return raw == null ? fallback : String(raw);
+}
+
+function usageFactsFrom(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return { ...(raw as Record<string, unknown>) };
+}
+
+/** Original BillingSnapshot JSON restore from persisted `tiered_snapshot`. */
+export function parseBillingSnapshot(raw: unknown): BillingSnapshot | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const exprString = stringField(obj.expr_string ?? obj.exprString);
+  if (!exprString) return null;
+  const facts = usageFactsFrom(obj.usage_facts ?? obj.usageFacts);
+  return {
+    billingMode: stringField(obj.billing_mode ?? obj.billingMode, "tiered_expr"),
+    modelName: stringField(obj.model_name ?? obj.modelName),
+    exprString,
+    exprHash: stringField(obj.expr_hash ?? obj.exprHash),
+    groupRatio: numberField(obj.group_ratio ?? obj.groupRatio, 1),
+    estimatedPromptTokens: numberField(obj.estimated_prompt_tokens ?? obj.estimatedPromptTokens),
+    estimatedCompletionTokens: numberField(obj.estimated_completion_tokens ?? obj.estimatedCompletionTokens),
+    estimatedQuotaBeforeGroup: numberField(obj.estimated_quota_before_group ?? obj.estimatedQuotaBeforeGroup),
+    estimatedQuotaAfterGroup: numberField(obj.estimated_quota_after_group ?? obj.estimatedQuotaAfterGroup),
+    estimatedTier: stringField(obj.estimated_tier ?? obj.estimatedTier),
+    quotaPerUnit: numberField(obj.quota_per_unit ?? obj.quotaPerUnit, 500000) || 500000,
+    exprVersion: numberField(obj.expr_version ?? obj.exprVersion, 1) || 1,
+    taskUsageBilling: Boolean(obj.task_usage_billing ?? obj.taskUsageBilling),
+    usageFacts: facts,
+  };
+}
+
 /** Original `billing_setting.SmokeTestExpr`. */
 export function smokeTestExpr(exprStr: string): Error | null {
   const compiled = compileBillingExpr(exprStr);

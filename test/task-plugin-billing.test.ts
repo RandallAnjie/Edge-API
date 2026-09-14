@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHANNEL_TYPE_OPENAI, LOG_CONSUME, ROOT_QUOTA } from "../src/constants.js";
+import { CHANNEL_TYPE_OPENAI, LOG_CONSUME, LOG_REFUND, ROOT_QUOTA } from "../src/constants.js";
 import { formatQuotaOriginal, insufficientWalletQuotaMessage } from "../src/quota.js";
 import { MAX_QUOTA, quotaClampMessage } from "../src/task-plugin-usage.js";
 import {
@@ -14,7 +14,10 @@ import {
   taskConsumptionLogContent,
   type TaskConsumptionLogInput,
   type TaskPriceData,
+  taskBillingOther,
 } from "../src/task-plugin-billing.js";
+import { runTaskPollingOnce, SYSTEM_TASK_TYPE_ASYNC_TASK_POLL, TASK_TIMEOUT_MINUTES } from "../src/task-plugin-poll.js";
+import worker from "../src/worker.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
@@ -280,8 +283,8 @@ async function boot() {
 }
 
 const httpUsagePlugin = `
-export const meta = {apiVersion:1,key:"mock-http",name:"Mock Task",version:"1.0.0",author:{name:"Test"},models:["mock-v1"],fetchMode:"per_task",channelTypes:[${CHANNEL_TYPE_OPENAI}],usageSchema:{seconds:{type:"number",unit:"second"},mode:{enum:["std","pro"]}},routes:[{method:"POST",path:"/vendor/jobs",type:"submit",decode:"decode",render:"created"}]};
-export const native = {decode:function(ctx){return {kind:"submit",model:"mock-v1",requestBody:ctx.body.value};},created:function(ctx,task){return {data:{task_id:task.task_id},upstream:task.data};}};
+export const meta = {apiVersion:1,key:"mock-http",name:"Mock Task",version:"1.0.0",author:{name:"Test"},models:["mock-v1"],fetchMode:"per_task",channelTypes:[${CHANNEL_TYPE_OPENAI}],usageSchema:{seconds:{type:"number",unit:"second"},mode:{enum:["std","pro"]}},routes:[{method:"POST",path:"/vendor/jobs",type:"submit",decode:"decode",render:"created"},{method:"GET",path:"/vendor/jobs/:task_id",type:"query",render:"status"}]};
+export const native = {decode:function(ctx){return {kind:"submit",model:"mock-v1",requestBody:ctx.body.value};},created:function(ctx,task){return {data:{task_id:task.task_id},upstream:task.data};},status:function(ctx,task){return {data:{task_id:task.task_id,status:task.status,progress:task.progress,fail_reason:task.fail_reason}};}};
 export function buildSubmitRequest(ctx){return {url:ctx.baseUrl+"/submit",method:"POST",body:{prompt:ctx.requestBody.prompt}};}
 export function parseSubmitResponse(ctx,resp){return {taskId:resp.body.id,taskData:{accepted:true,status:resp.statusCode}};}
 export function extractUsage(){return {seconds:5,mode:"pro"};}
@@ -799,6 +802,248 @@ test("original native RelayTask EvaluateTaskCompletionUsage immediate SUCCESS JS
     const user = await store.getUserByUsername("root");
     assert.equal(Number(user?.quota), ROOT_QUOTA - 20_000_000);
     assert.equal(Number(user?.used_quota), 20_000_000);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original taskBillingOther other_ratio keys and nested usage_facts JSON", () => {
+  const expression = `tier("720P", u("seconds") * 5)`;
+  const other = taskBillingOther({
+    task_id: "task_public",
+    model_name: "mock-v1",
+    properties: JSON.stringify({ origin_model_name: "alias", upstream_model_name: "upstream-v1" }),
+    private_data: JSON.stringify({
+      upstream_task_id: "up-1",
+      billing_context: {
+        model_price: 0,
+        model_ratio: 0,
+        group_ratio: 1,
+        other_ratios: { seconds: 7 },
+        origin_model_name: "mock-v1",
+        tiered_snapshot: {
+          billing_mode: "tiered_expr",
+          expr_string: expression,
+          estimated_tier: "720P",
+          usage_facts: { seconds: 5, mode: "pro" },
+          group_ratio: 1,
+          quota_per_unit: 500000,
+          task_usage_billing: true,
+        },
+      },
+      execution: { task_plugin: { key: "mock-http", name: "Mock Task", version: "1.0.0", api_version: 1, generation: 0, author: { name: "Test" } } },
+    }),
+  });
+  assert.equal(other.model_price, 0);
+  assert.equal("model_ratio" in other, false);
+  assert.equal(other.group_ratio, 1);
+  assert.equal(other.seconds, 7);
+  assert.equal(other.billing_mode, "tiered_expr");
+  assert.equal(other.expr_b64, Buffer.from(expression, "utf8").toString("base64"));
+  assert.equal(other.matched_tier, "720P");
+  assert.deepEqual(other.usage_facts, { seconds: 5, mode: "pro" });
+  assert.equal(other.is_model_mapped, true);
+  assert.equal(other.upstream_model_name, "upstream-v1");
+  assert.equal(other.task_id, "task_public");
+  const admin = other.admin_info as { task_plugin?: { key: string; author?: { name: string } } };
+  assert.equal(admin.task_plugin?.key, "mock-http");
+  assert.equal(admin.task_plugin?.author?.name, "Test");
+  const root = other.root_info as { upstream_task_id?: string; task_plugin?: { author?: unknown } };
+  assert.equal(root.upstream_task_id, "up-1");
+  assert.equal("author" in (root.task_plugin || {}), false);
+});
+
+test("original native poll FAILURE RefundTaskQuota log type 6 JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  const source = httpUsagePlugin.replace(`export function parseTaskResult(){return {status:"SUCCESS"};}`, `export function parseTaskResult(){return {status:"FAILURE",reason:"upstream failed"};}`);
+  await registerHttpUsage(e, auth, source, "mock-poll-fail");
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://provider.example.test/submit") {
+      return new Response(JSON.stringify({ id: "upstream-fail" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://provider.example.test/query") {
+      return new Response(JSON.stringify({ status: "FAILURE" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 200, hit.text);
+    const taskId = String((hit.body as { data?: { task_id?: string } }).data?.task_id);
+    const poll = await json(new Request("http://local/vendor/jobs/" + taskId, { headers: { authorization: "Bearer " + sk } }), e);
+    assert.equal(poll.res.status, 200, poll.text);
+    const view = (poll.body as { data?: { status?: string } }).data;
+    assert.equal(view?.status, "FAILURE");
+    const persisted = await store.getTaskByTid(taskId);
+    assert.equal(String(persisted?.status), "FAILURE");
+    assert.equal(Number(persisted?.quota), 0);
+    const refunds = await json(new Request("http://local/api/log/?type=6", { headers: auth }), e);
+    const items = (refunds.body.data as { items: { type: number; quota: number; content: string; other: string }[] }).items;
+    assert.ok(items.length, refunds.text);
+    const refund = items[0];
+    assert.equal(refund.type, LOG_REFUND);
+    assert.equal(refund.quota, 1750000);
+    assert.equal(refund.content, "");
+    const other = JSON.parse(refund.other || "{}") as Record<string, unknown>;
+    assert.equal(other.task_id, taskId);
+    assert.equal(other.reason, "upstream failed");
+    assert.equal(other.seconds, 7);
+    assert.equal(other.model_ratio, 1);
+    const user = await store.getUserByUsername("root");
+    assert.equal(Number(user?.quota), ROOT_QUOTA);
+    assert.equal(Number(user?.used_quota), 0);
+    assert.equal(Number(user?.request_count), 1);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original native poll SUCCESS RecalculateTaskQuota pre_consumed_quota JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  const source = httpUsagePlugin.replace(
+    `export function parseTaskResult(){return {status:"SUCCESS"};}`,
+    `export function parseTaskResult(){return {status:"SUCCESS"};}\nexport function extractUsageOnComplete(){return {seconds:8};}`,
+  );
+  await registerHttpUsage(e, auth, source, "mock-poll-recalc");
+  const expression = `tier("720P", u("seconds") * 5)`;
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "billing_setting.billing_mode", value: JSON.stringify({ "mock-v1": "tiered_expr" }) }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "billing_setting.billing_expr", value: JSON.stringify({ "mock-v1": expression }) }),
+    }),
+    e,
+  );
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://provider.example.test/submit") {
+      return new Response(JSON.stringify({ id: "upstream-recalc" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://provider.example.test/query") {
+      return new Response(JSON.stringify({ status: "SUCCESS", seconds: 8 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 200, hit.text);
+    const taskId = String((hit.body as { data?: { task_id?: string } }).data?.task_id);
+    const summary = await runTaskPollingOnce(store);
+    assert.equal(summary.unfinished_tasks, 1);
+    assert.equal(summary.platforms_scanned, 1);
+    assert.equal(summary.null_tasks_failed, 0);
+    const persisted = await store.getTaskByTid(taskId);
+    assert.equal(String(persisted?.status), "SUCCESS");
+    assert.equal(Number(persisted?.quota), 20_000_000);
+    const logs = await json(new Request("http://local/api/log/?type=2", { headers: auth }), e);
+    const items = (logs.body.data as { items: { quota: number; content: string; other: string }[] }).items;
+    const delta = items.find((item) => JSON.parse(item.other || "{}").pre_consumed_quota != null);
+    assert.ok(delta, logs.text);
+    assert.equal(delta?.quota, 7_500_000);
+    assert.equal(delta?.content, "任务用量表达式结算");
+    const other = JSON.parse(delta?.other || "{}") as Record<string, unknown>;
+    assert.equal(other.task_id, taskId);
+    assert.equal(other.pre_consumed_quota, 12_500_000);
+    assert.equal(other.actual_quota, 20_000_000);
+    assert.equal(other.billing_mode, "tiered_expr");
+    assert.deepEqual(other.usage_facts, { seconds: 8, mode: "pro" });
+    const user = await store.getUserByUsername("root");
+    assert.equal(Number(user?.quota), ROOT_QUOTA - 20_000_000);
+    assert.equal(Number(user?.used_quota), 20_000_000);
+    assert.equal(Number(user?.request_count), 1);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original sweepTimedOutTasks refunds with timeout reason JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  await registerHttpUsage(e, auth, httpUsagePlugin, "mock-timeout");
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://provider.example.test/submit") {
+      return new Response(JSON.stringify({ id: "upstream-timeout" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 200, hit.text);
+    const taskId = String((hit.body as { data?: { task_id?: string } }).data?.task_id);
+    const cutoff = Math.floor(Date.now() / 1000) - TASK_TIMEOUT_MINUTES * 60 - 10;
+    await store.updateTaskByTid(taskId, { submit_time: cutoff });
+    const pending: Promise<unknown>[] = [];
+    await worker.scheduled({}, e, { waitUntil(p) { pending.push(p); } });
+    await Promise.all(pending);
+    const persisted = await store.getTaskByTid(taskId);
+    assert.equal(String(persisted?.status), "FAILURE");
+    assert.equal(String(persisted?.fail_reason), `任务超时（${TASK_TIMEOUT_MINUTES}分钟）`);
+    assert.equal(Number(persisted?.quota), 0);
+    const refunds = await json(new Request("http://local/api/log/?type=6", { headers: auth }), e);
+    const items = (refunds.body.data as { items: { type: number; quota: number; content: string; other: string }[] }).items;
+    assert.equal(items[0].type, LOG_REFUND);
+    assert.equal(items[0].quota, 1750000);
+    const other = JSON.parse(items[0].other || "{}") as Record<string, unknown>;
+    assert.equal(other.reason, `任务超时（${TASK_TIMEOUT_MINUTES}分钟）`);
+    assert.equal(other.task_id, taskId);
+    const tasks = await json(new Request("http://local/api/system-task/list", { headers: auth }), e);
+    const sys = (tasks.body.data as { type?: string; result?: string }[]).find((item) => item.type === SYSTEM_TASK_TYPE_ASYNC_TASK_POLL);
+    assert.ok(sys, tasks.text);
+    const result = typeof sys?.result === "string" ? JSON.parse(sys.result) : sys?.result;
+    assert.equal(typeof (result as { unfinished_tasks?: number }).unfinished_tasks, "number");
+    assert.equal(typeof (result as { platforms_scanned?: number }).platforms_scanned, "number");
+    assert.equal(typeof (result as { null_tasks_failed?: number }).null_tasks_failed, "number");
+    const user = await store.getUserByUsername("root");
+    assert.equal(Number(user?.quota), ROOT_QUOTA);
+    assert.equal(Number(user?.used_quota), 0);
+    assert.equal(Number(user?.request_count), 1);
   } finally {
     globalThis.fetch = origFetch;
   }

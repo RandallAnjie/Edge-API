@@ -8,6 +8,7 @@ import { type PluginEngine, validateRequestURL } from "./jsplugin.js";
 import { pickChannelKey } from "./select.js";
 import type { Store } from "./store.js";
 import type { ChannelRow } from "./types.js";
+import { refundTaskQuota, settleTaskBillingOnComplete } from "./task-plugin-billing.js";
 import { validatedCompletionUsageFacts } from "./task-plugin-usage.js";
 
 export const MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES = 1 << 20;
@@ -646,7 +647,7 @@ export function applyNativePollToTask(
   return next;
 }
 
-function failTaskFromPoll(row: Record<string, unknown>, reason: string, now = nowSec()): Record<string, unknown> {
+export function failTaskFromPoll(row: Record<string, unknown>, reason: string, now = nowSec()): Record<string, unknown> {
   const next = { ...row };
   const privateData = parsePrivateData(row);
   next.status = TASK_STATUS_FAILURE;
@@ -658,6 +659,79 @@ function failTaskFromPoll(row: Record<string, unknown>, reason: string, now = no
   return next;
 }
 
+/** Original `relaycommon.FailTaskInfo`. */
+export function failNativeTaskInfo(reason: string): NativeTaskInfo {
+  return {
+    code: 0,
+    taskId: "",
+    status: TASK_STATUS_FAILURE,
+    progress: PROGRESS_COMPLETE,
+    reason,
+    url: "",
+    remoteUrl: "",
+    completionTokens: 0,
+    totalTokens: 0,
+  };
+}
+
+/** Original jsplugin `TaskAdaptor.AdjustBillingOnComplete` (returns 0 after stuffing facts). */
+export function adjustBillingOnComplete(engine: PluginEngine, row: Record<string, unknown>, result: NativeTaskInfo): number {
+  if (!engine.hasCallablePath("extractUsageOnComplete")) return 0;
+  try {
+    const facts = engine.call("extractUsageOnComplete", pluginJsonValue(row), pluginJsonValue(result));
+    const properties = parseProperties(row);
+    const model = String(properties.upstream_model_name || properties.origin_model_name || "");
+    applyCompletionUsageFacts(result, facts, model, pluginMeta(engine));
+  } catch {
+    return 0;
+  }
+  return 0;
+}
+
+function taskPersistPatch(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    status: row.status,
+    progress: row.progress,
+    fail_reason: row.fail_reason ?? "",
+    data: typeof row.data === "string" ? row.data : JSON.stringify(row.data ?? null),
+    private_data: typeof row.private_data === "string" ? row.private_data : JSON.stringify(parsePrivateData(row)),
+    start_time: Number(row.start_time || 0),
+    finish_time: Number(row.finish_time || 0),
+    submit_time: Number(row.submit_time || 0),
+    action: row.action ?? "",
+    updated_at: Number(row.updated_at || nowSec()),
+  };
+}
+
+export async function persistNativePollUpdate(opts: {
+  store: Store;
+  previous: Record<string, unknown>;
+  next: Record<string, unknown>;
+  taskInfo: NativeTaskInfo | null;
+  engine?: PluginEngine;
+}): Promise<Record<string, unknown>> {
+  const taskId = String(opts.next.task_id || opts.previous.task_id || "");
+  const fromStatus = String(opts.previous.status || "");
+  const nextStatus = String(opts.next.status || "");
+  const isDone = nextStatus === TASK_STATUS_SUCCESS || nextStatus === TASK_STATUS_FAILURE;
+  const terminalTransition = isDone && fromStatus !== nextStatus;
+  const won = await opts.store.updateTaskByTidIfStatus(taskId, fromStatus, taskPersistPatch(opts.next));
+  if (!won) return (await opts.store.getTaskByTid(taskId)) || opts.next;
+  const persisted = (await opts.store.getTaskByTid(taskId)) || opts.next;
+  if (!terminalTransition) return persisted;
+  const info = opts.taskInfo || failNativeTaskInfo(String(opts.next.fail_reason || ""));
+  const settled = await settleTaskBillingOnComplete({
+    store: opts.store,
+    row: persisted,
+    taskInfo: info,
+    adjustBillingOnComplete: opts.engine ? (row) => adjustBillingOnComplete(opts.engine as PluginEngine, row, info) : undefined,
+  });
+  if (nextStatus === TASK_STATUS_FAILURE && !settled && Number(persisted.quota || 0) !== 0) {
+    await refundTaskQuota(opts.store, persisted, String(opts.next.fail_reason || info.reason || ""));
+  }
+  return (await opts.store.getTaskByTid(taskId)) || persisted;
+}
+
 function pollFailureReason(className: string, statusCode: number, detail: string): string {
   let reason = `poll failed: ${className}`;
   if (statusCode > 0) reason = `poll failed: ${className} (HTTP ${statusCode})`;
@@ -665,7 +739,7 @@ function pollFailureReason(className: string, statusCode: number, detail: string
   return reason;
 }
 
-function recordPollFailure(row: Record<string, unknown>, className: string, statusCode: number, detail: string): Record<string, unknown> {
+export function recordPollFailure(row: Record<string, unknown>, className: string, statusCode: number, detail: string): Record<string, unknown> {
   const privateData = parsePrivateData(row);
   const failures = Number(privateData.poll_failures || 0) + 1;
   privateData.poll_failures = failures;
@@ -676,19 +750,14 @@ function recordPollFailure(row: Record<string, unknown>, className: string, stat
   return next;
 }
 
-async function persistTaskRow(store: Store, row: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const taskId = String(row.task_id || "");
-  await store.updateTaskByTid(taskId, {
-    status: row.status,
-    progress: row.progress,
-    fail_reason: row.fail_reason ?? "",
-    data: typeof row.data === "string" ? row.data : JSON.stringify(row.data ?? null),
-    private_data: typeof row.private_data === "string" ? row.private_data : JSON.stringify(parsePrivateData(row)),
-    start_time: Number(row.start_time || 0),
-    finish_time: Number(row.finish_time || 0),
-    updated_at: Number(row.updated_at || nowSec()),
-  });
-  return (await store.getTaskByTid(taskId)) || row;
+async function persistTaskRow(
+  store: Store,
+  previous: Record<string, unknown>,
+  row: Record<string, unknown>,
+  taskInfo: NativeTaskInfo | null = null,
+  engine?: PluginEngine,
+): Promise<Record<string, unknown>> {
+  return persistNativePollUpdate({ store, previous, next: row, taskInfo, engine });
 }
 
 export async function refreshNativeQueryTask(opts: {
@@ -712,43 +781,44 @@ export async function refreshNativeQueryTask(opts: {
   const queryContext = buildNativeQueryContext(opts.engine, opts.row, apiKey, baseUrl);
   if (isNativeQueryError(queryContext)) {
     const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, 0, queryContext.message);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   const descriptor = buildNativeQueryDescriptor(opts.engine, queryContext, baseUrl);
   if (isNativeQueryError(descriptor)) {
     const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, 0, descriptor.message);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   const fetched = await fetchNativeQuery(descriptor);
   if (isNativeQueryError(fetched)) {
     const failed = recordPollFailure(opts.row, POLL_TRANSPORT, 0, fetched.message);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   const httpClass = classifyPollHTTP(fetched.status);
   if (httpClass === POLL_NOT_FOUND) {
-    return persistTaskRow(opts.store, failTaskFromPoll(opts.row, `upstream task not found (HTTP ${fetched.status})`));
+    const reason = `upstream task not found (HTTP ${fetched.status})`;
+    return persistTaskRow(opts.store, opts.row, failTaskFromPoll(opts.row, reason), failNativeTaskInfo(reason), opts.engine);
   }
   if (httpClass === POLL_AUTH || httpClass === POLL_TRANSIENT) {
-    return persistTaskRow(opts.store, recordPollFailure(opts.row, httpClass, fetched.status, ""));
+    return persistTaskRow(opts.store, opts.row, recordPollFailure(opts.row, httpClass, fetched.status, ""), null, opts.engine);
   }
   const peer = parsePeerTaskResponse(fetched.body);
   const info = peer || parseNativeTaskResult(opts.engine, queryContext, fetched.status, fetched.headers, fetched.body);
   if (isNativeQueryError(info)) {
     const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, fetched.status, info.message);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   const parsed = info;
   if (!parsed.status || parsed.status === TASK_STATUS_UNKNOWN || !knownPollStatus(parsed.status)) {
     const failed = recordPollFailure(opts.row, POLL_UNRECOGNIZED, fetched.status, parsed.reason || parsed.status);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   if (httpClass === POLL_OTHER_CLIENT && isNonTerminalPollStatus(parsed.status)) {
     const failed = recordPollFailure(opts.row, POLL_UNRECOGNIZED, fetched.status, parsed.reason);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   const serverAddress = opts.serverAddress ?? (await opts.store.option("ServerAddress"));
   const applied = applyNativePollToTask(opts.row, parsed, fetched.body, serverAddress);
-  return persistTaskRow(opts.store, applied);
+  return persistTaskRow(opts.store, opts.row, applied, parsed, opts.engine);
 }
 
 async function refreshNativeBatchQueryTask(
@@ -764,24 +834,25 @@ async function refreshNativeBatchQueryTask(
   const packed = buildNativeBatchQueryContext(opts.engine, [opts.row], apiKey, baseUrl);
   if (isNativeQueryError(packed)) {
     const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, 0, packed.message);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   const descriptor = buildNativeBatchQueryDescriptor(opts.engine, packed.ctx, packed.taskContexts, baseUrl);
   if (isNativeQueryError(descriptor)) {
     const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, 0, descriptor.message);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   const fetched = await fetchNativeQuery(descriptor);
   if (isNativeQueryError(fetched)) {
     const failed = recordPollFailure(opts.row, POLL_TRANSPORT, 0, fetched.message);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   const httpClass = classifyPollHTTP(fetched.status);
   if (httpClass === POLL_NOT_FOUND) {
-    return persistTaskRow(opts.store, failTaskFromPoll(opts.row, `upstream task not found (HTTP ${fetched.status})`));
+    const reason = `upstream task not found (HTTP ${fetched.status})`;
+    return persistTaskRow(opts.store, opts.row, failTaskFromPoll(opts.row, reason), failNativeTaskInfo(reason), opts.engine);
   }
   if (httpClass === POLL_AUTH || httpClass === POLL_TRANSIENT) {
-    return persistTaskRow(opts.store, recordPollFailure(opts.row, httpClass, fetched.status, ""));
+    return persistTaskRow(opts.store, opts.row, recordPollFailure(opts.row, httpClass, fetched.status, ""), null, opts.engine);
   }
   const parsed = parseNativeBatchResult(
     opts.engine,
@@ -793,7 +864,7 @@ async function refreshNativeBatchQueryTask(
   );
   if (isNativeQueryError(parsed)) {
     const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, fetched.status, parsed.message);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   const upstreamId = getUpstreamTaskID(opts.row);
   const item = parsed[upstreamId];
@@ -801,11 +872,11 @@ async function refreshNativeBatchQueryTask(
   const info = item.taskInfo;
   if (!info.status || info.status === TASK_STATUS_UNKNOWN || !knownPollStatus(info.status)) {
     const failed = recordPollFailure(opts.row, POLL_UNRECOGNIZED, fetched.status, info.reason || info.status);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   if (httpClass === POLL_OTHER_CLIENT && isNonTerminalPollStatus(info.status)) {
     const failed = recordPollFailure(opts.row, POLL_UNRECOGNIZED, fetched.status, info.reason);
-    return persistTaskRow(opts.store, failed);
+    return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
   }
   const serverAddress = opts.serverAddress ?? (await opts.store.option("ServerAddress"));
   const applied = applyNativePollToTask(opts.row, info, item.data != null ? item.data : {}, serverAddress);
@@ -814,5 +885,5 @@ async function refreshNativeBatchQueryTask(
   if (item.startTime) applied.start_time = item.startTime;
   if (item.finishTime) applied.finish_time = item.finishTime;
   if (item.action) applied.action = item.action;
-  return persistTaskRow(opts.store, applied);
+  return persistTaskRow(opts.store, opts.row, applied, info, opts.engine);
 }

@@ -374,9 +374,23 @@ export class Store {
       .run();
   }
 
+  /** Original `model.DecreaseTokenQuota` (no remain check; Recalculate extra). */
+  async decreaseTokenQuota(tokenId: number, quota: number): Promise<void> {
+    if (quota <= 0) return;
+    await this.db
+      .prepare("UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ?")
+      .bind(quota, quota, nowSec(), tokenId)
+      .run();
+  }
+
   /** Original `model.UpdateUserUsedQuotaAndRequestCount`. */
   async addUserUsedQuotaAndRequestCount(userId: number, quota: number): Promise<void> {
     await this.db.prepare("UPDATE users SET used_quota = used_quota + ?, request_count = request_count + 1 WHERE id = ?").bind(quota, userId).run();
+  }
+
+  /** Original `model.UpdateUserUsedQuota` (refund/recalculate; request_count unchanged). */
+  async addUserUsedQuota(userId: number, quota: number): Promise<void> {
+    await this.db.prepare("UPDATE users SET used_quota = used_quota + ? WHERE id = ?").bind(quota, userId).run();
   }
 
   /** Original `model.UpdateChannelUsedQuota`. */
@@ -2246,6 +2260,74 @@ export class Store {
     if (!cols.length) return;
     vals.push(taskId);
     await this.db.prepare(`UPDATE tasks SET ${cols.join(", ")} WHERE task_id = ?`).bind(...vals).run();
+  }
+
+  /** Original `Task.UpdateWithStatus` CAS guarded by previous status. */
+  async updateTaskByTidIfStatus(taskId: string, fromStatus: string, patch: Record<string, unknown>): Promise<boolean> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return false;
+    vals.push(taskId, fromStatus);
+    const r = await this.db.prepare(`UPDATE tasks SET ${cols.join(", ")} WHERE task_id = ? AND status = ?`).bind(...vals).run();
+    return Number(r.meta.changes || 0) === 1;
+  }
+
+  /** Original `Task.UpdateQuota`. */
+  async updateTaskQuota(taskId: string, quota: number): Promise<void> {
+    await this.db.prepare("UPDATE tasks SET quota = ? WHERE task_id = ?").bind(quota, taskId).run();
+  }
+
+  /** Original `model.GetAllUnFinishSyncTasks`. */
+  async listUnfinishedSyncTasks(limit = 1000): Promise<Record<string, unknown>[]> {
+    const n = Number.isInteger(limit) && limit > 0 ? limit : 1000;
+    const { results } = await this.db
+      .prepare(
+        "SELECT * FROM tasks WHERE progress != ? AND status != ? AND status != ? ORDER BY id LIMIT ?",
+      )
+      .bind("100%", "FAILURE", "SUCCESS", n)
+      .all<Record<string, unknown>>();
+    return results || [];
+  }
+
+  /** Original `model.HasUnfinishedSyncTasks`. */
+  async hasUnfinishedSyncTasks(): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        "SELECT id FROM tasks WHERE progress != ? AND status != ? AND status != ? LIMIT 1",
+      )
+      .bind("100%", "FAILURE", "SUCCESS")
+      .first<{ id: number }>();
+    return Boolean(row?.id);
+  }
+
+  /** Original `model.GetTimedOutUnfinishedTasks`. */
+  async listTimedOutUnfinishedTasks(cutoffUnix: number, limit = 100): Promise<Record<string, unknown>[]> {
+    const n = Number.isInteger(limit) && limit > 0 ? limit : 100;
+    const { results } = await this.db
+      .prepare(
+        "SELECT * FROM tasks WHERE progress != ? AND status NOT IN (?, ?) AND submit_time < ? ORDER BY submit_time LIMIT ?",
+      )
+      .bind("100%", "FAILURE", "SUCCESS", cutoffUnix, n)
+      .all<Record<string, unknown>>();
+    return results || [];
+  }
+
+  /** Original `model.TaskBulkUpdateByID` (no CAS; not for billing transitions). */
+  async bulkUpdateTasksByIds(ids: number[], patch: Record<string, unknown>): Promise<void> {
+    if (!ids.length) return;
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    const ph = ids.map(() => "?").join(",");
+    await this.db.prepare(`UPDATE tasks SET ${cols.join(", ")} WHERE id IN (${ph})`).bind(...vals, ...ids).run();
   }
 
   async listTasks(

@@ -2,10 +2,21 @@
  * Original `service.LogTaskConsumption` consume-log JSON on workerd.
  * Matches `other` public/admin/root scopes and content `操作 … 计算参数：`.
  */
-import { LOG_CONSUME, parseJson } from "./constants.js";
+import { evaluateTaskCompletionUsage, parseBillingSnapshot, type BillingSnapshot } from "./billing-expr.js";
+import { DEFAULT_GROUP_RATIO, LOG_CONSUME, LOG_REFUND, parseJson } from "./constants.js";
+import { getModelRatioFromMap } from "./ratio-setting.js";
 import type { Store } from "./store.js";
-import type { QuotaClamp } from "./task-plugin-usage.js";
+import { otherRatioMultiplier, quotaFromFloatChecked, type QuotaClamp } from "./task-plugin-usage.js";
 import type { UserRow } from "./types.js";
+
+/** Original `relaycommon.TaskInfo` fields used by poll settlement. */
+export type TaskCompleteInfo = {
+  status?: string;
+  reason?: string;
+  completionTokens?: number;
+  totalTokens?: number;
+  usageFacts?: Record<string, unknown>;
+};
 
 const LOG_OTHER_RESERVED = new Set(["admin_info", "root_info", "audit_info", "channel_id", "channel_name", "channel_type", "reject_reason"]);
 
@@ -322,4 +333,332 @@ export async function logTaskConsumption(opts: {
     content,
     other: logTaskConsumptionOther(opts.input),
   });
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function objectFrom(raw: unknown): Record<string, unknown> {
+  if (isPlainObject(raw)) return { ...raw };
+  if (typeof raw === "string") return parseJson<Record<string, unknown>>(raw, {});
+  return {};
+}
+
+function numberField(raw: unknown, fallback = 0): number {
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function pluginSnapshotFromPrivate(privateData: Record<string, unknown>): TaskPluginSnapshot | null {
+  const execution = objectFrom(privateData.execution);
+  const plugin = objectFrom(execution.task_plugin);
+  const key = String(plugin.key || "");
+  if (!key) return null;
+  const authorRaw = objectFrom(plugin.author);
+  const name = String(authorRaw.name || "");
+  const url = String(authorRaw.url || "");
+  return {
+    key,
+    name: String(plugin.name || key),
+    version: String(plugin.version || ""),
+    author: name ? { name, ...(url ? { url } : {}) } : undefined,
+    apiVersion: Number(plugin.api_version ?? plugin.apiVersion ?? 1) || 1,
+    generation: Number(plugin.generation ?? 0) || 0,
+  };
+}
+
+function billingContext(privateData: Record<string, unknown>): Record<string, unknown> {
+  return objectFrom(privateData.billing_context);
+}
+
+function otherRatiosFromContext(bc: Record<string, unknown>): Record<string, number> {
+  const raw = objectFrom(bc.other_ratios ?? bc.otherRatios);
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const n = Number(value);
+    if (Number.isFinite(n)) out[key] = n;
+  }
+  return out;
+}
+
+function taskModelName(row: Record<string, unknown>, privateData: Record<string, unknown>): string {
+  const bc = billingContext(privateData);
+  const fromBc = String(bc.origin_model_name ?? bc.originModelName || "");
+  if (fromBc) return fromBc;
+  const properties = objectFrom(row.properties);
+  return String(properties.origin_model_name || row.model_name || "");
+}
+
+function taskGroup(row: Record<string, unknown>): string {
+  return String(row.group ?? row["group"] || "");
+}
+
+/** Original `service.taskBillingOther`. */
+export function taskBillingOther(row: Record<string, unknown>): Record<string, unknown> {
+  const other = newLogOther();
+  const privateData = objectFrom(row.private_data);
+  const bc = billingContext(privateData);
+  if (Object.keys(bc).length) {
+    setLogOtherPublic(other, "model_price", numberField(bc.model_price ?? bc.modelPrice));
+    const modelRatio = numberField(bc.model_ratio ?? bc.modelRatio);
+    if (modelRatio > 0) setLogOtherPublic(other, "model_ratio", modelRatio);
+    setLogOtherPublic(other, "group_ratio", numberField(bc.group_ratio ?? bc.groupRatio, 1));
+    for (const [key, value] of Object.entries(otherRatiosFromContext(bc))) {
+      setLogOtherPublic(other, key, value);
+    }
+    const snap = parseBillingSnapshot(bc.tiered_snapshot ?? bc.tieredSnapshot);
+    if (snap) {
+      setLogOtherPublic(other, "billing_mode", "tiered_expr");
+      setLogOtherPublic(other, "expr_b64", utf8Base64(snap.exprString));
+      setLogOtherPublic(other, "matched_tier", snap.estimatedTier);
+      if (snap.usageFacts && Object.keys(snap.usageFacts).length) {
+        setLogOtherPublic(other, "usage_facts", snap.usageFacts);
+      }
+    }
+  }
+  const properties = objectFrom(row.properties);
+  const origin = String(properties.origin_model_name || "");
+  const upstream = String(properties.upstream_model_name || "");
+  if (upstream && upstream !== origin) {
+    setLogOtherPublic(other, "is_model_mapped", true);
+    setLogOtherPublic(other, "upstream_model_name", upstream);
+  }
+  appendTaskLogInfo(other, {
+    taskId: String(row.task_id || ""),
+    upstreamTaskId: String(privateData.upstream_task_id || ""),
+    nodeName: String(privateData.node_name || ""),
+    plugin: pluginSnapshotFromPrivate(privateData),
+  });
+  return logOtherSnapshot(other);
+}
+
+function applySnapshotToPrivate(privateData: Record<string, unknown>, snap: BillingSnapshot): void {
+  const bc = billingContext(privateData);
+  const prev = objectFrom(bc.tiered_snapshot ?? bc.tieredSnapshot);
+  bc.tiered_snapshot = {
+    ...prev,
+    estimated_tier: snap.estimatedTier,
+    usage_facts: snap.usageFacts,
+    expr_string: snap.exprString,
+    billing_mode: snap.billingMode,
+    group_ratio: snap.groupRatio,
+    quota_per_unit: snap.quotaPerUnit,
+    task_usage_billing: snap.taskUsageBilling,
+  };
+  privateData.billing_context = bc;
+}
+
+async function recordTaskBillingLog(opts: {
+  store: Store;
+  userId: number;
+  logType: number;
+  content: string;
+  channelId: number;
+  modelName: string;
+  quota: number;
+  tokenId: number;
+  group: string;
+  other: Record<string, unknown>;
+}): Promise<void> {
+  if (opts.logType === LOG_CONSUME && !(await opts.store.optionBool("LogConsumeEnabled", true))) return;
+  const user = await opts.store.getUserById(opts.userId);
+  let tokenName = "";
+  if (opts.tokenId > 0) {
+    const token = await opts.store.getTokenById(opts.tokenId);
+    tokenName = String(token?.name || "");
+  }
+  await opts.store.insertLog({
+    user_id: opts.userId,
+    type: opts.logType,
+    content: opts.content,
+    username: user?.username || "",
+    token_name: tokenName,
+    model_name: opts.modelName,
+    quota: opts.quota,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    use_time: 0,
+    is_stream: 0,
+    channel_id: opts.channelId,
+    token_id: opts.tokenId,
+    group: opts.group,
+    ip: "",
+    request_id: "",
+    other: JSON.stringify(opts.other),
+  });
+  if (opts.logType === LOG_CONSUME && user && (await opts.store.optionBool("DataExportEnabled", true))) {
+    await opts.store.bumpQuotaData(user, opts.modelName, opts.quota, 0, {
+      useGroup: opts.group,
+      tokenId: opts.tokenId,
+      channelId: opts.channelId,
+    });
+  }
+}
+
+async function taskAdjustFunding(store: Store, row: Record<string, unknown>, delta: number): Promise<void> {
+  const userId = Number(row.user_id || 0);
+  if (!userId || delta === 0) return;
+  if (delta > 0) await store.decreaseUserQuota(userId, delta);
+  else await store.releaseUserQuota(userId, -delta);
+}
+
+async function taskAdjustTokenQuota(store: Store, row: Record<string, unknown>, privateData: Record<string, unknown>, delta: number): Promise<void> {
+  const tokenId = Number(privateData.token_id ?? row.token_id ?? 0);
+  if (!tokenId || delta === 0) return;
+  if (delta > 0) await store.decreaseTokenQuota(tokenId, delta);
+  else await store.releaseTokenQuota(tokenId, -delta);
+}
+
+/** Original `service.RefundTaskQuota`. */
+export async function refundTaskQuota(store: Store, row: Record<string, unknown>, reason: string): Promise<boolean> {
+  const quota = Number(row.quota || 0);
+  if (!quota) return true;
+  const privateData = objectFrom(row.private_data);
+  await taskAdjustFunding(store, row, -quota);
+  await taskAdjustTokenQuota(store, row, privateData, -quota);
+  const userId = Number(row.user_id || 0);
+  const channelId = Number(row.channel_id || 0);
+  if (userId) await store.addUserUsedQuota(userId, -quota);
+  if (channelId) await store.addChannelUsedQuota(channelId, -quota);
+  const other = taskBillingOther(row);
+  other.task_id = String(row.task_id || "");
+  other.reason = reason;
+  await recordTaskBillingLog({
+    store,
+    userId,
+    logType: LOG_REFUND,
+    content: "",
+    channelId,
+    modelName: taskModelName(row, privateData),
+    quota,
+    tokenId: Number(privateData.token_id ?? row.token_id ?? 0),
+    group: taskGroup(row),
+    other,
+  });
+  row.quota = 0;
+  await store.updateTaskQuota(String(row.task_id || ""), 0);
+  return true;
+}
+
+/** Original `service.RecalculateTaskQuota`. */
+export async function recalculateTaskQuota(
+  store: Store,
+  row: Record<string, unknown>,
+  actualQuota: number,
+  reason: string,
+  clamps: Array<QuotaClamp | null | undefined> = [],
+): Promise<void> {
+  if (actualQuota < 0) return;
+  const preConsumedQuota = Number(row.quota || 0);
+  const quotaDelta = actualQuota - preConsumedQuota;
+  if (quotaDelta === 0) return;
+  const privateData = objectFrom(row.private_data);
+  await taskAdjustFunding(store, row, quotaDelta);
+  await taskAdjustTokenQuota(store, row, privateData, quotaDelta);
+  row.quota = actualQuota;
+  await store.updateTaskQuota(String(row.task_id || ""), actualQuota);
+  const userId = Number(row.user_id || 0);
+  const channelId = Number(row.channel_id || 0);
+  if (userId) await store.addUserUsedQuota(userId, quotaDelta);
+  if (channelId) await store.addChannelUsedQuota(channelId, quotaDelta);
+  const logType = quotaDelta > 0 ? LOG_CONSUME : LOG_REFUND;
+  const logQuota = quotaDelta > 0 ? quotaDelta : -quotaDelta;
+  const otherMaps = newLogOther();
+  const snapshot = taskBillingOther(row);
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (key === "admin_info" && isPlainObject(value)) {
+      for (const [adminKey, adminValue] of Object.entries(value)) setLogOtherAdmin(otherMaps, adminKey, adminValue);
+      continue;
+    }
+    if (key === "root_info" && isPlainObject(value)) {
+      for (const [rootKey, rootValue] of Object.entries(value)) setLogOtherRoot(otherMaps, rootKey, rootValue);
+      continue;
+    }
+    setLogOtherPublic(otherMaps, key, value);
+  }
+  setLogOtherPublic(otherMaps, "task_id", String(row.task_id || ""));
+  setLogOtherPublic(otherMaps, "pre_consumed_quota", preConsumedQuota);
+  setLogOtherPublic(otherMaps, "actual_quota", actualQuota);
+  for (const clamp of clamps) attachQuotaSaturationToOther(otherMaps, clamp);
+  await recordTaskBillingLog({
+    store,
+    userId,
+    logType,
+    content: reason,
+    channelId,
+    modelName: taskModelName(row, privateData),
+    quota: logQuota,
+    tokenId: Number(privateData.token_id ?? row.token_id ?? 0),
+    group: taskGroup(row),
+    other: logOtherSnapshot(otherMaps),
+  });
+}
+
+/** Original `service.RecalculateTaskQuotaByTokens`. */
+export async function recalculateTaskQuotaByTokens(store: Store, row: Record<string, unknown>, totalTokens: number): Promise<boolean> {
+  if (totalTokens <= 0) return false;
+  const privateData = objectFrom(row.private_data);
+  const modelName = taskModelName(row, privateData);
+  const modelRatioMap = parseJson<Record<string, number>>(await store.option("ModelRatio"), {});
+  const ratio = getModelRatioFromMap(modelName, modelRatioMap);
+  if (!ratio.configured || ratio.ratio <= 0) return false;
+  let group = taskGroup(row);
+  if (!group) {
+    const user = await store.getUserById(Number(row.user_id || 0));
+    group = String(user?.group || "");
+  }
+  if (!group) return false;
+  const overlay = parseJson<Record<string, Record<string, number>>>(await store.option("GroupGroupRatio"), {});
+  const nested = overlay[group];
+  let finalGroupRatio: number;
+  if (nested && nested[group] != null) finalGroupRatio = Number(nested[group]);
+  else {
+    const groupRatioMap = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
+    finalGroupRatio = groupRatioMap[group] ?? groupRatioMap.default ?? 1;
+  }
+  const otherMultiplier = otherRatioMultiplier(otherRatiosFromContext(billingContext(privateData)));
+  const checked = quotaFromFloatChecked(totalTokens * ratio.ratio * finalGroupRatio * otherMultiplier);
+  const reason = `token重算：tokens=${totalTokens}, modelRatio=${ratio.ratio.toFixed(2)}, groupRatio=${finalGroupRatio.toFixed(2)}, otherMultiplier=${otherMultiplier.toFixed(4)}`;
+  await recalculateTaskQuota(store, row, checked.quota, reason, [checked.clamp]);
+  return true;
+}
+
+/** Original `service.settleTaskBillingOnComplete`. */
+export async function settleTaskBillingOnComplete(opts: {
+  store: Store;
+  row: Record<string, unknown>;
+  taskInfo: TaskCompleteInfo | null | undefined;
+  adjustBillingOnComplete?: (row: Record<string, unknown>, info: TaskCompleteInfo) => number;
+}): Promise<boolean> {
+  const row = opts.row;
+  const privateData = objectFrom(row.private_data);
+  const bc = billingContext(privateData);
+  const snap = parseBillingSnapshot(bc.tiered_snapshot ?? bc.tieredSnapshot);
+  const status = String(row.status || opts.taskInfo?.status || "");
+  const info: TaskCompleteInfo = { ...(opts.taskInfo || {}) };
+  if (snap) {
+    if (status === "FAILURE") return false;
+    try {
+      const { result, usage } = evaluateTaskCompletionUsage(snap, info.usageFacts || {});
+      snap.usageFacts = usage;
+      snap.estimatedTier = result.matchedTier;
+      applySnapshotToPrivate(privateData, snap);
+      row.private_data = privateData;
+      await recalculateTaskQuota(opts.store, row, result.actualQuotaAfterGroup, "任务用量表达式结算", [result.clamp]);
+      return true;
+    } catch {
+      return true;
+    }
+  }
+  if (Boolean(bc.per_call_billing ?? bc.perCallBilling)) return false;
+  const adjusted = opts.adjustBillingOnComplete ? opts.adjustBillingOnComplete(row, info) : 0;
+  if (adjusted > 0) {
+    await recalculateTaskQuota(opts.store, row, adjusted, "adaptor计费调整");
+    return true;
+  }
+  let tokens = Number(info.totalTokens || 0) || 0;
+  if (!tokens && Number(info.completionTokens || 0) > 0) tokens = Number(info.completionTokens || 0);
+  if (tokens > 0) return recalculateTaskQuotaByTokens(opts.store, row, tokens);
+  return false;
 }

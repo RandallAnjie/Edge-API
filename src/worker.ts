@@ -1,5 +1,6 @@
 import { runChannelTestTask } from "./channel-test.js";
 import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
+import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
 import { apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
@@ -719,6 +720,7 @@ export default {
           }
         }
         await runPendingModelUpdateSystemTask(store);
+        await runPendingAsyncTaskPoll(store);
       })(),
     );
   },
