@@ -62,5 +62,8 @@ Material changes from upstream:
   channel distribution. Native submit uses original RelayTask
   `buildSubmitRequest` / `parseSubmitResponse` / `native.render` JSON
   (public `task_id`, no `clientResponse`, `X-New-Api-Other-Ratios`).
+  Native query uses original `buildQueryRequest` / `parseTaskResult` /
+  `updateVideoSingleTask` JSON (`queryContext` without `requestBody`, public
+  `task_id` in `native.render`, persisted `result_url` / `plugin_state`).
 
 ==== End of Notices ====

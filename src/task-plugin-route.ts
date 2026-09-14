@@ -17,6 +17,7 @@ import { applyOriginTaskIntent, type ApplyOriginTaskIntentResult, taskPluginLega
 import type { MatchedPlugin } from "./plugin-dispatch.js";
 import { Store } from "./store.js";
 import { continueNativeSubmit as continueNativeRelayTaskSubmit } from "./task-plugin-submit.js";
+import { refreshNativeQueryTask } from "./task-plugin-query.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
 
 export const TASK_PLUGIN_INVALID_ROUTE_RESULT = "plugin returned an invalid route result";
@@ -501,10 +502,16 @@ async function renderTaskPluginQuery(
   }
   const byId = new Map<string, Record<string, unknown>>();
   for (const task of tasks) byId.set(String(task.task_id || ""), task);
+  const serverAddress = await store.option("ServerAddress");
   const views: Record<string, unknown>[] = [];
   for (const taskID of taskIDs) {
-    const task = byId.get(taskID);
+    let task = byId.get(taskID);
     if (!task) return abortTaskPluginRouteErrorDetail(engine, requestContext, 404, "", requestId);
+    try {
+      task = await refreshNativeQueryTask({ store, engine, row: task, serverAddress });
+    } catch {
+      /* original query GET still renders the last persisted row if poll fails */
+    }
     views.push(buildTaskPluginView(task));
   }
   const rendererInput: unknown = multiple ? views : views[0];
