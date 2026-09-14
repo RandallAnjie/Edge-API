@@ -1,7 +1,8 @@
 import { parseJson } from "./constants.js";
-import { extractPluginMeta } from "./dto.js";
 import type { Store } from "./store.js";
 import { pinnedTaskPluginChannelTypes } from "./channel-constraint.js";
+import { listRoutingPlugins } from "./task-plugin-factory.js";
+import { pluginModelNames } from "./plugin-meta.js";
 
 /** Original `jsplugin.HostProtocols` operations used for endpoint pinning. */
 export const HOST_PROTOCOL_OPERATIONS: { name: string; method: string; path: string }[] = [
@@ -35,20 +36,12 @@ export async function matchTaskPlugin(
   path: string,
   model = "",
 ): Promise<MatchedPlugin | null> {
-  const plugins = (await store.listTaskPlugins()) as {
-    key: string;
-    status: string;
-    enabled?: number;
-    routes: string;
-    source?: string;
-  }[];
+  const plugins = await listRoutingPlugins(store);
   for (const p of plugins) {
-    if (Number(p.enabled) === 0) continue;
-    if (p.status !== "active" && p.status !== "enabled") continue;
-    const meta = extractPluginMeta(String(p.source || ""));
+    const meta = p.meta;
     const channelTypes = pinnedTaskPluginChannelTypes(meta.channelTypes);
-    const models = Array.isArray(meta.models) ? (meta.models as unknown[]).map((m) => String(m)) : [];
-    const routes = pluginRoutes(p.routes, meta);
+    const models = pluginModelNames(meta);
+    const routes = pluginRoutes("", meta);
     for (const r of routes) {
       if ((r.method || "POST").toUpperCase() !== method.toUpperCase()) continue;
       if (pluginRoutePathMatches(r.path || "", path)) {
@@ -58,10 +51,8 @@ export async function matchTaskPlugin(
   }
   if (!model) return null;
   for (const p of plugins) {
-    if (Number(p.enabled) === 0) continue;
-    if (p.status !== "active" && p.status !== "enabled") continue;
-    const meta = extractPluginMeta(String(p.source || ""));
-    const models = Array.isArray(meta.models) ? (meta.models as unknown[]).map((m) => String(m)) : [];
+    const meta = p.meta;
+    const models = pluginModelNames(meta);
     if (models.length && !models.includes(model)) continue;
     if (!models.length) continue;
     const claimed = claimedProtocolNames(meta);
@@ -139,18 +130,9 @@ export async function matchPluginOwnedPath(
   store: Store,
   path: string,
 ): Promise<{ key: string; methods: string[] } | null> {
-  const plugins = (await store.listTaskPlugins()) as {
-    key: string;
-    status: string;
-    enabled?: number;
-    routes: string;
-    source?: string;
-  }[];
+  const plugins = await listRoutingPlugins(store);
   for (const p of plugins) {
-    if (Number(p.enabled) === 0) continue;
-    if (p.status !== "active" && p.status !== "enabled") continue;
-    const meta = extractPluginMeta(String(p.source || ""));
-    const routes = pluginRoutes(p.routes, meta);
+    const routes = pluginRoutes("", p.meta);
     const methods: string[] = [];
     for (const r of routes) {
       if (pluginRoutePathMatches(r.path || "", path)) methods.push((r.method || "POST").toUpperCase());

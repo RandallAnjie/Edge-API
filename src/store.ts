@@ -2911,7 +2911,7 @@ export class Store {
         ...p,
         enabled: enabled ? 1 : 0,
         status: enabled ? "active" : "inactive",
-        active: enabled ? 1 : 0,
+        active: Number(p.active ?? 1) ? 1 : 0,
       });
     }
   }

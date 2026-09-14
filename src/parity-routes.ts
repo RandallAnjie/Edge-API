@@ -51,6 +51,16 @@ import {
 import { Store } from "./store.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
 import { enrichModelMeta, extractPluginMeta, listAdminModels, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView } from "./dto.js";
+import {
+  factoryPluginIcon,
+  factoryTaskPluginDetail,
+  hasFactoryPlugin,
+  listTaskPluginListItems,
+  listTaskPluginOptions,
+  resolveTaskPluginSource,
+  setTaskPluginDisabledFactoryKeys,
+  getTaskPluginDisabledFactoryKeys,
+} from "./task-plugin-factory.js";
 import { channelAffinityCacheStats, clearAffinityCacheAll, clearAffinityCacheByRule, getChannelAffinityUsageCacheStats } from "./channel-affinity.js";
 import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
 import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
@@ -1058,11 +1068,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const items = [];
-    for (const row of (await s.listTaskPlugins()) as Record<string, unknown>[]) {
-      items.push(await publicTaskPlugin(s, row));
-    }
-    return apiOk(items);
+    return apiOk(await listTaskPluginListItems(s));
   });
   r.post("/api/plugin/task", (c) => upsertPlugin(c));
   r.put("/api/plugin/task", (c) => upsertPlugin(c));
@@ -1105,24 +1111,33 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const version = c.url.searchParams.get("version") || "";
     const p = await s.getTaskPluginVersion(c.params.key, version);
-    if (!p) return apiFail("task plugin not found");
-    const extracted = extractPluginMeta(String(p.source || ""));
-    const manifest = parseJson<Record<string, unknown>>(String(p.manifest || "{}"), {});
-    const meta = taskPluginMetaView({ ...manifest, ...extracted }, { key: String(p.key), version: String(p.version || ""), name: String(p.name || "") });
-    return apiOk({
-      plugin: publicTaskPluginRecord(p),
-      meta,
-      source: String(p.source || ""),
-      layer: "override",
-      has_icon: Boolean(p.icon),
-    });
+    if (p) {
+      const extracted = extractPluginMeta(String(p.source || ""));
+      const manifest = parseJson<Record<string, unknown>>(String(p.manifest || "{}"), {});
+      const meta = taskPluginMetaView({ ...manifest, ...extracted }, { key: String(p.key), version: String(p.version || ""), name: String(p.name || "") });
+      return apiOk({
+        plugin: publicTaskPluginRecord(p),
+        meta,
+        source: String(p.source || ""),
+        layer: "override",
+        has_icon: Boolean(p.icon),
+      });
+    }
+    if (version) return apiFail("task plugin not found");
+    const factory = factoryTaskPluginDetail(c.params.key);
+    if (!factory) return apiFail("task plugin not found");
+    return apiOk(factory);
   });
   r.get("/api/plugin/task/:key/icon", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const p = await s.getTaskPluginVersion(c.params.key, c.url.searchParams.get("version") || "");
-    const decoded = decodePluginIcon(String(p?.icon || ""));
+    let icon = String(p?.icon || "");
+    if (!icon && !c.url.searchParams.get("version")) {
+      icon = factoryPluginIcon(c.params.key)?.dataUri || "";
+    }
+    const decoded = decodePluginIcon(icon);
     if (!decoded) return new Response(null, { status: 404 });
     return new Response(decoded.body as unknown as BodyInit, {
       status: 200,
@@ -1157,11 +1172,13 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { enabled?: boolean };
     if (typeof body.enabled !== "boolean") return apiFail("enabled is required");
-    const p = await s.getTaskPlugin(c.params.key);
-    if (!p) return apiFail("task plugin not found");
+    const key = c.params.key;
+    const p = await s.getTaskPlugin(key);
+    const factory = hasFactoryPlugin(key);
+    if (!p && !factory) return apiFail("task plugin not found");
     let disabledChannels = 0;
     if (!body.enabled) {
-      const usage = await s.taskPluginUsage(c.params.key);
+      const usage = await s.taskPluginUsage(key);
       const cascade = c.url.searchParams.get("cascade") === "true";
       const force = c.url.searchParams.get("force") === "true";
       if ((usage.channels.length > 0 && !cascade) || (usage.in_flight_count > 0 && !force)) {
@@ -1178,7 +1195,13 @@ export function registerParity(r: Router<Env>): void {
         }
       }
     }
-    await s.setTaskPluginEnabled(c.params.key, body.enabled);
+    if (factory) {
+      const keys = await getTaskPluginDisabledFactoryKeys(s);
+      const next = body.enabled ? keys.filter((item) => item !== key) : [...keys, key];
+      await setTaskPluginDisabledFactoryKeys(s, next);
+      if (!p) return apiOk({ plugin_enabled: body.enabled, disabled_channels: disabledChannels });
+    }
+    await s.setTaskPluginEnabled(key, body.enabled);
     return apiOk({ plugin_enabled: body.enabled, disabled_channels: disabledChannels });
   });
   r.post("/api/plugin/task/:key/dryrun", async (c) => {
@@ -1189,8 +1212,8 @@ export function registerParity(r: Router<Env>): void {
     if (!body.hook) {
       return apiFail("Key: 'taskPluginDryRunRequest.Hook' Error:Field validation for 'Hook' failed on the 'required' tag");
     }
-    const p = await s.getTaskPluginVersion(c.params.key, "");
-    if (!p) return apiFail("task plugin not found");
+    const resolved = await resolveTaskPluginSource(s, c.params.key);
+    if (!resolved) return apiFail("task plugin not found");
     return apiFail("jsplugin: goja runtime is not available on workerd");
   });
   r.delete("/api/plugin/task/:key/versions/:version", async (c) => {
@@ -1218,8 +1241,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requirePermission(c, s, "task_plugin", "bind");
     if (isResponse(u)) return u;
-    const plugins = ((await s.listTaskPlugins()) as { key: string; name: string; status: string }[]).filter((p) => p.status === "active");
-    return apiOk(plugins.map((p) => ({ key: p.key, name: p.name })));
+    return apiOk(await listTaskPluginOptions(s));
   });
 
   r.get("/api/log/search", async (c) => {

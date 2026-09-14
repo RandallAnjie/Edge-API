@@ -9,7 +9,9 @@ import {
   parseJson,
 } from "./constants.js";
 import { bytesToHex, sha256Bytes } from "./crypto.js";
-import { endpointTypesForChannel, extractPluginMeta, isImageGenerationModel, matchesName } from "./dto.js";
+import { endpointTypesForChannel, isImageGenerationModel, matchesName } from "./dto.js";
+import { listRoutingPlugins } from "./task-plugin-factory.js";
+import { pluginModelNames, pluginUsageForModel } from "./plugin-meta.js";
 import { defaultModelRatio } from "./ratio-defaults.js";
 import { formatMatchingModelName, resolveCompletionRatio } from "./ratio-setting.js";
 import { baseModelName } from "./reasoning.js";
@@ -431,18 +433,68 @@ export async function getModelPricingSnapshot(store: Store, names: string[]): Pr
   const sorted = [...nameSet].sort();
   const selfUse = await store.optionBool("SelfUseModeEnabled", false);
   const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
+  const routing = await listRoutingPlugins(store);
+  const pluginsByModel = new Map<string, typeof routing>();
+  for (const plugin of routing) {
+    for (const modelName of pluginModelNames(plugin.meta)) {
+      const list = pluginsByModel.get(modelName) || [];
+      list.push(plugin);
+      pluginsByModel.set(modelName, list);
+    }
+  }
   const entries: ModelPricingEntry[] = [];
   for (const name of sorted) {
     const configured = configuredFor(values, name);
     const effective = effectiveFor(values, name, selfUse);
-    entries.push({
+    const providers = pluginsByModel.get(name) || [];
+    const usage = providers[0] ? pluginUsageForModel(providers[0].meta, name) : undefined;
+    const configuredVariants =
+      configured[PLUGIN_BILLING_EXPR_OPTION] && typeof configured[PLUGIN_BILLING_EXPR_OPTION] === "object"
+        ? (configured[PLUGIN_BILLING_EXPR_OPTION] as Record<string, unknown>)
+        : {};
+    const variantKeys = new Set<string>([...providers.map((p) => p.key), ...Object.keys(configuredVariants)]);
+    const plugin_variants: ModelPricingPluginVariant[] = [];
+    if (providers.length >= 2 || Object.keys(configuredVariants).length) {
+      for (const key of [...variantKeys].sort()) {
+        const plugin = providers.find((item) => item.key === key);
+        const configuredExpr = String(configuredVariants[key] || "");
+        if (!plugin || !pluginModelNames(plugin.meta).includes(name)) {
+          plugin_variants.push({
+            plugin_key: key,
+            plugin_name: plugin?.meta.name ? String(plugin.meta.name) : key,
+            icon: plugin?.meta.icon ? String(plugin.meta.icon) : undefined,
+            usage_schema: {},
+            configured: configuredExpr,
+            effective: "",
+            compatible: false,
+            stale: true,
+          });
+          continue;
+        }
+        const schema = pluginUsageForModel(plugin.meta, name);
+        plugin_variants.push({
+          plugin_key: plugin.key,
+          plugin_name: String(plugin.meta.name || plugin.key),
+          icon: plugin.meta.icon ? String(plugin.meta.icon) : undefined,
+          usage_schema: schema.usageSchema && Object.keys(schema.usageSchema).length ? schema.usageSchema : {},
+          usage_examples: schema.usageExamples,
+          configured: configuredExpr,
+          effective: configuredExpr || (effective["billing_setting.billing_mode"] === BILLING_MODE_TIERED_EXPR ? String(effective["billing_setting.billing_expr"] || "") : ""),
+          compatible: Boolean(configuredExpr || effective["billing_setting.billing_expr"]),
+        });
+      }
+    }
+    const entry: ModelPricingEntry = {
       model_name: name,
       version: await modelPricingVersion(configured),
       configured,
       effective,
       cache_write_mode: resolveCacheWriteMode(name, configured),
       billing_details: compactBillingDetails(resolveLegacyBillingDetails(name, effective, configured, quotaPerUnit)),
-    });
+    };
+    if (usage?.usageSchema && Object.keys(usage.usageSchema).length) entry.usage_schema = usage.usageSchema;
+    if (plugin_variants.length) entry.plugin_variants = plugin_variants;
+    entries.push(entry);
   }
   const options: Record<string, string> = {};
   for (const key of MODEL_PRICING_OPTION_KEYS) {
@@ -575,13 +627,8 @@ function followChannelModelMapping(mapping: Record<string, string>, start: strin
 }
 
 async function isTaskPluginModel(store: Store, name: string): Promise<boolean> {
-  const plugins = (await store.listTaskPlugins()) as { source?: string; status?: string; enabled?: number }[];
-  for (const plugin of plugins) {
-    if (Number(plugin.enabled) === 0) continue;
-    if (plugin.status && plugin.status !== "active" && plugin.status !== "enabled") continue;
-    const meta = extractPluginMeta(String(plugin.source || ""));
-    const models = Array.isArray(meta.models) ? (meta.models as unknown[]).map((m) => String(m)) : [];
-    if (models.includes(name)) return true;
+  for (const plugin of await listRoutingPlugins(store)) {
+    if (pluginModelNames(plugin.meta).includes(name)) return true;
   }
   return false;
 }

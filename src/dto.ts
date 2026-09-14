@@ -24,8 +24,12 @@ import {
   getModelPriceFromMap,
   getModelRatioFromMap,
 } from "./ratio-setting.js";
+import { pluginUsageByModel, listRoutingPlugins } from "./task-plugin-factory.js";
+import { pluginModelNames, pluginUsageForModel } from "./plugin-meta.js";
 import type { Store } from "./store.js";
 import type { ChannelRow, LogRow, RedemptionRow, TokenRow, UserRow } from "./types.js";
+
+export { extractPluginMeta, taskPluginMetaView } from "./plugin-meta.js";
 
 export const DEFAULT_USABLE_GROUPS: Record<string, string> = {
   default: "默认分组",
@@ -389,19 +393,6 @@ function overlayCustomEndpoints(
   return next;
 }
 
-async function pluginUsageByModel(store: Store): Promise<Map<string, Record<string, unknown>>> {
-  const out = new Map<string, Record<string, unknown>>();
-  for (const row of (await store.listTaskPlugins()) as Record<string, unknown>[]) {
-    const extracted = extractPluginMeta(String(row.source || ""));
-    const models = Array.isArray(extracted.models) ? extracted.models : [];
-    for (const name of models) {
-      const key = String(name);
-      if (key && !out.has(key)) out.set(key, extracted);
-    }
-  }
-  return out;
-}
-
 export async function buildPricing(
   store: Store,
   userGroup = "",
@@ -444,6 +435,15 @@ export async function buildPricing(
   const names = [...groupsByModel.keys()];
   const metaMap = resolveModelMetadata(allMeta, names);
   const pluginByModel = await pluginUsageByModel(store);
+  const routingPlugins = await listRoutingPlugins(store);
+  const pluginsByModel = new Map<string, typeof routingPlugins>();
+  for (const plugin of routingPlugins) {
+    for (const modelName of pluginModelNames(plugin.meta)) {
+      const list = pluginsByModel.get(modelName) || [];
+      list.push(plugin);
+      pluginsByModel.set(modelName, list);
+    }
+  }
   const supported: Record<string, { path: string; method: string }> = {};
   for (const name of names) {
     let endpoints = typesByModel.get(name) || [];
@@ -512,6 +512,21 @@ export async function buildPricing(
       item.billing_usage_schema = usageSchema;
       const examples = plugin?.usageExamples;
       if (Array.isArray(examples) && examples.length) item.billing_usage_examples = examples;
+    }
+    const providers = pluginsByModel.get(name) || [];
+    if (providers.length >= 2 && item.billing_mode === "tiered_expr") {
+      item.billing_plugin_variants = providers.map((provider) => {
+        const usage = pluginUsageForModel(provider.meta, name);
+        return {
+          plugin_key: provider.key,
+          plugin_name: String(provider.meta.name || provider.key),
+          icon: provider.meta.icon ? String(provider.meta.icon) : undefined,
+          billing_expr: String(item.billing_expr || ""),
+          billing_mode: "tiered_expr",
+          billing_usage_schema: usage.usageSchema || {},
+          billing_usage_examples: usage.usageExamples,
+        };
+      });
     }
     pricing.push(item);
   }
@@ -1391,57 +1406,6 @@ export function publicPrefill(row: Record<string, unknown>): Record<string, unkn
     description: String(row.description || ""),
     created_time: created,
     updated_time: Number(row.updated_time || created),
-  };
-}
-
-export function extractPluginMeta(source: string): Record<string, unknown> {
-  const idx = source.search(/\bmeta\s*=\s*\{/);
-  if (idx < 0) return {};
-  const start = source.indexOf("{", idx);
-  if (start < 0) return {};
-  let depth = 0;
-  for (let i = start; i < source.length; i++) {
-    const ch = source[i];
-    if (ch === "{") depth += 1;
-    else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        const raw = source.slice(start, i + 1);
-        const jsonish = raw
-          .replace(/'([^'\\]*)'/g, '"$1"')
-          .replace(/([,{]\s*)([A-Za-z_][\w]*)\s*:/g, '$1"$2":')
-          .replace(/,(\s*[}\]])/g, "$1");
-        return parseJson<Record<string, unknown>>(jsonish, {});
-      }
-    }
-  }
-  return {};
-}
-
-export function taskPluginMetaView(meta: Record<string, unknown>, fallback: { key: string; version?: string; name?: string } = { key: "" }): Record<string, unknown> {
-  const key = String(meta.key || fallback.key || "");
-  const version = String(meta.version || fallback.version || "1.0.0");
-  const name = String(meta.name || fallback.name || key);
-  const authorRaw = meta.author && typeof meta.author === "object" ? (meta.author as Record<string, unknown>) : {};
-  return {
-    sortPriority: Number(meta.sortPriority || 0) || undefined,
-    website: meta.website ? String(meta.website) : undefined,
-    apiVersion: Number(meta.apiVersion ?? meta.api_version ?? 1) || 1,
-    key,
-    name,
-    icon: meta.icon ? String(meta.icon) : undefined,
-    description: meta.description,
-    version,
-    author: { name: String(authorRaw.name || ""), url: authorRaw.url ? String(authorRaw.url) : undefined },
-    baseUrl: meta.baseUrl ? String(meta.baseUrl) : undefined,
-    channelTypes: Array.isArray(meta.channelTypes) ? meta.channelTypes : undefined,
-    models: Array.isArray(meta.models) ? meta.models : [],
-    fetchMode: String(meta.fetchMode || "per_task"),
-    allowedHosts: Array.isArray(meta.allowedHosts) ? meta.allowedHosts : [],
-    routes: Array.isArray(meta.routes) ? meta.routes : [],
-    protocols: Array.isArray(meta.protocols) ? meta.protocols : [],
-    usageSchema: meta.usageSchema,
-    auth: meta.auth && typeof meta.auth === "object" ? meta.auth : { type: "" },
   };
 }
 

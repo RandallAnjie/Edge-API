@@ -52,6 +52,9 @@ Material changes from upstream:
   OpenAI/Anthropic/Gemini compatible or uses HTTP pass-through; otherwise they
   return a structured error. Stripe/Epay/Creem/Waffo checkout use HTTP APIs
   (no vendor SDK). io.net model deployments use the original HTTP API (no
-  vendor SDK). Task plugins are a D1 registry plus passthrough routes.
+  vendor SDK). Original QuantumNous factory task plugins (`plugins/tasks/*/plugin.js`)
+  are embedded and listed/routed with original JSON (`source: "factory"`).
+  In-process Goja execution is not available on workerd; matched native plugin
+  routes still dispatch as HTTP pass-through.
 
 ==== End of Notices ====
