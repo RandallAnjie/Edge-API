@@ -12,6 +12,7 @@ import {
   USER_ENABLED,
   csv,
   hourStartSec,
+  nowMs,
   nowSec,
   parseJson,
 } from "./constants.js";
@@ -1391,24 +1392,144 @@ export class Store {
   async insertMj(task: Record<string, unknown>): Promise<number> {
     const r = await this.db
       .prepare(
-        `INSERT INTO mj_tasks (action, user_id, mj_id, prompt, prompt_en, status, image_url, progress, fail_reason, channel_id, submit_time)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO mj_tasks (code, action, user_id, mj_id, prompt, prompt_en, description, state, status, image_url, video_url, video_urls, progress, fail_reason, channel_id, quota, buttons, properties, submit_time, start_time, finish_time, token_id, billing_channel_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
+        task.code ?? 0,
         task.action ?? "",
         task.user_id ?? 0,
         task.mj_id ?? "",
         task.prompt ?? "",
         task.prompt_en ?? "",
-        task.status ?? "SUBMITTED",
+        task.description ?? "",
+        task.state ?? "",
+        task.status ?? "",
         task.image_url ?? "",
+        task.video_url ?? "",
+        task.video_urls ?? "",
         task.progress ?? "0%",
         task.fail_reason ?? "",
         task.channel_id ?? 0,
-        nowSec(),
+        task.quota ?? 0,
+        typeof task.buttons === "string" ? task.buttons : task.buttons != null ? JSON.stringify(task.buttons) : "",
+        typeof task.properties === "string" ? task.properties : task.properties != null ? JSON.stringify(task.properties) : "",
+        task.submit_time ?? nowMs(),
+        task.start_time ?? 0,
+        task.finish_time ?? 0,
+        task.token_id ?? 0,
+        task.billing_channel_id ?? 0,
       )
       .run();
     return Number(r.meta.last_row_id || 0);
+  }
+
+  async getMjById(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM mj_tasks WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  }
+
+  /** Original `model.GetByOnlyMJId`. */
+  async getMjByMjId(mjId: string): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM mj_tasks WHERE mj_id = ?").bind(mjId).first<Record<string, unknown>>();
+  }
+
+  /** Original `model.GetByMJId`. */
+  async getMjByUserMjId(userId: number, mjId: string): Promise<Record<string, unknown> | null> {
+    return this.db
+      .prepare("SELECT * FROM mj_tasks WHERE user_id = ? AND mj_id = ?")
+      .bind(userId, mjId)
+      .first<Record<string, unknown>>();
+  }
+
+  /** Original `model.GetByMJIds`. */
+  async getMjByUserMjIds(userId: number, mjIds: string[]): Promise<Record<string, unknown>[]> {
+    if (!mjIds.length) return [];
+    const ph = mjIds.map(() => "?").join(",");
+    const { results } = await this.db
+      .prepare(`SELECT * FROM mj_tasks WHERE user_id = ? AND mj_id IN (${ph})`)
+      .bind(userId, ...mjIds)
+      .all<Record<string, unknown>>();
+    return results || [];
+  }
+
+  /** Original `model.GetAllUnFinishTasks` (`progress != 100%`). */
+  async listUnfinishedMjTasks(): Promise<Record<string, unknown>[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM mj_tasks WHERE progress != ?")
+      .bind("100%")
+      .all<Record<string, unknown>>();
+    return results || [];
+  }
+
+  /** Original `model.HasUnfinishedMidjourneyTasks`. */
+  async hasUnfinishedMjTasks(): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT id FROM mj_tasks WHERE progress != ? LIMIT 1")
+      .bind("100%")
+      .first<{ id: number }>();
+    return Boolean(row?.id);
+  }
+
+  /** Original `Midjourney.UpdateWithStatus` CAS. */
+  async updateMjByIdIfStatus(id: number, fromStatus: string, patch: Record<string, unknown>): Promise<boolean> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return false;
+    vals.push(id, fromStatus);
+    const r = await this.db.prepare(`UPDATE mj_tasks SET ${cols.join(", ")} WHERE id = ? AND status = ?`).bind(...vals).run();
+    return Number(r.meta.changes || 0) === 1;
+  }
+
+  async updateMj(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(id);
+    await this.db.prepare(`UPDATE mj_tasks SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  /** Original `Midjourney.UpdateBillingState`. */
+  async updateMjBillingState(id: number, quota: number, tokenId: number, billingChannelId: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE mj_tasks SET quota = ?, token_id = ?, billing_channel_id = ? WHERE id = ?")
+      .bind(quota, tokenId, billingChannelId, id)
+      .run();
+  }
+
+  /** Original `model.MjBulkUpdate` by mj_id. */
+  async bulkUpdateMjByMjIds(mjIds: string[], patch: Record<string, unknown>): Promise<void> {
+    if (!mjIds.length) return;
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    const ph = mjIds.map(() => "?").join(",");
+    await this.db.prepare(`UPDATE mj_tasks SET ${cols.join(", ")} WHERE mj_id IN (${ph})`).bind(...vals, ...mjIds).run();
+  }
+
+  /** Original `model.MjBulkUpdateByTaskIds`. */
+  async bulkUpdateMjByIds(ids: number[], patch: Record<string, unknown>): Promise<void> {
+    if (!ids.length) return;
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    const ph = ids.map(() => "?").join(",");
+    await this.db.prepare(`UPDATE mj_tasks SET ${cols.join(", ")} WHERE id IN (${ph})`).bind(...vals, ...ids).run();
   }
 
   async listMj(

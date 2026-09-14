@@ -1546,7 +1546,7 @@ export function adminRouter(): Router<Env> {
       start_timestamp: c.url.searchParams.get("start_timestamp") || "",
       end_timestamp: c.url.searchParams.get("end_timestamp") || "",
     });
-    const forward = await s.optionBool("MjForwardUrlEnabled", false);
+    const forward = await s.optionBool("MjForwardUrlEnabled", true);
     const server = await s.option("ServerAddress");
     return apiOk(pageData(items.map((row) => publicMj(row as Record<string, unknown>, server, forward)), total, q));
   });
@@ -1561,7 +1561,7 @@ export function adminRouter(): Router<Env> {
       start_timestamp: c.url.searchParams.get("start_timestamp") || "",
       end_timestamp: c.url.searchParams.get("end_timestamp") || "",
     });
-    const forward = await s.optionBool("MjForwardUrlEnabled", false);
+    const forward = await s.optionBool("MjForwardUrlEnabled", true);
     const server = await s.option("ServerAddress");
     return apiOk(pageData(items.map((row) => publicMj(row as Record<string, unknown>, server, forward)), total, q));
   });

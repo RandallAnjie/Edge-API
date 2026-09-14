@@ -2391,45 +2391,7 @@ export async function playgroundRelay(
   });
 }
 
-export async function proxyMj(
-  req: Request,
-  store: Store,
-  auth: AuthToken,
-  path: string,
-): Promise<Response> {
-  const channels = (await store.enabledChannels()).filter((c) => channelKind(c.type) === "mj");
-  const ch = channels[0];
-  if (!ch) return openaiError(503, "没有可用的 Midjourney 渠道", "no_available_channel");
-  const target = buildUpstream(ch, "passthrough", path, "midjourney", await readBodyMaybe(req));
-  target.method = req.method;
-  const res = await fetchUpstream(target);
-  const text = await res.text();
-  try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    if (parsed.result) {
-      await store.insertMj({
-        action: path,
-        user_id: auth.user.id,
-        mj_id: parsed.result,
-        prompt: asObj(target.body).prompt,
-        status: "SUBMITTED",
-        channel_id: ch.id,
-      });
-    }
-  } catch {
-    /* ignore */
-  }
-  return new Response(text, { status: res.status, headers: { "content-type": res.headers.get("content-type") || "application/json" } });
-}
-
-async function readBodyMaybe(req: Request): Promise<unknown> {
-  if (req.method === "GET" || req.method === "HEAD") return null;
-  try {
-    return await req.clone().json();
-  } catch {
-    return null;
-  }
-}
+export { proxyMj } from "./midjourney.js";
 
 void parseBool;
 

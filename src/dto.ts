@@ -1690,8 +1690,7 @@ export async function taskArtifactsView(
 
 export function publicMj(row: Record<string, unknown>, serverAddress: string, forwardUrl: boolean): Record<string, unknown> {
   const mjId = String(row.mj_id || "");
-  const imageUrl =
-    forwardUrl && serverAddress ? `${serverAddress.replace(/\/$/, "")}/mj/image/${mjId}` : String(row.image_url || "");
+  const imageUrl = forwardUrl ? `${String(serverAddress || "").replace(/\/$/, "")}/mj/image/${mjId}` : String(row.image_url || "");
   return {
     id: Number(row.id || 0),
     code: Number(row.code || 0),

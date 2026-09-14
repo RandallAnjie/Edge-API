@@ -40,7 +40,9 @@ export const CHANNEL_AUTO_DISABLED = 3;
 
 /** Original `constant.ChannelType*`. */
 export const CHANNEL_TYPE_OPENAI = 1;
+export const CHANNEL_TYPE_MIDJOURNEY = 2;
 export const CHANNEL_TYPE_AZURE = 3;
+export const CHANNEL_TYPE_MIDJOURNEY_PLUS = 5;
 export const CHANNEL_TYPE_OLLAMA = 4;
 export const CHANNEL_TYPE_PALM = 11;
 export const CHANNEL_TYPE_ANTHROPIC = 14;
@@ -229,8 +231,8 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   TopupGroupRatio: "{}",
   MjAccountFilterEnabled: "false",
   MjModeClearEnabled: "false",
-  MjForwardUrlEnabled: "false",
-  MjActionCheckSuccessEnabled: "false",
+  MjForwardUrlEnabled: "true",
+  MjActionCheckSuccessEnabled: "true",
   CheckSensitiveEnabled: "false",
   CheckSensitiveOnPromptEnabled: "false",
   StopOnSensitiveEnabled: "false",
@@ -362,6 +364,11 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
 
 export function nowSec(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+/** Original Midjourney `time.Now().UnixNano() / int64(time.Millisecond)`. */
+export function nowMs(): number {
+  return Date.now();
 }
 
 export function dayStartSec(ts = nowSec()): number {

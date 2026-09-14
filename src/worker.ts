@@ -1,5 +1,6 @@
 import { runChannelTestTask } from "./channel-test.js";
 import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
+import { runPendingMidjourneyPoll } from "./midjourney-poll.js";
 import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
@@ -172,7 +173,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   if (req.method === "GET" && isMjImagePath(path)) {
     hit("relay");
     const guest = { token: { id: 0 }, user: { id: 0 }, usingGroup: "default" } as AuthToken;
-    return proxyMj(req, store, guest, mjRelayPath(path));
+    return proxyMj(req, env, store, guest, mjRelayPath(path));
   }
 
   const auth = await authenticateApiToken(ctxStore(req, env, ctx), store);
@@ -205,7 +206,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   }
 
   if (isMjRelayRequest(path)) {
-    return proxyMj(req, store, auth, mjRelayPath(path));
+    return proxyMj(req, env, store, auth, mjRelayPath(path));
   }
 
   if (path === "/v1/realtime") {
@@ -721,6 +722,7 @@ export default {
         }
         await runPendingModelUpdateSystemTask(store);
         await runPendingAsyncTaskPoll(store);
+        await runPendingMidjourneyPoll(store);
       })(),
     );
   },
