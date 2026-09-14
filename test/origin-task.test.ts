@@ -439,7 +439,7 @@ function originEndpointPluginSource(): string {
   return `export const meta = { apiVersion: 1, key: "origin-endpoint", name: "origin-endpoint", version: "1.0.0", author: { name: "test" }, models: ["claimed-model"], fetchMode: "per_task", routes: [], protocols: [{ name: "openai_responses", supports: ["sync", "background"] }], channelTypes: [${CHANNEL_TYPE_OPENAI}], allowedHosts: [], auth: { type: "none" } };
 export function buildSubmitRequest(ctx) { return {url: String(ctx.baseUrl || "") + "/submit", method: "POST", body: ctx.requestBody || {}}; }
 export function parseSubmitResponse() { return {taskId: "one"}; }
-export function buildQueryRequest() { return {url: "https://example.com"}; }
+export function buildQueryRequest(ctx) { return {url: String(ctx.baseUrl || "") + "/query"}; }
 export function parseTaskResult() { return {status: "SUCCESS"}; }
 export const protocols = {
   openai_responses: {
