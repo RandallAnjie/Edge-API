@@ -32,7 +32,7 @@ import {
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_DOUBAO_VIDEO, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_KLING, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SORA, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VIDU, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "../src/constants.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
@@ -2352,4 +2352,40 @@ test("original AdvancedCustom ConvertOpenAIRequest converter JSON", () => {
   assert.equal(fromGemini.length, 1);
   assert.equal(fromGemini[0].role, "user");
 });
+
+test("original TaskPlugin ConvertOpenAIRequest is invalid api type -1", () => {
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "doc-parse-v1", messages: [{ role: "user", content: "hi" }], stream_options: { include_usage: true } },
+        { channelType: CHANNEL_TYPE_TASK_PLUGIN, originModelName: "doc-parse-v1", upstreamModelName: "doc-parse-v1" },
+      ),
+    /invalid api type: -1/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIResponsesRequest(
+        { model: "doc-parse-v1", input: "hi" },
+        { channelType: CHANNEL_TYPE_TASK_PLUGIN, originModelName: "doc-parse-v1", upstreamModelName: "doc-parse-v1" },
+      ),
+    /invalid api type: -1/,
+  );
+});
+
+test("original Kling Vidu Sora DoubaoVideo ConvertOpenAIRequest uses OpenAI adaptor ChannelType", () => {
+  for (const channelType of [CHANNEL_TYPE_KLING, CHANNEL_TYPE_VIDU, CHANNEL_TYPE_SORA, CHANNEL_TYPE_DOUBAO_VIDEO]) {
+    const out = convertOpenAIRequest(
+      {
+        model: "video-model",
+        messages: [{ role: "user", content: "hi" }],
+        stream_options: { include_usage: true },
+      },
+      { channelType, originModelName: "video-model", upstreamModelName: "video-model" },
+    );
+    assert.equal(out.model, "video-model");
+    assert.equal("stream_options" in out, false, `channel type ${channelType} must drop stream_options like openai.Adaptor`);
+    assert.deepEqual(out.messages, [{ role: "user", content: "hi" }]);
+  }
+});
+
 

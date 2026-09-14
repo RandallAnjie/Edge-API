@@ -720,9 +720,7 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
     });
   }
   if (opts.channelType === CHANNEL_TYPE_TASK_PLUGIN) {
-    const out = suffixed.body;
-    out.model = suffixed.upstreamModelName;
-    return out;
+    throw new Error("invalid api type: -1");
   }
   if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM) {
     return convertAdvancedCustomOpenAIRequest(suffixed.body, {
@@ -746,6 +744,7 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
 export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
   const settings = opts.settings || {};
   const suffixed = applyReasoningModelSuffix(body, opts.originModelName, opts.upstreamModelName, settings, "responses");
+  if (opts.channelType === CHANNEL_TYPE_TASK_PLUGIN) throw new Error("invalid api type: -1");
   if (opts.channelType === CHANNEL_TYPE_SUBMODEL) submodelUnsupportedEndpoint();
   if (opts.channelType === CHANNEL_TYPE_REPLICATE) throw new Error("replicate adaptor: ConvertOpenAIResponsesRequest is not implemented");
   if (opts.channelType === CHANNEL_TYPE_XUNFEI) throw new Error("not implemented");
