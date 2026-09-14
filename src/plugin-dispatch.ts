@@ -51,7 +51,7 @@ export async function matchTaskPlugin(
     const routes = pluginRoutes(p.routes, meta);
     for (const r of routes) {
       if ((r.method || "POST").toUpperCase() !== method.toUpperCase()) continue;
-      if (pathMatches(r.path || "", path)) {
+      if (pluginRoutePathMatches(r.path || "", path)) {
         return { key: p.key, path: r.path || path, channelTypes, kind: "route", models };
       }
     }
@@ -123,4 +123,39 @@ function pathMatches(pattern: string, path: string): boolean {
     si += 1;
   }
   return si === sp.length;
+}
+
+/** Original plugin inner Gin `RedirectTrailingSlash = false` path match. */
+export function pluginRoutePathMatches(pattern: string, path: string): boolean {
+  if (!pathMatches(pattern, path)) return false;
+  if (pattern.split("/").some((part) => part.startsWith("*"))) return true;
+  const patternSlash = pattern.length > 1 && pattern.endsWith("/");
+  const pathSlash = path.length > 1 && path.endsWith("/");
+  return patternSlash === pathSlash;
+}
+
+/** Original plugin inner engine `HandleMethodNotAllowed`: path owned, method missing. */
+export async function matchPluginOwnedPath(
+  store: Store,
+  path: string,
+): Promise<{ key: string; methods: string[] } | null> {
+  const plugins = (await store.listTaskPlugins()) as {
+    key: string;
+    status: string;
+    enabled?: number;
+    routes: string;
+    source?: string;
+  }[];
+  for (const p of plugins) {
+    if (Number(p.enabled) === 0) continue;
+    if (p.status !== "active" && p.status !== "enabled") continue;
+    const meta = extractPluginMeta(String(p.source || ""));
+    const routes = pluginRoutes(p.routes, meta);
+    const methods: string[] = [];
+    for (const r of routes) {
+      if (pluginRoutePathMatches(r.path || "", path)) methods.push((r.method || "POST").toUpperCase());
+    }
+    if (methods.length) return { key: p.key, methods };
+  }
+  return null;
 }

@@ -290,6 +290,16 @@ export function taskPluginRouteError(status: number, detail = ""): Response {
   return json(taskErr.httpStatus, { code: taskErr.code, message: taskErr.message, data: null });
 }
 
+/** Original plugin inner Gin `NoMethod` `AbortWithStatus(405)` empty body. */
+export function pluginMethodNotAllowed(): Response {
+  return new Response(null, { status: 405 });
+}
+
+/** Original `pluginRouteRecovery` panic JSON. */
+export function pluginRoutePanicError(): Response {
+  return json(500, { error: { message: "internal plugin route error", type: "plugin_route_error" } });
+}
+
 /** Original `controller.RelayNotImplemented`. */
 export function relayNotImplemented(): Response {
   return json(501, {

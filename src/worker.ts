@@ -2,7 +2,7 @@ import { runChannelTestTask } from "./channel-test.js";
 import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
-import { apiFail, noAvailableChannelMessage, openaiError, pluginProtocolError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
+import { apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginProtocolError, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -22,7 +22,7 @@ import { extractGeminiModelAction } from "./convert.js";
 import { ensureSchema } from "./schema.js";
 import { Store } from "./store.js";
 import { hit } from "./metrics.js";
-import { matchPluginRoute, matchTaskPlugin, type MatchedPlugin } from "./plugin-dispatch.js";
+import { matchPluginOwnedPath, matchPluginRoute, matchTaskPlugin, type MatchedPlugin } from "./plugin-dispatch.js";
 import { applyOriginTaskIntent, type OriginTaskRef } from "./origin-task.js";
 import type { ChannelPin } from "./channel-constraint.js";
 import { taskArtifactsView, taskFetchView, openaiVideoView, taskResultURL } from "./dto.js";
@@ -597,7 +597,15 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       if (isRelay && !path.startsWith("/v1/dashboard")) {
         if (!isRegisteredRelay(req.method, path)) {
           const plugin = await matchPluginRoute(store, req.method, path);
-          if (!plugin) return withCors(req, relayNotFound(req.method, path));
+          if (!plugin) {
+            if (await matchPluginOwnedPath(store, path)) return withCors(req, pluginMethodNotAllowed());
+            return withCors(req, relayNotFound(req.method, path));
+          }
+          try {
+            return withCors(req, await handleRelay(req, env, ctx));
+          } catch {
+            return withCors(req, pluginRoutePanicError());
+          }
         }
         try {
           return withCors(req, await handleRelay(req, env, ctx));
@@ -615,8 +623,13 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       const plugin = await matchPluginRoute(store, req.method, path);
       if (plugin) {
         hit("relay");
-        return withCors(req, await handleRelay(req, env, ctx));
+        try {
+          return withCors(req, await handleRelay(req, env, ctx));
+        } catch {
+          return withCors(req, pluginRoutePanicError());
+        }
       }
+      if (await matchPluginOwnedPath(store, path)) return withCors(req, pluginMethodNotAllowed());
       if (path.startsWith("/v1") || path.startsWith("/api") || path.startsWith("/assets")) {
         return withCors(req, relayNotFound(req.method, path));
       }
