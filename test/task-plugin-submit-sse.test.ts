@@ -523,7 +523,9 @@ test("original undeclared SSE submit is local 502 JSON", async () => {
       e,
     );
     assert.equal(hit.res.status, 502, hit.text);
-    assert.match(String(hit.body.message || hit.text), /unexpected SSE response for a JSON submission/);
+    assert.equal(hit.body.code, "server_error");
+    assert.match(String(hit.body.message || hit.text), /Task request failed \(request id: /);
+    assert.equal(hit.body.data, null);
   } finally {
     globalThis.fetch = origFetch;
   }
