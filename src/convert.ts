@@ -643,6 +643,10 @@ function isAudioRelayMode(mode?: string): boolean {
   return mode === "audio_speech" || mode === "audio_transcription" || mode === "audio_translation";
 }
 
+function isOneOf(channelType: number, types: number[]): boolean {
+  return types.includes(channelType);
+}
+
 /**
  * Original adaptor ConvertImageRequest / ConvertAudioRequest / ConvertEmbeddingRequest /
  * ConvertRerankRequest / ConvertOpenAIResponsesRequest error strings.
@@ -651,16 +655,49 @@ export function nativeOpenAIConvertEndpointError(channelType: number, mode?: str
   const m = mode || "chat";
   const audio = isAudioRelayMode(m);
   const embeddings = m === "embeddings" || m === "engines_embeddings";
-  if (channelType === CHANNEL_TYPE_COZE) {
-    if (m === "images" || audio || embeddings || m === "rerank" || m === "responses") return "not implemented";
-  }
-  if (channelType === CHANNEL_TYPE_DIFY) {
-    if (m === "images" || audio || embeddings || m === "responses") return "not implemented";
-  }
+  const images = m === "images";
+  const rerank = m === "rerank";
+  const responses = m === "responses";
+
   if (channelType === CHANNEL_TYPE_MOONSHOT) {
     if (audio) return "not supported";
-    if (m === "responses") return "not implemented";
+    if (responses) return "not implemented";
+    return undefined;
   }
+  if (channelType === CHANNEL_TYPE_XAI && (audio || embeddings)) return "not available";
+  if (channelType === CHANNEL_TYPE_MINIMAX) {
+    if (responses) return "not implemented";
+    if (m === "audio_transcription" || m === "audio_translation") return "unsupported audio relay mode";
+    return undefined;
+  }
+  if (channelType === CHANNEL_TYPE_COZE && (images || audio || embeddings || rerank || responses)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_DIFY && (images || audio || embeddings || responses)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_ZHIPU_V4 && audio) return "not implemented";
+  if (channelType === CHANNEL_TYPE_SILICONFLOW && responses) return "not implemented";
+  if (channelType === CHANNEL_TYPE_ALI && audio) return "not implemented";
+  if (
+    isOneOf(channelType, [
+      CHANNEL_TYPE_ZHIPU,
+      CHANNEL_TYPE_PALM,
+      CHANNEL_TYPE_TENCENT,
+      CHANNEL_TYPE_MISTRAL,
+      CHANNEL_TYPE_XUNFEI,
+      CHANNEL_TYPE_AWS,
+    ]) &&
+    (images || audio || embeddings || responses)
+  ) {
+    return "not implemented";
+  }
+  if (channelType === CHANNEL_TYPE_MOKA && (images || audio || responses)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_PERPLEXITY && (images || audio || embeddings)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_JINA && (images || audio || responses)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_DEEPSEEK && (images || audio || embeddings)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_CLOUDFLARE && images) return "not implemented";
+  if (channelType === CHANNEL_TYPE_COHERE && (images || audio || responses)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_BAIDU && (images || audio || responses)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_OLLAMA && (images || audio)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_VERTEX && (audio || embeddings || rerank || responses)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_JIMENG && (audio || embeddings || rerank || responses)) return "not implemented";
   return undefined;
 }
 

@@ -473,3 +473,83 @@ test("original Tencent, Mistral, Moka, Jina, SiliconFlow, and PaLM ConvertOpenAI
     globalThis.fetch = origFetch;
   }
 });
+
+test("original Jina/SiliconFlow/PaLM/Mistral/Tencent ConvertImage/Responses HTTP JSON errors", async () => {
+  const { e, auth, sk } = await boot();
+  await addChannel(e, auth, {
+    name: "jina-endpoint",
+    type: CHANNEL_TYPE_JINA,
+    key: "jk",
+    models: "jina-clip-v1",
+    group: "default",
+  });
+  await addChannel(e, auth, {
+    name: "sf-endpoint",
+    type: CHANNEL_TYPE_SILICONFLOW,
+    key: "sfk",
+    models: "Qwen/Qwen2-7B-Instruct",
+    group: "default",
+  });
+  await addChannel(e, auth, {
+    name: "palm-endpoint",
+    type: CHANNEL_TYPE_PALM,
+    key: "palm-key",
+    models: "PaLM-2",
+    group: "default",
+  });
+  await addChannel(e, auth, {
+    name: "mistral-endpoint",
+    type: CHANNEL_TYPE_MISTRAL,
+    key: "ms",
+    models: "mistral-small-latest",
+    group: "default",
+  });
+  await addChannel(e, auth, {
+    name: "tencent-endpoint",
+    type: CHANNEL_TYPE_TENCENT,
+    key: "1300000000|AKIDxxxxxxxx|secretxxxxxxxx",
+    models: "hunyuan-lite",
+    group: "default",
+  });
+  await addChannel(e, auth, {
+    name: "moka-endpoint",
+    type: CHANNEL_TYPE_MOKA,
+    key: "mk",
+    models: "m3e-base",
+    group: "default",
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("upstream must not be called");
+  }) as typeof fetch;
+  try {
+    async function assertFailed(path: string, payload: Record<string, unknown>, model: string, message: string) {
+      const hit = await json(
+        new Request("http://local" + path, {
+          method: "POST",
+          headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+          body: JSON.stringify({ model, ...payload }),
+        }),
+        e,
+      );
+      assert.equal(hit.res.status, 500, hit.text);
+      assert.equal((hit.body.error as { message: string }).message, message);
+      assert.equal((hit.body.error as { code: string }).code, "convert_request_failed");
+    }
+
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "jina-clip-v1", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "jina-clip-v1", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "Qwen/Qwen2-7B-Instruct", "not implemented");
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "PaLM-2", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "PaLM-2", "not implemented");
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "mistral-small-latest", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "mistral-small-latest", "not implemented");
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "hunyuan-lite", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "hunyuan-lite", "not implemented");
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "m3e-base", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "m3e-base", "not implemented");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

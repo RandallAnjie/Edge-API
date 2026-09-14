@@ -855,3 +855,64 @@ test("original Moonshot ConvertAudioRequest and ConvertOpenAIResponsesRequest HT
     globalThis.fetch = origFetch;
   }
 });
+
+test("original DeepSeek ConvertImage/Audio/Embedding HTTP JSON errors", async () => {
+  const { e, auth, sk } = await boot();
+  const add = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "deepseek-endpoint",
+        type: CHANNEL_TYPE_DEEPSEEK,
+        key: "dk",
+        models: "deepseek-chat",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(add.body.success, true, String(add.body.message));
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("upstream must not be called");
+  }) as typeof fetch;
+  try {
+    const image = await json(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "deepseek-chat", prompt: "a cat" }),
+      }),
+      e,
+    );
+    assert.equal(image.res.status, 500, image.text);
+    assert.equal((image.body.error as { message: string }).message, "not implemented");
+    assert.equal((image.body.error as { code: string }).code, "convert_request_failed");
+
+    const embed = await json(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "deepseek-chat", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(embed.res.status, 500, embed.text);
+    assert.equal((embed.body.error as { message: string }).message, "not implemented");
+
+    const speech = await json(
+      new Request("http://local/v1/audio/speech", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "deepseek-chat", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(speech.res.status, 500, speech.text);
+    assert.equal((speech.body.error as { message: string }).message, "not implemented");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

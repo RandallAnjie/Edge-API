@@ -2415,6 +2415,78 @@ test("original Coze/Dify/Moonshot ConvertImage/Audio/Embedding/Responses error s
   );
   assert.equal(moonshotImage.model, "kimi-k2.5");
   assert.equal(moonshotImage.prompt, "a cat");
+
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_ZHIPU, "images"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_ZHIPU, "responses"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_ZHIPU, "rerank"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_ZHIPU_V4, "audio_speech"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_ZHIPU_V4, "images"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_ZHIPU_V4, "responses"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_PERPLEXITY, "images"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_PERPLEXITY, "embeddings"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_PERPLEXITY, "responses"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_JINA, "images"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_JINA, "responses"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_JINA, "embeddings"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_DEEPSEEK, "images"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_DEEPSEEK, "embeddings"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_DEEPSEEK, "responses"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_SILICONFLOW, "responses"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_SILICONFLOW, "images"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MINIMAX, "responses"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MINIMAX, "audio_transcription"), "unsupported audio relay mode");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MINIMAX, "audio_speech"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_CLOUDFLARE, "images"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_CLOUDFLARE, "embeddings"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU, "images"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU, "embeddings"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_OLLAMA, "images"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_OLLAMA, "embeddings"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_ALI, "audio_speech"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_ALI, "images"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_VERTEX, "embeddings"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_VERTEX, "images"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_XAI, "audio_speech"), "not available");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_XAI, "responses"), undefined);
+
+  const zhipuOpts = { channelType: CHANNEL_TYPE_ZHIPU, originModelName: "chatglm_std", upstreamModelName: "chatglm_std" };
+  assert.throws(
+    () => convertOpenAIRequest({ model: "chatglm_std", prompt: "a cat" }, { ...zhipuOpts, relayMode: "images" }),
+    /not implemented/,
+  );
+  assert.throws(() => convertOpenAIResponsesRequest({ model: "chatglm_std", input: "hi" }, zhipuOpts), /not implemented/);
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "glm-4", input: "hi" },
+        { channelType: CHANNEL_TYPE_ZHIPU_V4, originModelName: "glm-4", upstreamModelName: "glm-4", relayMode: "audio_speech" },
+      ),
+    /not implemented/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "sonar", prompt: "a cat" },
+        { channelType: CHANNEL_TYPE_PERPLEXITY, originModelName: "sonar", upstreamModelName: "sonar", relayMode: "images" },
+      ),
+    /not implemented/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIResponsesRequest(
+        { model: "Qwen/Qwen2-7B-Instruct", input: "hi" },
+        { channelType: CHANNEL_TYPE_SILICONFLOW, originModelName: "Qwen/Qwen2-7B-Instruct", upstreamModelName: "Qwen/Qwen2-7B-Instruct" },
+      ),
+    /not implemented/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIResponsesRequest(
+        { model: "abab6.5s-chat", input: "hi" },
+        { channelType: CHANNEL_TYPE_MINIMAX, originModelName: "abab6.5s-chat", upstreamModelName: "abab6.5s-chat" },
+      ),
+    /not implemented/,
+  );
 });
 
 test("original xAIHandler and xAIStreamHandler usage JSON", () => {

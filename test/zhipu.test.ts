@@ -437,3 +437,75 @@ test("original Zhipu, Perplexity, Cloudflare, BaiduV2, and MiniMax ConvertOpenAI
     globalThis.fetch = origFetch;
   }
 });
+
+test("original Zhipu/Perplexity/Cloudflare/MiniMax ConvertImage/Audio/Responses HTTP JSON errors", async () => {
+  const { e, auth, sk } = await boot();
+  await addChannel(e, auth, {
+    name: "zhipu-endpoint",
+    type: CHANNEL_TYPE_ZHIPU,
+    key: "id.secret",
+    models: "chatglm_std",
+    group: "default",
+  });
+  await addChannel(e, auth, {
+    name: "zhipu-v4-endpoint",
+    type: CHANNEL_TYPE_ZHIPU_V4,
+    key: "sk-z",
+    models: "glm-4",
+    group: "default",
+  });
+  await addChannel(e, auth, {
+    name: "pplx-endpoint",
+    type: CHANNEL_TYPE_PERPLEXITY,
+    key: "pk",
+    models: "sonar",
+    group: "default",
+  });
+  await addChannel(e, auth, {
+    name: "cf-endpoint",
+    type: CHANNEL_TYPE_CLOUDFLARE,
+    key: "cfk",
+    models: "llama-3",
+    group: "default",
+    other: "acct-1",
+  });
+  await addChannel(e, auth, {
+    name: "minimax-endpoint",
+    type: CHANNEL_TYPE_MINIMAX,
+    key: "mk",
+    models: "abab6.5s-chat",
+    group: "default",
+  });
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("upstream must not be called");
+  }) as typeof fetch;
+  try {
+    async function assertFailed(path: string, payload: Record<string, unknown>, model: string, message: string) {
+      const hit = await json(
+        new Request("http://local" + path, {
+          method: "POST",
+          headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+          body: JSON.stringify({ model, ...payload }),
+        }),
+        e,
+      );
+      assert.equal(hit.res.status, 500, hit.text);
+      assert.equal((hit.body.error as { message: string }).message, message);
+      assert.equal((hit.body.error as { code: string }).code, "convert_request_failed");
+      assert.equal((hit.body.error as { type: string }).type, "new_api_error");
+    }
+
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "chatglm_std", "not implemented");
+    await assertFailed("/v1/embeddings", { input: "hi" }, "chatglm_std", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "chatglm_std", "not implemented");
+    await assertFailed("/v1/audio/speech", { input: "hi" }, "glm-4", "not implemented");
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "sonar", "not implemented");
+    await assertFailed("/v1/embeddings", { input: "hi" }, "sonar", "not implemented");
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "llama-3", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "abab6.5s-chat", "not implemented");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
