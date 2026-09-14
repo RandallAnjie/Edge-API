@@ -498,7 +498,7 @@ export function applyNativeSubmitCompletionUsage(
       completionTokens: 0,
       totalTokens: 0,
     };
-    applyCompletionUsageFacts(result, facts, info.upstreamModelName || info.originModelName);
+    applyCompletionUsageFacts(result, facts, info.upstreamModelName || info.originModelName, pluginMeta(engine));
     if (result.usageFacts) {
       immediate.usageFacts = result.usageFacts;
       immediate.usage_facts = result.usageFacts;

@@ -413,3 +413,44 @@ export function applyRelayTaskSubmitBilling(opts: {
   }
   return { quota: opts.quota, otherRatios: opts.otherRatios };
 }
+
+/** Original `TaskAdaptor.validatedCompletionUsageFacts`. */
+export function validatedCompletionUsageFacts(
+  facts: unknown,
+  modelName: string,
+  meta: Record<string, unknown>,
+): { facts: Record<string, unknown> | null } | UsageRatiosErr {
+  if (facts == null) return { facts: null };
+  if (!isPlainObject(facts)) return { error: "plugin usage hook must return an object" };
+  const usageSchema = fieldSchemaMap(pluginUsageForModel(meta, modelName).usageSchema);
+  const validated: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(facts)) {
+    validated[key] = value;
+    if (Object.prototype.hasOwnProperty.call(usageSchema, key)) {
+      const checked = validateUsageValue(value, usageSchema[key], false);
+      if ("error" in checked) return { error: checked.error };
+      if (usageSchema[key].type === "number") validated[key] = checked.number;
+      continue;
+    }
+    const canonical = canonicalUsageLimit(key);
+    if (canonical.canonical) {
+      const parsed = usageNumber(value, false);
+      if (!parsed.numeric) return { error: "plugin usage value must be a number" };
+      const err = validateUsageNumberLimit(parsed.number, canonical.limit);
+      if (err) return { error: err };
+      validated[key] = parsed.number;
+      continue;
+    }
+    if (key === "upstreamUnits" || key === "completionTokens" || key === "totalTokens") {
+      const parsed = usageNumber(value, false);
+      if (!parsed.numeric || Number.isNaN(parsed.number) || !Number.isFinite(parsed.number) || parsed.number < 0) {
+        return { error: "plugin usage value must be a finite non-negative number" };
+      }
+      validated[key] = quotaFromFloat(parsed.number);
+      continue;
+    }
+    const parsed = usageNumber(value, false);
+    if (parsed.numeric) validated[key] = parsed.number;
+  }
+  return { facts: validated };
+}

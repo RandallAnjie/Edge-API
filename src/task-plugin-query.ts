@@ -8,6 +8,7 @@ import { type PluginEngine, validateRequestURL } from "./jsplugin.js";
 import { pickChannelKey } from "./select.js";
 import type { Store } from "./store.js";
 import type { ChannelRow } from "./types.js";
+import { validatedCompletionUsageFacts } from "./task-plugin-usage.js";
 
 export const MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES = 1 << 20;
 export const TASK_POLL_MAX_FAILURES = 20;
@@ -373,7 +374,7 @@ export function parseNativeBatchResult(
       }
       try {
         const facts = engine.call("extractUsageOnComplete", itemCtx, pluginJsonValue(info), usageBody);
-        applyCompletionUsageFacts(info, facts, String(itemCtx.upstreamModel || ""));
+        applyCompletionUsageFacts(info, facts, String(itemCtx.upstreamModel || ""), pluginMeta(engine));
       } catch {
         /* original keeps the parsed item when the completion hook fails */
       }
@@ -440,7 +441,7 @@ export function parseNativeTaskResult(
   if (engine.hasCallablePath("extractUsageOnComplete")) {
     try {
       const facts = engine.call("extractUsageOnComplete", queryContext, pluginJsonValue(result), body);
-      applyCompletionUsageFacts(result, facts, String(queryContext.upstreamModel || ""));
+      applyCompletionUsageFacts(result, facts, String(queryContext.upstreamModel || ""), pluginMeta(engine));
     } catch {
       /* original retains ParseTaskResult when the completion hook fails */
     }
@@ -449,10 +450,16 @@ export function parseNativeTaskResult(
 }
 
 /** Original `TaskAdaptor.applyCompletionUsageFacts` after schema validation. */
-export function applyCompletionUsageFacts(result: NativeTaskInfo, facts: unknown, _modelName: string): void {
-  if (facts == null) return;
-  if (!isPlainObject(facts)) return;
-  const values: Record<string, unknown> = { ...facts };
+export function applyCompletionUsageFacts(
+  result: NativeTaskInfo,
+  facts: unknown,
+  modelName: string,
+  meta: Record<string, unknown>,
+): void {
+  const validated = validatedCompletionUsageFacts(facts, modelName, meta);
+  if ("error" in validated) return;
+  if (!validated.facts || !Object.keys(validated.facts).length) return;
+  const values = validated.facts;
   result.usageFacts = values;
   const units = positiveInt(values.upstreamUnits);
   if (units > 0) {

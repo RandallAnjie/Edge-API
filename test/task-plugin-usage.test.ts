@@ -6,8 +6,10 @@ import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { Store } from "../src/store.js";
+import { isNativeQueryError, parseNativeTaskResult } from "../src/task-plugin-query.js";
 import {
   MAX_IMAGE_N,
+  MAX_QUOTA,
   MAX_TASK_DURATION_SECONDS,
   adjustBillingOnSubmit,
   applyRelayTaskSubmitBilling,
@@ -600,5 +602,61 @@ export function parseTaskResult(){return {status:"SUCCESS"};}
     assert.equal(fetched, 0);
   } finally {
     globalThis.fetch = origFetch;
+  }
+});
+
+test("original ParseTaskResult discards invalid completion usage JSON", () => {
+  const loaded = compilePlugin(boundedUsagePlugin, { key: "bounded-usage", version: "1.0.0" });
+  for (const usage of [
+    { duration: MAX_TASK_DURATION_SECONDS + 1 },
+    { count: MAX_IMAGE_N + 1 },
+    { duration: "5" },
+  ]) {
+    const parsed = parseNativeTaskResult(loaded.engine, {}, 200, {}, { completionUsage: usage });
+    assert.equal(isNativeQueryError(parsed), false, JSON.stringify(usage));
+    if (!isNativeQueryError(parsed)) {
+      assert.equal(parsed.usageFacts, undefined);
+      assert.equal(parsed.totalTokens, 0);
+    }
+  }
+  const tokens = parseNativeTaskResult(loaded.engine, {}, 200, {}, { completionUsage: { tokens: 500000 } });
+  assert.equal(isNativeQueryError(tokens), false);
+  if (!isNativeQueryError(tokens)) {
+    assert.equal(tokens.usageFacts?.tokens, 500000);
+  }
+});
+
+test("original completion credit facts keep sub-integer precision JSON", () => {
+  const source = `
+export const meta = {
+  apiVersion: 1, key: "credit-decimals", name: "Credit Decimals", version: "1.0.0",
+  author: {name: "Test"}, models: ["model"], fetchMode: "per_task",
+  usageSchema: {units: {type: "number", unit: "credit"}},
+  usageExamples: [{label: "3.5 credits", facts: {units: 3.5}}],
+};
+export function buildSubmitRequest(ctx) { return {url: ctx.baseUrl + "/submit"}; }
+export function parseSubmitResponse() { return {taskId: "task"}; }
+export function buildQueryRequest() { return {url: "https://example.com"}; }
+export function parseTaskResult() { return {status: "SUCCESS"}; }
+export function extractUsage() { return {units: 3.5}; }
+export function extractUsageOnComplete() { return {units: 3.5}; }
+`;
+  const loaded = compilePlugin(source, { key: "credit-decimals", version: "1.0.0" });
+  const parsed = parseNativeTaskResult(loaded.engine, {}, 200, {}, {});
+  assert.equal(isNativeQueryError(parsed), false);
+  if (!isNativeQueryError(parsed)) {
+    assert.equal(parsed.usageFacts?.units, 3.5);
+  }
+});
+
+test("original completion token facts saturate at MaxQuota JSON", () => {
+  const loaded = compilePlugin(boundedUsagePlugin, { key: "bounded-usage", version: "1.0.0" });
+  const parsed = parseNativeTaskResult(loaded.engine, {}, 200, {}, {
+    completionUsage: { upstreamUnits: MAX_QUOTA + 1 },
+  });
+  assert.equal(isNativeQueryError(parsed), false);
+  if (!isNativeQueryError(parsed)) {
+    assert.equal(parsed.usageFacts?.upstreamUnits, MAX_QUOTA);
+    assert.equal(parsed.totalTokens, MAX_QUOTA);
   }
 });
