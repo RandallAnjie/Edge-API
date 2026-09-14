@@ -238,3 +238,66 @@ test("original Gemini type-24 ConvertEmbeddingRequest batchEmbedContents GeminiE
     globalThis.fetch = origFetch;
   }
 });
+
+test("original GetGeminiVersionSetting uses v1 for gemini-1.0-pro GetRequestURL", async () => {
+  const { e, auth, sk } = await boot();
+  const add = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "gemini-version",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey",
+        models: "gemini-1.0-pro,gemini-2.0-flash",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(add.body.success, true, String(add.body.message));
+
+  const origFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    urls.push(String(input));
+    return new Response(
+      JSON.stringify({
+        candidates: [{ finishReason: "STOP", content: { role: "model", parts: [{ text: "ok" }] } }],
+        usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const pro = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gemini-1.0-pro",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(pro.res.status, 200, pro.text);
+    assert.equal(urls[0], "https://generativelanguage.googleapis.com/v1/models/gemini-1.0-pro:generateContent?key=gkey");
+
+    const flash = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gemini-2.0-flash",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(flash.res.status, 200, flash.text);
+    assert.equal(urls[1], "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=gkey");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

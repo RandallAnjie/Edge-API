@@ -70,6 +70,7 @@ import { applyChannelParamOverride, asParamOverrideReturnError, ParamOverrideRet
 import {
   DEFAULT_CLAUDE_MAX_TOKENS,
   DEFAULT_EFFORT_TAIL_MODEL_IDS,
+  DEFAULT_GEMINI_VERSION_SETTINGS,
   DEFAULT_THINKING_MODEL_BLACKLIST,
   ReasoningClientError,
   applyReasoningModelSuffix,
@@ -223,6 +224,7 @@ async function reasoningSettingsFromStore(store: Store): Promise<ReasoningHostSe
     geminiThinkingAdapterBudgetTokensPercentage: Number(await store.option("gemini.thinking_adapter_budget_tokens_percentage")) || 0.6,
     claudeDefaultMaxTokens: parseJson(await store.option("claude.default_max_tokens"), DEFAULT_CLAUDE_MAX_TOKENS),
     geminiSafetySettings: parseJson(await store.option("gemini.safety_settings"), { default: "OFF" }),
+    geminiVersionSettings: parseJson(await store.option("gemini.version_settings"), DEFAULT_GEMINI_VERSION_SETTINGS),
     geminiSupportedImagineModels: parseJson(await store.option("gemini.supported_imagine_models"), []),
     geminiFunctionCallThoughtSignatureEnabled: (await store.option("gemini.function_call_thought_signature_enabled")) !== "false",
     removeFunctionResponseIdEnabled: (await store.option("gemini.remove_function_response_id_enabled")) !== "false",
@@ -1261,6 +1263,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       isStream: opts.stream,
       relayFormat: clientFormat === "anthropic" ? "claude" : clientFormat === "gemini" ? "gemini" : "openai",
       isClaudeBetaQuery: new URL(opts.req.url).searchParams.get("beta") === "true",
+      geminiVersionSettings: convertSettings.geminiVersionSettings,
     };
     let target: UpstreamTarget;
     try {

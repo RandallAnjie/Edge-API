@@ -60,6 +60,7 @@ import { CHANNEL_SPECIAL_BASES, channelKind, defaultBaseUrl, resolveBaseUrl } fr
 import { isGeminiEmbeddingModel } from "./gemini-convert.js";
 import { usesOpenAIAdaptor } from "./openai-adaptor.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
+import { getGeminiVersionSetting } from "./reasoning.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import type { ChannelRow } from "./types.js";
 
@@ -502,7 +503,9 @@ export function buildUpstream(
       break;
     }
     case "gemini": {
-      const version = "v1beta";
+      const version = getGeminiVersionSetting(upstreamModel, {
+        geminiVersionSettings: relayInfo.geminiVersionSettings,
+      });
       const stream =
         requestPath.includes("streamGenerateContent") ||
         (payloadIsObject(body) && Boolean((body as { stream?: boolean }).stream));

@@ -42,6 +42,7 @@ import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-
 import { buildAdvancedCustomRelayTarget, shouldApplyAdvancedCustomClaudeHeaders } from "./channel-validate.js";
 import { buildCodexRelayTarget } from "./codex-models.js";
 import { pickChannelKey } from "./select.js";
+import { DEFAULT_GEMINI_VERSION_SETTINGS } from "./reasoning.js";
 import type { Store } from "./store.js";
 import type { ChannelRow, UserRow } from "./types.js";
 
@@ -546,6 +547,7 @@ export async function testChannel(
       upstreamModel: mappedModel,
       requestPath,
       isChannelTest: true,
+      geminiVersionSettings: parseJson(await store.option("gemini.version_settings"), DEFAULT_GEMINI_VERSION_SETTINGS),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

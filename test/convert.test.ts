@@ -81,7 +81,7 @@ import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC,
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding } from "../src/ollama-convert.js";
 import { openaiFromNovaResponse } from "../src/aws-convert.js";
 import { openaiFromImagenResponse, VERTEX_IMAGE_TOKENS, imagenUsage } from "../src/vertex-convert.js";
-import { isClientError } from "../src/reasoning.js";
+import { isClientError, getGeminiVersionSetting } from "../src/reasoning.js";
 import { getZhipuToken, clearZhipuTokenCache, openaiFromZhipuV4Image } from "../src/zhipu-convert.js";
 import { applyTencentTc3Authorization, getTencentSign, tencentTokenHubBase, TENCENT_TOKENHUB_BASE } from "../src/tencent-convert.js";
 import { buildXunfeiAuthUrl, xunfeiDomain, xunfeiHostUrl } from "../src/xunfei-convert.js";
@@ -1737,6 +1737,23 @@ test("original Gemini ConvertImageRequest JSON, :predict URL, and GeminiImageHan
   assert.equal(
     chatUrl.url,
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=gkey",
+  );
+  assert.equal(getGeminiVersionSetting("gemini-1.0-pro"), "v1");
+  assert.equal(getGeminiVersionSetting("gemini-2.0-flash"), "v1beta");
+  assert.equal(
+    getGeminiVersionSetting("gemini-1.0-pro", { geminiVersionSettings: { default: "v1beta", "gemini-1.0-pro": "v1alpha" } }),
+    "v1alpha",
+  );
+  const proUrl = buildUpstream(
+    geminiCh,
+    "chat",
+    "/v1/chat/completions",
+    "gemini-1.0-pro",
+    { model: "gemini-1.0-pro", contents: [] },
+  );
+  assert.equal(
+    proUrl.url,
+    "https://generativelanguage.googleapis.com/v1/models/gemini-1.0-pro:generateContent?key=gkey",
   );
 });
 

@@ -56,6 +56,7 @@ export type ReasoningHostSettings = {
   geminiThinkingAdapterBudgetTokensPercentage?: number;
   claudeDefaultMaxTokens?: Record<string, number>;
   geminiSafetySettings?: Record<string, string>;
+  geminiVersionSettings?: Record<string, string>;
   geminiSupportedImagineModels?: string[];
   geminiFunctionCallThoughtSignatureEnabled?: boolean;
   removeFunctionResponseIdEnabled?: boolean;
@@ -64,6 +65,10 @@ export type ReasoningHostSettings = {
 
 export const DEFAULT_CLAUDE_MAX_TOKENS: Record<string, number> = { default: 8192 };
 export const DEFAULT_GEMINI_SAFETY = "OFF";
+export const DEFAULT_GEMINI_VERSION_SETTINGS: Record<string, string> = {
+  default: "v1beta",
+  "gemini-1.0-pro": "v1",
+};
 export const GEMINI_SAFETY_CATEGORIES = [
   "HARM_CATEGORY_HARASSMENT",
   "HARM_CATEGORY_HATE_SPEECH",
@@ -1089,6 +1094,14 @@ export function claudeDefaultMaxTokensFor(model: string, settings: ReasoningHost
 export function geminiSafetySettingFor(category: string, settings: ReasoningHostSettings = {}): string {
   const table = settings.geminiSafetySettings || { default: DEFAULT_GEMINI_SAFETY };
   return table[category] || table.default || DEFAULT_GEMINI_SAFETY;
+}
+
+/** Original `model_setting.GetGeminiVersionSetting`. */
+export function getGeminiVersionSetting(model: string, settings: ReasoningHostSettings = {}): string {
+  const table = settings.geminiVersionSettings || DEFAULT_GEMINI_VERSION_SETTINGS;
+  if (Object.prototype.hasOwnProperty.call(table, model)) return table[model] ?? "";
+  if (Object.prototype.hasOwnProperty.call(table, "default")) return table.default ?? "";
+  return DEFAULT_GEMINI_VERSION_SETTINGS.default;
 }
 
 export function geminiSupportsImagine(model: string, settings: ReasoningHostSettings = {}): boolean {

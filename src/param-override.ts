@@ -68,6 +68,8 @@ export type ParamOverrideRelayInfo = {
   relayFormat?: "openai" | "claude" | "gemini";
   /** Original `relaycommon.RelayInfo.IsClaudeBetaQuery` (`c.Query("beta") == "true"`). */
   isClaudeBetaQuery?: boolean;
+  /** Original `model_setting.GeminiSettings.VersionSettings` for Gemini GetRequestURL. */
+  geminiVersionSettings?: Record<string, string>;
 };
 
 type JsonType = 0 | 1 | 2 | 3 | 4 | 5;
