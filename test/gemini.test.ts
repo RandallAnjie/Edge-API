@@ -160,3 +160,81 @@ test("original Gemini type-24 ConvertImageRequest :predict GeminiImageHandler JS
     globalThis.fetch = origFetch;
   }
 });
+
+test("original Gemini type-24 ConvertEmbeddingRequest batchEmbedContents GeminiEmbeddingHandler JSON fields", async () => {
+  const { e, auth, sk } = await boot();
+  const add = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "gemini-embed",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey",
+        models: "customer-embed,text-embedding-004,gemini-embedding-001",
+        group: "default",
+        model_mapping: JSON.stringify({ "customer-embed": "text-embedding-004" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(add.body.success, true, String(add.body.message));
+
+  const origFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown>; headers: Headers }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const raw = init?.body;
+    if (raw instanceof FormData || raw instanceof Uint8Array || raw instanceof ArrayBuffer) {
+      throw new Error("unexpected gemini embedding body");
+    }
+    const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    calls.push({ url, body: parsed, headers: new Headers(init?.headers) });
+    return new Response(
+      JSON.stringify({ embeddings: [{ values: [0.11, 0.22] }, { values: [0.33, 0.44] }] }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const embed = await json(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "customer-embed",
+          input: ["hello", "world"],
+          dimensions: 768,
+        }),
+      }),
+      e,
+    );
+    assert.equal(embed.res.status, 200, embed.text);
+    assert.equal(calls.length, 1);
+    assert.equal(
+      calls[0].url,
+      "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:batchEmbedContents?key=gkey",
+    );
+    assert.equal(calls[0].headers.get("x-goog-api-key"), "gkey");
+    assert.deepEqual(calls[0].body.requests, [
+      {
+        model: "models/text-embedding-004",
+        content: { parts: [{ text: "hello" }] },
+        outputDimensionality: 768,
+      },
+      {
+        model: "models/text-embedding-004",
+        content: { parts: [{ text: "world" }] },
+        outputDimensionality: 768,
+      },
+    ]);
+    assert.equal(embed.body.object, "list");
+    assert.equal(embed.body.model, "text-embedding-004");
+    assert.deepEqual(embed.body.data, [
+      { object: "embedding", embedding: [0.11, 0.22], index: 0 },
+      { object: "embedding", embedding: [0.33, 0.44], index: 1 },
+    ]);
+    assert.equal((embed.body.usage as { completion_tokens: number }).completion_tokens, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

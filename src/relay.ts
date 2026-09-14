@@ -13,6 +13,7 @@ import {
   extractGeminiModelAction,
   geminiToOpenAIChat,
   openaiFromAnthropicResponse,
+  openaiFromGeminiEmbedding,
   openaiFromGeminiResponse,
   openaiToAnthropic,
   openaiToGemini,
@@ -325,6 +326,12 @@ async function convertOutbound(
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_BAIDU && mode === "embeddings") {
     return convertBaiduEmbeddingRequest(o);
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_VERTEX && mode === "embeddings") {
+    throw new Error("not implemented");
+  }
+  if (client === "openai" && channelType === CHANNEL_TYPE_GEMINI && mode === "embeddings") {
+    return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_DIFY) {
     return convertDifyOpenAIRequestWithUploads(o, {
@@ -673,6 +680,9 @@ async function convertInbound(
   if (client === "openai" && kind === "anthropic") return openaiFromAnthropicResponse(upstreamJson, model);
   if (client === "openai" && kind === "gemini") {
     if (model.startsWith("imagen")) return openaiFromImagenResponse(upstreamJson, { created: opts.created });
+    if (opts.relayMode === "embeddings") {
+      return openaiFromGeminiEmbedding(upstreamJson, model, { fallbackPromptTokens: opts.fallbackPromptTokens });
+    }
     return openaiFromGeminiResponse(upstreamJson, model, {
       id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
       created: opts.created,

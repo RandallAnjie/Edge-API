@@ -593,3 +593,77 @@ export function convertOpenAIChatToGemini(body: OpenAIChatBody, opts: ConvertGem
   geminiRequest.generationConfig = generationConfig;
   return geminiRequest;
 }
+
+const GEMINI_OUTPUT_DIMENSIONALITY_MODELS = new Set([
+  "text-embedding-004",
+  "gemini-embedding-exp-03-07",
+  "gemini-embedding-001",
+]);
+
+/** Original `gemini.Adaptor.GetRequestURL` embedding-model prefixes. */
+export function isGeminiEmbeddingModel(upstreamModelName: string): boolean {
+  return (
+    upstreamModelName.startsWith("text-embedding") ||
+    upstreamModelName.startsWith("embedding") ||
+    upstreamModelName.startsWith("gemini-embedding")
+  );
+}
+
+/** Original `dto.EmbeddingRequest.ParseInput`. */
+export function parseGeminiEmbeddingInput(input: unknown): string[] {
+  if (input == null) return [];
+  if (typeof input === "string") return [input];
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  for (const item of input) {
+    if (typeof item === "string") out.push(item);
+  }
+  return out;
+}
+
+/** Original `gemini.Adaptor.ConvertEmbeddingRequest` (`requests` + `IsGeminiBatchEmbedding`). */
+export function convertGeminiEmbeddingRequest(
+  body: Record<string, unknown>,
+  opts: { upstreamModelName?: string } = {},
+): Record<string, unknown> {
+  if (body.input == null) throw new Error("input is required");
+  const inputs = parseGeminiEmbeddingInput(body.input);
+  if (inputs.length === 0) throw new Error("input is empty");
+  const upstream = opts.upstreamModelName || String(body.model || "");
+  const dimensions = Number(body.dimensions ?? 0);
+  const requests = inputs.map((input) => {
+    const geminiRequest: Record<string, unknown> = {
+      model: `models/${upstream}`,
+      content: { parts: [{ text: input }] },
+    };
+    if (GEMINI_OUTPUT_DIMENSIONALITY_MODELS.has(upstream) && dimensions > 0) {
+      geminiRequest.outputDimensionality = dimensions;
+    }
+    return geminiRequest;
+  });
+  return { requests };
+}
+
+/** Original `GeminiEmbeddingHandler` OpenAI embedding JSON. */
+export function openaiFromGeminiEmbedding(
+  upstream: Record<string, unknown>,
+  model: string,
+  opts: { fallbackPromptTokens?: number } = {},
+): Record<string, unknown> {
+  const embeddings = Array.isArray(upstream.embeddings) ? (upstream.embeddings as Record<string, unknown>[]) : [];
+  const promptTokens = opts.fallbackPromptTokens || 0;
+  return {
+    object: "list",
+    data: embeddings.map((embedding, index) => ({
+      object: "embedding",
+      embedding: Array.isArray(embedding.values) ? embedding.values : [],
+      index,
+    })),
+    model,
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: 0,
+      total_tokens: promptTokens,
+    },
+  };
+}

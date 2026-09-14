@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   openaiFromAnthropicResponse,
   openaiFromGeminiResponse,
+  openaiFromGeminiEmbedding,
   openaiToAnthropic,
   openaiToGemini,
   usageFromOpenAI,
@@ -1091,6 +1092,133 @@ test("original Gemini ConvertImageRequest JSON, :predict URL, and GeminiImageHan
   assert.equal(
     chatUrl.url,
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=gkey",
+  );
+});
+
+test("original Gemini ConvertEmbeddingRequest JSON, batchEmbedContents URL, and GeminiEmbeddingHandler fields", () => {
+  const batch = convertOpenAIRequest(
+    { model: "text-embedding-004", input: ["hello", "world"], dimensions: 768 },
+    {
+      channelType: CHANNEL_TYPE_GEMINI,
+      originModelName: "text-embedding-004",
+      upstreamModelName: "text-embedding-004",
+      relayMode: "embeddings",
+    },
+  );
+  assert.deepEqual(batch.requests, [
+    {
+      model: "models/text-embedding-004",
+      content: { parts: [{ text: "hello" }] },
+      outputDimensionality: 768,
+    },
+    {
+      model: "models/text-embedding-004",
+      content: { parts: [{ text: "world" }] },
+      outputDimensionality: 768,
+    },
+  ]);
+
+  const single = convertOpenAIRequest(
+    { model: "gemini-embedding-001", input: "one string", dimensions: 256 },
+    {
+      channelType: CHANNEL_TYPE_GEMINI,
+      originModelName: "gemini-embedding-001",
+      upstreamModelName: "gemini-embedding-001",
+      relayMode: "embeddings",
+    },
+  );
+  assert.deepEqual(single.requests, [
+    {
+      model: "models/gemini-embedding-001",
+      content: { parts: [{ text: "one string" }] },
+      outputDimensionality: 256,
+    },
+  ]);
+
+  const preview = convertOpenAIRequest(
+    { model: "gemini-embedding-2-preview", input: "x", dimensions: 768 },
+    {
+      channelType: CHANNEL_TYPE_GEMINI,
+      originModelName: "gemini-embedding-2-preview",
+      upstreamModelName: "gemini-embedding-2-preview",
+      relayMode: "embeddings",
+    },
+  );
+  assert.deepEqual(preview.requests, [
+    { model: "models/gemini-embedding-2-preview", content: { parts: [{ text: "x" }] } },
+  ]);
+
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "text-embedding-004" },
+        {
+          channelType: CHANNEL_TYPE_GEMINI,
+          originModelName: "text-embedding-004",
+          upstreamModelName: "text-embedding-004",
+          relayMode: "embeddings",
+        },
+      ),
+    /input is required/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "text-embedding-004", input: [] },
+        {
+          channelType: CHANNEL_TYPE_GEMINI,
+          originModelName: "text-embedding-004",
+          upstreamModelName: "text-embedding-004",
+          relayMode: "embeddings",
+        },
+      ),
+    /input is empty/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIRequest(
+        { model: "gemini-embedding-001", input: "hi" },
+        {
+          channelType: CHANNEL_TYPE_VERTEX,
+          originModelName: "gemini-embedding-001",
+          upstreamModelName: "gemini-embedding-001",
+          relayMode: "embeddings",
+        },
+      ),
+    /not implemented/,
+  );
+
+  const mapped = openaiFromGeminiEmbedding(
+    { embeddings: [{ values: [0.1, 0.2] }, { values: [0.3, 0.4] }] },
+    "text-embedding-004",
+    { fallbackPromptTokens: 7 },
+  );
+  assert.equal(mapped.object, "list");
+  assert.equal(mapped.model, "text-embedding-004");
+  assert.deepEqual(mapped.data, [
+    { object: "embedding", embedding: [0.1, 0.2], index: 0 },
+    { object: "embedding", embedding: [0.3, 0.4], index: 1 },
+  ]);
+  assert.deepEqual(mapped.usage, { prompt_tokens: 7, completion_tokens: 0, total_tokens: 7 });
+
+  const geminiCh = testChannel({
+    type: CHANNEL_TYPE_GEMINI,
+    key: "gkey",
+    models: "text-embedding-004,gemini-2.0-flash",
+  });
+  assert.equal(
+    buildUpstream(geminiCh, "embeddings", "/v1/embeddings", "text-embedding-004", batch).url,
+    "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:batchEmbedContents?key=gkey",
+  );
+  assert.equal(
+    buildUpstream(geminiCh, "chat", "/v1/chat/completions", "gemini-2.0-flash", { model: "gemini-2.0-flash" }).url,
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=gkey",
+  );
+  assert.equal(
+    buildUpstream(geminiCh, "gemini", "/v1beta/models/text-embedding-004:embedContent", "text-embedding-004", {
+      model: "models/text-embedding-004",
+    }).url,
+    "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=gkey",
   );
 });
 

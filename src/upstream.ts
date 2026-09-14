@@ -57,6 +57,7 @@ import {
   vertexRequestMode,
 } from "./vertex-convert.js";
 import { CHANNEL_SPECIAL_BASES, channelKind, defaultBaseUrl, resolveBaseUrl } from "./catalog.js";
+import { isGeminiEmbeddingModel } from "./gemini-convert.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import type { ChannelRow } from "./types.js";
@@ -474,8 +475,10 @@ export function buildUpstream(
         (payloadIsObject(body) && Boolean((body as { stream?: boolean }).stream));
       const action = upstreamModel.startsWith("imagen")
         ? "predict"
-        : mode === "embeddings"
-          ? "embedContent"
+        : isGeminiEmbeddingModel(upstreamModel)
+          ? mode === "embeddings"
+            ? "batchEmbedContents"
+            : "embedContent"
           : stream
             ? "streamGenerateContent?alt=sse"
             : "generateContent";
