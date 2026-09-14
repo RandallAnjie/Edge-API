@@ -71,6 +71,14 @@ import {
   resolveAdvancedCustomConverter,
   shouldApplyAdvancedCustomClaudeHeaders,
 } from "./channel-validate.js";
+import {
+  CONVERTER_CHAT_TO_CLAUDE,
+  CONVERTER_CHAT_TO_GEMINI,
+} from "./advanced-custom-convert.js";
+import {
+  advancedCustomOpenaiShapedInbound,
+  convertAdvancedCustomInbound,
+} from "./advanced-custom-response.js";
 import { buildCodexRelayTarget, fetchCodexChannelModels } from "./codex-models.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
@@ -473,8 +481,17 @@ function convertInbound(
     rawText?: string;
     cozeUsage?: CozeUsage;
     channelKey?: string;
+    converter?: string;
   } = {},
 ): Record<string, unknown> {
+  if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM) {
+    return convertAdvancedCustomInbound(opts.converter || "none", client, upstreamJson, model, {
+      requestId: opts.requestId,
+      created: opts.created,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+      relayMode: opts.relayMode,
+    });
+  }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_OLLAMA) {
     if (opts.relayMode === "embeddings") return openaiFromOllamaEmbedding(upstreamJson, model);
     if (opts.relayMode === "responses") return upstreamJson;
@@ -574,8 +591,40 @@ function openaiClientFromProvider(
   text: string,
   mapped: string,
   stream: boolean,
-  opts: { requestId: string; includeUsage?: boolean; fallbackPromptTokens?: number; channelType?: number; relayMode?: RelayMode; channelKey?: string },
+  opts: {
+    requestId: string;
+    includeUsage?: boolean;
+    fallbackPromptTokens?: number;
+    channelType?: number;
+    relayMode?: RelayMode;
+    channelKey?: string;
+    converter?: string;
+  },
 ): { body: string; usageBody: Record<string, unknown> } {
+  if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_CHAT_TO_CLAUDE) {
+    const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
+    if (stream) {
+      return {
+        body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),
+        usageBody: out.json || {},
+      };
+    }
+    return { body: JSON.stringify(out.json), usageBody: out.json || {} };
+  }
+  if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_CHAT_TO_GEMINI) {
+    const out = geminiUpstreamToOpenAIChat(text, mapped, {
+      id: `chatcmpl-${opts.requestId}`,
+      upstreamModel: mapped,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+    if (stream) {
+      return {
+        body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),
+        usageBody: out.json || {},
+      };
+    }
+    return { body: JSON.stringify(out.json), usageBody: out.json || {} };
+  }
   if (opts.channelType === CHANNEL_TYPE_OLLAMA && opts.relayMode !== "responses" && opts.relayMode !== "embeddings") {
     const out = ollamaUpstreamToOpenAIChat(text, mapped);
     return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
@@ -692,7 +741,11 @@ function openaiClientFromProvider(
     channelType: opts.channelType,
     channelKey: opts.channelKey,
     relayMode: opts.relayMode,
+    converter: opts.converter,
   });
+  if (stream && converted.object === "response") {
+    return { body: `event: response.completed\ndata: ${JSON.stringify(converted)}\n\n`, usageBody: converted };
+  }
   return { body: stream ? sseFromOpenAIChatCompletion(converted) : JSON.stringify(converted), usageBody: converted };
 }
 
@@ -881,9 +934,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     const kind = channelKind(channel.type);
     let mapped = model;
     let outbound: unknown = opts.body;
+    let advancedConverter: string | undefined;
     try {
       mapped = applyModelMapping(channel, model);
       const channelSetting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
+      if (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
+        advancedConverter = resolveAdvancedCustomConverter(channel, requestPath, model);
+      }
       outbound = opts.rawBody
         ? opts.body
         : convertOutbound(kind, clientFormat, opts.body, channel.type, mapped, model, convertSettings, mode, {
@@ -893,10 +950,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             requestPath,
             systemPrompt: String(channelSetting.system_prompt || ""),
             systemPromptOverride: Boolean(channelSetting.system_prompt_override),
-            converter:
-              channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM
-                ? resolveAdvancedCustomConverter(channel, requestPath, model)
-                : undefined,
+            converter: advancedConverter,
             isStream: opts.stream,
           });
       if (!opts.rawBody) {
@@ -1105,7 +1159,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         channel.type !== CHANNEL_TYPE_PALM &&
         !(channel.type === CHANNEL_TYPE_TENCENT && tencentUsesNativeAdaptor(pickChannelKey(channel.key)))) ||
       channel.type === CHANNEL_TYPE_ZHIPU_V4 ||
-      (channel.type === CHANNEL_TYPE_CLOUDFLARE && mode === "responses");
+      (channel.type === CHANNEL_TYPE_CLOUDFLARE && mode === "responses") ||
+      (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM && advancedCustomOpenaiShapedInbound(advancedConverter || "none"));
     if (isSSE && res.body) {
       if (!openaiShapedInbound && clientFormat === "openai" && !ollamaResponsesPassthrough) {
         const text = await res.text();
@@ -1119,10 +1174,14 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             channelType: channel.type,
             relayMode: mode,
             channelKey: pickChannelKey(channel.key),
+            converter: advancedConverter,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          if (message.startsWith("unsupported advanced custom converter:")) {
+            return openaiError(400, message, "invalid_request");
+          }
           return openaiError(500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody);
@@ -1180,10 +1239,14 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         rawText: text,
         cozeUsage,
         channelKey: pickChannelKey(channel.key),
+        converter: advancedConverter,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, message.slice(0, 2000), extra);
+      if (message.startsWith("unsupported advanced custom converter:")) {
+        return openaiError(400, message, "invalid_request");
+      }
       return openaiError(500, message, "bad_response_body");
     }
     let usage = usageFromOpenAI(converted);

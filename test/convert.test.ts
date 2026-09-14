@@ -13,6 +13,10 @@ import {
   convertClaudeRequest,
   convertAdvancedCustomClaudeRequest,
   convertAdvancedCustomGeminiRequest,
+  convertAdvancedCustomInbound,
+  geminiResponseToResponsesResponse,
+  responsesResponseToChatCompletion,
+  chatCompletionToResponsesResponse,
   convertOpenAIChatToClaude,
   convertOllamaEmbeddingRequest,
   convertBaiduEmbeddingRequest,
@@ -2351,6 +2355,147 @@ test("original AdvancedCustom ConvertOpenAIRequest converter JSON", () => {
   const fromGemini = geminiToChat.messages as { role: string }[];
   assert.equal(fromGemini.length, 1);
   assert.equal(fromGemini[0].role, "user");
+});
+
+test("original AdvancedCustom DoResponse converter JSON", () => {
+  const claude = convertAdvancedCustomInbound(
+    "openai_chat_completions_to_anthropic_messages",
+    "openai",
+    {
+      id: "msg_adv",
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 2, output_tokens: 1 },
+    },
+    "claude-test",
+  );
+  assert.equal(claude.object, "chat.completion");
+  const claudeChoice = (claude.choices as { message: { content: string }; finish_reason: string }[])[0];
+  assert.equal(claudeChoice.message.content, "ok");
+  assert.equal(claudeChoice.finish_reason, "stop");
+
+  const gemini = convertAdvancedCustomInbound(
+    "openai_chat_completions_to_gemini_generate_content",
+    "openai",
+    {
+      candidates: [{ content: { role: "model", parts: [{ text: "hello" }] } }],
+      usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+    },
+    "gemini-2.5-flash",
+  );
+  assert.equal(gemini.object, "chat.completion");
+  const geminiChoice = (gemini.choices as { message: { content: string } }[])[0];
+  assert.equal(geminiChoice.message.content, "hello");
+
+  const chatFromResponses = convertAdvancedCustomInbound(
+    "openai_chat_completions_to_openai_responses",
+    "openai",
+    {
+      id: "resp_1",
+      object: "response",
+      created_at: 123,
+      status: "completed",
+      model: "gpt-responses",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] }],
+      usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+    },
+    "gpt-responses",
+    { requestId: "adv-chat" },
+  );
+  assert.equal(chatFromResponses.object, "chat.completion");
+  const chatChoice = (chatFromResponses.choices as { message: { content: string }; finish_reason: string }[])[0];
+  assert.equal(chatChoice.message.content, "hello");
+  assert.equal(chatChoice.finish_reason, "stop");
+
+  const responsesFromChat = convertAdvancedCustomInbound(
+    "openai_responses_to_openai_chat_completions",
+    "openai",
+    {
+      id: "chatcmpl-adv",
+      object: "chat.completion",
+      created: 123,
+      model: "gpt-from-responses",
+      choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+    },
+    "gpt-from-responses",
+    { requestId: "resp-adv", relayMode: "responses" },
+  );
+  assert.equal(responsesFromChat.object, "response");
+  assert.equal(responsesFromChat.status, "completed");
+  const output = responsesFromChat.output as { type: string; content?: { type: string; text: string }[] }[];
+  const messageOut = output.find((item) => item.type === "message");
+  if (!messageOut) throw new Error("missing responses message output");
+  assert.equal(messageOut.content?.[0].type, "output_text");
+  assert.equal(messageOut.content?.[0].text, "ok");
+
+  const geminiResponses = convertAdvancedCustomInbound(
+    "openai_responses_to_gemini_generate_content",
+    "openai",
+    {
+      candidates: [
+        {
+          content: { role: "model", parts: [{ text: "hello" }] },
+        },
+      ],
+      usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+    },
+    "gemini-test",
+    { relayMode: "responses" },
+  );
+  assert.equal(geminiResponses.object, "response");
+  const geminiOut = JSON.stringify(geminiResponses);
+  assert.equal(geminiOut.includes('"type":"output_text"'), true);
+  assert.equal(geminiOut.includes('"text":"hello"'), true);
+  assert.equal(geminiOut.includes('"candidates"'), false);
+
+  const none = convertAdvancedCustomInbound(
+    "none",
+    "openai",
+    {
+      id: "chatcmpl-adv",
+      object: "chat.completion",
+      choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+    },
+    "gpt-test",
+  );
+  assert.equal(none.object, "chat.completion");
+  assert.equal((none.choices as { message: { content: string } }[])[0].message.content, "ok");
+
+  assert.throws(
+    () => convertAdvancedCustomInbound("not-a-converter", "openai", {}, "gpt-test"),
+    /unsupported advanced custom converter: not-a-converter/,
+  );
+
+  const directGemini = geminiResponseToResponsesResponse(
+    {
+      candidates: [{ content: { role: "model", parts: [{ text: "hello" }] } }],
+      usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+    },
+    "gemini-test",
+    { id: "resp_gemini" },
+  );
+  assert.equal(directGemini.object, "response");
+  assert.equal(JSON.stringify(directGemini).includes('"candidates"'), false);
+
+  const chatRoundTrip = responsesResponseToChatCompletion(
+    chatCompletionToResponsesResponse(
+      {
+        id: "chatcmpl_1",
+        model: "gpt-test",
+        created: 123,
+        choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 4, completion_tokens: 5, total_tokens: 9 },
+      },
+      "resp_1",
+    ),
+    "chatcmpl_1",
+  );
+  assert.equal(chatRoundTrip.object, "chat.completion");
+  assert.equal((chatRoundTrip.choices as { message: { content: string } }[])[0].message.content, "hello");
 });
 
 test("original TaskPlugin ConvertOpenAIRequest is invalid api type -1", () => {

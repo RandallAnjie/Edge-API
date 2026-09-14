@@ -428,6 +428,15 @@ export {
   convertClaudeMessagesToOpenAIChat,
   convertGeminiContentToOpenAIChat,
 } from "./advanced-custom-convert.js";
+export {
+  convertAdvancedCustomInbound,
+  unsupportedAdvancedCustomConverter,
+} from "./advanced-custom-response.js";
+export {
+  chatCompletionToResponsesResponse,
+  geminiResponseToResponsesResponse,
+  responsesResponseToChatCompletion,
+} from "./responses-convert.js";
 
 function applyOpenAICompatibleAdaptor(
   body: Record<string, unknown>,

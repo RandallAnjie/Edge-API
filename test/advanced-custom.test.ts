@@ -67,6 +67,53 @@ function openaiCompletion() {
   );
 }
 
+function claudeMessage() {
+  return new Response(
+    JSON.stringify({
+      id: "msg_adv",
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 2, output_tokens: 1 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+function geminiCandidates(text = "hello") {
+  return new Response(
+    JSON.stringify({
+      candidates: [{ content: { role: "model", parts: [{ text }] } }],
+      usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+function responsesUpstream() {
+  return new Response(
+    JSON.stringify({
+      id: "resp_1",
+      object: "response",
+      created_at: 123,
+      status: "completed",
+      model: "gpt-responses",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] }],
+      usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+function upstreamFor(url: string) {
+  if (url.includes("/v1/messages")) return claudeMessage();
+  if (url.includes(":generateContent") || url.includes("generativelanguage")) return geminiCandidates();
+  if (url.includes("/v1/responses")) return responsesUpstream();
+  return openaiCompletion();
+}
+
 test("original AdvancedCustom ConvertOpenAIRequest converter JSON", async () => {
   const { e, auth, sk } = await boot();
   const added = await json(
@@ -134,7 +181,7 @@ test("original AdvancedCustom ConvertOpenAIRequest converter JSON", async () => 
       body = {};
     }
     calls.push({ url, body, headers });
-    return openaiCompletion();
+    return upstreamFor(url);
   }) as typeof fetch;
 
   try {
@@ -151,6 +198,8 @@ test("original AdvancedCustom ConvertOpenAIRequest converter JSON", async () => 
       e,
     );
     assert.equal(none.res.status, 200, none.text);
+    assert.equal(none.body.object, "chat.completion");
+    assert.equal((none.body.choices as { message: { content: string } }[])[0].message.content, "ok");
     const noneHit = calls.find((c) => c.url === "https://upstream.example/v1/chat/completions" && c.body.model === "gpt-test");
     if (!noneHit) throw new Error("missing none converter upstream");
     assert.deepEqual(noneHit.body.stream_options, { include_usage: true });
@@ -168,6 +217,8 @@ test("original AdvancedCustom ConvertOpenAIRequest converter JSON", async () => 
       e,
     );
     assert.equal(claude.res.status, 200, claude.text);
+    assert.equal(claude.body.object, "chat.completion");
+    assert.equal((claude.body.choices as { message: { content: string } }[])[0].message.content, "ok");
     const claudeHit = calls.find((c) => c.url === "https://upstream.example/v1/messages");
     if (!claudeHit) throw new Error("missing chat→claude upstream");
     assert.equal(claudeHit.body.model, "claude-test");
@@ -186,6 +237,8 @@ test("original AdvancedCustom ConvertOpenAIRequest converter JSON", async () => 
       e,
     );
     assert.equal(gemini.res.status, 200, gemini.text);
+    assert.equal(gemini.body.object, "chat.completion");
+    assert.equal((gemini.body.choices as { message: { content: string } }[])[0].message.content, "hello");
     const geminiHit = calls.find((c) => c.url.includes(":generateContent"));
     if (!geminiHit) throw new Error("missing chat→gemini upstream");
     assert.equal((geminiHit.body.contents as { role: string }[])[0].role, "user");
@@ -205,6 +258,8 @@ test("original AdvancedCustom ConvertOpenAIRequest converter JSON", async () => 
       e,
     );
     assert.equal(responses.res.status, 200, responses.text);
+    assert.equal(responses.body.object, "chat.completion");
+    assert.equal((responses.body.choices as { message: { content: string } }[])[0].message.content, "hello");
     const responsesHit = calls.find((c) => c.url === "https://upstream.example/v1/responses");
     if (!responsesHit) throw new Error("missing chat→responses upstream");
     assert.equal(responsesHit.body.model, "gpt-responses");
@@ -224,6 +279,9 @@ test("original AdvancedCustom ConvertOpenAIRequest converter JSON", async () => 
       e,
     );
     assert.equal(fromResponses.res.status, 200, fromResponses.text);
+    assert.equal(fromResponses.body.object, "response");
+    assert.equal(fromResponses.text.includes('"type":"output_text"'), true);
+    assert.equal(fromResponses.text.includes('"text":"ok"'), true);
     const chatHit = calls.find(
       (c) => c.url === "https://upstream.example/v1/chat/completions" && Array.isArray(c.body.messages) && (c.body.messages as { role: string }[])[0]?.role === "system",
     );
@@ -234,6 +292,64 @@ test("original AdvancedCustom ConvertOpenAIRequest converter JSON", async () => 
     assert.equal(msgs[0].content, "system rules");
     assert.equal(msgs[1].role, "user");
     assert.equal(msgs[1].content, "hello");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original AdvancedCustom responses→gemini DoResponse uses Responses bridge", async () => {
+  const { e, auth, sk } = await boot();
+  const added = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "adv-responses-gemini",
+        type: CHANNEL_TYPE_ADVANCED_CUSTOM,
+        key: "sk-adv",
+        models: "gemini-test",
+        group: "default",
+        base_url: "https://upstream.example",
+        settings: JSON.stringify({
+          advanced_custom: {
+            advanced_routes: [
+              {
+                incoming_path: "/v1/responses",
+                upstream_path: "/v1beta/models/{model}:generateContent",
+                converter: "openai_responses_to_gemini_generate_content",
+                models: ["gemini-test"],
+              },
+            ],
+          },
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(added.body.success, true, String(added.body.message));
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    void init;
+    const url = String(input);
+    if (!url.includes(":generateContent")) throw new Error("unexpected upstream " + url);
+    return geminiCandidates("hello");
+  }) as typeof fetch;
+
+  try {
+    const got = await json(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "gemini-test", input: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(got.res.status, 200, got.text);
+    assert.equal(got.body.object, "response");
+    assert.equal(got.text.includes('"type":"output_text"'), true);
+    assert.equal(got.text.includes('"text":"hello"'), true);
+    assert.equal(got.text.includes('"candidates"'), false);
   } finally {
     globalThis.fetch = origFetch;
   }
