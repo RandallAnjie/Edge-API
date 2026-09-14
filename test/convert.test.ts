@@ -79,6 +79,10 @@ import {
   oaiChatSseToGeminiSse,
   newClaudeStreamMeta,
   delegatesClaudeToOpenAIAdaptor,
+  convertClaudeMessagesToOpenAIResponses,
+  convertTextRequestViaResponses,
+  CONVERTER_CLAUDE_TO_RESPONSES,
+  shouldChatCompletionsUseResponsesPolicy,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason, openaiFinishReasonToClaudeStopReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
@@ -4905,6 +4909,232 @@ test("original OpenAI Responses → Claude Messages request/response/stream JSON
         },
       ),
     /converter "openai_responses_to_claude_messages" does not support OpenAI Responses requests/,
+  );
+});
+
+test("original Claude Messages → OpenAI Responses request JSON fields", () => {
+  assert.throws(() => convertClaudeMessagesToOpenAIResponses({ messages: [{ role: "user", content: "hello" }] }), /model is required/);
+  assert.throws(
+    () =>
+      convertAdvancedCustomClaudeRequest(
+        { model: "gpt-test", messages: [{ role: "user", content: "hello" }] },
+        {
+          channelType: CHANNEL_TYPE_ADVANCED_CUSTOM,
+          originModelName: "gpt-test",
+          upstreamModelName: "gpt-test",
+          converter: CONVERTER_CLAUDE_TO_RESPONSES,
+        },
+      ),
+    /converter "claude_messages_to_openai_responses" does not support Anthropic Messages requests/,
+  );
+
+  const mixed = convertClaudeMessagesToOpenAIResponses(
+    {
+      model: "gpt-test",
+      system: [
+        { type: "text", text: "system " },
+        { type: "text", text: "rules" },
+      ],
+      max_tokens: 4096,
+      stream: true,
+      context_management: { edits: [{ type: "clear_tool_uses_20250919" }] },
+      tools: [
+        {
+          name: "lookup",
+          description: "Look up a value",
+          input_schema: { type: "object", properties: { q: { type: "string" } } },
+          strict: true,
+        },
+      ],
+      tool_choice: { type: "tool", name: "lookup", disable_parallel_tool_use: true },
+      messages: [
+        { role: "user", content: [{ type: "text", text: "question" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "before" },
+            { type: "tool_use", id: "call_1", name: "lookup", input: { q: "x" } },
+            { type: "text", text: "after" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "call_1", content: "result" },
+            { type: "text", text: "continue" },
+          ],
+        },
+      ],
+    },
+    { originModelName: "gpt-test", upstreamModelName: "gpt-test" },
+  );
+  assert.equal(mixed.model, "gpt-test");
+  assert.equal(mixed.max_output_tokens, 4096);
+  assert.equal(mixed.stream, true);
+  assert.equal(mixed.instructions, "system rules");
+  assert.equal(mixed.context_management, undefined);
+  assert.deepEqual(mixed.tools, [
+    {
+      type: "function",
+      name: "lookup",
+      description: "Look up a value",
+      parameters: { type: "object", properties: { q: { type: "string" } } },
+      strict: true,
+    },
+  ]);
+  assert.deepEqual(mixed.tool_choice, { type: "function", name: "lookup" });
+  assert.equal(mixed.parallel_tool_calls, false);
+  const input = mixed.input as Record<string, unknown>[];
+  assert.equal(input.length, 6);
+  assert.equal(input[0].role, "user");
+  assert.deepEqual(input[0].content, [{ type: "input_text", text: "question" }]);
+  assert.equal(input[1].role, "assistant");
+  assert.deepEqual(input[1].content, [{ type: "output_text", text: "before" }]);
+  assert.equal(input[2].type, "function_call");
+  assert.equal(input[2].call_id, "call_1");
+  assert.equal(input[2].name, "lookup");
+  assert.equal(input[2].arguments, '{"q":"x"}');
+  assert.equal(input[3].role, "assistant");
+  assert.deepEqual(input[3].content, [{ type: "output_text", text: "after" }]);
+  assert.equal(input[4].type, "function_call_output");
+  assert.equal(input[4].call_id, "call_1");
+  assert.equal(input[4].output, "result");
+  assert.equal(input[5].role, "user");
+  assert.deepEqual(input[5].content, [{ type: "input_text", text: "continue" }]);
+
+  const stringUser = convertClaudeMessagesToOpenAIResponses({
+    model: "gpt-test",
+    messages: [{ role: "user", content: "hello" }],
+    tool_choice: { type: "any", disable_parallel_tool_use: true },
+    metadata: { user_id: "u1" },
+    temperature: 0.2,
+    top_p: 0.9,
+    service_tier: "default",
+  });
+  assert.deepEqual((stringUser.input as Record<string, unknown>[])[0], { role: "user", content: "hello" });
+  assert.equal(stringUser.tool_choice, "required");
+  assert.equal(stringUser.parallel_tool_calls, false);
+  assert.deepEqual(stringUser.metadata, { user_id: "u1" });
+  assert.equal(stringUser.temperature, 0.2);
+  assert.equal(stringUser.top_p, 0.9);
+  assert.equal(stringUser.service_tier, "default");
+
+  const media = convertClaudeMessagesToOpenAIResponses({
+    model: "gpt-test",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "url", url: "https://example.com/a.png" } },
+          { type: "document", source: { type: "base64", media_type: "application/pdf", data: "AAA" } },
+          { type: "tool_result", tool_use_id: "call_img", content: [{ type: "text", text: "ok" }] },
+        ],
+      },
+    ],
+  });
+  const mediaInput = media.input as Record<string, unknown>[];
+  assert.equal(mediaInput[0].role, "user");
+  assert.deepEqual(mediaInput[0].content, [
+    { type: "input_image", image_url: "https://example.com/a.png" },
+    { type: "input_file", file_data: "data:application/pdf;base64,AAA" },
+  ]);
+  assert.equal(mediaInput[1].type, "function_call_output");
+  assert.deepEqual(mediaInput[1].output, [{ type: "input_text", text: "ok" }]);
+
+  const thinking = convertClaudeMessagesToOpenAIResponses(
+    {
+      model: "gpt-5.6-sol",
+      thinking: { type: "adaptive", display: "summarized" },
+      messages: [{ role: "user", content: "hello" }],
+    },
+    { originModelName: "gpt-5.6-sol", upstreamModelName: "gpt-5.6-sol" },
+  );
+  const reasoning = thinking.reasoning as { effort: string; summary: string };
+  assert.equal(reasoning.effort, "high");
+  assert.equal(reasoning.summary, "detailed");
+
+  const explicitLow = convertClaudeMessagesToOpenAIResponses(
+    {
+      model: "gpt-5.6-sol",
+      output_config: { effort: "low" },
+      thinking: { type: "adaptive", display: "summarized" },
+      messages: [{ role: "user", content: "hello" }],
+    },
+    { originModelName: "gpt-5.6-sol", upstreamModelName: "gpt-5.6-sol" },
+  );
+  assert.equal((explicitLow.reasoning as { effort: string }).effort, "low");
+
+  const suffixed = convertClaudeMessagesToOpenAIResponses(
+    { model: "gpt-test", messages: [{ role: "user", content: "hello" }] },
+    { originModelName: "gpt-test-thinking", upstreamModelName: "gpt-test" },
+  );
+  assert.equal(suffixed.model, "gpt-test-thinking");
+  const openRouter = convertClaudeMessagesToOpenAIResponses(
+    { model: "gpt-test", messages: [{ role: "user", content: "hello" }] },
+    { originModelName: "gpt-test-thinking", upstreamModelName: "gpt-test", openRouterDialect: true },
+  );
+  assert.equal(openRouter.model, "gpt-test");
+
+  const via = convertTextRequestViaResponses(
+    {
+      model: "gpt-5.6-sol",
+      thinking: { type: "adaptive", display: "summarized" },
+      messages: [{ role: "user", content: "hello" }],
+    },
+    "anthropic",
+    {
+      channelType: CHANNEL_TYPE_OPENAI,
+      originModelName: "gpt-5.6-sol",
+      upstreamModelName: "gpt-5.6-sol",
+    },
+  );
+  assert.equal(via.messages, undefined);
+  assert.equal((via.input as Record<string, unknown>[])[0].content, "hello");
+  assert.equal((via.reasoning as { effort: string; summary: string }).effort, "high");
+  assert.equal((via.reasoning as { effort: string; summary: string }).summary, "detailed");
+
+  const openaiUp = buildUpstream(
+    testChannel({ type: CHANNEL_TYPE_OPENAI, key: "sk-test", base_url: "https://api.openai.com", models: "gpt-5.6-sol" }),
+    "responses",
+    "/v1/responses",
+    "gpt-5.6-sol",
+    via,
+    {},
+    "POST",
+    { relayFormat: "claude" },
+  );
+  assert.equal(openaiUp.url, "https://api.openai.com/v1/responses");
+
+  assert.equal(
+    shouldChatCompletionsUseResponsesPolicy({ enabled: false, all_channels: true, model_patterns: [".*"] }, 1, CHANNEL_TYPE_OPENAI, "gpt-5.6-sol"),
+    false,
+  );
+  assert.equal(
+    shouldChatCompletionsUseResponsesPolicy(
+      { enabled: true, all_channels: true, model_patterns: ["gpt-5\\.6-sol"] },
+      1,
+      CHANNEL_TYPE_OPENAI,
+      "gpt-5.6-sol",
+    ),
+    true,
+  );
+  assert.equal(
+    shouldChatCompletionsUseResponsesPolicy(
+      { enabled: true, all_channels: false, channel_ids: [9], model_patterns: [".*"] },
+      1,
+      CHANNEL_TYPE_OPENAI,
+      "gpt-5.6-sol",
+    ),
+    false,
+  );
+  assert.equal(
+    shouldChatCompletionsUseResponsesPolicy(
+      { enabled: true, all_channels: false, channel_types: [CHANNEL_TYPE_OPENAI], model_patterns: ["gpt-.*"] },
+      1,
+      CHANNEL_TYPE_OPENAI,
+      "gpt-5.6-sol",
+    ),
+    true,
   );
 });
 

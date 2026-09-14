@@ -9,6 +9,7 @@ import {
   convertOllamaEmbeddingRequest,
   convertOpenAIRequest,
   convertOpenAIResponsesRequest,
+  convertTextRequestViaResponses,
   convertOpenAIAdaptorClaudeRequest,
   convertOpenAIAdaptorGeminiRequest,
   convertVolcClaudeRequest,
@@ -22,6 +23,9 @@ import {
   geminiToOpenAIChat,
   openaiFromAnthropicResponse,
   chatCompletionToResponsesResponse,
+  responsesResponseToChatCompletion,
+  shouldChatCompletionsUseResponsesPolicy,
+  type ChatCompletionsToResponsesPolicy,
   openaiFromGeminiEmbedding,
   openaiFromGeminiResponse,
   openaiChatToClaudeResponse,
@@ -271,11 +275,26 @@ async function convertOutbound(
     converter?: string;
     isStream?: boolean;
     channelBase?: string;
+    viaResponses?: boolean;
   } = {},
 ): Promise<unknown> {
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
   const upstream = mappedModel || String(o.model || "");
+  if (extras.viaResponses && (client === "anthropic" || client === "openai")) {
+    return convertTextRequestViaResponses(o, client, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: "responses",
+      converter: extras.converter,
+      requestPath: extras.requestPath,
+      isStream: extras.isStream,
+      systemPrompt: extras.systemPrompt,
+      systemPromptOverride: extras.systemPromptOverride,
+    });
+  }
   if (channelType === CHANNEL_TYPE_ADVANCED_CUSTOM) {
     const convertOpts = {
       channelType,
@@ -664,8 +683,18 @@ async function convertInbound(
     channelBase?: string;
     requestPath?: string;
     upstreamStatus?: number;
+    viaResponses?: boolean;
   } = {},
 ): Promise<Record<string, unknown>> {
+  if (client === "anthropic" && looksLikeOpenAIResponsesResponse(upstreamJson)) {
+    return responsesResponseToClaudeMessagesResponse(upstreamJson);
+  }
+  if (opts.viaResponses && client === "openai" && looksLikeOpenAIResponsesResponse(upstreamJson)) {
+    const id = opts.requestId || String(upstreamJson.id || "");
+    const chat = responsesResponseToChatCompletion(upstreamJson, id);
+    if (!chat.model && model) chat.model = model;
+    return chat;
+  }
   if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM) {
     return convertAdvancedCustomInbound(opts.converter || "none", client, upstreamJson, model, {
       requestId: opts.requestId,
@@ -673,9 +702,6 @@ async function convertInbound(
       fallbackPromptTokens: opts.fallbackPromptTokens,
       relayMode: opts.relayMode,
     });
-  }
-  if (client === "anthropic" && looksLikeOpenAIResponsesResponse(upstreamJson)) {
-    return responsesResponseToClaudeMessagesResponse(upstreamJson);
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_OLLAMA) {
     if (opts.relayMode === "embeddings") return openaiFromOllamaEmbedding(upstreamJson, model);
@@ -1183,6 +1209,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
 
   const retryTimes = selectParam.retryTimes;
   const convertSettings = await reasoningSettingsFromStore(store);
+  const chatResponsesPolicy = parseJson<ChatCompletionsToResponsesPolicy>(
+    await store.option("global.chat_completions_to_responses_policy"),
+    { enabled: false, all_channels: true },
+  );
+  const passThroughGlobal = (await store.option("global.pass_through_request_enabled")) === "true";
 
   for (let retry = 0; retry <= retryTimes; retry++) {
     let channel: ChannelRow | null;
@@ -1205,6 +1236,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let advancedConverter: string | undefined;
     let openaiEditForm: OpenAIImageEditForm | undefined;
     let openaiAudioForm: EncodedMultipart | undefined;
+    let viaResponses = false;
     const multipartEdits =
       mode === "images" &&
       isAliImageEdits(requestPath) &&
@@ -1220,6 +1252,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       const endpointErr = nativeOpenAIConvertEndpointError(channel.type, mode);
       if (endpointErr) throw new Error(endpointErr);
       const channelSetting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
+      const passThrough = passThroughGlobal || Boolean(channelSetting.pass_through_body_enabled);
+      viaResponses =
+        !passThrough &&
+        !opts.rawBody &&
+        ((clientFormat === "anthropic") || (clientFormat === "openai" && mode === "chat")) &&
+        shouldChatCompletionsUseResponsesPolicy(chatResponsesPolicy, channel.id, channel.type, model);
       if (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
         advancedConverter = resolveAdvancedCustomConverter(channel, requestPath, model);
       }
@@ -1266,6 +1304,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             systemPromptOverride: Boolean(channelSetting.system_prompt_override),
             converter: advancedConverter,
             isStream: opts.stream,
+            viaResponses,
           });
       }
       if (!opts.rawBody || aliMultipartEdits) {
@@ -1277,7 +1316,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             model,
             mapped,
             convertSettings,
-            mode === "responses" ? "responses" : "chat",
+            viaResponses || mode === "responses" ? "responses" : "chat",
           ).upstreamModelName;
         }
       }
@@ -1288,6 +1327,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       lastStatus = ret.statusCode;
       continue;
     }
+    const outboundMode = viaResponses ? "responses" : mode;
+    const outboundPath = viaResponses ? "/v1/responses" : path;
     const relayInfo: ParamOverrideRelayInfo = {
       requestHeaders: requestHeadersFrom(opts.req),
       userId: auth.user.id,
@@ -1296,7 +1337,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       usingGroup: auth.usingGroup,
       originalModel: model,
       upstreamModel: mapped,
-      requestPath,
+      requestPath: outboundPath,
       retryIndex: retry,
       affinityTemplate: affinity?.template,
       isStream: opts.stream,
@@ -1308,8 +1349,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     try {
       target = buildChannelRelayTarget(
         channel,
-        mode,
-        path,
+        outboundMode,
+        outboundPath,
         model,
         aliMultipartEdits || !opts.rawBody ? outbound : null,
         {
@@ -1524,6 +1565,40 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         });
       }
       if (
+        viaResponses &&
+        clientFormat === "openai"
+      ) {
+        const text = await res.text();
+        let converted: { sse: string; usageBody: Record<string, unknown> };
+        try {
+          converted = oaiResponsesSseToChatSse(text, {
+            id: `chatcmpl-${rid}`,
+            model: mapped,
+            created: Math.floor(started / 1000),
+            includeUsage: shouldIncludeUsage(asObj(opts.body)),
+            fallbackPromptTokens: promptEst,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          return openaiError(500, message, "bad_response_body");
+        }
+        const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
+        extra.cachedTokens = usage.cachedTokens;
+        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        ctx?.waitUntil(
+          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
+        );
+        return new Response(converted.sse, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            "x-oneapi-request-id": rid,
+          },
+        });
+      }
+      if (
         clientFormat === "openai" &&
         channel.type === CHANNEL_TYPE_XAI &&
         mode !== "images" &&
@@ -1660,6 +1735,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         channelBase: resolveBaseUrl(channel.type, channel.base_url),
         requestPath: path,
         upstreamStatus: res.status,
+        viaResponses,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

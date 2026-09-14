@@ -10,7 +10,7 @@ import { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-conver
 import { convertOpenAIResponsesRequestToClaudeMessages } from "./responses-claude.js";
 import { convertGeminiEmbeddingRequest, convertGeminiRequest, convertOpenAIChatToGemini } from "./gemini-convert.js";
 import { channelKind, isChannelSpecialBase } from "./catalog.js";
-import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertGeminiImageFromOpenAI, convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
@@ -57,6 +57,11 @@ import {
 } from "./advanced-custom-convert.js";
 import { asObj as usageAsObj, sseLine } from "./openai-usage.js";
 import { delegatesClaudeToOpenAIAdaptor, openaiAdaptorSupportStreamOptions, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor } from "./openai-adaptor.js";
+import {
+  applyClaudeChannelSystemPrompt,
+  convertClaudeMessagesToOpenAIResponses,
+} from "./claude-to-responses.js";
+import { applyChatChannelSystemPrompt } from "./chat-responses-mode.js";
 
 export type ChatMessage = {
   role?: string;
@@ -488,6 +493,16 @@ export {
   responsesResponseToClaudeMessagesResponse,
   ResponsesToClaudeStreamState,
 } from "./responses-claude.js";
+export {
+  CONVERTER_CLAUDE_TO_RESPONSES,
+  applyClaudeChannelSystemPrompt,
+  convertClaudeMessagesToOpenAIResponses,
+} from "./claude-to-responses.js";
+export {
+  applyChatChannelSystemPrompt,
+  shouldChatCompletionsUseResponsesPolicy,
+  type ChatCompletionsToResponsesPolicy,
+} from "./chat-responses-mode.js";
 
 function applyOpenAICompatibleAdaptor(
   body: Record<string, unknown>,
@@ -1023,4 +1038,34 @@ export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opt
 /** Original `relayconvert` OpenAI chat → Responses request used by advanced-custom converters. */
 export function openaiChatToResponses(body: Record<string, unknown>): Record<string, unknown> {
   return convertChatCompletionsToResponsesRequest(body);
+}
+
+/**
+ * Original `textRequestViaResponses`: ConvertRequest to Responses then
+ * `adaptor.ConvertOpenAIResponsesRequest`. Used when
+ * `ShouldChatCompletionsUseResponsesGlobal` is true. Does not go through
+ * advanced-custom ConvertClaudeRequest.
+ */
+export function convertTextRequestViaResponses(
+  body: Record<string, unknown>,
+  client: "openai" | "anthropic",
+  opts: ConvertOpenAIOpts,
+): Record<string, unknown> {
+  let responses: Record<string, unknown>;
+  if (client === "anthropic") {
+    const claude = applyClaudeChannelSystemPrompt(body, opts.systemPrompt, opts.systemPromptOverride);
+    responses = convertClaudeMessagesToOpenAIResponses(claude, {
+      originModelName: opts.originModelName,
+      upstreamModelName: opts.upstreamModelName,
+      settings: opts.settings,
+      openRouterDialect: opts.channelType === CHANNEL_TYPE_OPENROUTER,
+    });
+  } else {
+    const chat = applyChatChannelSystemPrompt(body, opts.systemPrompt, opts.systemPromptOverride);
+    responses = convertChatCompletionsToResponsesRequest({
+      ...chat,
+      model: opts.upstreamModelName || chat.model,
+    });
+  }
+  return convertOpenAIResponsesRequest(responses, { ...opts, relayMode: "responses" });
 }

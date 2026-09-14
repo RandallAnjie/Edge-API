@@ -352,6 +352,31 @@ export function fromOpenAIResponses(req: Record<string, unknown> | null | undefi
   return mergeExplicit(intent, pivotIntent, String(req.model || ""));
 }
 
+/** Original `reasoning.ApplyToOpenAIResponses`. */
+export function applyToOpenAIResponses(req: Record<string, unknown> | null | undefined, intent: ReasoningIntent): void {
+  if (!req) return;
+  const normalized = normalizeIntent(intent);
+  const effort = effectiveEffort(normalized);
+  if (effort) {
+    let summary = "detailed";
+    if (effort === EFFORT_NONE || (normalized.includeThoughts != null && !normalized.includeThoughts)) {
+      summary = "";
+    }
+    const reasoning: Record<string, unknown> = { effort };
+    if (summary) reasoning.summary = summary;
+    req.reasoning = reasoning;
+  }
+  if (intentIsEmpty(normalized)) return;
+  (req as OpenAIChatBody)[REASONING_CONVERSION] = {
+    mode: normalized.mode,
+    effort: normalized.effort,
+    budgetTokens: normalized.budgetTokens,
+    includeThoughts: normalized.includeThoughts,
+    source: normalized.source,
+    budgetSource: normalized.budgetSource,
+  };
+}
+
 export function fromClaudeThinking(thinking: Record<string, unknown> | null | undefined, maxTokens?: number): ReasoningIntent {
   if (!thinking) return emptyIntent();
   const intent = emptyIntent();
@@ -1305,6 +1330,12 @@ export function isKnownClaudeModel(modelName: string): boolean {
 export function claudeUsesManualThinking(model: string, intent: ReasoningIntent): boolean {
   const capabilities = claudeCapabilitiesFor(model);
   return capabilities.supportsManual && intent.budgetTokens != null && intent.mode !== MODE_ADAPTIVE;
+}
+
+/** Original `reasoning.ResolveClaudeDefault`. */
+export function resolveClaudeDefault(model: string, intent: ReasoningIntent): ReasoningIntent {
+  if (intentHasStrength(intent) || !claudeCapabilitiesFor(model).defaultThinking) return intent;
+  return { ...intent, mode: MODE_ADAPTIVE, effort: EFFORT_HIGH };
 }
 
 function thinkingDisplay(intent: ReasoningIntent): string | undefined {
