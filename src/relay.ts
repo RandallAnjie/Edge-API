@@ -23,6 +23,7 @@ import {
   geminiToOpenAIChat,
   openaiFromAnthropicResponse,
   chatCompletionToResponsesResponse,
+  claudeResponseToResponsesResponse,
   geminiResponseToResponsesResponse,
   responsesResponseToChatCompletion,
   shouldChatCompletionsUseResponsesPolicy,
@@ -860,11 +861,19 @@ async function convertInbound(
         created: opts.created,
       });
     }
+    if (opts.relayMode === "responses") {
+      return claudeResponseToResponsesResponse(upstreamJson, model, { id: opts.requestId });
+    }
     return openaiFromAnthropicResponse(upstreamJson, model);
   }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_VERTEX) {
     const mode = vertexRequestMode(model);
-    if (mode === "claude") return openaiFromAnthropicResponse(upstreamJson, model);
+    if (mode === "claude") {
+      if (opts.relayMode === "responses") {
+        return claudeResponseToResponsesResponse(upstreamJson, model, { id: opts.requestId });
+      }
+      return openaiFromAnthropicResponse(upstreamJson, model);
+    }
     if (model.startsWith("imagen")) return openaiFromImagenResponse(upstreamJson, { created: opts.created });
     if (mode === "opensource") return upstreamJson;
     return openaiFromGeminiResponse(upstreamJson, model, {
@@ -892,11 +901,10 @@ async function convertInbound(
     return upstreamJson;
   }
   if (client === "openai" && kind === "anthropic") {
-    const chat = openaiFromAnthropicResponse(upstreamJson, model);
     if (opts.relayMode === "responses") {
-      return chatCompletionToResponsesResponse(chat, opts.requestId || String(chat.id || ""));
+      return claudeResponseToResponsesResponse(upstreamJson, model, { id: opts.requestId });
     }
-    return chat;
+    return openaiFromAnthropicResponse(upstreamJson, model);
   }
   if (client === "openai" && kind === "gemini") {
     if (model.startsWith("imagen")) return openaiFromImagenResponse(upstreamJson, { created: opts.created });
@@ -1119,22 +1127,29 @@ async function openaiClientFromProvider(
     };
   }
   if (useClaude) {
-    const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
-    if (opts.relayMode === "responses" && opts.channelType === CHANNEL_TYPE_ANTHROPIC) {
-      const responseId = opts.requestId || String(out.json?.id || "");
+    if (opts.relayMode === "responses") {
+      const responseId = opts.requestId;
       if (stream) {
+        const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
         const chatSse = out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, ""));
         const converted = oaiChatSseToResponsesSse(chatSse, {
-          id: responseId,
+          id: responseId || String(out.json?.id || ""),
           model: mapped,
           created: opts.created,
           fallbackPromptTokens: opts.fallbackPromptTokens,
         });
         return { body: converted.sse, usageBody: converted.usageBody };
       }
-      const json = chatCompletionToResponsesResponse(out.json || {}, responseId);
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        parsed = { content: [{ type: "text", text }] };
+      }
+      const json = claudeResponseToResponsesResponse(parsed, mapped, { id: responseId || String(parsed.id || "") });
       return { body: JSON.stringify(json), usageBody: json };
     }
+    const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
     if (stream) {
       return {
         body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),

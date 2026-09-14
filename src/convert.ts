@@ -509,6 +509,7 @@ export {
 } from "./advanced-custom-response.js";
 export {
   chatCompletionToResponsesResponse,
+  claudeResponseToResponsesResponse,
   geminiResponseToResponsesResponse,
   responsesResponseToChatCompletion,
 } from "./responses-convert.js";

@@ -35,6 +35,7 @@ import {
   convertAdvancedCustomGeminiRequest,
   convertAdvancedCustomInbound,
   geminiResponseToResponsesResponse,
+  claudeResponseToResponsesResponse,
   responsesResponseToChatCompletion,
   chatCompletionToResponsesResponse,
   convertOpenAIChatToClaude,
@@ -360,6 +361,198 @@ test("original Claude Messages → OpenAI Responses composed JSON fields", () =>
   assert.match(stream.sse, /"delta":"Hello world"/);
   assert.match(stream.sse, /event: response\.completed/);
   assert.match(stream.sse, /"sequence_number"/);
+});
+
+test("original Claude hosted ConvertResponse JSON emits web_search_call and mcp_call", () => {
+  const chat = openaiFromAnthropicResponse(
+    {
+      id: "msg_hosted",
+      model: "claude-test",
+      content: [
+        { type: "text", text: "The answer is 42." },
+        { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "answer 42" } },
+        {
+          type: "web_search_tool_result",
+          tool_use_id: "srvtoolu_1",
+          content: [{ type: "web_search_result", url: "https://example.com/42", title: "The Hitchhiker" }],
+        },
+      ],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 5 },
+    },
+    "ignored",
+  );
+  const chatMessage = (chat.choices as { message: { content: string; tool_calls?: unknown[] } }[])[0].message;
+  assert.equal(chatMessage.content, "The answer is 42.");
+  assert.equal("tool_calls" in chatMessage, false);
+
+  const converted = claudeResponseToResponsesResponse(
+    {
+      id: "msg_hosted",
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        { type: "text", text: "The answer is 42." },
+        { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "answer 42" } },
+        {
+          type: "web_search_tool_result",
+          tool_use_id: "srvtoolu_1",
+          content: [{ type: "web_search_result", url: "https://example.com/42", title: "The Hitchhiker" }],
+        },
+      ],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3, cache_creation_input_tokens: 2 },
+    },
+    "ignored",
+  );
+  assert.equal(converted.object, "response");
+  assert.equal(converted.id, "msg_hosted");
+  assert.equal(converted.model, "claude-test");
+  const output = converted.output as {
+    type: string;
+    id?: string;
+    status?: string;
+    role?: string;
+    content?: { type: string; text?: string }[] | null;
+    action?: { type: string; query?: string; queries?: string[] };
+    name?: string;
+    server_label?: string;
+    arguments?: string;
+    output?: string;
+    call_id?: string;
+  }[];
+  assert.equal(output[0].type, "message");
+  assert.equal(output[0].content?.[0].text, "The answer is 42.");
+  assert.equal(output[1].type, "web_search_call");
+  assert.equal(output[1].id, "srvtoolu_1");
+  assert.equal(output[1].status, "completed");
+  assert.equal(output[1].action?.type, "search");
+  assert.equal(output[1].action?.query, "answer 42");
+  assert.equal("queries" in (output[1].action || {}), false);
+  assert.equal("role" in output[1], false);
+  assert.equal("content" in output[1], false);
+  assert.equal("quality" in output[1], false);
+  assert.equal("size" in output[1], false);
+  assert.equal("name" in output[1], false);
+  const usage = converted.usage as {
+    billing_usage: { source: string; semantic: string; claude_usage: { input_tokens: number; output_tokens: number } };
+  };
+  assert.equal(usage.billing_usage.source, "claude_messages");
+  assert.equal(usage.billing_usage.semantic, "anthropic");
+  assert.equal(usage.billing_usage.claude_usage.input_tokens, 10);
+  assert.equal(usage.billing_usage.claude_usage.output_tokens, 5);
+
+  const pending = claudeResponseToResponsesResponse({
+    id: "msg_pending",
+    model: "claude-test",
+    content: [{ type: "server_tool_use", id: "srvtoolu_2", name: "web_search", input: { query: "deep thought" } }],
+    stop_reason: "pause_turn",
+  });
+  const pendingOut = pending.output as { type: string; status?: string; action?: { query?: string } }[];
+  assert.equal(pendingOut[0].type, "web_search_call");
+  assert.equal(pendingOut[0].status, "in_progress");
+  assert.equal(pendingOut[0].action?.query, "deep thought");
+
+  const mcp = claudeResponseToResponsesResponse({
+    id: "msg_mcp",
+    model: "claude-test",
+    content: [
+      { type: "text", text: "looked up" },
+      {
+        type: "mcp_tool_use",
+        id: "mcptoolu_1",
+        name: "lookup",
+        server_name: "docs",
+        input: { q: "pricing" },
+      },
+      { type: "mcp_tool_result", tool_use_id: "mcptoolu_1", content: [{ type: "text", text: "ok" }] },
+    ],
+    stop_reason: "end_turn",
+    usage: { input_tokens: 4, output_tokens: 2 },
+  });
+  const mcpOut = mcp.output as {
+    type: string;
+    id?: string;
+    name?: string;
+    server_label?: string;
+    arguments?: string;
+    output?: string;
+    status?: string;
+    call_id?: string;
+    content?: { text?: string }[];
+  }[];
+  assert.equal(mcpOut[0].type, "message");
+  assert.equal(mcpOut[0].content?.[0].text, "looked up");
+  assert.equal(mcpOut[1].type, "mcp_call");
+  assert.equal(mcpOut[1].id, "mcptoolu_1");
+  assert.equal(mcpOut[1].name, "lookup");
+  assert.equal(mcpOut[1].server_label, "docs");
+  assert.equal(mcpOut[1].arguments, '{"q":"pricing"}');
+  assert.equal(mcpOut[1].status, "completed");
+  assert.equal(mcpOut[1].output, "ok");
+  assert.equal("call_id" in mcpOut[1], false);
+  assert.equal("role" in mcpOut[1], false);
+  assert.equal("content" in mcpOut[1], false);
+
+  const mixed = claudeResponseToResponsesResponse({
+    id: "msg_mixed",
+    model: "claude-test",
+    content: [
+      { type: "text", text: "The answer is 42." },
+      { type: "server_tool_use", id: "srvtoolu_3", name: "web_search", input: { query: "answer 42" } },
+      { type: "tool_use", id: "toolu_abc", name: "get_weather", input: { city: "Paris" } },
+    ],
+    stop_reason: "tool_use",
+  });
+  const mixedOut = mixed.output as { type: string; id?: string; name?: string; arguments?: string }[];
+  assert.equal(mixedOut[0].type, "message");
+  assert.equal(mixedOut[1].type, "web_search_call");
+  assert.equal(mixedOut[1].id, "srvtoolu_3");
+  assert.equal(mixedOut[2].type, "function_call");
+  assert.equal(mixedOut[2].id, "toolu_abc");
+  assert.equal(mixedOut[2].name, "get_weather");
+  assert.equal(mixedOut[2].arguments, '{"city":"Paris"}');
+
+  const skipped = claudeResponseToResponsesResponse({
+    id: "msg_skip",
+    model: "claude-test",
+    content: [
+      { type: "text", text: "ok" },
+      { type: "server_tool_use", id: "code_1", name: "code_execution", input: { code: "print(1)" } },
+      { type: "mcp_tool_use", id: "mcp_skip", name: "lookup", input: { q: "x" } },
+    ],
+    stop_reason: "end_turn",
+  });
+  const skippedOut = skipped.output as { type: string }[];
+  assert.equal(skippedOut.length, 1);
+  assert.equal(skippedOut[0].type, "message");
+
+  const advanced = convertAdvancedCustomInbound(
+    "openai_chat_completions_to_anthropic_messages",
+    "openai",
+    {
+      id: "msg_adv_hosted",
+      type: "message",
+      role: "assistant",
+      model: "claude-test",
+      content: [
+        { type: "text", text: "The answer is 42." },
+        { type: "server_tool_use", id: "srvtoolu_adv", name: "web_search", input: { query: "answer 42" } },
+      ],
+      stop_reason: "pause_turn",
+      usage: { input_tokens: 2, output_tokens: 1 },
+    },
+    "claude-test",
+    { relayMode: "responses", requestId: "msg_adv_hosted" },
+  );
+  assert.equal(advanced.object, "response");
+  const advOut = advanced.output as { type: string; id?: string; status?: string; action?: { query?: string } }[];
+  assert.equal(advOut[0].type, "message");
+  assert.equal(advOut[1].type, "web_search_call");
+  assert.equal(advOut[1].id, "srvtoolu_adv");
+  assert.equal(advOut[1].status, "in_progress");
+  assert.equal(advOut[1].action?.query, "answer 42");
 });
 
 test("original Claude thinking block becomes message.reasoning_content", () => {

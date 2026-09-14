@@ -14,6 +14,7 @@ import { openaiFromAnthropicResponse } from "./claude-response.js";
 import { openaiFromGeminiResponse } from "./gemini-response.js";
 import {
   chatCompletionToResponsesResponse,
+  claudeResponseToResponsesResponse,
   geminiResponseToResponsesResponse,
   responsesResponseToChatCompletion,
 } from "./responses-convert.js";
@@ -55,8 +56,7 @@ function claudeAdaptorDoResponse(
 ): Record<string, unknown> {
   if (client === "anthropic") return upstreamJson;
   if (client === "openai" && relayMode === "responses") {
-    const chat = openaiFromAnthropicResponse(upstreamJson, model);
-    return chatCompletionToResponsesResponse(chat, responseId(opts, str(chat.id)));
+    return claudeResponseToResponsesResponse(upstreamJson, model, { id: responseId(opts, str(upstreamJson.id)) });
   }
   return openaiFromAnthropicResponse(upstreamJson, model);
 }

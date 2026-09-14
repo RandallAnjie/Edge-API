@@ -1,6 +1,8 @@
-/** Original `relaykit/relayconvert` Chat Completions ↔ Responses + Gemini→Responses JSON. */
+/** Original `relaykit/relayconvert` Chat Completions ↔ Responses + Gemini/Claude→Responses JSON. */
 
+import { openaiFromAnthropicResponse } from "./claude-response.js";
 import { groundingWebSearchQueries, openaiFromGeminiResponse } from "./gemini-response.js";
+import { attachOpenAIHostedResponse, extractClaudeHostedResponse } from "./hosted-response.js";
 import {
   asInt,
   asObj,
@@ -489,6 +491,18 @@ export function responsesResponseToChatCompletion(
     choices: [{ index: 0, message, finish_reason: finishReason }],
     usage: openAIUsageToJson(usage),
   };
+}
+
+/** Original Claude ConvertResponse: ExtractHosted + Claude→Chat→Responses + AttachHosted. */
+export function claudeResponseToResponsesResponse(
+  upstream: Record<string, unknown>,
+  model = "",
+  opts: { id?: string } = {},
+): Record<string, unknown> {
+  const { remaining, hosted } = extractClaudeHostedResponse(upstream);
+  const chat = openaiFromAnthropicResponse(remaining, model);
+  const converted = chatCompletionToResponsesResponse(chat, opts.id || str(chat.id) || "");
+  return attachOpenAIHostedResponse(converted, hosted);
 }
 
 /** Original GeminiResponsesHandler: Gemini chat JSON → OpenAI Responses via Gemini→Chat then Chat→Responses. */
