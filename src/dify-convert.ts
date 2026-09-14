@@ -108,7 +108,7 @@ export async function uploadDifyFile(
   const ext = mimeType.replace(/^image\//, "") || "jpeg";
   const form = new FormData();
   form.append("user", opts.user);
-  form.append("file", new Blob([bytes], { type: mimeType }), `image.${ext}`);
+  form.append("file", new Blob([bytes as unknown as BlobPart], { type: mimeType }), `image.${ext}`);
   const base = String(opts.channelBase || "").replace(/\/+$/, "");
   const url = `${base}/v1/files/upload`;
   const fetchImpl = opts.fetchImpl || globalThis.fetch.bind(globalThis);
