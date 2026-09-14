@@ -373,3 +373,74 @@ test("original PUT /api/option/passkey/domains JSON", async () => {
   assert.equal(confirmed.body.success, true, confirmed.text);
   assert.equal((confirmed.body.data as { legacy_rp_ids: string }).legacy_rp_ids, "WWW.example.com");
 });
+
+test("original NormalizePasskeyRPID publicsuffix PUT /api/option JSON", async () => {
+  const { e, auth } = await boot();
+  const invalid = [
+    { key: "passkey.rp_id", value: "co.uk" },
+    { key: "passkey.rp_id", value: "github.io" },
+    { key: "passkey.rp_id", value: "localhost:3000" },
+    { key: "passkey.legacy_rp_ids", value: "localhost:3001" },
+    { key: "passkey.rp_id", value: "com" },
+    { key: "passkey.rp_id", value: "foo.kobe.jp" },
+  ];
+  for (const body of invalid) {
+    const res = await json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: { ...auth, "accept-language": "en" },
+        body: JSON.stringify(body),
+      }),
+      e,
+    );
+    assert.equal(res.body.success, false, body.value);
+    assert.equal(res.body.code, "PASSKEY_RP_ID_INVALID", body.value);
+    assert.equal(
+      res.body.message,
+      "Invalid Passkey domain. Enter a domain without a scheme, port, path or wildcard.",
+      body.value,
+    );
+  }
+
+  const zh = await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: { ...auth, "accept-language": "zh-CN" },
+      body: JSON.stringify({ key: "passkey.rp_id", value: "co.uk" }),
+    }),
+    e,
+  );
+  assert.equal(zh.body.code, "PASSKEY_RP_ID_INVALID");
+  assert.equal(zh.body.message, "通行密钥域名无效。请填写域名，不包含协议、端口、路径或通配符。");
+
+  const hosts: { rp_id: string; origins: string; valid: boolean }[] = [
+    { rp_id: "intranet", origins: "https://intranet:8443", valid: true },
+    { rp_id: "intranet", origins: "https://child.intranet", valid: false },
+    { rp_id: "intranet", origins: "http://intranet", valid: false },
+    { rp_id: "com", origins: "https://com", valid: false },
+    { rp_id: "127.0.0.1", origins: "https://127.0.0.1", valid: false },
+    { rp_id: "intranet:8443", origins: "https://intranet:8443", valid: false },
+    { rp_id: "localhost", origins: "http://localhost:3000", valid: true },
+    { rp_id: "example.co.uk", origins: "https://example.co.uk", valid: true },
+    { rp_id: "münchen.de", origins: "https://xn--mnchen-3ya.de", valid: true },
+  ];
+  for (const tc of hosts) {
+    const res = await json(
+      new Request("http://local/api/option/passkey/domains", {
+        method: "PUT",
+        headers: { ...auth, "accept-language": "en" },
+        body: JSON.stringify({ rp_id: tc.rp_id, legacy_rp_ids: "", origins: tc.origins, preview: true }),
+      }),
+      e,
+    );
+    if (!tc.valid) {
+      assert.equal(res.body.success, false, tc.rp_id + " " + tc.origins);
+      assert.equal(res.body.code, "PASSKEY_RP_ID_INVALID", tc.rp_id);
+      continue;
+    }
+    assert.equal(res.body.success, true, tc.rp_id + " " + res.text);
+    const data = res.body.data as { rp_id: string };
+    if (tc.rp_id === "münchen.de") assert.equal(data.rp_id, "xn--mnchen-3ya.de");
+    else assert.equal(data.rp_id, tc.rp_id);
+  }
+});

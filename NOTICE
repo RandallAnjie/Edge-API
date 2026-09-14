@@ -67,5 +67,17 @@ Material changes from upstream:
   `task_id` in `native.render`, persisted `result_url` / `plugin_state`).
   `/v1/videos/:task_id` retrieve uses original `ConvertToOpenAIVideo`
   (`protocols.openai_video.render` + host-owned id/status/progress/model).
+- Passkey RP IDs use original `idna.Lookup.ToASCII` then
+  `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
+  v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented
+  PBKDF2-SHA256, not a fake Argon2 implementation.
+
+==== Public Suffix List ====
+
+Passkey domain validation includes a snapshot of the Public Suffix List
+(https://publicsuffix.org/) as compiled by golang.org/x/net v0.55.0
+(list git revision d6c92f1bbb7433e5db7b8405c25d4035fb8ff376). The list is
+Mozilla Public License 2.0. golang.org/x/net is BSD-3-Clause (Copyright
+2009 The Go Authors).
 
 ==== End of Notices ====

@@ -2,6 +2,7 @@
 
 import { hmacSha256Hex, timingSafeEqualStr } from "./crypto.js";
 import { apiFail, apiFailCode, i18nPair, json } from "./http.js";
+import { effectiveTLDPlusOne, publicSuffix } from "./passkey-publicsuffix.js";
 import type { Store } from "./store.js";
 
 export const ERR_PASSKEY_RPID_INVALID = "Invalid Passkey domain. Enter a domain without a scheme, port, path or wildcard.";
@@ -108,10 +109,48 @@ function isIPv6(value: string): boolean {
   return value.includes(":") && /^[0-9a-fA-F:.]+$/.test(value);
 }
 
-/** Original `system_setting.NormalizePasskeyRPID` (ASCII domains; punycode ToASCII is identity for ASCII). */
+/**
+ * Original `idna.Lookup.ToASCII` (UTS #46 lookup: MapForLookup, STD3, CheckHyphens).
+ * WHATWG hostname processing covers Unicode mapping; ASCII CheckHyphens is explicit
+ * because browsers accept labels such as `ab--cd`.
+ */
+function idnaLookupToASCII(value: string): { ascii: string; error: boolean } {
+  if (!value) return { ascii: "", error: true };
+  try {
+    let mapped = value;
+    if (!/^[\x00-\x7F]*$/.test(value)) {
+      if (/[:/?#@\\[\]]/.test(value)) return { ascii: value, error: true };
+      const parsed = new URL(`https://${value}`);
+      if (parsed.username || parsed.password || parsed.port) return { ascii: value, error: true };
+      if ((parsed.pathname && parsed.pathname !== "/") || parsed.search || parsed.hash) {
+        return { ascii: value, error: true };
+      }
+      mapped = parsed.hostname;
+    }
+    for (const label of mapped.split(".")) {
+      if (label.length >= 4 && label[2] === "-" && label[3] === "-" && !label.toLowerCase().startsWith("xn--")) {
+        return { ascii: mapped, error: true };
+      }
+      if (label.toLowerCase().startsWith("xn--")) {
+        try {
+          const host = new URL(`https://${label}.invalid`).hostname;
+          if (!host.endsWith(".invalid")) return { ascii: mapped, error: true };
+        } catch {
+          return { ascii: mapped, error: true };
+        }
+      }
+    }
+    return { ascii: mapped, error: false };
+  } catch {
+    return { ascii: value, error: true };
+  }
+}
+
+/** Original `system_setting.NormalizePasskeyRPID`. */
 export function normalizePasskeyRPID(value: string, configuredOrigins: string[] = []): string {
-  const rpID = value.trim().toLowerCase();
-  if (!rpID || rpID.length > 253 || /[:/*@?#\\]/.test(rpID) || isIPv4(rpID) || isIPv6(rpID)) {
+  const { ascii, error } = idnaLookupToASCII(value.trim());
+  const rpID = ascii.toLowerCase();
+  if (error || !rpID || rpID.length > 253 || /[:/*@?#\\]/.test(rpID) || isIPv4(rpID) || isIPv6(rpID)) {
     throw new PasskeyDomainError(ERR_PASSKEY_RPID_INVALID, { code: "PASSKEY_RP_ID_INVALID" });
   }
   for (const label of rpID.split(".")) {
@@ -125,7 +164,11 @@ export function normalizePasskeyRPID(value: string, configuredOrigins: string[] 
     }
   }
   if (rpID === "localhost") return rpID;
-  if (rpID.includes(".")) return rpID;
+  if (effectiveTLDPlusOne(rpID)) return rpID;
+  const { icann } = publicSuffix(rpID);
+  if (icann || rpID.includes(".")) {
+    throw new PasskeyDomainError(ERR_PASSKEY_RPID_INVALID, { code: "PASSKEY_RP_ID_INVALID" });
+  }
   for (const origins of configuredOrigins) {
     for (const origin of origins.split(",")) {
       const trimmed = origin.trim();
