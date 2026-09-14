@@ -320,11 +320,20 @@ export function openaiFromAnthropicResponse(upstream: Record<string, unknown>, m
   return response;
 }
 
-type ClaudeStreamState = {
+export type ClaudeStreamState = {
   toolIndexByContentBlock: Map<number, number>;
   blockTypeByContentBlock: Map<number, string>;
   nextToolIndex: number;
 };
+
+/** Original `relayconvert.NewClaudeToChatStreamState`. */
+export function newClaudeToChatStreamState(): ClaudeStreamState {
+  return {
+    toolIndexByContentBlock: new Map(),
+    blockTypeByContentBlock: new Map(),
+    nextToolIndex: 0,
+  };
+}
 
 function isClaudeHostedToolStreamBlock(blockType: string): boolean {
   switch (blockType) {
@@ -447,7 +456,7 @@ export function convertClaudeStreamChunk(state: ClaudeStreamState, claudeRespons
   return streamResponseClaude2OpenAI(converted);
 }
 
-type ClaudeResponseInfo = {
+export type ClaudeResponseInfo = {
   responseId: string;
   created: number;
   model: string;
@@ -456,7 +465,7 @@ type ClaudeResponseInfo = {
 };
 
 /** Original `FormatClaudeResponseInfo` (id/created/model + semantic usage accumulation). */
-function formatClaudeResponseInfo(
+export function formatClaudeResponseInfo(
   claudeResponse: Record<string, unknown>,
   oaiResponse: Record<string, unknown> | null,
   info: ClaudeResponseInfo,

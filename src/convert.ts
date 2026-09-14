@@ -522,6 +522,7 @@ export {
   newResponsesToChatStreamState,
   oaiChatSseToResponsesSse,
   oaiResponsesSseToChatSse,
+  claudeSseToResponsesSse,
 } from "./responses-stream.js";
 export {
   CONVERTER_RESPONSES_TO_CLAUDE,

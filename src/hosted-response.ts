@@ -246,7 +246,8 @@ function responsesMCPErrorFromClaudeContent(raw: unknown, errorCode: string): { 
   return responsesMCPStringFromClaudeContent(raw);
 }
 
-function hostedOutputJson(output: Record<string, unknown>): Record<string, unknown> {
+/** Original `dto.ResponsesOutput.MarshalJSON` for hosted-tool stream/non-stream items. */
+export function hostedResponsesOutputJson(output: Record<string, unknown>): Record<string, unknown> {
   const type = str(output.type);
   if (type === "web_search_call") {
     const json: Record<string, unknown> = { type, id: str(output.id) };
@@ -457,7 +458,7 @@ export function attachOpenAIHostedResponse(
     const outputIndex = hostedOutput.length;
     if (item.id) convertedByID.set(item.id, outputIndex);
     if (item.callId) convertedByID.set(item.callId, outputIndex);
-    hostedOutput.push({ position: item.position, output: hostedOutputJson(output) });
+    hostedOutput.push({ position: item.position, output: hostedResponsesOutputJson(output) });
   }
   const regular = Array.isArray(response.output) ? (response.output as Record<string, unknown>[]) : [];
   response.output = mergeResponsesOutput(regular, hostedOutput, set);

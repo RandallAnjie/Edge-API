@@ -75,6 +75,7 @@ import {
   finalizeResponsesToChatStream,
   newResponsesToChatStreamState,
   oaiChatSseToResponsesSse,
+  claudeSseToResponsesSse,
   oaiResponsesSseToChatSse,
   convertOpenAIResponsesRequestToClaudeMessages,
   convertOpenAIResponsesRequestToGeminiChat,
@@ -553,6 +554,124 @@ test("original Claude hosted ConvertResponse JSON emits web_search_call and mcp_
   assert.equal(advOut[1].id, "srvtoolu_adv");
   assert.equal(advOut[1].status, "in_progress");
   assert.equal(advOut[1].action?.query, "answer 42");
+});
+
+test("original Claude hosted ConvertResponse stream JSON emits web_search_call and mcp_call SSE", () => {
+  const sse = [
+    'event: message_start',
+    'data: {"type":"message_start","message":{"id":"msg_hosted","model":"claude-test","usage":{"input_tokens":10,"output_tokens":0}}}',
+    "",
+    'event: content_block_start',
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+    "",
+    'event: content_block_delta',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The answer is 42."}}',
+    "",
+    'event: content_block_stop',
+    'data: {"type":"content_block_stop","index":0}',
+    "",
+    'event: content_block_start',
+    'data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}',
+    "",
+    'event: content_block_delta',
+    'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"query\\":\\"answer 42\\"}"}}',
+    "",
+    'event: content_block_stop',
+    'data: {"type":"content_block_stop","index":1}',
+    "",
+    'event: content_block_start',
+    'data: {"type":"content_block_start","index":2,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","url":"https://example.com/42","title":"The Hitchhiker"}]}}',
+    "",
+    'event: content_block_stop',
+    'data: {"type":"content_block_stop","index":2}',
+    "",
+    'event: message_delta',
+    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}',
+    "",
+    'event: message_stop',
+    'data: {"type":"message_stop"}',
+    "",
+  ].join("\n");
+  const converted = claudeSseToResponsesSse(sse, { id: "msg_hosted", model: "claude-test", created: 0 });
+  assert.match(converted.sse, /event: response\.created/);
+  assert.match(converted.sse, /event: response\.output_text\.delta/);
+  assert.match(converted.sse, /"delta":"The answer is 42\."/);
+  assert.match(converted.sse, /event: response\.output_item\.added/);
+  assert.match(converted.sse, /"type":"web_search_call"/);
+  assert.match(converted.sse, /"id":"srvtoolu_1"/);
+  assert.match(converted.sse, /event: response\.web_search_call\.in_progress/);
+  assert.match(converted.sse, /event: response\.web_search_call\.searching/);
+  assert.match(converted.sse, /event: response\.web_search_call\.completed/);
+  assert.match(converted.sse, /event: response\.output_item\.done/);
+  assert.match(converted.sse, /"query":"answer 42"/);
+  assert.equal(converted.sse.includes('"type":"function_call"'), false);
+  assert.match(converted.sse, /event: response\.completed/);
+  assert.match(converted.sse, /"sequence_number"/);
+  const added = [...converted.sse.matchAll(/event: response\.output_item\.added\ndata: (\{.*\})/g)].map((m) => JSON.parse(m[1]) as {
+    item?: { type?: string; id?: string; status?: string; action?: { type?: string; query?: string }; role?: string; content?: unknown; quality?: string };
+  });
+  const searchAdded = added.find((event) => event.item?.type === "web_search_call");
+  assert.equal(searchAdded?.item?.id, "srvtoolu_1");
+  assert.equal(searchAdded?.item?.status, "in_progress");
+  assert.equal(searchAdded?.item?.action?.type, "search");
+  assert.equal(searchAdded?.item?.action?.query, "answer 42");
+  assert.equal("role" in (searchAdded?.item || {}), false);
+  assert.equal("content" in (searchAdded?.item || {}), false);
+  assert.equal("quality" in (searchAdded?.item || {}), false);
+  const done = [...converted.sse.matchAll(/event: response\.output_item\.done\ndata: (\{.*\})/g)].map((m) => JSON.parse(m[1]) as {
+    item?: { type?: string; id?: string; status?: string };
+  });
+  const searchDone = done.find((event) => event.item?.type === "web_search_call");
+  assert.equal(searchDone?.item?.status, "completed");
+  assert.equal(searchDone?.item?.id, "srvtoolu_1");
+
+  const mcpSse = [
+    'event: message_start',
+    'data: {"type":"message_start","message":{"id":"msg_mcp","model":"claude-test","usage":{"input_tokens":4,"output_tokens":0}}}',
+    "",
+    'event: content_block_start',
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"mcp_tool_use","id":"mcptoolu_1","name":"lookup","server_name":"docs","input":{}}}',
+    "",
+    'event: content_block_delta',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"q\\":\\"pricing\\"}"}}',
+    "",
+    'event: content_block_stop',
+    'data: {"type":"content_block_stop","index":0}',
+    "",
+    'event: content_block_start',
+    'data: {"type":"content_block_start","index":1,"content_block":{"type":"mcp_tool_result","tool_use_id":"mcptoolu_1","content":[{"type":"text","text":"ok"}]}}',
+    "",
+    'event: message_delta',
+    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}',
+    "",
+  ].join("\n");
+  const mcp = claudeSseToResponsesSse(mcpSse, { id: "msg_mcp", model: "claude-test", created: 0 });
+  assert.match(mcp.sse, /"type":"mcp_call"/);
+  assert.match(mcp.sse, /"name":"lookup"/);
+  assert.match(mcp.sse, /"server_label":"docs"/);
+  assert.match(mcp.sse, /event: response\.mcp_call\.in_progress/);
+  assert.match(mcp.sse, /event: response\.mcp_call_arguments\.delta/);
+  assert.match(mcp.sse, /"delta":"{\\"q\\":\\"pricing\\"}"/);
+  assert.match(mcp.sse, /event: response\.mcp_call_arguments\.done/);
+  assert.match(mcp.sse, /event: response\.mcp_call\.completed/);
+  const mcpAdded = [...mcp.sse.matchAll(/event: response\.output_item\.added\ndata: (\{.*\})/g)].map((m) => JSON.parse(m[1]) as {
+    item?: { type?: string; arguments?: string; call_id?: string; role?: string };
+  });
+  const mcpItem = mcpAdded.find((event) => event.item?.type === "mcp_call");
+  assert.equal(mcpItem?.item?.arguments, "");
+  assert.equal("call_id" in (mcpItem?.item || {}), false);
+  assert.equal("role" in (mcpItem?.item || {}), false);
+  const mcpDone = [...mcp.sse.matchAll(/event: response\.output_item\.done\ndata: (\{.*\})/g)].map((m) => JSON.parse(m[1]) as {
+    item?: { type?: string; output?: string; status?: string; arguments?: string };
+  });
+  const mcpDoneItem = mcpDone.find((event) => event.item?.type === "mcp_call");
+  assert.equal(mcpDoneItem?.item?.status, "completed");
+  assert.equal(mcpDoneItem?.item?.arguments, '{"q":"pricing"}');
+  assert.equal(mcpDoneItem?.item?.output, '[{"text":"ok","type":"text"}]');
+
+  const chat = claudeSseToOpenAIChat(sse, { created: 0, includeUsage: true, upstreamModel: "claude-test" });
+  assert.equal(chat.body.includes("web_search_call"), false);
+  assert.equal(chat.body.includes("srvtoolu_1"), false);
 });
 
 test("original Claude thinking block becomes message.reasoning_content", () => {

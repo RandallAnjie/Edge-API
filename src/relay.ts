@@ -51,7 +51,7 @@ import {
 } from "./convert.js";
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
 import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
-import { compactUuid } from "./openai-usage.js";
+import { compactUuid, looksLikeSse } from "./openai-usage.js";
 import { isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding, ollamaUpstreamToOpenAIChat } from "./ollama-convert.js";
 import { convertVertexClaudeRequest, convertVertexGeminiRequest, imagenUsage, openaiFromImagenResponse, vertexRequestMode } from "./vertex-convert.js";
@@ -129,7 +129,7 @@ import {
   advancedCustomOpenaiShapedInbound,
   convertAdvancedCustomInbound,
 } from "./advanced-custom-response.js";
-import { oaiChatSseToResponsesSse, oaiResponsesSseToChatSse } from "./responses-stream.js";
+import { oaiChatSseToResponsesSse, oaiResponsesSseToChatSse, claudeSseToResponsesSse } from "./responses-stream.js";
 import { oaiChatSseToClaudeSse, oaiChatSseToGeminiSse } from "./openai-stream-convert.js";
 import {
   looksLikeOpenAIResponsesResponse,
@@ -1130,15 +1130,23 @@ async function openaiClientFromProvider(
     if (opts.relayMode === "responses") {
       const responseId = opts.requestId;
       if (stream) {
-        const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
-        const chatSse = out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, ""));
-        const converted = oaiChatSseToResponsesSse(chatSse, {
-          id: responseId || String(out.json?.id || ""),
-          model: mapped,
-          created: opts.created,
-          fallbackPromptTokens: opts.fallbackPromptTokens,
-        });
-        return { body: converted.sse, usageBody: converted.usageBody };
+        if (looksLikeSse(text)) {
+          const converted = claudeSseToResponsesSse(text, {
+            id: responseId || "",
+            model: mapped,
+            created: opts.created,
+            fallbackPromptTokens: opts.fallbackPromptTokens,
+          });
+          return { body: converted.sse, usageBody: converted.usageBody };
+        }
+        let parsed: Record<string, unknown> = {};
+        try {
+          parsed = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          parsed = { content: [{ type: "text", text }] };
+        }
+        const json = claudeResponseToResponsesResponse(parsed, mapped, { id: responseId || String(parsed.id || "") });
+        return { body: `event: response.completed\ndata: ${JSON.stringify(json)}\n\n`, usageBody: json };
       }
       let parsed: Record<string, unknown> = {};
       try {

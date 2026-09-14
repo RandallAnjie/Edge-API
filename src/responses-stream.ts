@@ -3,11 +3,19 @@
 import {
   asInt,
   asObj,
+  compactJson,
   emptyOpenAIUsage,
   openAIUsageToJson,
   sseLine,
   type OpenAIUsage,
 } from "./openai-usage.js";
+import {
+  buildOpenAIStyleUsageFromClaudeUsage,
+  convertClaudeStreamChunk,
+  formatClaudeResponseInfo,
+  newClaudeToChatStreamState,
+} from "./claude-response.js";
+import { hostedResponsesOutputJson, normalizeResponsesWebSearchAction } from "./hosted-response.js";
 import {
   responsesFinishReasonFromStatus,
   responsesStatusFromChatFinishReason,
@@ -51,8 +59,82 @@ type StreamTool = {
   done: boolean;
 };
 
+type HostedStreamTool = {
+  outputIndex: number;
+  output: Record<string, unknown>;
+  done: boolean;
+};
+
+export type HostedToolStreamStart = {
+  type: string;
+  id: string;
+  name?: string;
+  action?: unknown;
+  caller?: unknown;
+  serverLabel?: string;
+};
+
+export type HostedToolStreamResult = {
+  type?: string;
+  id: string;
+  result?: unknown;
+  errorCode?: string;
+  isError?: boolean;
+};
+
 function str(v: unknown): string {
   return typeof v === "string" ? v : v == null ? "" : String(v);
+}
+
+function hostedEventPrefix(outputType: string): string {
+  switch (outputType) {
+    case "web_search_call":
+      return "response.web_search_call";
+    case "mcp_call":
+      return "response.mcp_call";
+    default:
+      return "";
+  }
+}
+
+function hostedTerminalEvent(outputType: string, failed: boolean): string {
+  const prefix = hostedEventPrefix(outputType);
+  if (!prefix) return "";
+  if (!failed) return `${prefix}.completed`;
+  if (outputType === "mcp_call") return `${prefix}.failed`;
+  return "";
+}
+
+function hostedJSONString(value: unknown): string {
+  if (value == null) return "";
+  const raw = typeof value === "string" ? value.trim() : compactJson(value);
+  if (!raw || raw === "null") return "";
+  try {
+    JSON.parse(raw);
+  } catch {
+    throw new Error("invalid JSON payload");
+  }
+  return raw;
+}
+
+function hostedResultString(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (typeof parsed === "string") return parsed;
+    } catch {
+      throw new Error("invalid JSON payload");
+    }
+    return hostedJSONString(trimmed);
+  }
+  return hostedJSONString(value);
+}
+
+function cloneHostedOutput(output: Record<string, unknown>): Record<string, unknown> {
+  return hostedResponsesOutputJson({ ...output });
 }
 
 function cloneUsage(usage: OpenAIUsage): OpenAIUsage {
@@ -255,6 +337,7 @@ export class ChatToResponsesStreamState {
   private nextSequenceNumber = 0;
   private nextOutputIndex = 0;
   private toolsByIndex = new Map<number, StreamTool>();
+  private hostedByID = new Map<string, HostedStreamTool>();
   private outputOrder: OutputRef[] = [];
   private text = "";
   private annotations: unknown[] = [];
@@ -293,11 +376,15 @@ export class ChatToResponsesStreamState {
     return "completed";
   }
 
-  private nextIndex(kind: string, toolIndex: number): number {
+  private nextIndex(kind: string, toolIndex: number, hostedId?: string): number {
     const index = this.nextOutputIndex;
     this.nextOutputIndex += 1;
-    this.outputOrder.push({ kind, toolIndex });
+    this.outputOrder.push({ kind, toolIndex, hostedId });
     return index;
+  }
+
+  private nextHostedIndex(id: string): number {
+    return this.nextIndex("hosted", -1, id);
   }
 
   private toolCallId(tool: StreamTool): string {
@@ -354,6 +441,9 @@ export class ChatToResponsesStreamState {
       else if (ref.kind === "tool") {
         const tool = this.toolsByIndex.get(ref.toolIndex);
         if (tool) output.push(this.toolOutput(tool, status));
+      } else if (ref.kind === "hosted") {
+        const tool = this.hostedByID.get(ref.hostedId || "");
+        if (tool) output.push(hostedResponsesOutputJson(tool.output));
       }
     }
     return responsesResponseWire({
@@ -514,6 +604,136 @@ export class ChatToResponsesStreamState {
     return events;
   }
 
+  /** Original `ChatToResponsesStreamState.StartHostedTool`. */
+  startHostedTool(start: HostedToolStreamStart): ChatToResponsesStreamEvent[] {
+    const id = str(start.id).trim();
+    if (!id) throw new Error("hosted-tool stream call is missing an id");
+    if (this.hostedByID.has(id)) throw new Error(`duplicate hosted-tool stream call id ${JSON.stringify(id)}`);
+    if (!hostedEventPrefix(start.type)) {
+      throw new Error(`unsupported Responses hosted-tool output type ${JSON.stringify(start.type)}`);
+    }
+    const caller = typeof start.caller === "string" ? start.caller.trim() : start.caller == null ? "" : compactJson(start.caller);
+    if (caller && caller !== "null") {
+      throw new Error(`Responses ${start.type} cannot preserve Claude hosted-tool caller provenance`);
+    }
+    const output: Record<string, unknown> = {
+      type: start.type,
+      id,
+      status: "in_progress",
+    };
+    if (start.type === "web_search_call") {
+      output.action = normalizeResponsesWebSearchAction(start.action);
+    } else if (start.type === "code_interpreter_call") {
+      throw new Error("cannot map provider code execution to Responses code_interpreter_call without a container_id");
+    } else if (start.type === "mcp_call") {
+      if (!str(start.name).trim() || !str(start.serverLabel).trim()) {
+        throw new Error("Responses MCP call requires name and server_label");
+      }
+      let argumentsText: string;
+      try {
+        argumentsText = hostedJSONString(start.action);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`encode Responses MCP arguments: ${message}`);
+      }
+      output.name = start.name;
+      output.server_label = start.serverLabel;
+      output.arguments = argumentsText;
+    }
+    const outputIndex = this.nextHostedIndex(id);
+    const tool: HostedStreamTool = { outputIndex, output, done: false };
+    this.hostedByID.set(id, tool);
+    const events = this.ensureCreated();
+    const addedItem = cloneHostedOutput(output);
+    if (start.type === "mcp_call") addedItem.arguments = "";
+    events.push(
+      this.event(EVENT_OUTPUT_ITEM_ADDED, {
+        output_index: outputIndex,
+        item_id: id,
+        item: addedItem,
+      }),
+      this.event(`${hostedEventPrefix(start.type)}.in_progress`, {
+        output_index: outputIndex,
+        item_id: id,
+      }),
+    );
+    if (start.type === "web_search_call") {
+      events.push(
+        this.event(`${hostedEventPrefix(start.type)}.searching`, {
+          output_index: outputIndex,
+          item_id: id,
+        }),
+      );
+    }
+    if (start.type === "mcp_call") {
+      const argumentsText = str(output.arguments);
+      events.push(
+        this.event("response.mcp_call_arguments.delta", {
+          output_index: outputIndex,
+          item_id: id,
+          delta: argumentsText,
+        }),
+        this.event("response.mcp_call_arguments.done", {
+          output_index: outputIndex,
+          item_id: id,
+          arguments: argumentsText,
+        }),
+      );
+    }
+    return events;
+  }
+
+  /** Original `ChatToResponsesStreamState.CompleteHostedTool`. */
+  completeHostedTool(result: HostedToolStreamResult): ChatToResponsesStreamEvent[] {
+    const id = str(result.id).trim();
+    const tool = this.hostedByID.get(id);
+    if (!tool) throw new Error(`hosted-tool result references unknown call ${JSON.stringify(id)}`);
+    if (tool.done) throw new Error(`duplicate hosted-tool result for call ${JSON.stringify(id)}`);
+    if (result.type && result.type !== tool.output.type) {
+      throw new Error(`hosted-tool result type ${JSON.stringify(result.type)} does not match call type ${JSON.stringify(tool.output.type)}`);
+    }
+    const failed = Boolean(result.isError) || Boolean(str(result.errorCode).trim());
+    tool.output.status = "completed";
+    if (str(tool.output.type) === "code_interpreter_call") {
+      throw new Error("Responses code_interpreter_call is not supported without a container_id");
+    }
+    if (str(tool.output.type) === "mcp_call") {
+      try {
+        tool.output.output = hostedResultString(result.result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`encode Responses MCP output: ${message}`);
+      }
+    }
+    if (failed) {
+      tool.output.status = "failed";
+      const errorValue = str(result.errorCode).trim() || "hosted tool execution failed";
+      if (str(tool.output.type) === "mcp_call") {
+        tool.output.error = errorValue;
+        delete tool.output.output;
+      }
+    }
+    tool.done = true;
+    const events: ChatToResponsesStreamEvent[] = [];
+    const eventType = hostedTerminalEvent(str(tool.output.type), failed);
+    if (eventType) {
+      events.push(
+        this.event(eventType, {
+          output_index: tool.outputIndex,
+          item_id: id,
+        }),
+      );
+    }
+    events.push(
+      this.event(EVENT_OUTPUT_ITEM_DONE, {
+        output_index: tool.outputIndex,
+        item_id: id,
+        item: cloneHostedOutput(tool.output),
+      }),
+    );
+    return events;
+  }
+
   applyFinishReason(finishReason: string): void {
     const mapped = responsesStatusFromChatFinishReason(finishReason);
     if (mapped.status) {
@@ -575,6 +795,37 @@ export class ChatToResponsesStreamState {
         this.event(EVENT_OUTPUT_ITEM_DONE, {
           output_index: tool.outputIndex,
           item: this.toolOutput(tool, status),
+        }),
+      );
+    }
+    for (const ref of this.outputOrder) {
+      if (ref.kind !== "hosted") continue;
+      const tool = this.hostedByID.get(ref.hostedId || "");
+      if (!tool || tool.done) continue;
+      if (this.status !== "failed") this.status = "incomplete";
+      tool.done = true;
+      tool.output.status = "incomplete";
+      if (this.status === "failed") {
+        tool.output.status = "failed";
+        if (str(tool.output.type) === "mcp_call") {
+          tool.output.error = "provider stream failed before hosted-tool result";
+          delete tool.output.output;
+        }
+        const eventType = hostedTerminalEvent(str(tool.output.type), true);
+        if (eventType) {
+          events.push(
+            this.event(eventType, {
+              output_index: tool.outputIndex,
+              item_id: tool.output.id,
+            }),
+          );
+        }
+      }
+      events.push(
+        this.event(EVENT_OUTPUT_ITEM_DONE, {
+          output_index: tool.outputIndex,
+          item_id: tool.output.id,
+          item: cloneHostedOutput(tool.output),
         }),
       );
     }
@@ -1317,6 +1568,196 @@ export function oaiResponsesSseToChatSse(
   let sse = chunks.map((chunk) => sseLine(chunk)).join("");
   sse += "data: [DONE]\n\n";
   return { sse, usageBody: usageBodyFrom(state.usage) };
+}
+
+function claudeHostedCallOutputType(blockType: string, name: string): string {
+  if (blockType === "mcp_tool_use") return "mcp_call";
+  switch (name.trim()) {
+    case "web_search":
+      return "web_search_call";
+    case "code_execution":
+      throw new Error("Claude code_execution has no valid OpenAI Responses mapping without a container_id");
+    case "web_fetch":
+      throw new Error("Claude web_fetch has no valid OpenAI Responses hosted-tool mapping");
+    default:
+      throw new Error(`unknown Claude server tool ${JSON.stringify(name)} cannot be represented as an OpenAI Responses hosted tool`);
+  }
+}
+
+function claudeHostedResultOutputType(blockType: string): string {
+  switch (blockType) {
+    case "web_search_tool_result":
+      return "web_search_call";
+    case "mcp_tool_result":
+      return "mcp_call";
+    case "code_execution_tool_result":
+      throw new Error("Claude code_execution result has no valid OpenAI Responses mapping without a container_id");
+    case "web_fetch_tool_result":
+      throw new Error("Claude web_fetch result has no valid OpenAI Responses hosted-tool mapping");
+    default:
+      throw new Error(`unknown Claude hosted-tool result ${JSON.stringify(blockType)}`);
+  }
+}
+
+function claudeHostedResultErrorCode(content: unknown, fallback: string): string {
+  if (fallback.trim()) return fallback.trim();
+  const value = asObj(content);
+  const contentType = str(value.type).trim();
+  if (!contentType.endsWith("_error")) return "";
+  return str(value.error_code).trim();
+}
+
+type ClaudeHostedStreamCall = {
+  blockType: string;
+  id: string;
+  name: string;
+  serverName: string;
+  caller: unknown;
+  startInput: unknown;
+  input: string;
+};
+
+/** Original `ClaudeHostedStreamBridge`. */
+export class ClaudeHostedStreamBridge {
+  private pending = new Map<number, ClaudeHostedStreamCall>();
+
+  convert(
+    response: Record<string, unknown>,
+    state: ChatToResponsesStreamState,
+  ): { events: ChatToResponsesStreamEvent[]; consumed: boolean } {
+    const type = str(response.type);
+    const index = response.index == null ? 0 : asInt(response.index);
+    if (type === "content_block_start") {
+      const block = response.content_block ? asObj(response.content_block) : null;
+      if (!block) return { events: [], consumed: false };
+      const blockType = str(block.type).trim();
+      if (blockType === "server_tool_use" || blockType === "mcp_tool_use") {
+        if (this.pending.has(index)) {
+          throw new Error(`duplicate Claude hosted-tool content block index ${index}`);
+        }
+        if (blockType === "mcp_tool_use" && (!str(block.name).trim() || !str(block.server_name).trim())) {
+          throw new Error("Claude MCP tool use must include name and server_name");
+        }
+        claudeHostedCallOutputType(blockType, str(block.name));
+        const pending: ClaudeHostedStreamCall = {
+          blockType,
+          id: str(block.id),
+          name: str(block.name),
+          serverName: str(block.server_name),
+          caller: block.caller,
+          startInput: undefined,
+          input: "",
+        };
+        if (block.input != null) {
+          const input = typeof block.input === "string" ? block.input.trim() : compactJson(block.input);
+          if (input !== "{}" && input !== "null") pending.startInput = block.input;
+        }
+        this.pending.set(index, pending);
+        return { events: [], consumed: true };
+      }
+      if (
+        blockType === "web_search_tool_result" ||
+        blockType === "mcp_tool_result" ||
+        blockType === "code_execution_tool_result" ||
+        blockType === "web_fetch_tool_result"
+      ) {
+        const outputType = claudeHostedResultOutputType(blockType);
+        const result = outputType === "web_search_call" ? undefined : block.content;
+        const events = state.completeHostedTool({
+          type: outputType,
+          id: str(block.tool_use_id),
+          result,
+          errorCode: claudeHostedResultErrorCode(block.content, str(block.error_code)),
+          isError: block.is_error === true,
+        });
+        return { events, consumed: true };
+      }
+      return { events: [], consumed: false };
+    }
+    if (type === "content_block_delta") {
+      const pending = this.pending.get(index);
+      if (!pending) return { events: [], consumed: false };
+      const delta = response.delta ? asObj(response.delta) : null;
+      if (delta && str(delta.type) === "input_json_delta" && typeof delta.partial_json === "string") {
+        pending.input += delta.partial_json;
+      }
+      return { events: [], consumed: true };
+    }
+    if (type === "content_block_stop") {
+      const pending = this.pending.get(index);
+      if (!pending) return { events: [], consumed: false };
+      this.pending.delete(index);
+      let action: unknown = pending.input;
+      if (!str(pending.input).trim()) action = pending.startInput ?? {};
+      const outputType = claudeHostedCallOutputType(pending.blockType, pending.name);
+      const events = state.startHostedTool({
+        type: outputType,
+        id: pending.id,
+        name: pending.name,
+        action,
+        caller: pending.caller,
+        serverLabel: pending.serverName,
+      });
+      return { events, consumed: true };
+    }
+    return { events: [], consumed: false };
+  }
+}
+
+/** Original `ClaudeResponsesStreamHandler` client SSE (`EmitSequenceNumber: true`). */
+export function claudeSseToResponsesSse(
+  text: string,
+  opts: { id: string; model: string; created?: number; fallbackPromptTokens?: number },
+): { sse: string; usageBody: Record<string, unknown> } {
+  const state = newChatToResponsesStreamState(opts.id, opts.model, {
+    created: opts.created,
+    emitSequenceNumber: true,
+  });
+  const hosted = new ClaudeHostedStreamBridge();
+  const claudeChat = newClaudeToChatStreamState();
+  const info = {
+    responseId: opts.id,
+    created: opts.created ?? Math.floor(Date.now() / 1000),
+    model: opts.model,
+    usage: emptyOpenAIUsage(),
+    done: false,
+  };
+  const events: ChatToResponsesStreamEvent[] = [];
+  const fail = (err: Error): { sse: string; usageBody: Record<string, unknown> } => {
+    events.push(...state.fail("server_error", err.message, ""));
+    return {
+      sse: events.map((event) => responsesSseEvent(event.type, event.payload)).join(""),
+      usageBody: usageBodyFrom(state.usage),
+    };
+  };
+  for (const payload of parseSseDataLines(text)) {
+    const parsed = parseJsonObject(payload);
+    if (!parsed) return fail(new Error("failed to unmarshal Claude stream event"));
+    const claudeError = asObj(parsed.error);
+    if (str(claudeError.type)) {
+      return fail(new Error(str(claudeError.message) || str(claudeError.type)));
+    }
+    formatClaudeResponseInfo(parsed, null, info);
+    if (!state.model && info.model) state.model = info.model;
+    try {
+      const hostedResult = hosted.convert(parsed, state);
+      events.push(...hostedResult.events);
+      if (hostedResult.consumed) continue;
+      const chunk = convertClaudeStreamChunk(claudeChat, parsed);
+      formatClaudeResponseInfo(parsed, chunk, info);
+      if (!chunk) continue;
+      events.push(...chatCompletionsStreamChunkToResponsesEvents(chunk, state));
+    } catch (err) {
+      return fail(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  const mapped = buildOpenAIStyleUsageFromClaudeUsage(info.usage);
+  state.usage = mapped.total_tokens ? mapped : maybeEstimateUsage(mapped, state.usageText(), opts.fallbackPromptTokens || 0);
+  events.push(...finalizeChatCompletionsStreamToResponses(state));
+  return {
+    sse: events.map((event) => responsesSseEvent(event.type, event.payload)).join(""),
+    usageBody: usageBodyFrom(state.usage),
+  };
 }
 
 /** Original `OaiChatToResponsesStreamHandler` client SSE (`EmitSequenceNumber: true`). */
