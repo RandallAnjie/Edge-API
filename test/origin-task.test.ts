@@ -435,22 +435,54 @@ test("original origin pin retries same channel; token pin is single-attempt", as
   }
 });
 
+function originEndpointPluginSource(): string {
+  return `export const meta = { apiVersion: 1, key: "origin-endpoint", name: "origin-endpoint", version: "1.0.0", author: { name: "test" }, models: ["claimed-model"], fetchMode: "per_task", routes: [], protocols: [{ name: "openai_responses", supports: ["sync", "background"] }], channelTypes: [${CHANNEL_TYPE_OPENAI}], allowedHosts: [], auth: { type: "none" } };
+export function buildSubmitRequest(ctx) { return {url: String(ctx.baseUrl || "") + "/submit", method: "POST", body: ctx.requestBody || {}}; }
+export function parseSubmitResponse() { return {taskId: "one"}; }
+export function buildQueryRequest() { return {url: "https://example.com"}; }
+export function parseTaskResult() { return {status: "SUCCESS"}; }
+export const protocols = {
+  openai_responses: {
+    decodeRequest: function(ctx) {
+      var value = ctx.body && ctx.body.value && typeof ctx.body.value === "object" && !Array.isArray(ctx.body.value) ? ctx.body.value : {};
+      var out = { kind: "submit", model: ctx.model || value.model, requestBody: value };
+      if (Object.prototype.hasOwnProperty.call(value, "originTaskIds")) out.originTaskIds = value.originTaskIds;
+      return out;
+    },
+    renderFinal: function() {
+      return {
+        output: [{
+          type: "message",
+          status: "completed",
+          role: "assistant",
+          content: [{ type: "output_text", text: "ok", annotations: [], logprobs: [] }]
+        }]
+      };
+    }
+  }
+};
+`;
+}
+
 test("original PrepareTaskPluginEndpoint origin pin JSON fields", async () => {
   const { e, auth, store, rootId } = await boot();
-  const originId = await addChannel(e, auth, "endpoint-origin", { base_url: "https://origin-ep.example.test" });
-  await addChannel(e, auth, "endpoint-other", { base_url: "https://other-ep.example.test" });
+  const priced = await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "ModelPrice", value: JSON.stringify({ "claimed-model": 0 }) }),
+    }),
+    e,
+  );
+  assert.equal(priced.body.success, true, String(priced.body.message));
+  const originId = await addChannel(e, auth, "endpoint-origin", { base_url: "https://origin-ep.example.test", models: "claimed-model" });
+  await addChannel(e, auth, "endpoint-other", { base_url: "https://other-ep.example.test", models: "claimed-model" });
   await insertOwnedTask(store, { taskId: "task-endpoint", userId: rootId, channelId: originId, platform: "origin-endpoint" });
   const plugin = await json(
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({
-        source: pluginSource("origin-endpoint", {
-          routes: "[]",
-          protocols: `["openai_responses"]`,
-          models: `["claimed-model"]`,
-        }),
-      }),
+      body: JSON.stringify({ source: originEndpointPluginSource() }),
     }),
     e,
   );
@@ -485,6 +517,10 @@ test("original PrepareTaskPluginEndpoint origin pin JSON fields", async () => {
     );
     assert.equal(hit.res.status, 200, hit.text);
     assert.ok(seen.some((u) => u.startsWith("https://origin-ep.example.test")), JSON.stringify(seen));
+    assert.equal(hit.body.object, "response");
+    assert.equal(hit.body.status, "completed");
+    assert.match(String(hit.body.id), /^resp_/);
+    assert.equal((hit.body.metadata as { task_id?: string }).task_id, String(hit.body.id).replace(/^resp_/, "task_"));
   } finally {
     globalThis.fetch = origFetch;
   }

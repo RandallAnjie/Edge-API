@@ -66,7 +66,62 @@ export type MatchedPlugin = {
   protocol?: string;
   operation?: string;
   bodyKinds?: string[];
+  protocolModes?: string[];
 };
+
+/** Original `HostProtocolDefinition.DefinedModes` nonempty check. */
+export function hostProtocolHasDefinedModes(protocol: string): boolean {
+  return protocol === "openai_responses";
+}
+
+/** Original `PluginMeta.ProtocolSupports`. */
+export function pluginProtocolSupports(plugin: MatchedPlugin, protocol: string, mode: string): boolean {
+  if (plugin.protocol && plugin.protocol !== protocol) return false;
+  return (plugin.protocolModes || []).includes(mode);
+}
+
+function protocolClaimSupports(meta: Record<string, unknown>, protocol: string): string[] {
+  const raw = meta.protocols;
+  if (!Array.isArray(raw)) return [];
+  for (const item of raw) {
+    if (typeof item === "string") {
+      if (item === protocol) return [];
+      continue;
+    }
+    if (item && typeof item === "object" && typeof (item as { name?: unknown }).name === "string") {
+      if (String((item as { name: string }).name) !== protocol) continue;
+      return Array.isArray((item as { supports?: unknown }).supports)
+        ? (item as { supports: unknown[] }).supports.map((name) => String(name)).filter(Boolean)
+        : [];
+    }
+  }
+  return [];
+}
+
+/** Original `unsupportedProtocolFormMessage`. */
+export function unsupportedProtocolFormMessage(
+  candidates: EndpointCandidate[],
+  protocol: string,
+  stream: boolean,
+  background: boolean,
+): string {
+  const supports = (mode: string) => candidates.some((candidate) => pluginProtocolSupports(candidate.plugin, protocol, mode));
+  if (stream && !supports("stream")) {
+    if (supports("background")) {
+      return 'Streaming is not supported for this model. Set "stream": false, or use "background": true and retrieve the response later.';
+    }
+    return 'Streaming is not supported for this model. Set "stream": false.';
+  }
+  if (background && !supports("background")) {
+    return 'Background mode is not supported for this model. Remove "background": true.';
+  }
+  const forms: string[] = [];
+  if (supports("stream")) forms.push('"stream": true');
+  if (supports("background")) forms.push('"background": true');
+  const message = "Synchronous non-streaming requests are not supported for this model.";
+  if (!forms.length) return message;
+  return `${message} Set ${forms.join(" or ")}.`;
+}
 
 export async function matchPluginRoute(
   store: Store,
@@ -183,6 +238,7 @@ export async function lookupEndpointCandidates(
         protocol: operation.protocol,
         operation: operation.operation,
         bodyKinds: operation.bodyKinds,
+        protocolModes: protocolClaimSupports(p.meta, operation.protocol),
       },
       protocol: operation.protocol,
       operation,

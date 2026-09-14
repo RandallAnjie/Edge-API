@@ -11,7 +11,7 @@ import {
 } from "./channel-select.js";
 import { PIN_RETRY_SINGLE_ATTEMPT } from "./channel-constraint.js";
 import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_VERTEX, DEFAULT_GROUP_RATIO, parseJson, ROLE_ADMIN } from "./constants.js";
-import { json, noAvailableChannelMessage, openaiError, taskErrorJson, tokenModelForbiddenMessage } from "./http.js";
+import { json, noAvailableChannelMessage, openaiError, pluginProtocolSubmissionError, taskErrorJson, tokenModelForbiddenMessage } from "./http.js";
 import { type PluginEngine, validateRequestURL } from "./jsplugin.js";
 import { requestHeadersFrom } from "./param-override.js";
 import type { MatchedPlugin } from "./plugin-dispatch.js";
@@ -630,9 +630,17 @@ async function relayTaskSubmitOnce(opts: {
 }
 
 function nativeSubmitError(prepared: SubmitKind, engine: PluginEngine, err: NativeTaskError, requestId: string): Response {
+  if (prepared.protocol === "openai_responses") return pluginProtocolSubmissionError(err);
   if (prepared.protocol) return taskErrorJson(err.statusCode, err.code, err.message);
   return respondTaskPluginError(engine, prepared.requestContext, err.statusCode, err.message, requestId);
 }
+
+export type NativeTaskPersistOutcome = {
+  row: Record<string, unknown>;
+  originModelName: string;
+  otherRatios: Record<string, number>;
+  engine: PluginEngine;
+};
 
 /** Original `TaskAdaptor.ValidateRequestAndSetAction` final protocol decode. */
 export function validateFinalProtocolDecoder(
@@ -659,8 +667,8 @@ export function validateFinalProtocolDecoder(
   return out;
 }
 
-/** Original `controller.RelayTask` native submit after `PrepareTaskPluginRoute`. */
-export async function continueNativeSubmit(
+/** Original `controller.executeTaskSubmission` native persist without presenting. */
+export async function executeNativeTaskSubmission(
   req: Request,
   env: Env,
   store: Store,
@@ -668,18 +676,21 @@ export async function continueNativeSubmit(
   plugin: MatchedPlugin,
   prepared: SubmitKind,
   requestId: string,
-): Promise<Response> {
+): Promise<NativeTaskPersistOutcome | { error: Response }> {
   const path = new URL(req.url).pathname;
   const engine = prepared.engine;
   if (prepared.protocol && prepared.protocolContext) {
     const decoded = validateFinalProtocolDecoder(engine, prepared.protocol, prepared.model, prepared.protocolContext);
-    if ("statusCode" in decoded) return nativeSubmitError(prepared, engine, decoded, requestId);
+    if ("statusCode" in decoded) return { error: nativeSubmitError(prepared, engine, decoded, requestId) };
     if (Object.prototype.hasOwnProperty.call(decoded, "requestBody")) prepared.requestBody = decoded.requestBody;
     if (decoded.action) prepared.action = decoded.action;
   }
   const model = prepared.model;
   if (!tokenAllowsModel(auth.token, model)) {
-    return openaiError(403, tokenModelForbiddenMessage(req, model), "model_not_allowed");
+    if (prepared.protocol === "openai_responses") {
+      return { error: pluginProtocolSubmissionError({ statusCode: 403, code: "model_not_allowed", message: tokenModelForbiddenMessage(req, model) }) };
+    }
+    return { error: openaiError(403, tokenModelForbiddenMessage(req, model), "model_not_allowed") };
   }
 
   const selected = await selectDistributedChannel({
@@ -696,12 +707,24 @@ export async function continueNativeSubmit(
     originPin: prepared.origin.pin,
   });
   if (selected.error) {
-    return openaiError(selected.error.status, selected.error.message, selected.error.code);
+    if (prepared.protocol === "openai_responses") {
+      return { error: pluginProtocolSubmissionError({ statusCode: selected.error.status, code: selected.error.code, message: selected.error.message }) };
+    }
+    return { error: openaiError(selected.error.status, selected.error.message, selected.error.code) };
   }
   auth.usingGroup = selected.usingGroup;
   let channel = selected.channel;
   if (!channel) {
-    return openaiError(503, noAvailableChannelMessage(req, auth.usingGroup, model), "no_available_channel");
+    if (prepared.protocol === "openai_responses") {
+      return {
+        error: pluginProtocolSubmissionError({
+          statusCode: 503,
+          code: "no_available_channel",
+          message: noAvailableChannelMessage(req, auth.usingGroup, model),
+        }),
+      };
+    }
+    return { error: openaiError(503, noAvailableChannelMessage(req, auth.usingGroup, model), "no_available_channel") };
   }
 
   const retryTimes = await store.optionNum("RetryTimes", 0);
@@ -761,10 +784,10 @@ export async function continueNativeSubmit(
 
   if (lastErr) {
     if (preconsumed) await store.addQuota(auth.user.id, preconsumed);
-    return nativeSubmitError(prepared, engine, lastErr, requestId);
+    return { error: nativeSubmitError(prepared, engine, lastErr, requestId) };
   }
   if (!outcome) {
-    return nativeSubmitError(prepared, engine, taskErr("task_submit_failed", "task submission returned no result", 500, true), requestId);
+    return { error: nativeSubmitError(prepared, engine, taskErr("task_submit_failed", "task submission returned no result", 500, true), requestId) };
   }
 
   let row: Record<string, unknown>;
@@ -783,16 +806,31 @@ export async function continueNativeSubmit(
     });
   } catch (err) {
     if (preconsumed) await store.addQuota(auth.user.id, preconsumed);
-    return nativeSubmitError(prepared, engine, taskErr("task_insert_failed", hookMessage(err), 500, true), requestId);
+    return { error: nativeSubmitError(prepared, engine, taskErr("task_insert_failed", hookMessage(err), 500, true), requestId) };
   }
 
+  return { row, originModelName: outcome.info.originModelName, otherRatios: outcome.otherRatios, engine };
+}
+
+/** Original `controller.RelayTask` native submit after `PrepareTaskPluginRoute`. */
+export async function continueNativeSubmit(
+  req: Request,
+  env: Env,
+  store: Store,
+  auth: AuthToken,
+  plugin: MatchedPlugin,
+  prepared: SubmitKind,
+  requestId: string,
+): Promise<Response> {
+  const result = await executeNativeTaskSubmission(req, env, store, auth, plugin, prepared, requestId);
+  if ("error" in result) return result.error;
   return presentTaskSubmission({
-    engine,
+    engine: result.engine,
     requestContext: prepared.requestContext,
     render: String(plugin.route?.render || ""),
-    taskRow: row,
-    originModelName: outcome.info.originModelName,
-    otherRatios: outcome.otherRatios,
+    taskRow: result.row,
+    originModelName: result.originModelName,
+    otherRatios: result.otherRatios,
     protocol: prepared.protocol,
     operation: prepared.operation,
   });

@@ -228,6 +228,28 @@ export function pluginProtocolError(status: number, code: string, message: strin
   return json(status, { error: { message, type: "new_api_error", code } });
 }
 
+/** Original `controller.respondPluginProtocolSubmissionError`. */
+export function pluginProtocolSubmissionError(err: { statusCode: number; code: string; message: string }): Response {
+  let status = err.statusCode >= 400 && err.statusCode <= 599 ? err.statusCode : 500;
+  switch (status) {
+    case 400: {
+      let message = "Invalid task protocol request";
+      if (err.message && (err.code === "invalid_request" || err.code.startsWith("invalid_request"))) {
+        message = err.message;
+      }
+      return pluginProtocolError(status, "invalid_request_error", message);
+    }
+    case 401:
+      return pluginProtocolError(status, "authentication_error", "Authentication failed");
+    case 403:
+      return pluginProtocolError(status, "permission_denied", "Task protocol request was denied");
+    case 429:
+      return pluginProtocolError(status, "rate_limit_exceeded", "Too many requests");
+    default:
+      return pluginProtocolError(status, "task_protocol_error", "Task protocol request failed");
+  }
+}
+
 /** Original `dto.TaskError` JSON (`code`, `message`, `data`). */
 export function taskErrorJson(status: number, code: string, message: string): Response {
   return json(status, { code, message, data: null });

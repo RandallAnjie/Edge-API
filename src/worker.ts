@@ -2,7 +2,7 @@ import { runChannelTestTask } from "./channel-test.js";
 import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
 import { START_TIME, VERSION, nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
-import { apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginProtocolError, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
+import { apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -25,7 +25,8 @@ import { hit } from "./metrics.js";
 import { matchPluginOwnedPath, matchPluginRoute, matchTaskPlugin, type MatchedPlugin } from "./plugin-dispatch.js";
 import { applyOriginTaskIntent, type OriginTaskRef } from "./origin-task.js";
 import { executeNativePluginRoute, handleNativePluginRoute } from "./task-plugin-route.js";
-import { tryRelayOpenAIVideoCreate } from "./task-plugin-endpoint.js";
+import { tryRelayTaskPluginEndpoint } from "./task-plugin-endpoint.js";
+import { retrieveTaskPluginResponse } from "./task-plugin-protocol-serve.js";
 import type { ChannelPin } from "./channel-constraint.js";
 import { taskArtifactsView, taskFetchView, openaiVideoView, taskResultURL } from "./dto.js";
 import { convertOwnedTaskToOpenAIVideo } from "./task-plugin-video.js";
@@ -248,7 +249,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
 
   if (req.method === "GET" && path.startsWith("/v1/responses/")) {
     const responseId = decodeURIComponent(path.slice("/v1/responses/".length).split("/")[0] || "");
-    return pluginProtocolError(404, "not_found", `No response found with id '${responseId}'.`);
+    return retrieveTaskPluginResponse({ store, auth, responseId });
   }
 
   if ((req.method === "GET" || req.method === "HEAD") && path.startsWith("/v1/tasks/")) {
@@ -294,8 +295,8 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     });
   }
 
-  if (req.method === "POST" && path === "/v1/videos") {
-    const claimed = await tryRelayOpenAIVideoCreate({ req, env, store, auth, ctx });
+  if (req.method === "POST" && (path === "/v1/videos" || path === "/v1/responses")) {
+    const claimed = await tryRelayTaskPluginEndpoint({ req, env, store, auth, ctx });
     if (claimed) return claimed;
   }
 

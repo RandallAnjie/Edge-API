@@ -20,11 +20,15 @@ import {
 import { messageWithRequestId, pluginProtocolError } from "./http.js";
 import { applyOriginTaskIntent } from "./origin-task.js";
 import {
+  hostProtocolHasDefinedModes,
   lookupEndpointCandidates,
   lookupHostProtocolOperation,
+  pluginProtocolSupports,
+  unsupportedProtocolFormMessage,
   type EndpointCandidate,
   type MatchedPlugin,
 } from "./plugin-dispatch.js";
+import { serveTaskPluginProtocolCreate } from "./task-plugin-protocol-serve.js";
 import { continueNativeSubmit } from "./task-plugin-submit.js";
 import type { Store } from "./store.js";
 import type { AuthToken, Env, ExecutionContextLike } from "./types.js";
@@ -279,11 +283,43 @@ export async function prepareTaskPluginEndpoint(
   };
 }
 
+async function pinJsonBoolFlags(req: Request): Promise<{ stream: boolean; background: boolean }> {
+  const contentType = (req.headers.get("content-type") || "").toLowerCase();
+  if (contentType && !contentType.includes("application/json") && !contentType.includes("+json")) {
+    return { stream: false, background: false };
+  }
+  try {
+    const raw = await req.clone().text();
+    if (!raw) return { stream: false, background: false };
+    const decoded = goUnmarshalJSON(raw);
+    if (!decoded.ok || !decoded.value || typeof decoded.value !== "object" || Array.isArray(decoded.value)) {
+      return { stream: false, background: false };
+    }
+    const body = decoded.value as Record<string, unknown>;
+    return { stream: body.stream === true, background: body.background === true };
+  } catch {
+    return { stream: false, background: false };
+  }
+}
+
+function filterModeCandidates(
+  candidates: EndpointCandidate[],
+  protocol: string,
+  stream: boolean,
+  background: boolean,
+): EndpointCandidate[] {
+  const required: string[] = [];
+  if (stream) required.push("stream");
+  if (background) required.push("background");
+  if (!stream && !background) required.push("sync");
+  return candidates.filter((candidate) => required.every((mode) => pluginProtocolSupports(candidate.plugin, protocol, mode)));
+}
+
 /**
- * Original claimed `POST /v1/videos` host protocol create.
- * Returns null when Pin leaves the request on ordinary RelayTask.
+ * Original claimed host protocol create (`POST /v1/videos` or `POST /v1/responses`).
+ * Returns null when Pin leaves the request on ordinary Relay / RelayTask.
  */
-export async function tryRelayOpenAIVideoCreate(opts: {
+export async function tryRelayTaskPluginEndpoint(opts: {
   req: Request;
   env: Env;
   store: Store;
@@ -292,13 +328,22 @@ export async function tryRelayOpenAIVideoCreate(opts: {
 }): Promise<Response | null> {
   const path = new URL(opts.req.url).pathname;
   const operation = lookupHostProtocolOperation(opts.req.method, path);
-  if (!operation || operation.protocol !== "openai_video" || operation.operation !== "create") return null;
+  if (!operation || operation.operation !== "create") return null;
+  if (operation.protocol !== "openai_video" && operation.protocol !== "openai_responses") return null;
   const requestId = pluginRequestId(opts.req);
   const pinned = await pinEndpointModel(opts.req);
   if ("error" in pinned) return abortOpenAi(400, pinned.error, requestId);
   if (!pinned.model.trim()) return null;
-  const candidates = await lookupEndpointCandidates(opts.store, opts.req.method, path, pinned.model);
+  let candidates = await lookupEndpointCandidates(opts.store, opts.req.method, path, pinned.model);
   if (!candidates.length) return null;
+  if (hostProtocolHasDefinedModes(operation.protocol)) {
+    const flags = await pinJsonBoolFlags(opts.req);
+    const unfiltered = candidates;
+    candidates = filterModeCandidates(candidates, operation.protocol, flags.stream, flags.background);
+    if (!candidates.length) {
+      return abortOpenAi(400, unsupportedProtocolFormMessage(unfiltered, operation.protocol, flags.stream, flags.background), requestId);
+    }
+  }
   const prepared = await prepareTaskPluginEndpoint(
     opts.store,
     opts.auth.user.id,
@@ -309,5 +354,29 @@ export async function tryRelayOpenAIVideoCreate(opts: {
     requestId,
   );
   if (prepared.kind === "response") return prepared.response;
+  if (operation.protocol === "openai_responses") {
+    return serveTaskPluginProtocolCreate({
+      req: opts.req,
+      env: opts.env,
+      store: opts.store,
+      auth: opts.auth,
+      plugin: prepared.plugin,
+      prepared: prepared.prepared,
+      requestId,
+    });
+  }
   return continueNativeSubmit(opts.req, opts.env, opts.store, opts.auth, prepared.plugin, prepared.prepared, requestId);
+}
+
+/** Original claimed `POST /v1/videos` host protocol create. */
+export async function tryRelayOpenAIVideoCreate(opts: {
+  req: Request;
+  env: Env;
+  store: Store;
+  auth: AuthToken;
+  ctx: ExecutionContextLike;
+}): Promise<Response | null> {
+  const path = new URL(opts.req.url).pathname;
+  if (path !== "/v1/videos") return null;
+  return tryRelayTaskPluginEndpoint(opts);
 }
