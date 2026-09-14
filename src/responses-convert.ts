@@ -1,9 +1,10 @@
 /** Original `relaykit/relayconvert` Chat Completions ↔ Responses + Gemini→Responses JSON. */
 
-import { openaiFromGeminiResponse } from "./gemini-response.js";
+import { groundingWebSearchQueries, openaiFromGeminiResponse } from "./gemini-response.js";
 import {
   asInt,
   asObj,
+  compactUuid,
   emptyOpenAIUsage,
   openAIUsageToJson,
   type OpenAIUsage,
@@ -505,5 +506,16 @@ export function geminiResponseToResponsesResponse(
   const converted = chatCompletionToResponsesResponse(chat, str(chat.id) || opts.id || "");
   converted.model = model;
   converted.usage = openAIUsageToJson(usageFromChatUsage(asObj(chat.usage)));
+  const queries = groundingWebSearchQueries(upstream);
+  if (queries.length) {
+    const output = asArr(converted.output);
+    output.push({
+      type: "web_search_call",
+      id: `ws_${compactUuid()}`,
+      status: "completed",
+      action: { type: "search", queries },
+    });
+    converted.output = output;
+  }
   return converted;
 }

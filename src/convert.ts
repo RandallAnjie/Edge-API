@@ -172,7 +172,13 @@ export function geminiToOpenAIChat(body: Record<string, unknown>, model: string)
 }
 
 export { openaiFromAnthropicResponse, claudeSseToOpenAIChat, usageFromClaudeAPIUsage } from "./claude-response.js";
-export { openaiFromGeminiResponse, geminiSseToOpenAIChat, usageFromGeminiMetadata } from "./gemini-response.js";
+export {
+  openaiFromGeminiResponse,
+  geminiSseToOpenAIChat,
+  usageFromGeminiMetadata,
+  groundingAnnotationsToChat,
+  groundingWebSearchQueries,
+} from "./gemini-response.js";
 
 export function usageFromOpenAI(body: Record<string, unknown> | null): {
   prompt: number;

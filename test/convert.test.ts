@@ -515,6 +515,247 @@ test("original Gemini stream DoResponse emits OpenAI chunks with usage.reasoning
   assert.equal(converted.usage.completion_tokens_details.reasoning_tokens, 2);
 });
 
+test("original Gemini ConvertResponse to OpenAI Responses JSON matches golden fields", () => {
+  const converted = geminiResponseToResponsesResponse(
+    {
+      candidates: [
+        {
+          finishReason: "STOP",
+          content: {
+            role: "model",
+            parts: [{ text: "The answer is 42." }, { functionCall: { name: "get_weather", args: { city: "Paris" } } }],
+          },
+        },
+      ],
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, thoughtsTokenCount: 2, totalTokenCount: 15 },
+    },
+    "upstream-model",
+    { id: "chatcmpl-fixed", created: 0 },
+  );
+  assert.equal(converted.id, "chatcmpl-fixed");
+  assert.equal(converted.object, "response");
+  assert.equal(converted.created_at, 0);
+  assert.equal(converted.status, "completed");
+  assert.equal(converted.instructions, null);
+  assert.equal(converted.max_output_tokens, 0);
+  assert.equal(converted.model, "upstream-model");
+  assert.equal(converted.parallel_tool_calls, false);
+  assert.equal(converted.previous_response_id, null);
+  assert.equal(converted.reasoning, null);
+  assert.equal(converted.store, false);
+  assert.equal(converted.temperature, 0);
+  assert.equal(converted.tool_choice, null);
+  assert.equal(converted.tools, null);
+  assert.equal(converted.top_p, 0);
+  assert.equal(converted.truncation, null);
+  assert.equal(converted.user, null);
+  assert.equal(converted.metadata, null);
+  const output = converted.output as {
+    type: string;
+    id: string;
+    status: string;
+    role: string;
+    quality: string;
+    size: string;
+    content?: { type: string; text?: string; annotations?: unknown[] }[] | null;
+    call_id?: string;
+    name?: string;
+    arguments?: string;
+  }[];
+  assert.equal(output.length, 2);
+  assert.equal(output[0].type, "message");
+  assert.equal(output[0].id, "chatcmpl-fixed_msg_0");
+  assert.equal(output[0].status, "completed");
+  assert.equal(output[0].role, "assistant");
+  assert.equal(output[0].quality, "");
+  assert.equal(output[0].size, "");
+  assert.equal(output[0].content?.[0].type, "output_text");
+  assert.equal(output[0].content?.[0].text, "The answer is 42.");
+  assert.deepEqual(output[0].content?.[0].annotations, []);
+  assert.equal(output[1].type, "function_call");
+  assert.match(output[1].id, /^call_/);
+  assert.equal(output[1].call_id, output[1].id);
+  assert.equal(output[1].status, "completed");
+  assert.equal(output[1].role, "");
+  assert.equal(output[1].content, null);
+  assert.equal(output[1].quality, "");
+  assert.equal(output[1].size, "");
+  assert.equal(output[1].name, "get_weather");
+  assert.equal(output[1].arguments, '{"city":"Paris"}');
+  const usage = converted.usage as {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    input_tokens: number;
+    output_tokens: number;
+    prompt_tokens_details: { cached_tokens: number; text_tokens: number; audio_tokens: number; image_tokens: number };
+    completion_tokens_details: { reasoning_tokens: number; text_tokens: number };
+    input_tokens_details: { cached_tokens: number; text_tokens: number; audio_tokens: number; image_tokens: number } | null;
+    claude_cache_creation_5_m_tokens: number;
+    claude_cache_creation_1_h_tokens: number;
+    billing_usage: { source: string; semantic: string; gemini_usage_metadata: Record<string, unknown> };
+  };
+  assert.equal(usage.prompt_tokens, 10);
+  assert.equal(usage.completion_tokens, 7);
+  assert.equal(usage.total_tokens, 15);
+  assert.equal(usage.input_tokens, 10);
+  assert.equal(usage.output_tokens, 7);
+  assert.equal(usage.prompt_tokens_details.cached_tokens, 0);
+  assert.equal(usage.prompt_tokens_details.text_tokens, 0);
+  assert.equal(usage.prompt_tokens_details.audio_tokens, 0);
+  assert.equal(usage.prompt_tokens_details.image_tokens, 0);
+  assert.equal(usage.completion_tokens_details.reasoning_tokens, 2);
+  assert.equal(usage.completion_tokens_details.text_tokens, 0);
+  assert.equal(usage.input_tokens_details?.cached_tokens, 0);
+  assert.equal(usage.input_tokens_details?.text_tokens, 10);
+  assert.equal(usage.input_tokens_details?.audio_tokens, 0);
+  assert.equal(usage.input_tokens_details?.image_tokens, 0);
+  assert.equal(usage.claude_cache_creation_5_m_tokens, 0);
+  assert.equal(usage.claude_cache_creation_1_h_tokens, 0);
+  assert.equal("usage_semantic" in usage, false);
+  assert.equal(usage.billing_usage.source, "gemini_chat");
+  assert.equal(usage.billing_usage.semantic, "gemini");
+  assert.equal(usage.billing_usage.gemini_usage_metadata.promptTokenCount, 10);
+  assert.equal(usage.billing_usage.gemini_usage_metadata.toolUsePromptTokenCount, 0);
+  assert.equal(usage.billing_usage.gemini_usage_metadata.candidatesTokenCount, 5);
+  assert.equal(usage.billing_usage.gemini_usage_metadata.totalTokenCount, 15);
+  assert.equal(usage.billing_usage.gemini_usage_metadata.thoughtsTokenCount, 2);
+  assert.equal(usage.billing_usage.gemini_usage_metadata.cachedContentTokenCount, 0);
+  assert.deepEqual(usage.billing_usage.gemini_usage_metadata.promptTokensDetails, []);
+  assert.deepEqual(usage.billing_usage.gemini_usage_metadata.toolUsePromptTokensDetails, []);
+  assert.deepEqual(usage.billing_usage.gemini_usage_metadata.candidatesTokensDetails, []);
+});
+
+test("original Gemini grounding ConvertResponse JSON emits url_citation and web_search_call", () => {
+  const chat = openaiFromGeminiResponse(
+    {
+      candidates: [
+        {
+          finishReason: "STOP",
+          content: { role: "model", parts: [{ text: "The answer is 42." }] },
+          groundingMetadata: {
+            webSearchQueries: ["answer 42", "answer 42", " deep thought "],
+            groundingChunks: [
+              { web: { uri: "https://example.com/42", title: "The Hitchhiker" } },
+              { retrievedContext: { uri: "https://example.com/retrieved", title: "Notes" } },
+            ],
+            groundingSupports: [
+              {
+                segment: { startIndex: 0, endIndex: 18, text: "The answer is 42." },
+                groundingChunkIndices: [0, 1, 0],
+              },
+            ],
+          },
+        },
+      ],
+    },
+    "upstream-model",
+    { id: "chatcmpl-ground", created: 0, upstreamModel: "upstream-model" },
+  );
+  const message = (chat.choices as { message: { content: string; annotations?: { type: string; url_citation: Record<string, unknown> }[] } }[])[0]
+    .message;
+  assert.equal(message.content, "The answer is 42.");
+  assert.equal(message.annotations?.length, 2);
+  assert.equal(message.annotations?.[0].type, "url_citation");
+  assert.equal(message.annotations?.[0].url_citation.start_index, 0);
+  assert.equal(message.annotations?.[0].url_citation.end_index, 18);
+  assert.equal(message.annotations?.[0].url_citation.url, "https://example.com/42");
+  assert.equal(message.annotations?.[0].url_citation.title, "The Hitchhiker");
+  assert.equal(message.annotations?.[1].url_citation.url, "https://example.com/retrieved");
+  assert.equal(message.annotations?.[1].url_citation.title, "Notes");
+
+  const mismatch = openaiFromGeminiResponse(
+    {
+      candidates: [
+        {
+          content: { parts: [{ text: "The answer is 42." }] },
+          groundingMetadata: {
+            groundingChunks: [{ web: { uri: "https://example.com/42", title: "The Hitchhiker" } }],
+            groundingSupports: [
+              { segment: { startIndex: 0, endIndex: 18, text: "wrong" }, groundingChunkIndices: [0] },
+            ],
+          },
+        },
+      ],
+    },
+    "m",
+  );
+  assert.equal("annotations" in (mismatch.choices as { message: object }[])[0].message, false);
+
+  const converted = geminiResponseToResponsesResponse(
+    {
+      candidates: [
+        {
+          finishReason: "STOP",
+          content: { role: "model", parts: [{ text: "The answer is 42." }] },
+          groundingMetadata: {
+            webSearchQueries: ["answer 42", " deep thought "],
+            groundingChunks: [{ web: { uri: "https://example.com/42", title: "The Hitchhiker" } }],
+            groundingSupports: [
+              { segment: { startIndex: 0, endIndex: 18, text: "The answer is 42." }, groundingChunkIndices: [0] },
+            ],
+          },
+        },
+      ],
+    },
+    "upstream-model",
+    { id: "chatcmpl-ground", created: 0 },
+  );
+  const responsesOutput = converted.output as {
+    type: string;
+    id: string;
+    status?: string;
+    content?: { type: string; text?: string; annotations?: { type: string; url?: string; title?: string; start_index?: number; end_index?: number }[] }[];
+    action?: { type: string; queries?: string[] };
+  }[];
+  assert.equal(responsesOutput[0].type, "message");
+  const citations = responsesOutput[0].content?.[0].annotations;
+  assert.equal(citations?.[0].type, "url_citation");
+  assert.equal(citations?.[0].url, "https://example.com/42");
+  assert.equal(citations?.[0].title, "The Hitchhiker");
+  assert.equal(citations?.[0].start_index, 0);
+  assert.equal(citations?.[0].end_index, 18);
+  assert.equal("url_citation" in (citations?.[0] || {}), false);
+  assert.equal(responsesOutput[1].type, "web_search_call");
+  assert.match(responsesOutput[1].id, /^ws_/);
+  assert.equal(responsesOutput[1].status, "completed");
+  assert.equal(responsesOutput[1].action?.type, "search");
+  assert.deepEqual(responsesOutput[1].action?.queries, ["answer 42", "deep thought"]);
+  assert.equal("role" in responsesOutput[1], false);
+  assert.equal("content" in responsesOutput[1], false);
+  assert.equal("quality" in responsesOutput[1], false);
+
+  const cafe = openaiFromGeminiResponse(
+    {
+      candidates: [
+        {
+          content: { parts: [{ text: "café ok" }] },
+          groundingMetadata: {
+            groundingChunks: [{ web: { uri: "https://example.com/cafe", title: "Café" } }],
+            groundingSupports: [{ segment: { startIndex: 0, endIndex: 5, text: "café" }, groundingChunkIndices: [0] }],
+          },
+        },
+      ],
+    },
+    "m",
+  );
+  const cafeCite = (cafe.choices as { message: { annotations: { url_citation: { start_index: number; end_index: number } }[] } }[])[0]
+    .message.annotations[0].url_citation;
+  assert.equal(cafeCite.start_index, 0);
+  assert.equal(cafeCite.end_index, 4);
+
+  const stream = geminiSseToOpenAIChat(
+    [
+      'data: {"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"The answer is 42."}]},"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://example.com/42","title":"The Hitchhiker"}}],"groundingSupports":[{"segment":{"startIndex":0,"endIndex":18,"text":"The answer is 42."},"groundingChunkIndices":[0]}]}}]}',
+      "",
+    ].join("\n"),
+    { id: "chatcmpl-stream", created: 0, upstreamModel: "upstream-model" },
+  );
+  assert.match(stream.body, /"type":"url_citation"/);
+  assert.match(stream.body, /"url":"https:\/\/example.com\/42"/);
+  assert.match(stream.body, /"title":"The Hitchhiker"/);
+});
+
 test("azure upstream url uses deployment and api-version", () => {
   const ch = {
     id: 1,

@@ -161,6 +161,220 @@ function usageMetadataFromResponse(response: Record<string, unknown>): Record<st
   return null;
 }
 
+function groundingMetadataFromCandidate(candidate: Record<string, unknown>): Record<string, unknown> | null {
+  const meta = candidate.groundingMetadata || candidate.grounding_metadata;
+  if (meta && typeof meta === "object") return asObj(meta);
+  return null;
+}
+
+function parseJsonArray(raw: unknown): Record<string, unknown>[] | null {
+  if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? (parsed as Record<string, unknown>[]) : null;
+    } catch {
+      return null;
+    }
+  }
+  if (raw == null) return [];
+  return null;
+}
+
+function utf8Bytes(s: string): Uint8Array {
+  return new TextEncoder().encode(s);
+}
+
+function utf8Decode(bytes: Uint8Array, fatal = false): string {
+  return new TextDecoder("utf-8", { fatal }).decode(bytes);
+}
+
+function utf8ValidPrefix(s: string, byteLen: number): boolean {
+  const bytes = utf8Bytes(s);
+  if (byteLen < 0 || byteLen > bytes.length) return false;
+  try {
+    utf8Decode(bytes.subarray(0, byteLen), true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function utf8Slice(s: string, startByte: number, endByte: number): string {
+  return utf8Decode(utf8Bytes(s).subarray(startByte, endByte));
+}
+
+function utf8IndexOf(haystack: string, needle: string, fromByte: number): number {
+  const hay = utf8Bytes(haystack);
+  const nee = utf8Bytes(needle);
+  if (fromByte > hay.length) return -1;
+  outer: for (let i = fromByte; i <= hay.length - nee.length; i++) {
+    for (let j = 0; j < nee.length; j++) {
+      if (hay[i + j] !== nee[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+function runeCount(s: string): number {
+  return Array.from(s).length;
+}
+
+function optionalInt(v: unknown): number | undefined {
+  if (v == null || v === "") return undefined;
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string" && v.trim()) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return Math.trunc(n);
+  }
+  return undefined;
+}
+
+type RenderedGeminiPart = { text: string; startByte: number };
+
+function locateRenderedGeminiParts(content: Record<string, unknown>, rendered: string): RenderedGeminiPart[] {
+  const parts = asArr(content.parts);
+  const located: RenderedGeminiPart[] = [];
+  let cursor = 0;
+  for (const part of parts) {
+    const text = str(part.text);
+    const item: RenderedGeminiPart = { text, startByte: -1 };
+    located.push(item);
+    if (!text || part.thought === true || cursor > utf8Bytes(rendered).length) continue;
+    const start = utf8IndexOf(rendered, text, cursor);
+    if (start < 0) continue;
+    item.startByte = start;
+    cursor = start + utf8Bytes(text).length;
+  }
+  return located;
+}
+
+function groundingRuneRange(
+  rendered: string,
+  part: RenderedGeminiPart,
+  startByte: number,
+  endByte: number,
+): { start: number; end: number } | null {
+  if (startByte < 0 || endByte <= startByte || endByte > utf8Bytes(part.text).length) return null;
+  if (!utf8ValidPrefix(part.text, startByte) || !utf8ValidPrefix(part.text, endByte)) return null;
+  const partStartRunes = runeCount(utf8Slice(rendered, 0, part.startByte));
+  const start = partStartRunes + runeCount(utf8Slice(part.text, 0, startByte));
+  const end = partStartRunes + runeCount(utf8Slice(part.text, 0, endByte));
+  return { start, end };
+}
+
+function groundingSource(chunk: Record<string, unknown>): { uri: string; title: string } | null {
+  const web = chunk.web && typeof chunk.web === "object" ? asObj(chunk.web) : null;
+  const retrieved =
+    (chunk.retrievedContext || chunk.retrieved_context) && typeof (chunk.retrievedContext || chunk.retrieved_context) === "object"
+      ? asObj(chunk.retrievedContext || chunk.retrieved_context)
+      : null;
+  const source = web || retrieved;
+  if (!source) return null;
+  const uri = str(source.uri || source.URI).trim();
+  if (!uri) return null;
+  return { uri, title: str(source.title) };
+}
+
+function appendGroundingAnnotations(
+  annotations: Record<string, unknown>[],
+  chunks: Record<string, unknown>[],
+  support: Record<string, unknown>,
+  start: number,
+  end: number,
+  keyPrefix: string,
+  seen: Set<string>,
+): void {
+  const indices = parseJsonArray(support.groundingChunkIndices || support.grounding_chunk_indices);
+  if (!indices) return;
+  for (const rawIndex of indices) {
+    const chunkIndex = asInt(rawIndex);
+    if (chunkIndex < 0 || chunkIndex >= chunks.length) continue;
+    const source = groundingSource(chunks[chunkIndex]);
+    if (!source) continue;
+    const key = `${keyPrefix}${start}:${end}:${source.uri}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    annotations.push({
+      type: "url_citation",
+      url_citation: {
+        start_index: start,
+        end_index: end,
+        url: source.uri,
+        title: source.title,
+      },
+    });
+  }
+}
+
+/** Original `geminichat.groundingAnnotationsToChat`. */
+export function groundingAnnotationsToChat(
+  metadata: Record<string, unknown> | null | undefined,
+  content: Record<string, unknown>,
+  rendered: string,
+): Record<string, unknown>[] | undefined {
+  if (!metadata) return undefined;
+  const rawChunks = metadata.groundingChunks || metadata.grounding_chunks;
+  const rawSupports = metadata.groundingSupports || metadata.grounding_supports;
+  if (rawChunks == null || rawSupports == null) return undefined;
+  const chunks = parseJsonArray(rawChunks);
+  const supports = parseJsonArray(rawSupports);
+  if (!chunks || !supports || !chunks.length || !supports.length) return undefined;
+  const parts = locateRenderedGeminiParts(content, rendered);
+  let textPartCount = 0;
+  let soleTextPart = -1;
+  for (let index = 0; index < parts.length; index++) {
+    if (parts[index].startByte < 0) continue;
+    textPartCount += 1;
+    soleTextPart = index;
+  }
+  const annotations: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  for (const support of supports) {
+    const segment = asObj(support.segment);
+    const explicitPart = optionalInt(segment.partIndex ?? segment.part_index);
+    let partIndex = soleTextPart;
+    if (explicitPart != null) partIndex = explicitPart;
+    else if (textPartCount !== 1) continue;
+    if (partIndex < 0 || partIndex >= parts.length || parts[partIndex].startByte < 0) continue;
+    const part = parts[partIndex];
+    const startByte = asInt(segment.startIndex ?? segment.start_index);
+    const endByte = asInt(segment.endIndex ?? segment.end_index);
+    const range = groundingRuneRange(rendered, part, startByte, endByte);
+    if (!range) continue;
+    const segmentText = str(segment.text);
+    if (segmentText) {
+      try {
+        if (utf8Slice(part.text, startByte, endByte) !== segmentText) continue;
+      } catch {
+        continue;
+      }
+    }
+    appendGroundingAnnotations(annotations, chunks, support, range.start, range.end, "", seen);
+  }
+  return annotations.length ? annotations : undefined;
+}
+
+/** Original `geminichat.GroundingWebSearchQueries`. */
+export function groundingWebSearchQueries(response: Record<string, unknown>): string[] {
+  const queries: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of asArr(response.candidates)) {
+    const metadata = groundingMetadataFromCandidate(candidate);
+    if (!metadata) continue;
+    const raw = metadata.webSearchQueries || metadata.web_search_queries;
+    const list = Array.isArray(raw) ? raw : [];
+    for (const item of list) {
+      const query = str(item).trim();
+      if (!query || seen.has(query)) continue;
+      seen.add(query);
+      queries.push(query);
+    }
+  }
+  return queries;
+}
+
 function partInline(part: Record<string, unknown>): { mime: string; data: string } | null {
   const inline = part.inlineData || part.inline_data;
   if (!inline || typeof inline !== "object") return null;
@@ -270,6 +484,12 @@ export function responseGeminiChat2OpenAI(id: string, created: number, response:
       message.tool_calls = rendered.toolCalls;
       isToolCall = true;
     }
+    const annotations = groundingAnnotationsToChat(
+      groundingMetadataFromCandidate(candidate),
+      asObj(candidate.content),
+      rendered.content,
+    );
+    if (annotations) message.annotations = annotations;
     let finishReason = "stop";
     const rawFinish = candidate.finishReason ?? candidate.finish_reason;
     if (rawFinish != null && str(rawFinish) !== "") finishReason = geminiFinishReason(str(rawFinish));
@@ -372,6 +592,12 @@ export function streamResponseGeminiChat2OpenAI(geminiResponse: Record<string, u
     if (rendered.thought) delta.reasoning_content = rendered.content;
     else delta.content = rendered.content;
     if (rendered.toolCalls.length) delta.tool_calls = rendered.toolCalls;
+    const annotations = groundingAnnotationsToChat(
+      groundingMetadataFromCandidate(candidate),
+      asObj(candidate.content),
+      rendered.content,
+    );
+    if (annotations) delta.annotations = annotations;
     let finishReason: string | null = null;
     if (finish != null && str(finish) !== "") finishReason = geminiFinishReason(str(finish));
     if (rendered.toolCalls.length) finishReason = "tool_calls";
