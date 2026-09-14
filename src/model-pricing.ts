@@ -282,31 +282,69 @@ export function geminiInputAudioPricePerMillion(modelName: string): number {
   return 0;
 }
 
-/** Original shopspring `decimal.NewFromFloat(n).String()` via `strconv.FormatFloat(f, 'f', -1, 64)`. */
+/** Original shopspring `decimal` used by `model_pricing_conversion.go`. */
+type ShopDec = { neg: boolean; unscaled: bigint; scale: number };
+
+function expandSci(s: string): string {
+  const match = /^([0-9]+)(?:\.([0-9]+))?[eE]([+-]?\d+)$/.exec(s);
+  if (!match) return s;
+  const digits = match[1] + (match[2] || "");
+  const exp = Number(match[3]) - (match[2] ? match[2].length : 0) + (match[1].length - 1);
+  const point = exp + 1;
+  if (point <= 0) return "0." + "0".repeat(-point) + digits;
+  if (point >= digits.length) return digits + "0".repeat(point - digits.length);
+  return `${digits.slice(0, point)}.${digits.slice(point)}`;
+}
+
+function shopFromFloat(n: number): ShopDec {
+  if (!Number.isFinite(n) || n === 0) return { neg: n < 0, unscaled: 0n, scale: 0 };
+  const neg = n < 0;
+  let s = Math.abs(n).toString();
+  if (/[eE]/.test(s)) s = expandSci(s);
+  const [intPart, frac = ""] = s.split(".");
+  return { neg, unscaled: BigInt(intPart + frac), scale: frac.length };
+}
+
+function shopMul(a: ShopDec, b: ShopDec): ShopDec {
+  return { neg: a.neg !== b.neg, unscaled: a.unscaled * b.unscaled, scale: a.scale + b.scale };
+}
+
+function shopDiv(a: ShopDec, b: ShopDec): ShopDec {
+  if (b.unscaled === 0n) throw new Error("invalid quota unit");
+  const extra = 16n;
+  const num = a.unscaled * 10n ** BigInt(b.scale) * 10n ** extra;
+  const den = b.unscaled * 10n ** BigInt(a.scale);
+  let q = num / den;
+  const r = num % den;
+  if (r * 2n >= den) q += 1n;
+  return { neg: a.neg !== b.neg, unscaled: q, scale: Number(extra) };
+}
+
+function shopString(d: ShopDec): string {
+  if (d.unscaled === 0n) return "0";
+  const sign = d.neg ? "-" : "";
+  let digits = d.unscaled.toString();
+  if (d.scale <= 0) return sign + digits + (d.scale < 0 ? "0".repeat(-d.scale) : "");
+  if (digits.length <= d.scale) digits = digits.padStart(d.scale + 1, "0");
+  const i = digits.slice(0, digits.length - d.scale);
+  const f = digits.slice(digits.length - d.scale).replace(/0+$/, "");
+  return sign + (f ? `${i}.${f}` : i);
+}
+
+/** Original `decimal.NewFromFloat(n).String()`. */
 function shopspringString(n: number): string {
   if (!Number.isFinite(n)) return String(n);
-  if (n === 0) return "0";
-  const sign = n < 0 ? "-" : "";
-  const abs = Math.abs(n);
-  let s = abs.toString();
-  if (/[eE]/.test(s)) {
-    const match = /^([0-9]+)(?:\.([0-9]+))?[eE]([+-]?\d+)$/.exec(s);
-    if (match) {
-      const digits = match[1] + (match[2] || "");
-      const exp = Number(match[3]) - (match[2] ? match[2].length : 0) + (match[1].length - 1);
-      const point = exp + 1;
-      if (point <= 0) s = "0." + "0".repeat(-point) + digits;
-      else if (point >= digits.length) s = digits + "0".repeat(point - digits.length);
-      else s = `${digits.slice(0, point)}.${digits.slice(point)}`;
-    }
-  }
-  return sign + s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  return shopString(shopFromFloat(n));
+}
+
+function legacyInputPriceDec(ratio: number, quotaPerUnit: number): ShopDec {
+  if (!(quotaPerUnit > 0) || !Number.isFinite(quotaPerUnit)) throw new Error("invalid quota unit");
+  if (ratio < 0 || !Number.isFinite(ratio)) throw new Error("input ratio must be finite and non-negative");
+  return shopDiv(shopMul(shopFromFloat(ratio), shopFromFloat(1_000_000)), shopFromFloat(quotaPerUnit));
 }
 
 function legacyInputPricePerMillion(ratio: number, quotaPerUnit: number): number {
-  if (!(quotaPerUnit > 0) || !Number.isFinite(quotaPerUnit)) throw new Error("invalid quota unit");
-  if (ratio < 0 || !Number.isFinite(ratio)) throw new Error("input ratio must be finite and non-negative");
-  return (ratio * 1_000_000) / quotaPerUnit;
+  return Number(shopString(legacyInputPriceDec(ratio, quotaPerUnit)));
 }
 
 export function resolveLegacyBillingDetails(
@@ -718,13 +756,14 @@ export async function previewModelPricingConversion(
       };
     }
     cacheWriteMode = resolveCacheWriteMode(name, draft);
-    const base = legacyInputPricePerMillion(ratio, quotaPerUnit);
+    const baseDec = legacyInputPriceDec(ratio, quotaPerUnit);
+    const base = Number(shopString(baseDec));
     const ordinaryAudio = previewDetails.audio_output_price !== undefined;
     if (ordinaryAudio && cacheWriteMode !== "none") previewDetails.audio_text_branches = true;
     const mergeCacheRead =
       base === 0 ||
       (cacheWriteMode === "none" && asFloat(effective.ImageRatio) === 1 && (previewDetails.audio_input_price === undefined || ordinaryAudio));
-    let body = `tier("base", p * ${shopspringString(base)}`;
+    let body = `tier("base", p * ${shopString(baseDec)}`;
     for (const lane of [
       { variable: "c", key: "CompletionRatio", multiplier: 1 },
       { variable: "cr", key: "CacheRatio", multiplier: 1 },
@@ -738,7 +777,7 @@ export async function previewModelPricingConversion(
       }
       const multiplier = asFloat(effective[lane.key]) as number;
       if ((lane.variable === "img" || (lane.variable === "cr" && mergeCacheRead)) && multiplier === 1) continue;
-      body += ` + ${lane.variable} * ${shopspringString(base * multiplier * lane.multiplier)}`;
+      body += ` + ${lane.variable} * ${shopString(shopMul(shopMul(baseDec, shopFromFloat(multiplier)), shopFromFloat(lane.multiplier)))}`;
     }
     for (const lane of [
       { variable: "ai", price: previewDetails.audio_input_price },
@@ -751,9 +790,9 @@ export async function previewModelPricingConversion(
     body += ")";
     expression = body;
     if (ordinaryAudio && previewDetails.audio_text_branches) {
-      const completion = base * (asFloat(effective.CompletionRatio) as number);
+      const completion = shopMul(baseDec, shopFromFloat(asFloat(effective.CompletionRatio) as number));
       expression =
-        `(ai > 0 || ao > 0) ? tier("audio", max(len - ai, 0) * ${shopspringString(base)} + c * ${shopspringString(completion)} + ai * ${shopspringString(previewDetails.audio_input_price as number)} + ao * ${shopspringString(previewDetails.audio_output_price as number)}) : ${expression}`;
+        `(ai > 0 || ao > 0) ? tier("audio", max(len - ai, 0) * ${shopString(baseDec)} + c * ${shopString(completion)} + ai * ${shopspringString(previewDetails.audio_input_price as number)} + ao * ${shopspringString(previewDetails.audio_output_price as number)}) : ${expression}`;
     }
   }
   const smoke = smokeTestExpr(expression);

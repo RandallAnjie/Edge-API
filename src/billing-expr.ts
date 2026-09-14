@@ -36,6 +36,7 @@ function rewriteExpr(body: string): string {
 
 function envFor(tokens: { p: number; c: number; len: number }, usage: Record<string, unknown> = {}) {
   return {
+    image_count: 1,
     p: tokens.p,
     c: tokens.c,
     len: tokens.len,
@@ -43,6 +44,7 @@ function envFor(tokens: { p: number; c: number; len: number }, usage: Record<str
     cc: 0,
     cc1h: 0,
     img: 0,
+    img_cr: 0,
     img_o: 0,
     ai: 0,
     ao: 0,
