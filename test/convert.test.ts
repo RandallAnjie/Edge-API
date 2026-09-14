@@ -13,6 +13,7 @@ import {
   convertOpenAIResponsesRequest,
   convertOpenAIAdaptorClaudeRequest,
   convertOpenAIAdaptorGeminiRequest,
+  convertVolcClaudeRequest,
   openaiChatToClaudeResponse,
   openaiChatToGeminiResponse,
   usesOpenAIAdaptor,
@@ -880,6 +881,83 @@ test("original SiliconFlow/Perplexity ConvertClaudeRequest delegates to openai.A
     () => buildUpstream(baiduV2Ch, "messages", "/v1/messages", "ernie", {}, {}, "POST", { relayFormat: "claude" }),
     /unsupported relay mode/,
   );
+});
+
+test("original VolcEngine ConvertClaudeRequest special-plan vs openai.Adaptor JSON", () => {
+  const claudeReq = {
+    model: "customer-claude",
+    max_tokens: 32,
+    stop_sequences: ["END"],
+    stream: true,
+    tools: [
+      {
+        name: "lookup",
+        description: "find",
+        input_schema: { type: "object", properties: { q: { type: "string" } } },
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "hi" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "YWE=" } },
+        ],
+      },
+    ],
+  };
+  const chat = convertVolcClaudeRequest(claudeReq, {
+    channelType: CHANNEL_TYPE_VOLC,
+    originModelName: "customer-claude",
+    upstreamModelName: "doubao-pro",
+    isStream: true,
+    channelBase: "https://ark.cn-beijing.volces.com",
+  });
+  assert.equal(chat.model, "doubao-pro");
+  assert.equal(chat.stream, true);
+  assert.equal("stream_options" in chat, false);
+  assert.equal(chat.stop, "END");
+  assert.deepEqual((chat.messages as Record<string, unknown>[])[0].content, [
+    { type: "text", text: "hi" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,YWE=" } },
+  ]);
+  assert.deepEqual(chat.tools, [
+    {
+      type: "function",
+      function: {
+        name: "lookup",
+        description: "find",
+        parameters: { type: "object", properties: { q: { type: "string" } } },
+      },
+    },
+  ]);
+
+  const thinking = convertVolcClaudeRequest(
+    { model: "deepseek-v3-thinking", max_tokens: 32, messages: [{ role: "user", content: "hi" }] },
+    {
+      channelType: CHANNEL_TYPE_VOLC,
+      originModelName: "deepseek-v3-thinking",
+      upstreamModelName: "deepseek-v3-thinking",
+    },
+  );
+  assert.equal(thinking.model, "deepseek-v3");
+  assert.deepEqual(thinking.thinking, { type: "enabled" });
+
+  const special = convertVolcClaudeRequest(claudeReq, {
+    channelType: CHANNEL_TYPE_VOLC,
+    originModelName: "customer-claude",
+    upstreamModelName: "doubao-pro",
+    isStream: true,
+    channelBase: "doubao-coding-plan",
+  });
+  assert.equal(special.model, "customer-claude");
+  assert.equal(special.max_tokens, 32);
+  assert.equal(Array.isArray(special.messages), true);
+  assert.equal(Array.isArray((special.messages as Record<string, unknown>[])[0].content), true);
+  assert.equal(((special.messages as Record<string, unknown>[])[0].content as Record<string, unknown>[])[1].type, "image");
+  assert.equal("tools" in special, true);
+  assert.equal((special.tools as { name: string }[])[0].name, "lookup");
+  assert.equal("function" in (special.tools as Record<string, unknown>[])[0], false);
 });
 
 test("original ConvertOpenAIRequest sampling, suffixes, OpenRouter, Moonshot, and Ali JSON", () => {
@@ -1951,6 +2029,18 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () =
   assert.equal(
     buildUpstream(plan, "chat", "/v1/chat/completions", "doubao-pro", volcPlain).url,
     "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+  );
+  assert.equal(
+    buildUpstream(volc, "messages", "/v1/messages", "doubao-pro", { model: "doubao-pro" }, {}, "POST", { relayFormat: "claude" }).url,
+    "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+  );
+  assert.equal(
+    buildUpstream(volc, "messages", "/v1/messages", "bot-1", { model: "bot-1" }, {}, "POST", { relayFormat: "claude" }).url,
+    "https://ark.cn-beijing.volces.com/api/v3/bots/chat/completions",
+  );
+  assert.equal(
+    buildUpstream(plan, "messages", "/v1/messages", "doubao-pro", { model: "doubao-pro" }, {}, "POST", { relayFormat: "claude" }).url,
+    "https://ark.cn-beijing.volces.com/api/coding/v1/messages",
   );
 
   const deepseek = testChannel({ type: CHANNEL_TYPE_DEEPSEEK, key: "sk-ds", base_url: "", models: "deepseek-chat" });

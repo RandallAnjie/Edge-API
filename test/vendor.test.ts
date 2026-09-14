@@ -196,3 +196,196 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON is sent upstrea
     globalThis.fetch = origFetch;
   }
 });
+
+test("original VolcEngine ConvertClaudeRequest HTTP JSON, URLs, and Gemini not implemented", async () => {
+  const { e, auth, sk } = await boot();
+  const volcAdd = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "volc-claude",
+        type: CHANNEL_TYPE_VOLC,
+        key: "vk",
+        models: "doubao-pro,deepseek-v3-thinking",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(volcAdd.body.success, true, String(volcAdd.body.message));
+  const planAdd = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "volc-plan",
+        type: CHANNEL_TYPE_VOLC,
+        key: "vk-plan",
+        models: "doubao-pro-plan",
+        group: "default",
+        base_url: "doubao-coding-plan",
+      }),
+    }),
+    e,
+  );
+  assert.equal(planAdd.body.success, true, String(planAdd.body.message));
+
+  const openaiSse = [
+    'data: {"id":"chatcmpl_volc","model":"doubao-pro","choices":[{"index":0,"delta":{"content":"hello volc"},"finish_reason":null}]}',
+    "",
+    'data: {"id":"chatcmpl_volc","model":"doubao-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const origFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const raw = init?.body;
+    if (raw instanceof FormData || raw instanceof Uint8Array || raw instanceof ArrayBuffer) {
+      throw new Error("unexpected volc claude body");
+    }
+    const parsed = typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    calls.push({ url, body: parsed });
+    if (parsed.stream === true) {
+      return new Response(openaiSse, { headers: { "content-type": "text/event-stream" } });
+    }
+    if (url.includes("/api/coding/v1/messages")) {
+      return new Response(
+        JSON.stringify({
+          id: "msg_plan",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "plan ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 3, output_tokens: 2 },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl_volc",
+        model: parsed.model,
+        choices: [
+          {
+            index: 0,
+            finish_reason: "tool_calls",
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [{ id: "call_1", type: "function", function: { name: "lookup", arguments: '{"q":"x"}' } }],
+            },
+          },
+        ],
+        usage: { prompt_tokens: 4, completion_tokens: 6, total_tokens: 10 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const claudeBody = {
+      model: "doubao-pro",
+      max_tokens: 32,
+      tools: [{ name: "lookup", description: "find", input_schema: { type: "object", properties: { q: { type: "string" } } } }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "hi" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: "YWE=" } },
+          ],
+        },
+      ],
+    };
+    const volc = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify(claudeBody),
+      }),
+      e,
+    );
+    assert.equal(volc.res.status, 200, volc.text);
+    assert.equal(calls[0].url, "https://ark.cn-beijing.volces.com/api/v3/chat/completions");
+    assert.equal(calls[0].body.model, "doubao-pro");
+    assert.deepEqual((calls[0].body.messages as Record<string, unknown>[])[0].content, [
+      { type: "text", text: "hi" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,YWE=" } },
+    ]);
+    assert.equal(volc.body.type, "message");
+    assert.equal(volc.body.stop_reason, "tool_use");
+    assert.deepEqual(volc.body.content, [{ type: "tool_use", id: "call_1", name: "lookup", input: { q: "x" } }]);
+
+    const thinking = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "deepseek-v3-thinking",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(thinking.res.status, 200, thinking.text);
+    assert.equal(calls[1].url, "https://ark.cn-beijing.volces.com/api/v3/chat/completions");
+    assert.equal(calls[1].body.model, "deepseek-v3");
+    assert.deepEqual(calls[1].body.thinking, { type: "enabled" });
+
+    const plan = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ ...claudeBody, model: "doubao-pro-plan" }),
+      }),
+      e,
+    );
+    assert.equal(plan.res.status, 200, plan.text);
+    assert.equal(calls[2].url, "https://ark.cn-beijing.volces.com/api/coding/v1/messages");
+    assert.equal(((calls[2].body.messages as Record<string, unknown>[])[0].content as Record<string, unknown>[])[1].type, "image");
+    assert.equal((calls[2].body.tools as { name: string }[])[0].name, "lookup");
+    assert.equal("function" in (calls[2].body.tools as Record<string, unknown>[])[0], false);
+    assert.equal(plan.body.type, "message");
+    assert.equal(plan.body.stop_reason, "end_turn");
+    assert.deepEqual(plan.body.content, [{ type: "text", text: "plan ok" }]);
+
+    const stream = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json", "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model: "doubao-pro",
+          max_tokens: 32,
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(stream.res.status, 200, stream.text);
+    assert.equal(stream.res.headers.get("content-type"), "text/event-stream; charset=utf-8");
+    assert.equal(calls[3].url, "https://ark.cn-beijing.volces.com/api/v3/chat/completions");
+    assert.equal(calls[3].body.stream, true);
+    assert.equal("stream_options" in calls[3].body, false);
+    assert.match(stream.text, /event: message_start/);
+    assert.match(stream.text, /hello volc/);
+    assert.match(stream.text, /event: message_stop/);
+
+    const gemini = await json(
+      new Request("http://local/v1beta/models/doubao-pro:generateContent", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(gemini.res.status, 500, gemini.text);
+    assert.match(gemini.text, /not implemented/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

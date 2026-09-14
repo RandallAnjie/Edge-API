@@ -182,3 +182,8 @@ export const CHANNEL_SPECIAL_BASES: Record<string, ChannelSpecialBase> = {
     openai: "https://ark.cn-beijing.volces.com/api/coding/v3",
   },
 };
+
+/** Original `channelconstant.ChannelSpecialBases[baseUrl]` key lookup. */
+export function isChannelSpecialBase(baseUrl: string | undefined): boolean {
+  return Boolean(baseUrl && CHANNEL_SPECIAL_BASES[baseUrl]);
+}

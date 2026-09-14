@@ -529,13 +529,20 @@ export function buildUpstream(
     }
     case "volc": {
       const special = CHANNEL_SPECIAL_BASES[channel.base_url || ""];
-      if (mode === "messages" && special?.claude) {
-        url = `${special.claude.replace(/\/+$/, "")}/v1/messages`;
+      const claudeFormat = relayInfo.relayFormat === "claude" || mode === "messages";
+      if (claudeFormat) {
+        if (special?.claude) {
+          url = `${special.claude.replace(/\/+$/, "")}/v1/messages`;
+        } else if (upstreamModel.startsWith("bot")) {
+          url = `${base}/api/v3/bots/chat/completions`;
+        } else {
+          url = `${base}/api/v3/chat/completions`;
+        }
       } else if (mode === "chat" && special?.openai) {
         url = `${special.openai.replace(/\/+$/, "")}/chat/completions`;
       } else if (mode === "images") {
         url = `${base}/api/v3/images/generations`;
-      } else if ((mode === "chat" || mode === "messages") && upstreamModel.startsWith("bot")) {
+      } else if (mode === "chat" && upstreamModel.startsWith("bot")) {
         url = `${base}/api/v3/bots/chat/completions`;
       } else {
         url = joinUrl(base, "/api/v3" + openaiPath(mode, requestPath).replace(/^\/v1/, ""));

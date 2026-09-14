@@ -8,7 +8,7 @@ import {
 } from "./reasoning.js";
 import { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
 import { convertGeminiEmbeddingRequest, convertGeminiRequest, convertOpenAIChatToGemini } from "./gemini-convert.js";
-import { channelKind } from "./catalog.js";
+import { channelKind, isChannelSpecialBase } from "./catalog.js";
 import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_AWS, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MISTRAL, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_PALM, CHANNEL_TYPE_PERPLEXITY, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4 } from "./constants.js";
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertGeminiImageFromOpenAI, convertVertexOpenAIRequest } from "./vertex-convert.js";
@@ -374,6 +374,8 @@ export type ConvertOpenAIOpts = {
   converter?: string;
   /** Original `info.IsStream` used by Gemini→OpenAI chat conversion. */
   isStream?: boolean;
+  /** Original `info.ChannelBaseUrl` used by Volc ConvertClaudeRequest special-plan lookup. */
+  channelBase?: string;
 };
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
@@ -821,6 +823,18 @@ export function convertOpenAIAdaptorClaudeRequest(body: Record<string, unknown>,
     return chat;
   }
   return convertOpenAIRequest(chat, { ...opts, relayMode: opts.relayMode || "chat" });
+}
+
+/** Original `volcengine.Adaptor.ConvertClaudeRequest`. Special ChannelSpecialBases uses claude.Adaptor; else openai.Adaptor. */
+export function convertVolcClaudeRequest(body: Record<string, unknown>, opts: ConvertOpenAIOpts): Record<string, unknown> {
+  if (isChannelSpecialBase(opts.channelBase)) {
+    return convertClaudeRequest(body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: opts.upstreamModelName,
+      settings: opts.settings,
+    });
+  }
+  return convertOpenAIAdaptorClaudeRequest(body, opts);
 }
 
 /** Original `openai.Adaptor.ConvertGeminiRequest`. */
