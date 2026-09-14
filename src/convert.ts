@@ -523,6 +523,7 @@ export {
   oaiChatSseToResponsesSse,
   oaiResponsesSseToChatSse,
   claudeSseToResponsesSse,
+  geminiSseToResponsesSse,
 } from "./responses-stream.js";
 export {
   CONVERTER_RESPONSES_TO_CLAUDE,

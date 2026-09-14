@@ -22,7 +22,6 @@ import {
   extractGeminiModelAction,
   geminiToOpenAIChat,
   openaiFromAnthropicResponse,
-  chatCompletionToResponsesResponse,
   claudeResponseToResponsesResponse,
   geminiResponseToResponsesResponse,
   responsesResponseToChatCompletion,
@@ -129,7 +128,7 @@ import {
   advancedCustomOpenaiShapedInbound,
   convertAdvancedCustomInbound,
 } from "./advanced-custom-response.js";
-import { oaiChatSseToResponsesSse, oaiResponsesSseToChatSse, claudeSseToResponsesSse } from "./responses-stream.js";
+import { oaiChatSseToResponsesSse, oaiResponsesSseToChatSse, claudeSseToResponsesSse, geminiSseToResponsesSse } from "./responses-stream.js";
 import { oaiChatSseToClaudeSse, oaiChatSseToGeminiSse } from "./openai-stream-convert.js";
 import {
   looksLikeOpenAIResponsesResponse,
@@ -1017,27 +1016,50 @@ async function openaiClientFromProvider(
     return { body: JSON.stringify(out.json), usageBody: out.json || {} };
   }
   if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_RESPONSES_TO_GEMINI) {
-    const out = geminiUpstreamToOpenAIChat(text, mapped, {
-      id: opts.relayMode === "responses" ? opts.requestId : `chatcmpl-${opts.requestId}`,
-      upstreamModel: mapped,
-      fallbackPromptTokens: opts.fallbackPromptTokens,
-    });
     if (opts.relayMode === "responses") {
-      const responseId = opts.requestId || String(out.json?.id || "");
+      const responseId = opts.requestId || "";
       if (stream) {
-        const chatSse = out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, ""));
-        const converted = oaiChatSseToResponsesSse(chatSse, {
+        if (looksLikeSse(text)) {
+          const converted = geminiSseToResponsesSse(text, {
+            id: responseId,
+            model: mapped,
+            created: opts.created,
+            fallbackPromptTokens: opts.fallbackPromptTokens,
+          });
+          return { body: converted.sse, usageBody: converted.usageBody };
+        }
+        let parsed: Record<string, unknown> = {};
+        try {
+          parsed = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          parsed = { candidates: [{ content: { parts: [{ text }] } }] };
+        }
+        const json = geminiResponseToResponsesResponse(parsed, mapped, {
           id: responseId,
-          model: mapped,
           created: opts.created,
           fallbackPromptTokens: opts.fallbackPromptTokens,
         });
-        return { body: converted.sse, usageBody: converted.usageBody };
+        return { body: `event: response.completed\ndata: ${JSON.stringify(json)}\n\n`, usageBody: json };
       }
-      const json = chatCompletionToResponsesResponse(out.json || {}, responseId);
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        parsed = { candidates: [{ content: { parts: [{ text }] } }] };
+      }
+      const json = geminiResponseToResponsesResponse(parsed, mapped, {
+        id: responseId,
+        created: opts.created,
+        fallbackPromptTokens: opts.fallbackPromptTokens,
+      });
       json.model = mapped;
       return { body: JSON.stringify(json), usageBody: json };
     }
+    const out = geminiUpstreamToOpenAIChat(text, mapped, {
+      id: `chatcmpl-${opts.requestId}`,
+      upstreamModel: mapped,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
     if (stream) {
       return {
         body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),
@@ -1167,27 +1189,50 @@ async function openaiClientFromProvider(
     return { body: JSON.stringify(out.json), usageBody: out.json || {} };
   }
   if (useGemini) {
-    const out = geminiUpstreamToOpenAIChat(text, mapped, {
-      id: opts.relayMode === "responses" ? opts.requestId : `chatcmpl-${opts.requestId}`,
-      upstreamModel: mapped,
-      fallbackPromptTokens: opts.fallbackPromptTokens,
-    });
     if (opts.relayMode === "responses") {
-      const responseId = opts.requestId || String(out.json?.id || "");
+      const responseId = opts.requestId || "";
       if (stream) {
-        const chatSse = out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, ""));
-        const converted = oaiChatSseToResponsesSse(chatSse, {
+        if (looksLikeSse(text)) {
+          const converted = geminiSseToResponsesSse(text, {
+            id: responseId,
+            model: mapped,
+            created: opts.created,
+            fallbackPromptTokens: opts.fallbackPromptTokens,
+          });
+          return { body: converted.sse, usageBody: converted.usageBody };
+        }
+        let parsed: Record<string, unknown> = {};
+        try {
+          parsed = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          parsed = { candidates: [{ content: { parts: [{ text }] } }] };
+        }
+        const json = geminiResponseToResponsesResponse(parsed, mapped, {
           id: responseId,
-          model: mapped,
           created: opts.created,
           fallbackPromptTokens: opts.fallbackPromptTokens,
         });
-        return { body: converted.sse, usageBody: converted.usageBody };
+        return { body: `event: response.completed\ndata: ${JSON.stringify(json)}\n\n`, usageBody: json };
       }
-      const json = chatCompletionToResponsesResponse(out.json || {}, responseId);
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        parsed = { candidates: [{ content: { parts: [{ text }] } }] };
+      }
+      const json = geminiResponseToResponsesResponse(parsed, mapped, {
+        id: responseId,
+        created: opts.created,
+        fallbackPromptTokens: opts.fallbackPromptTokens,
+      });
       json.model = mapped;
       return { body: JSON.stringify(json), usageBody: json };
     }
+    const out = geminiUpstreamToOpenAIChat(text, mapped, {
+      id: `chatcmpl-${opts.requestId}`,
+      upstreamModel: mapped,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
     if (stream) {
       return {
         body: out.sse || (out.json ? sseFromOpenAIChatCompletion(out.json) : sseOpenAIFromText(mapped, "")),

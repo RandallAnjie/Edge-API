@@ -1,10 +1,12 @@
-/** Original `OaiResponsesToChatStreamHandler` / `OaiChatToResponsesStreamHandler` SSE JSON. Does not import convert.ts. */
+/** Original Chat↔Responses SSE + Claude/Gemini hosted ConvertResponse stream JSON. Does not import convert.ts. */
 
 import {
   asInt,
   asObj,
   compactJson,
+  compactUuid,
   emptyOpenAIUsage,
+  looksLikeSse,
   openAIUsageToJson,
   sseLine,
   type OpenAIUsage,
@@ -15,6 +17,11 @@ import {
   formatClaudeResponseInfo,
   newClaudeToChatStreamState,
 } from "./claude-response.js";
+import {
+  groundingWebSearchQueries,
+  streamResponseGeminiChat2OpenAI,
+  usageFromGeminiMetadata,
+} from "./gemini-response.js";
 import { hostedResponsesOutputJson, normalizeResponsesWebSearchAction } from "./hosted-response.js";
 import {
   responsesFinishReasonFromStatus,
@@ -1753,6 +1760,158 @@ export function claudeSseToResponsesSse(
   }
   const mapped = buildOpenAIStyleUsageFromClaudeUsage(info.usage);
   state.usage = mapped.total_tokens ? mapped : maybeEstimateUsage(mapped, state.usageText(), opts.fallbackPromptTokens || 0);
+  events.push(...finalizeChatCompletionsStreamToResponses(state));
+  return {
+    sse: events.map((event) => responsesSseEvent(event.type, event.payload)).join(""),
+    usageBody: usageBodyFrom(state.usage),
+  };
+}
+
+/** Original `GeminiHostedStreamBridge`. Accumulates distinct trimmed grounding queries until Finalize. */
+export class GeminiHostedStreamBridge {
+  private queries: string[] = [];
+  private seen = new Set<string>();
+
+  observe(response: Record<string, unknown> | null | undefined): void {
+    if (!response) return;
+    for (const query of groundingWebSearchQueries(response)) {
+      if (this.seen.has(query)) continue;
+      this.seen.add(query);
+      this.queries.push(query);
+    }
+  }
+
+  finalize(state: ChatToResponsesStreamState | null): ChatToResponsesStreamEvent[] {
+    if (!this.queries.length) return [];
+    if (!state) throw new Error("Chat-to-Responses stream state is required");
+    const id = `ws_${compactUuid()}`;
+    const action = { type: "search", queries: [...this.queries] };
+    const events = state.startHostedTool({ type: "web_search_call", id, action });
+    events.push(...state.completeHostedTool({ type: "web_search_call", id, errorCode: "" }));
+    return events;
+  }
+}
+
+function geminiHasNonStopFinish(response: Record<string, unknown>): boolean {
+  const candidates = Array.isArray(response.candidates) ? response.candidates : [];
+  for (const candidate of candidates) {
+    const finish = str(asObj(candidate).finishReason ?? asObj(candidate).finish_reason).trim();
+    if (finish && finish !== "STOP") return true;
+  }
+  return false;
+}
+
+function geminiStreamUsage(response: Record<string, unknown>, fallbackPromptTokens: number): OpenAIUsage | null {
+  const meta = response.usageMetadata || response.usage_metadata;
+  return usageFromGeminiMetadata(meta && typeof meta === "object" ? asObj(meta) : null, fallbackPromptTokens);
+}
+
+function geminiChatChunkHasToolCalls(chunk: Record<string, unknown>): boolean {
+  const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+  return choices.some((choice) => {
+    const tools = asObj(asObj(choice).delta).tool_calls;
+    return Array.isArray(tools) && tools.length > 0;
+  });
+}
+
+function geminiClearToolCallFinish(chunk: Record<string, unknown>): void {
+  const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+  for (const choice of choices) {
+    const o = asObj(choice);
+    if (str(o.finish_reason) === "tool_calls") o.finish_reason = null;
+  }
+}
+
+function geminiChunkFinishEmitted(chunk: Record<string, unknown>): boolean {
+  const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+  return choices.some((choice) => str(asObj(choice).finish_reason).trim() !== "");
+}
+
+function geminiTerminalChatChunk(
+  id: string,
+  created: number,
+  model: string,
+  finishReason: string,
+  usage: OpenAIUsage | null,
+): Record<string, unknown> {
+  const chunk: Record<string, unknown> = {
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model,
+    choices: [{ index: 0, delta: {}, logprobs: null, finish_reason: finishReason }],
+  };
+  if (usage) chunk.usage = openAIUsageToJson(usage);
+  return chunk;
+}
+
+/** Original `GeminiResponsesStreamHandler` client SSE (`EmitSequenceNumber: true`). */
+export function geminiSseToResponsesSse(
+  text: string,
+  opts: { id: string; model: string; created?: number; fallbackPromptTokens?: number },
+): { sse: string; usageBody: Record<string, unknown> } {
+  const state = newChatToResponsesStreamState(opts.id, opts.model, {
+    created: opts.created,
+    emitSequenceNumber: true,
+  });
+  const hosted = new GeminiHostedStreamBridge();
+  const events: ChatToResponsesStreamEvent[] = [];
+  const fail = (err: Error): { sse: string; usageBody: Record<string, unknown> } => {
+    events.push(...state.fail("server_error", err.message, ""));
+    return {
+      sse: events.map((event) => responsesSseEvent(event.type, event.payload)).join(""),
+      usageBody: usageBodyFrom(state.usage),
+    };
+  };
+  const id = opts.id;
+  const created = opts.created ?? Math.floor(Date.now() / 1000);
+  const fallback = opts.fallbackPromptTokens || 0;
+  let finishEmitted = false;
+  let sawToolCall = false;
+  let latestUsage: OpenAIUsage | null = null;
+  const payloads = looksLikeSse(text) ? parseSseDataLines(text) : [text];
+  for (const payload of payloads) {
+    const parsed = parseJsonObject(payload);
+    if (!parsed) return fail(new Error("unmarshal Gemini stream response"));
+    hosted.observe(parsed);
+    try {
+      const { chunk, isStop } = streamResponseGeminiChat2OpenAI(parsed);
+      chunk.id = id;
+      chunk.created = created;
+      chunk.model = opts.model;
+      const usage = geminiStreamUsage(parsed, fallback);
+      if (usage) {
+        latestUsage = usage;
+        chunk.usage = openAIUsageToJson(usage);
+      }
+      const hasNonStopFinish = geminiHasNonStopFinish(parsed);
+      if (geminiChatChunkHasToolCalls(chunk)) {
+        sawToolCall = true;
+        if (!hasNonStopFinish) geminiClearToolCallFinish(chunk);
+      }
+      events.push(...chatCompletionsStreamChunkToResponsesEvents(chunk, state));
+      if (geminiChunkFinishEmitted(chunk)) finishEmitted = true;
+      if (isStop && !finishEmitted) {
+        const terminal = geminiTerminalChatChunk(
+          id,
+          created,
+          opts.model,
+          sawToolCall ? "tool_calls" : "stop",
+          latestUsage,
+        );
+        events.push(...chatCompletionsStreamChunkToResponsesEvents(terminal, state));
+        finishEmitted = true;
+      }
+    } catch (err) {
+      return fail(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  try {
+    events.push(...hosted.finalize(state));
+  } catch (err) {
+    return fail(err instanceof Error ? err : new Error(String(err)));
+  }
+  if (!state.usage.total_tokens) state.usage = maybeEstimateUsage(state.usage, state.usageText(), fallback);
   events.push(...finalizeChatCompletionsStreamToResponses(state));
   return {
     sse: events.map((event) => responsesSseEvent(event.type, event.payload)).join(""),

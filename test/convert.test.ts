@@ -76,6 +76,7 @@ import {
   newResponsesToChatStreamState,
   oaiChatSseToResponsesSse,
   claudeSseToResponsesSse,
+  geminiSseToResponsesSse,
   oaiResponsesSseToChatSse,
   convertOpenAIResponsesRequestToClaudeMessages,
   convertOpenAIResponsesRequestToGeminiChat,
@@ -1066,6 +1067,111 @@ test("original Gemini grounding ConvertResponse JSON emits url_citation and web_
   assert.match(stream.body, /"type":"url_citation"/);
   assert.match(stream.body, /"url":"https:\/\/example.com\/42"/);
   assert.match(stream.body, /"title":"The Hitchhiker"/);
+});
+
+test("original Gemini hosted ConvertResponse stream JSON emits web_search_call SSE", () => {
+  const first = {
+    candidates: [
+      {
+        content: {
+          role: "model",
+          parts: [{ text: "The answer is 42." }],
+        },
+        groundingMetadata: {
+          webSearchQueries: ["answer 42", "answer 42", " deep thought "],
+          groundingChunks: [{ web: { uri: "https://example.com/42", title: "The Hitchhiker" } }],
+          groundingSupports: [
+            { segment: { startIndex: 0, endIndex: 17, text: "The answer is 42." }, groundingChunkIndices: [0] },
+          ],
+        },
+      },
+    ],
+    usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+  };
+  const final = {
+    candidates: [
+      {
+        finishReason: "STOP",
+        content: { role: "model", parts: [{ text: "" }] },
+        groundingMetadata: { webSearchQueries: ["answer 42"] },
+      },
+    ],
+    usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3, totalTokenCount: 5 },
+  };
+  const sse = ["data: " + JSON.stringify(first), "", "data: " + JSON.stringify(final), "", "data: [DONE]", ""].join("\n");
+  const converted = geminiSseToResponsesSse(sse, { id: "gemini-responses-stream-test", model: "gemini-test", created: 0 });
+  assert.match(converted.sse, /event: response\.created/);
+  assert.match(converted.sse, /event: response\.output_text\.delta/);
+  assert.match(converted.sse, /"delta":"The answer is 42\."/);
+  assert.match(converted.sse, /event: response\.output_text\.annotation\.added/);
+  assert.match(converted.sse, /"type":"url_citation"/);
+  assert.match(converted.sse, /"url":"https:\/\/example.com\/42"/);
+  assert.match(converted.sse, /event: response\.web_search_call\.in_progress/);
+  assert.match(converted.sse, /event: response\.web_search_call\.searching/);
+  assert.match(converted.sse, /event: response\.web_search_call\.completed/);
+  assert.match(converted.sse, /event: response\.completed/);
+  assert.match(converted.sse, /"input_tokens":2/);
+  assert.match(converted.sse, /"output_tokens":3/);
+  assert.match(converted.sse, /"sequence_number"/);
+  assert.equal(converted.sse.includes('"choices"'), false);
+  assert.equal(converted.sse.includes('"candidates"'), false);
+  let orderOffset = 0;
+  for (const part of [
+    "event: response.created",
+    "event: response.output_item.added",
+    "event: response.output_text.delta",
+    "event: response.output_text.done",
+    '"type":"web_search_call"',
+    "event: response.web_search_call.in_progress",
+    "event: response.web_search_call.searching",
+    "event: response.web_search_call.completed",
+    "event: response.completed",
+  ]) {
+    const idx = converted.sse.indexOf(part, orderOffset);
+    assert.notEqual(idx, -1, `missing ${part}`);
+    orderOffset = idx + part.length;
+  }
+  const added = [...converted.sse.matchAll(/event: response\.output_item\.added\ndata: (\{.*\})/g)].map((m) => JSON.parse(m[1]) as {
+    item?: {
+      type?: string;
+      id?: string;
+      status?: string;
+      action?: { type?: string; queries?: string[]; query?: string };
+      role?: string;
+      content?: unknown;
+      quality?: string;
+    };
+  });
+  const searchAdded = added.find((event) => event.item?.type === "web_search_call");
+  assert.match(searchAdded?.item?.id || "", /^ws_/);
+  assert.equal(searchAdded?.item?.status, "in_progress");
+  assert.equal(searchAdded?.item?.action?.type, "search");
+  assert.deepEqual(searchAdded?.item?.action?.queries, ["answer 42", "deep thought"]);
+  assert.equal("query" in (searchAdded?.item?.action || {}), false);
+  assert.equal("role" in (searchAdded?.item || {}), false);
+  assert.equal("content" in (searchAdded?.item || {}), false);
+  assert.equal("quality" in (searchAdded?.item || {}), false);
+  const done = [...converted.sse.matchAll(/event: response\.output_item\.done\ndata: (\{.*\})/g)].map((m) => JSON.parse(m[1]) as {
+    item?: { type?: string; id?: string; status?: string; action?: { queries?: string[] } };
+  });
+  const searchDone = done.find((event) => event.item?.type === "web_search_call");
+  assert.equal(searchDone?.item?.status, "completed");
+  assert.equal(searchDone?.item?.id, searchAdded?.item?.id);
+  assert.deepEqual(searchDone?.item?.action?.queries, ["answer 42", "deep thought"]);
+  assert.equal((converted.usageBody.usage as { prompt_tokens: number; completion_tokens: number }).prompt_tokens, 2);
+  assert.equal((converted.usageBody.usage as { prompt_tokens: number; completion_tokens: number }).completion_tokens, 3);
+
+  const noQuery = geminiSseToResponsesSse(
+    'data: {"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"hello"}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}}\n\n',
+    { id: "gemini-no-search", model: "gemini-test", created: 0 },
+  );
+  assert.match(noQuery.sse, /"delta":"hello"/);
+  assert.match(noQuery.sse, /event: response\.completed/);
+  assert.equal(noQuery.sse.includes("web_search_call"), false);
+
+  const chat = geminiSseToOpenAIChat(sse, { id: "chatcmpl-stream", created: 0, upstreamModel: "gemini-test" });
+  assert.equal(chat.body.includes("web_search_call"), false);
+  assert.match(chat.body, /"type":"url_citation"/);
 });
 
 test("azure upstream url uses deployment and api-version", () => {
