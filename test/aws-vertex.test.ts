@@ -298,3 +298,190 @@ test("original AWS Nova and Vertex ConvertOpenAIRequest JSON is sent upstream wi
     globalThis.fetch = origFetch;
   }
 });
+
+test("original Vertex ConvertClaudeRequest HTTP JSON wraps Vertex Claude for Claude and Gemini-named models", async () => {
+  const { e, auth, sk } = await boot();
+  const vertex = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "vertex-claude-client",
+        type: CHANNEL_TYPE_VERTEX,
+        key: "vkey",
+        models: "claude-3-5-sonnet-20241022,gemini-2.0-flash",
+        group: "default",
+        other: JSON.stringify({ default: "us-central1" }),
+        settings: { vertex_key_type: "api_key" },
+      }),
+    }),
+    e,
+  );
+  assert.equal(vertex.body.success, true, String(vertex.body.message));
+
+  const origFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    calls.push({ url, body: parsed });
+    if (url.includes("publishers/anthropic") || url.includes(":rawPredict")) {
+      return new Response(
+        JSON.stringify({
+          id: "msg_vertex",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "ok vertex claude" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            finishReason: "STOP",
+            content: {
+              role: "model",
+              parts: [
+                { text: "hello from gemini" },
+                { functionCall: { id: "call_1", name: "lookup", args: { q: "x" } } },
+              ],
+            },
+          },
+        ],
+        usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 6, totalTokenCount: 10 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const claudeClient = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json", "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model: "claude-3-5-sonnet-20241022",
+          max_tokens: 1024,
+          system: "You are a helpful assistant.",
+          tools: [
+            {
+              name: "lookup",
+              description: "Lookup data",
+              input_schema: { type: "object", properties: { q: { type: "string" } } },
+            },
+          ],
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "What is in this image?" },
+                { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+              ],
+            },
+            {
+              role: "assistant",
+              content: [{ type: "tool_use", id: "toolu_1", name: "lookup", input: { q: "x" } }],
+            },
+            {
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: "toolu_1", content: '{"ok":true}' }],
+            },
+          ],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claudeClient.res.status, 200, claudeClient.text);
+    assert.equal(
+      calls[0].url,
+      "https://us-central1-aiplatform.googleapis.com/v1/publishers/anthropic/models/claude-3-5-sonnet-v2@20241022:rawPredict?key=vkey",
+    );
+    assert.equal(calls[0].body.anthropic_version, "vertex-2023-10-16");
+    assert.equal("model" in calls[0].body, false);
+    assert.equal(calls[0].body.system, "You are a helpful assistant.");
+    assert.equal(calls[0].body.max_tokens, 1024);
+    assert.equal((calls[0].body.tools as { name: string }[])[0].name, "lookup");
+    const claudeMessages = calls[0].body.messages as { content: { type: string; id?: string }[] }[];
+    assert.equal(claudeMessages[0].content[1].type, "image");
+    assert.equal(claudeMessages[1].content[0].type, "tool_use");
+    assert.equal(claudeMessages[1].content[0].id, "toolu_1");
+    assert.equal(claudeClient.body.type, "message");
+    assert.equal((claudeClient.body.content as { text?: string }[])[0].text, "ok vertex claude");
+
+    const geminiNamed = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json", "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model: "gemini-2.0-flash",
+          max_tokens: 1024,
+          system: "You are a helpful assistant.",
+          tools: [
+            {
+              name: "lookup",
+              description: "Lookup data",
+              input_schema: { type: "object", properties: { q: { type: "string" } } },
+            },
+          ],
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "What is in this image?" },
+                { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+              ],
+            },
+          ],
+        }),
+      }),
+      e,
+    );
+    assert.equal(geminiNamed.res.status, 200, geminiNamed.text);
+    assert.equal(
+      calls[1].url,
+      "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent?key=vkey",
+    );
+    assert.equal(calls[1].body.anthropic_version, "vertex-2023-10-16");
+    assert.equal("model" in calls[1].body, false);
+    assert.equal("contents" in calls[1].body, false);
+    assert.equal("generationConfig" in calls[1].body, false);
+    assert.equal(calls[1].body.system, "You are a helpful assistant.");
+    assert.equal(calls[1].body.max_tokens, 1024);
+    assert.equal((calls[1].body.tools as { name: string }[])[0].name, "lookup");
+    const geminiMessages = calls[1].body.messages as { content: { type: string }[] }[];
+    assert.equal(geminiMessages[0].content[1].type, "image");
+    assert.equal(geminiNamed.body.type, "message");
+    assert.equal(geminiNamed.body.role, "assistant");
+    const geminiBlocks = geminiNamed.body.content as { type: string; text?: string; name?: string }[];
+    assert.ok(geminiBlocks.some((block) => block.type === "text" && block.text === "hello from gemini"));
+    assert.ok(geminiBlocks.some((block) => block.type === "tool_use" && block.name === "lookup"));
+
+    const geminiStream = await json(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json", "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model: "gemini-2.0-flash",
+          max_tokens: 32,
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(geminiStream.res.status, 200, geminiStream.text);
+    assert.equal(
+      calls[2].url,
+      "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:streamGenerateContent?alt=sse&key=vkey",
+    );
+    assert.equal(calls[2].body.anthropic_version, "vertex-2023-10-16");
+    assert.equal(calls[2].body.stream, true);
+    assert.match(geminiStream.text, /event: message_start/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

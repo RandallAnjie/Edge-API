@@ -31,6 +31,8 @@ export const VERTEX_CLAUDE_MODEL_MAP: Record<string, string> = {
 
 export const VERTEX_IMAGE_TOKENS = 258;
 
+export type ConvertVertexOpts = ConvertClaudeOpts & { settings?: ReasoningHostSettings };
+
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
@@ -72,6 +74,14 @@ export function wrapVertexClaude(claudeReq: Record<string, unknown>, version = V
   if (claudeReq.thinking != null) out.thinking = claudeReq.thinking;
   if (claudeReq.output_config != null) out.output_config = claudeReq.output_config;
   return out;
+}
+
+/**
+ * Original `vertex.Adaptor.ConvertClaudeRequest`.
+ * Always `claude.Adaptor.ConvertClaudeRequest` then `copyRequest` — RequestMode is not consulted.
+ */
+export function convertVertexClaudeRequest(body: Record<string, unknown>, opts: ConvertVertexOpts = {}): Record<string, unknown> {
+  return wrapVertexClaude(convertClaudeRequest(body, opts));
 }
 
 /** Original `vertex.removeFunctionCallIDs`. */
@@ -190,8 +200,6 @@ function openaiChatToImagen(body: Record<string, unknown>): Record<string, unkno
     quality: typeof body.quality === "string" ? body.quality : undefined,
   });
 }
-
-export type ConvertVertexOpts = ConvertClaudeOpts & { settings?: ReasoningHostSettings };
 
 /** Original `vertex.Adaptor.ConvertOpenAIRequest`. */
 export function convertVertexOpenAIRequest(body: Record<string, unknown>, opts: ConvertVertexOpts): Record<string, unknown> {

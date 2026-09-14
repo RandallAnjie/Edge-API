@@ -49,7 +49,7 @@ import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
 import { compactUuid } from "./openai-usage.js";
 import { isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding, ollamaUpstreamToOpenAIChat } from "./ollama-convert.js";
-import { imagenUsage, openaiFromImagenResponse, removeFunctionCallIDs, vertexRequestMode, wrapVertexClaude } from "./vertex-convert.js";
+import { convertVertexClaudeRequest, imagenUsage, openaiFromImagenResponse, removeFunctionCallIDs, vertexRequestMode } from "./vertex-convert.js";
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest, openaiFromBaiduEmbedding, openaiFromBaiduResponse, baiduUpstreamToOpenAIChat } from "./baidu-convert.js";
 import { convertCohereRerankRequest, openaiFromCohereResponse, openaiFromCohereRerank, cohereUpstreamToOpenAIChat } from "./cohere-convert.js";
 import { completeCozeNonStreamChat, openaiFromCozeDetailResponse, cozeUpstreamToOpenAIChat, type CozeUsage } from "./coze-convert.js";
@@ -355,8 +355,8 @@ async function convertOutbound(
   if (channelType === CHANNEL_TYPE_AWS && client === "anthropic" && !isNovaModel(upstream)) {
     return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
-  if (channelType === CHANNEL_TYPE_VERTEX && client === "anthropic" && vertexRequestMode(upstream) === "claude") {
-    return wrapVertexClaude(convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings }));
+  if (channelType === CHANNEL_TYPE_VERTEX && client === "anthropic") {
+    return convertVertexClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
   if (client === "anthropic" && kind === "anthropic") {
     return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
@@ -819,6 +819,17 @@ async function convertInbound(
     if (model.startsWith("imagen")) return openaiFromImagenResponse(upstreamJson, { created: opts.created });
     if (mode === "opensource") return upstreamJson;
     return openaiFromGeminiResponse(upstreamJson, model, {
+      id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
+      created: opts.created,
+      upstreamModel: model,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+  }
+  if (client === "anthropic" && opts.channelType === CHANNEL_TYPE_VERTEX) {
+    const mode = vertexRequestMode(model);
+    if (mode === "claude") return upstreamJson;
+    if (mode === "opensource") return openaiChatToClaudeResponse(upstreamJson);
+    return geminiResponseToClaudeMessages(upstreamJson, model, {
       id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
       created: opts.created,
       upstreamModel: model,
@@ -1648,7 +1659,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           },
         });
       }
-      if (channel.type === CHANNEL_TYPE_GEMINI && clientFormat === "anthropic") {
+      if (
+        clientFormat === "anthropic" &&
+        (channel.type === CHANNEL_TYPE_GEMINI || (channel.type === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini"))
+      ) {
         const text = await res.text();
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
@@ -1658,6 +1672,31 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             created: Math.floor(started / 1000),
             upstreamModel: mapped,
           });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          return openaiError(500, message, "bad_response_body");
+        }
+        const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
+        extra.cachedTokens = usage.cachedTokens;
+        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        ctx?.waitUntil(
+          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
+        );
+        return new Response(converted.sse, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            "x-oneapi-request-id": rid,
+          },
+        });
+      }
+      if (channel.type === CHANNEL_TYPE_VERTEX && clientFormat === "anthropic" && vertexRequestMode(mapped) === "opensource") {
+        const text = await res.text();
+        let converted: { sse: string; usageBody: Record<string, unknown> };
+        try {
+          converted = oaiChatSseToClaudeSse(text, { estimatePromptTokens: promptEst });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);

@@ -386,6 +386,7 @@ export type ConvertOpenAIOpts = {
 };
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
+export { convertVertexClaudeRequest, wrapVertexClaude, VERTEX_ANTHROPIC_VERSION } from "./vertex-convert.js";
 export { convertGeminiRequest, convertOpenAIChatToGemini, convertGeminiEmbeddingRequest, openaiFromGeminiEmbedding } from "./gemini-convert.js";
 export {
   convertOllamaEmbeddingRequest,

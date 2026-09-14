@@ -25,6 +25,8 @@ import {
   openaiChatToGeminiResponse,
   usesOpenAIAdaptor,
   convertClaudeRequest,
+  convertVertexClaudeRequest,
+  VERTEX_ANTHROPIC_VERSION,
   convertAdvancedCustomClaudeRequest,
   convertAdvancedCustomGeminiRequest,
   convertAdvancedCustomInbound,
@@ -1847,6 +1849,159 @@ test("original Vertex ConvertOpenAIRequest Claude wrap, Gemini id strip, imagen,
   assert.equal(imagenUsage(1).total, VERTEX_IMAGE_TOKENS);
   assert.throws(() => openaiFromImagenResponse({ predictions: [] }), /no images generated/);
   assert.throws(() => openaiFromImagenResponse({}), /no images generated/);
+});
+
+test("original Vertex ConvertClaudeRequest always wraps Vertex Claude JSON", () => {
+  assert.equal(VERTEX_ANTHROPIC_VERSION, "vertex-2023-10-16");
+
+  const claudeBody = {
+    model: "claude-3-5-sonnet-20241022",
+    max_tokens: 1024,
+    system: "You are a helpful assistant.",
+    temperature: 0.2,
+    top_p: 0.9,
+    top_k: 20,
+    stop_sequences: ["END"],
+    thinking: { type: "enabled", budget_tokens: 1024 },
+    tools: [
+      {
+        name: "lookup",
+        description: "Lookup data",
+        input_schema: { type: "object", properties: { q: { type: "string" } } },
+      },
+    ],
+    tool_choice: { type: "auto" },
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "What is in this image?" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "toolu_1", name: "lookup", input: { q: "x" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: '{"ok":true}' }],
+      },
+    ],
+  };
+
+  const claude = convertVertexClaudeRequest(claudeBody, {
+    originModelName: "claude-3-5-sonnet-20241022",
+    upstreamModelName: "claude-3-5-sonnet-20241022",
+  });
+  assert.equal(claude.anthropic_version, "vertex-2023-10-16");
+  assert.equal("model" in claude, false);
+  assert.equal("contents" in claude, false);
+  assert.equal(claude.system, "You are a helpful assistant.");
+  assert.equal(claude.max_tokens, 1024);
+  assert.equal(claude.temperature, 0.2);
+  assert.equal(claude.top_p, 0.9);
+  assert.equal(claude.top_k, 20);
+  assert.deepEqual(claude.stop_sequences, ["END"]);
+  assert.deepEqual(claude.thinking, { type: "enabled", budget_tokens: 1024 });
+  assert.equal((claude.tools as { name: string }[])[0].name, "lookup");
+  assert.deepEqual(claude.tool_choice, { type: "auto" });
+  const claudeMessages = claude.messages as { role: string; content: { type: string }[] }[];
+  assert.equal(claudeMessages[0].content[1].type, "image");
+  assert.equal(claudeMessages[1].content[0].type, "tool_use");
+  assert.equal((claudeMessages[1].content[0] as { id: string }).id, "toolu_1");
+
+  const geminiNamed = convertVertexClaudeRequest(
+    {
+      model: "gemini-2.0-flash",
+      max_tokens: 1024,
+      system: "You are a helpful assistant.",
+      tools: [
+        {
+          name: "lookup",
+          description: "Lookup data",
+          input_schema: { type: "object", properties: { q: { type: "string" } } },
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is in this image?" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+          ],
+        },
+      ],
+    },
+    { originModelName: "gemini-2.0-flash", upstreamModelName: "gemini-2.0-flash" },
+  );
+  assert.equal(geminiNamed.anthropic_version, "vertex-2023-10-16");
+  assert.equal("model" in geminiNamed, false);
+  assert.equal("contents" in geminiNamed, false);
+  assert.equal("generationConfig" in geminiNamed, false);
+  assert.equal("systemInstruction" in geminiNamed, false);
+  assert.equal(geminiNamed.system, "You are a helpful assistant.");
+  assert.equal(geminiNamed.max_tokens, 1024);
+  assert.equal((geminiNamed.tools as { name: string }[])[0].name, "lookup");
+  const geminiMessages = geminiNamed.messages as { role: string; content: { type: string }[] }[];
+  assert.equal(geminiMessages[0].content[0].type, "text");
+  assert.equal(geminiMessages[0].content[1].type, "image");
+
+  const llama = convertVertexClaudeRequest(
+    { model: "meta/llama3-405b-instruct-maas", messages: [{ role: "user", content: "hi" }] },
+    { originModelName: "meta/llama3-405b-instruct-maas", upstreamModelName: "meta/llama3-405b-instruct-maas" },
+  );
+  assert.equal(llama.anthropic_version, "vertex-2023-10-16");
+  assert.equal("model" in llama, false);
+  assert.equal(llama.max_tokens, 8192);
+  assert.deepEqual(llama.messages, [{ role: "user", content: "hi" }]);
+
+  const inbound = geminiResponseToClaudeMessages(
+    {
+      candidates: [
+        {
+          finishReason: "STOP",
+          content: {
+            role: "model",
+            parts: [
+              { text: "hello from gemini" },
+              { functionCall: { id: "call_1", name: "lookup", args: { q: "x" } } },
+            ],
+          },
+        },
+      ],
+      usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 6, totalTokenCount: 10 },
+    },
+    "gemini-2.0-flash",
+  );
+  assert.equal(inbound.type, "message");
+  assert.equal(inbound.role, "assistant");
+  const inboundBlocks = inbound.content as { type: string; text?: string; name?: string }[];
+  assert.ok(inboundBlocks.some((block) => block.type === "text" && block.text === "hello from gemini"));
+  assert.ok(inboundBlocks.some((block) => block.type === "tool_use" && block.name === "lookup"));
+
+  const vertex = testChannel({
+    type: CHANNEL_TYPE_VERTEX,
+    key: "vkey",
+    other: JSON.stringify({ default: "us-central1" }),
+    settings: JSON.stringify({ vertex_key_type: "api_key" }),
+    models: "claude-3-5-sonnet-20241022,gemini-2.0-flash",
+  });
+  const claudeUrl = buildUpstream(vertex, "messages", "/v1/messages", "claude-3-5-sonnet-20241022", claude);
+  assert.equal(
+    claudeUrl.url,
+    "https://us-central1-aiplatform.googleapis.com/v1/publishers/anthropic/models/claude-3-5-sonnet-v2@20241022:rawPredict?key=vkey",
+  );
+  const geminiUrl = buildUpstream(vertex, "messages", "/v1/messages", "gemini-2.0-flash", geminiNamed);
+  assert.equal(
+    geminiUrl.url,
+    "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent?key=vkey",
+  );
+  const geminiStreamUrl = buildUpstream(vertex, "messages", "/v1/messages", "gemini-2.0-flash", { ...geminiNamed, stream: true });
+  assert.equal(
+    geminiStreamUrl.url,
+    "https://us-central1-aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:streamGenerateContent?alt=sse&key=vkey",
+  );
 });
 
 test("original Gemini ConvertImageRequest JSON, :predict URL, and GeminiImageHandler fields", () => {
