@@ -136,6 +136,8 @@ export function buildSubmitRequest(){return {url:"https://provider.example"}}
 export function parseSubmitResponse(){return {taskId:"upstream"}}
 export function buildQueryRequest(){return {url:"https://provider.example"}}
 export function parseTaskResult(){return {status:"SUCCESS"}}
+export function listArtifacts(){return []}
+export function buildContentRequest(){throw new Error("artifact_not_found")}
 export const protocols = {openai_video: {decodeRequest: function(){return {kind:"submit",model:"mock-v1",requestBody:{}}}, render: function(){ return ${value}; }}};
 `;
     const loaded = compilePlugin(source, { key: "mock-task", version: "1.0.0" });
@@ -144,6 +146,40 @@ export const protocols = {openai_video: {decodeRequest: function(){return {kind:
       /plugin returned an invalid OpenAI video object/,
     );
   }
+});
+
+test("original ConvertToOpenAIVideo host owns failure lifecycle JSON", () => {
+  const source = `
+export const meta = {apiVersion:1,key:"mock-task",name:"Mock Task",version:"1.0.0",author:{name:"Test"},models:["mock-v1"],fetchMode:"per_task",protocols:["openai_video"]};
+export function buildSubmitRequest(){return {url:"https://provider.example"}}
+export function parseSubmitResponse(){return {taskId:"upstream"}}
+export function buildQueryRequest(){return {url:"https://provider.example"}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+export function listArtifacts(){return []}
+export function buildContentRequest(){throw new Error("artifact_not_found")}
+export const protocols = {openai_video: {
+  decodeRequest: function(){return {kind:"submit",model:"mock-v1",requestBody:{}}},
+  render: function(){ return {id:"provider", object:"provider", model:"provider-model", status:"completed", progress:100, created_at:99, completed_at:20, error:{code:"provider_error",message:"provider rejected request"}}; }
+}};
+`;
+  const loaded = compilePlugin(source, { key: "mock-task", version: "1.0.0" });
+  const rendered = convertToOpenAIVideo(loaded.engine, {
+    task_id: "task_public",
+    status: "FAILURE",
+    fail_reason: "provider secret",
+    created_at: 10,
+    updated_at: 20,
+    properties: JSON.stringify({ origin_model_name: "origin-model" }),
+  });
+  assert.deepEqual(rendered, {
+    id: "task_public",
+    object: "video",
+    model: "origin-model",
+    status: "failed",
+    progress: 0,
+    created_at: 10,
+    error: { message: "provider rejected request", code: "provider_error" },
+  });
 });
 
 test("original /v1/videos/:task_id ConvertToOpenAIVideo HTTP JSON fields", async () => {
