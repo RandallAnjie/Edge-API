@@ -1245,7 +1245,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             headers: { location: tts.url, "x-oneapi-request-id": rid },
           });
         }
-        return new Response(tts.body, {
+        return new Response(tts.body as unknown as BodyInit, {
           status: 200,
           headers: { "content-type": tts.contentType, "x-oneapi-request-id": rid },
         });
