@@ -682,21 +682,23 @@ async function openaiClientFromProvider(
   },
 ): Promise<{ body: string; usageBody: Record<string, unknown> }> {
   if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_CHAT_TO_RESPONSES) {
-    return oaiResponsesSseToChatSse(text, {
+    const out = oaiResponsesSseToChatSse(text, {
       id: `chatcmpl-${opts.requestId}`,
       model: mapped,
       created: opts.created,
       includeUsage: opts.includeUsage,
       fallbackPromptTokens: opts.fallbackPromptTokens,
     });
+    return { body: out.sse, usageBody: out.usageBody };
   }
   if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_RESPONSES_TO_CHAT) {
-    return oaiChatSseToResponsesSse(text, {
+    const out = oaiChatSseToResponsesSse(text, {
       id: `chatcmpl-${opts.requestId}`,
       model: mapped,
       created: opts.created,
       fallbackPromptTokens: opts.fallbackPromptTokens,
     });
+    return { body: out.sse, usageBody: out.usageBody };
   }
   if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_CHAT_TO_CLAUDE) {
     const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
