@@ -448,6 +448,16 @@ export {
   geminiResponseToResponsesResponse,
   responsesResponseToChatCompletion,
 } from "./responses-convert.js";
+export {
+  chatCompletionsStreamChunkToResponsesEvents,
+  finalizeChatCompletionsStreamToResponses,
+  newChatToResponsesStreamState,
+  responsesStreamEventToChatChunks,
+  finalizeResponsesToChatStream,
+  newResponsesToChatStreamState,
+  oaiChatSseToResponsesSse,
+  oaiResponsesSseToChatSse,
+} from "./responses-stream.js";
 
 function applyOpenAICompatibleAdaptor(
   body: Record<string, unknown>,

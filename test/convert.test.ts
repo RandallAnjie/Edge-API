@@ -44,6 +44,14 @@ import {
   applyAliHeaders,
   supportsAliAnthropicMessages,
   isAliSyncImageModel,
+  chatCompletionsStreamChunkToResponsesEvents,
+  finalizeChatCompletionsStreamToResponses,
+  newChatToResponsesStreamState,
+  responsesStreamEventToChatChunks,
+  finalizeResponsesToChatStream,
+  newResponsesToChatStreamState,
+  oaiChatSseToResponsesSse,
+  oaiResponsesSseToChatSse,
 } from "../src/convert.js";
 import { claudeSseToOpenAIChat, claudeStopReasonToOpenAIFinishReason } from "../src/claude-response.js";
 import { geminiSseToOpenAIChat } from "../src/gemini-response.js";
@@ -2843,5 +2851,185 @@ test("original Ali GetRequestURL ConvertImageRequest image DoResponse rerank JSO
   );
   assert.deepEqual(pollOut.data, [{ url: imageUrl, b64_json: "YWE=", revised_prompt: "" }]);
 });
+
+test("original ChatCompletionsStreamToResponsesEvents aggregates usage and tool args", () => {
+  const state = newChatToResponsesStreamState("resp_1", "gpt-test", { created: 123 });
+  const events = [
+    ...chatCompletionsStreamChunkToResponsesEvents(
+      { id: "chatcmpl_1", model: "gpt-test", created: 123, choices: [{ index: 0, delta: { role: "assistant" } }] },
+      state,
+    ),
+    ...chatCompletionsStreamChunkToResponsesEvents(
+      { choices: [{ index: 0, delta: { content: "hello" } }] },
+      state,
+    ),
+    ...chatCompletionsStreamChunkToResponsesEvents(
+      {
+        choices: [
+          {
+            index: 0,
+            delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "lookup" } }] },
+          },
+        ],
+      },
+      state,
+    ),
+    ...chatCompletionsStreamChunkToResponsesEvents(
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"q":"x"}' } }] } }] },
+      state,
+    ),
+    ...chatCompletionsStreamChunkToResponsesEvents(
+      { choices: [{ index: 0, finish_reason: "tool_calls" }] },
+      state,
+    ),
+    ...chatCompletionsStreamChunkToResponsesEvents(
+      { usage: { prompt_tokens: 2, completion_tokens: 4, total_tokens: 6 } },
+      state,
+    ),
+    ...finalizeChatCompletionsStreamToResponses(state),
+  ];
+  assert.equal(events.length, 10);
+  assert.equal(events[0].type, "response.created");
+  assert.equal(events[2].type, "response.output_text.delta");
+  assert.equal(events[2].payload.delta, "hello");
+  assert.equal(events[4].type, "response.function_call_arguments.delta");
+  assert.equal(events[4].payload.delta, '{"q":"x"}');
+  assert.equal(events[9].type, "response.completed");
+  const completed = events[9].payload.response as { usage: { total_tokens: number }; output: { content?: { text: string }[]; arguments?: string }[] };
+  assert.equal(completed.usage.total_tokens, 6);
+  assert.equal(completed.output.length, 2);
+  assert.equal((completed.output[0].content as { text: string }[])[0].text, "hello");
+  assert.equal(completed.output[1].arguments, '{"q":"x"}');
+});
+
+test("original ResponsesStreamEventToChatChunks uses output_index for tool arguments", () => {
+  const state = newResponsesToChatStreamState("gpt-test", false, { id: "chatcmpl_test", created: 123 });
+  const chunks = [
+    ...responsesStreamEventToChatChunks({ type: "response.created" }, state),
+    ...responsesStreamEventToChatChunks({ type: "response.output_text.delta", delta: "text before tool" }, state),
+    ...responsesStreamEventToChatChunks({
+      type: "response.function_call_arguments.delta",
+      output_index: 1,
+      delta: '{"cmd":"ls"}',
+    }, state),
+    ...responsesStreamEventToChatChunks(
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec" },
+      },
+      state,
+    ),
+    ...responsesStreamEventToChatChunks(
+      {
+        type: "response.completed",
+        response: { status: "completed", usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } },
+      },
+      state,
+    ),
+  ];
+  assert.equal(chunks.length, 4);
+  assert.equal((chunks[0].choices as { delta: { role: string } }[])[0].delta.role, "assistant");
+  assert.equal((chunks[1].choices as { delta: { content: string } }[])[0].delta.content, "text before tool");
+  const tool = (chunks[2].choices as { delta: { tool_calls: { index: number; id: string; function: { name: string; arguments: string } }[] } }[])[0].delta.tool_calls[0];
+  assert.equal(tool.index, 0);
+  assert.equal(tool.id, "call_1");
+  assert.equal(tool.function.name, "exec");
+  assert.equal(tool.function.arguments, '{"cmd":"ls"}');
+  assert.equal((chunks[3].choices as { finish_reason: string }[])[0].finish_reason, "tool_calls");
+  assert.equal(state.usage.total_tokens, 3);
+  void finalizeResponsesToChatStream(state);
+});
+
+test("original ResponsesStreamEventToChatChunks does not duplicate pending args with output_index and item_id", () => {
+  const state = newResponsesToChatStreamState("gpt-test", false, { id: "chatcmpl_test" });
+  const chunks = [
+    ...responsesStreamEventToChatChunks({ type: "response.created" }, state),
+    ...responsesStreamEventToChatChunks({
+      type: "response.function_call_arguments.delta",
+      output_index: 1,
+      item_id: "fc_1",
+      delta: '{"q":"x"}',
+    }, state),
+    ...responsesStreamEventToChatChunks(
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item_id: "fc_1",
+        item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "lookup" },
+      },
+      state,
+    ),
+  ];
+  assert.equal(chunks.length, 2);
+  const tool = (chunks[1].choices as { delta: { tool_calls: { id: string; function: { name: string; arguments: string } }[] } }[])[0].delta.tool_calls[0];
+  assert.equal(tool.id, "call_1");
+  assert.equal(tool.function.name, "lookup");
+  assert.equal(tool.function.arguments, '{"q":"x"}');
+  assert.equal(state.pendingArgsByOutputIndexForTest.size, 0);
+  assert.equal(state.pendingArgsByItemIdForTest.size, 0);
+});
+
+test("original OaiResponsesToChatStreamHandler SSE order and usage JSON", () => {
+  const body = [
+    `data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-test","created_at":1710000000}}`,
+    `data: {"type":"response.output_text.delta","delta":"hello"}`,
+    `data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup"}}`,
+    `data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\\"q\\":\\"x\\"}"}`,
+    `data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+  const out = oaiResponsesSseToChatSse(body, {
+    id: "chatcmpl-responses-test",
+    model: "gpt-test",
+    created: 1710000000,
+    includeUsage: true,
+  });
+  assert.ok(out.sse.includes('"role":"assistant"'));
+  assert.ok(out.sse.includes('"content":"hello"'));
+  assert.ok(out.sse.includes('"name":"lookup"'));
+  assert.ok(out.sse.includes('"arguments":"{\\"q\\":\\"x\\"}"'));
+  assert.ok(out.sse.includes('"finish_reason":"tool_calls"'));
+  assert.ok(out.sse.includes('"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5'));
+  assert.ok(out.sse.includes("data: [DONE]"));
+  const order = [
+    '"role":"assistant"',
+    '"content":"hello"',
+    '"name":"lookup"',
+    '"arguments":"{\\"q\\":\\"x\\"}"',
+    '"finish_reason":"tool_calls"',
+    '"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5',
+    "data: [DONE]",
+  ];
+  let from = 0;
+  for (const part of order) {
+    const at = out.sse.indexOf(part, from);
+    assert.notEqual(at, -1, `missing ${part}`);
+    from = at + part.length;
+  }
+  assert.equal((out.usageBody.usage as { prompt_tokens: number }).prompt_tokens, 2);
+});
+
+test("original OaiChatToResponsesStreamHandler SSE events include sequence_number", () => {
+  const body = [
+    `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", created: 123, model: "gpt-from-responses", choices: [{ index: 0, delta: { role: "assistant" } }] })}`,
+    `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", created: 123, model: "gpt-from-responses", choices: [{ index: 0, delta: { content: "ok" } }] })}`,
+    `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", created: 123, model: "gpt-from-responses", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}`,
+    `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", created: 123, model: "gpt-from-responses", choices: [], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } })}`,
+    `data: [DONE]`,
+    ``,
+  ].join("\n");
+  const out = oaiChatSseToResponsesSse(body, { id: "chatcmpl-responses-test", model: "gpt-from-responses", created: 123 });
+  assert.match(out.sse, /event: response\.created/);
+  assert.match(out.sse, /"sequence_number":0/);
+  assert.match(out.sse, /"delta":"ok"/);
+  assert.match(out.sse, /event: response\.output_text\.delta/);
+  assert.match(out.sse, /event: response\.completed/);
+  assert.match(out.sse, /"status":"completed"/);
+  assert.match(out.sse, /"text":"ok"/);
+  assert.equal((out.usageBody.usage as { total_tokens: number }).total_tokens, 3);
+});
+
 
 

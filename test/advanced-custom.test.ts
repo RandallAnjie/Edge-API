@@ -354,3 +354,116 @@ test("original AdvancedCustom responses→gemini DoResponse uses Responses bridg
     globalThis.fetch = origFetch;
   }
 });
+
+test("original AdvancedCustom Responses↔Chat stream DoResponse SSE JSON", async () => {
+  const { e, auth, sk } = await boot();
+  const added = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "adv-stream",
+        type: CHANNEL_TYPE_ADVANCED_CUSTOM,
+        key: "sk-adv",
+        models: "gpt-responses,gpt-from-responses",
+        group: "default",
+        base_url: "https://upstream.example",
+        settings: JSON.stringify({
+          advanced_custom: {
+            advanced_routes: [
+              {
+                incoming_path: "/v1/chat/completions",
+                upstream_path: "/v1/responses",
+                converter: "openai_chat_completions_to_openai_responses",
+                models: ["gpt-responses"],
+              },
+              {
+                incoming_path: "/v1/responses",
+                upstream_path: "/v1/chat/completions",
+                converter: "openai_responses_to_openai_chat_completions",
+                models: ["gpt-from-responses"],
+              },
+            ],
+          },
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(added.body.success, true, String(added.body.message));
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/v1/responses")) {
+      return new Response(
+        [
+          `data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-responses","created_at":1710000000}}`,
+          `data: {"type":"response.output_text.delta","delta":"hello"}`,
+          `data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`,
+          `data: [DONE]`,
+          ``,
+        ].join("\n"),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    if (url.includes("/v1/chat/completions")) {
+      return new Response(
+        [
+          `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", created: 123, model: "gpt-from-responses", choices: [{ index: 0, delta: { role: "assistant" } }] })}`,
+          `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", created: 123, model: "gpt-from-responses", choices: [{ index: 0, delta: { content: "ok" } }] })}`,
+          `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", created: 123, model: "gpt-from-responses", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}`,
+          `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", created: 123, model: "gpt-from-responses", choices: [], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } })}`,
+          `data: [DONE]`,
+          ``,
+        ].join("\n"),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    throw new Error("unexpected upstream " + url);
+  }) as typeof fetch;
+
+  try {
+    const chat = await handleFetch(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-responses",
+          messages: [{ role: "user", content: "hello" }],
+          stream: true,
+        }),
+      }),
+      e,
+      ctx(),
+    );
+    const chatText = await chat.text();
+    assert.equal(chat.status, 200, chatText);
+    assert.equal(chat.headers.get("content-type"), "text/event-stream; charset=utf-8");
+    assert.match(chatText, /"role":"assistant"/);
+    assert.match(chatText, /"content":"hello"/);
+    assert.match(chatText, /"finish_reason":"stop"/);
+    assert.match(chatText, /"usage":\{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3/);
+    assert.match(chatText, /data: \[DONE\]/);
+
+    const responses = await handleFetch(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-from-responses", input: "hello", stream: true }),
+      }),
+      e,
+      ctx(),
+    );
+    const responsesText = await responses.text();
+    assert.equal(responses.status, 200, responsesText);
+    assert.equal(responses.headers.get("content-type"), "text/event-stream; charset=utf-8");
+    assert.match(responsesText, /event: response\.created/);
+    assert.match(responsesText, /"sequence_number":0/);
+    assert.match(responsesText, /"delta":"ok"/);
+    assert.match(responsesText, /event: response\.completed/);
+    assert.match(responsesText, /"text":"ok"/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

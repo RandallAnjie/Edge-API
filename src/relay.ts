@@ -82,11 +82,14 @@ import {
 import {
   CONVERTER_CHAT_TO_CLAUDE,
   CONVERTER_CHAT_TO_GEMINI,
+  CONVERTER_CHAT_TO_RESPONSES,
+  CONVERTER_RESPONSES_TO_CHAT,
 } from "./advanced-custom-convert.js";
 import {
   advancedCustomOpenaiShapedInbound,
   convertAdvancedCustomInbound,
 } from "./advanced-custom-response.js";
+import { oaiChatSseToResponsesSse, oaiResponsesSseToChatSse } from "./responses-stream.js";
 import { buildCodexRelayTarget, fetchCodexChannelModels } from "./codex-models.js";
 import { Store } from "./store.js";
 import type { AuthToken, ChannelRow, Env, ExecutionContextLike, UserRow } from "./types.js";
@@ -134,6 +137,12 @@ export interface RelayRequest {
 
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+/** Original `compatible_handler` `ShouldIncludeUsage` (true unless `stream_options` is present). */
+function shouldIncludeUsage(body: Record<string, unknown>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(body, "stream_options") || body.stream_options == null) return true;
+  return Boolean(asObj(body.stream_options).include_usage);
 }
 
 function parseAliOriginBody(rawText: string, fallback: Record<string, unknown>): unknown {
@@ -669,8 +678,26 @@ async function openaiClientFromProvider(
     relayMode?: RelayMode;
     channelKey?: string;
     converter?: string;
+    created?: number;
   },
 ): Promise<{ body: string; usageBody: Record<string, unknown> }> {
+  if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_CHAT_TO_RESPONSES) {
+    return oaiResponsesSseToChatSse(text, {
+      id: `chatcmpl-${opts.requestId}`,
+      model: mapped,
+      created: opts.created,
+      includeUsage: opts.includeUsage,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+  }
+  if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_RESPONSES_TO_CHAT) {
+    return oaiChatSseToResponsesSse(text, {
+      id: `chatcmpl-${opts.requestId}`,
+      model: mapped,
+      created: opts.created,
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
+  }
   if (opts.channelType === CHANNEL_TYPE_ADVANCED_CUSTOM && opts.converter === CONVERTER_CHAT_TO_CLAUDE) {
     const out = claudeUpstreamToOpenAIChat(text, mapped, { includeUsage: opts.includeUsage, upstreamModel: mapped });
     if (stream) {
@@ -1239,7 +1266,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     if (isSSE && res.body) {
       if (!openaiShapedInbound && clientFormat === "openai" && !ollamaResponsesPassthrough) {
         const text = await res.text();
-        const includeUsage = Boolean(asObj(asObj(opts.body).stream_options).include_usage);
+        const includeUsage = shouldIncludeUsage(asObj(opts.body));
         let converted: { body: string; usageBody: Record<string, unknown> };
         try {
           converted = await openaiClientFromProvider(kind, text, mapped, true, {
@@ -1250,6 +1277,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             relayMode: mode,
             channelKey: pickChannelKey(channel.key),
             converter: advancedConverter,
+            created: Math.floor(started / 1000),
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
