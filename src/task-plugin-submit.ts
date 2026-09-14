@@ -39,10 +39,15 @@ import {
 } from "./task-plugin-submit-body.js";
 import { applyCompletionUsageFacts, buildNativeQueryContext, isNativeQueryError, type NativeTaskInfo } from "./task-plugin-query.js";
 import { parseSubmitMediaType, readSubmitEvents } from "./task-plugin-submit-sse.js";
+import {
+  applyOtherRatiosToFloat,
+  applyRelayTaskSubmitBilling,
+  estimateBillingValidated,
+  quotaFromFloat,
+} from "./task-plugin-usage.js";
 
 export const MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES = 1 << 20;
 const TASK_ID_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const MAX_QUOTA = 2147483647;
 
 export type NativeTaskError = {
   code: string;
@@ -115,14 +120,6 @@ function hookMessage(err: unknown): string {
 
 function taskErr(code: string, message: string, statusCode: number, localError: boolean, noRetry = false): NativeTaskError {
   return { code, message, statusCode, localError, noRetry };
-}
-
-function quotaFromFloat(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  const n = Math.trunc(value);
-  if (n > MAX_QUOTA) return MAX_QUOTA;
-  if (n < -MAX_QUOTA) return -MAX_QUOTA;
-  return n;
 }
 
 function stringMap(value: unknown): Record<string, string> {
@@ -245,15 +242,6 @@ export async function modelPriceHelperPerCall(
     }
   }
   return { quota, modelPrice, modelRatio, groupRatio, usePrice, freeModel };
-}
-
-function applyOtherRatios(quota: number, ratios: Record<string, number>): number {
-  let value = quota;
-  for (const ratio of Object.values(ratios)) {
-    if (!Number.isFinite(ratio) || ratio === 1) continue;
-    value *= ratio;
-  }
-  return quotaFromFloat(value);
 }
 
 export function shouldRetryNativeTaskRelay(err: NativeTaskError, remaining: number, suppress: boolean): boolean {
@@ -520,23 +508,6 @@ export function applyNativeSubmitCompletionUsage(
   }
 }
 
-function extractUsageRatios(engine: PluginEngine, submitContext: Record<string, unknown>): Record<string, number> {
-  if (!engine.hasCallablePath("extractUsage")) return {};
-  let value: unknown;
-  try {
-    value = engine.call("extractUsage", { ...submitContext, usagePurpose: "billing_ratios" });
-  } catch {
-    return {};
-  }
-  if (!isPlainObject(value)) return {};
-  const ratios: Record<string, number> = {};
-  for (const [key, item] of Object.entries(value)) {
-    const n = typeof item === "number" ? item : Number(item);
-    if (Number.isFinite(n) && n > 0) ratios[key] = n;
-  }
-  return ratios;
-}
-
 function taskStatusFromImmediate(immediate: Record<string, unknown> | null): {
   status: string;
   progress: string;
@@ -699,9 +670,17 @@ async function relayTaskSubmitOnce(opts: {
     opts.auth.user.settings,
   );
   if ("statusCode" in priced) return priced;
-  const otherRatios = extractUsageRatios(opts.engine, submitContext);
+  const estimated = estimateBillingValidated(
+    opts.engine,
+    submitContext,
+    info.upstreamModelName || info.originModelName,
+  );
+  if ("error" in estimated) return taskErr("plugin_usage_invalid", estimated.error, 400, true);
+  const estimatedRatios = estimated.ratios && Object.keys(estimated.ratios).length ? estimated.ratios : {};
   let quota = priced.quota;
-  if (!priced.freeModel && Object.keys(otherRatios).length) quota = applyOtherRatios(quota, otherRatios);
+  if (!priced.freeModel && Object.keys(estimatedRatios).length) {
+    quota = quotaFromFloat(applyOtherRatiosToFloat(quota, estimatedRatios));
+  }
 
   const upstream = await doNativeSubmitRequest(descriptor, opts.prepared.requestContext.fileContents || [], {
     engine: opts.engine,
@@ -714,7 +693,16 @@ async function relayTaskSubmitOnce(opts: {
     return parsed;
   }
   applyNativeSubmitCompletionUsage(opts.engine, parsed, info);
-  return { parsed, info, otherRatios, quota };
+  const billed = applyRelayTaskSubmitBilling({
+    engine: opts.engine,
+    submitContext,
+    modelName: info.upstreamModelName || info.originModelName,
+    taskData: parsed.taskData,
+    immediate: parsed.immediate,
+    quota,
+    otherRatios: estimatedRatios,
+  });
+  return { parsed, info, otherRatios: billed.otherRatios, quota: billed.quota };
 }
 
 function nativeSubmitError(prepared: SubmitKind, engine: PluginEngine, err: NativeTaskError, requestId: string): Response {
