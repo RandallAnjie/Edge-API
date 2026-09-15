@@ -501,24 +501,37 @@ export async function requestCreemPay(
   req: Request,
   body: { product_id?: string; payment_method?: string },
 ): Promise<Response> {
-  if ((body.payment_method || "creem") !== "creem") return payErr("不支持的支付渠道");
+  if ((body.payment_method || "") !== "creem") return payErr("不支持的支付渠道");
   if (!body.product_id) return payErr("请选择产品");
-  const apiKey = await store.option("CreemApiKey");
-  if (!apiKey) return payErr("未配置Creem API密钥");
-  const products = parseJson<CreemProduct[]>(await store.option("CreemProducts"), []);
-  if (!products.length) return payErr("产品配置错误");
+  let products: CreemProduct[];
+  try {
+    const parsed = JSON.parse(await store.option("CreemProducts")) as unknown;
+    if (!Array.isArray(parsed)) return payErr("产品配置错误");
+    products = parsed as CreemProduct[];
+  } catch {
+    return payErr("产品配置错误");
+  }
   const selected = products.find((p) => p.productId === body.product_id);
   if (!selected) return payErr("产品不存在");
-  const trade = "ref_" + randomHex(16);
-  await store.insertTopup({
-    user_id: user.id,
-    amount: Number(selected.quota || 0),
-    money: Number(selected.price || 0),
-    trade_no: trade,
-    payment_method: "creem",
-    payment_provider: "creem",
-    status: "pending",
-  });
+  const invalid = await rejectInvalidTopUpQuota(store, user.id, Number(selected.quota || 0));
+  if (invalid) return invalid;
+  const reference = `creem-api-ref-${user.id}-${Date.now()}-${getRandomString(4)}`;
+  const trade = "ref_" + (await sha1Hex(reference));
+  try {
+    await store.insertTopup({
+      user_id: user.id,
+      amount: Number(selected.quota || 0),
+      money: Number(selected.price || 0),
+      trade_no: trade,
+      payment_method: "creem",
+      payment_provider: "creem",
+      status: "pending",
+    });
+  } catch {
+    return payErr("创建订单失败");
+  }
+  const apiKey = await store.option("CreemApiKey");
+  if (!apiKey) return payErr("拉起支付失败");
   const testMode = await store.optionBool("CreemTestMode", false);
   const endpoint = (await store.option("CreemCheckoutUrl")) || (testMode ? "https://test-api.creem.io/v1/checkouts" : "https://api.creem.io/v1/checkouts");
   const res = await fetch(endpoint, {
@@ -527,7 +540,7 @@ export async function requestCreemPay(
     body: JSON.stringify({
       product_id: selected.productId,
       request_id: trade,
-      customer: { email: user.email || `${user.username}@users.invalid` },
+      customer: { email: user.email || "" },
       metadata: {
         username: user.username,
         reference_id: trade,
@@ -537,7 +550,7 @@ export async function requestCreemPay(
     }),
   });
   const data = (await res.json().catch(() => ({}))) as { checkout_url?: string; id?: string };
-  if (!res.ok || !data.checkout_url) return payErr("拉起支付失败");
+  if (Math.floor(res.status / 100) !== 2 || !data.checkout_url) return payErr("拉起支付失败");
   void req;
   return payOk({ checkout_url: data.checkout_url, order_id: trade });
 }

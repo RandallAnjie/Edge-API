@@ -2482,13 +2482,13 @@ async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waff
   try {
     const text = await c.req.text();
     if (!text.trim()) {
-      if (kind === "stripe" || kind === "epay") return payErr("参数错误");
+      if (kind === "stripe" || kind === "epay" || kind === "creem") return payErr("参数错误");
       body = {};
     } else {
       body = JSON.parse(text) as Record<string, unknown>;
     }
   } catch {
-    if (kind === "stripe" || kind === "epay") return payErr("参数错误");
+    if (kind === "stripe" || kind === "epay" || kind === "creem") return payErr("参数错误");
     body = {};
   }
   if (!user) return kind === "stripe" ? payErr("用户不存在") : apiFail("用户不存在");

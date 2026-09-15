@@ -250,7 +250,7 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   ModelRequestRateLimitDurationMinutes: "1",
   ModelRequestRateLimitSuccessCount: "0",
   ModelRequestRateLimitGroup: "{}",
-  CreemProducts: "",
+  CreemProducts: "[]",
   CreemTestMode: "false",
   WaffoMerchantId: "",
   WaffoNotifyUrl: "",

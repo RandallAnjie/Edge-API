@@ -716,7 +716,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
     e,
   );
   assert.equal(creemUnconfigured.body.message, "error");
-  assert.equal(creemUnconfigured.body.data, "未配置Creem API密钥");
+  assert.equal(creemUnconfigured.body.data, "产品不存在");
 
   const waffoDisabled = await json(
     new Request("http://local/api/user/waffo/pay", {
