@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CHANNEL_TYPE_KLING } from "../src/constants.js";
+import { CHANNEL_TYPE_KLING, CHANNEL_TYPE_OPENAI } from "../src/constants.js";
+import {
+  abortWithOpenAiMessage,
+  getChannelRetryFailedMessage,
+  noAvailableChannelRetryMessage,
+} from "../src/http.js";
 import { compilePlugin } from "../src/jsplugin.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
@@ -375,3 +380,210 @@ test("loadCompiledPlugin still compiles presenter-test", () => {
   const loaded = loadCompiledPlugin(presenterSource, "presenter-test", "1.0.0");
   assert.equal(loaded.engine.hasCallablePath("buildSubmitRequest"), true);
 });
+
+test("original controller.getChannel retry messages are hardcoded Chinese", () => {
+  assert.equal(
+    getChannelRetryFailedMessage("default", "kling-v1", "auto groups is not enabled"),
+    "获取分组 default 下模型 kling-v1 的可用渠道失败（retry）: auto groups is not enabled",
+  );
+  assert.equal(
+    noAvailableChannelRetryMessage("default", "kling-v1"),
+    "分组 default 下模型 kling-v1 的可用渠道不存在（retry）",
+  );
+});
+
+test("original abortWithOpenAiMessage omits param and keeps new_api_error type", async () => {
+  const res = abortWithOpenAiMessage(503, "No available channel", "model_not_found", "empty-req");
+  assert.equal(res.status, 503);
+  const body = (await res.json()) as { error: Record<string, unknown> };
+  assert.deepEqual(Object.keys(body), ["error"]);
+  assert.deepEqual(Object.keys(body.error).sort(), ["code", "message", "type"]);
+  assert.equal(body.error.type, "new_api_error");
+  assert.equal(body.error.code, "model_not_found");
+  assert.equal(body.error.message, "No available channel (request id: empty-req)");
+});
+
+const emptyChannelPlugin = `
+export const meta = {apiVersion:1,key:"empty-channel-native",name:"Empty Channel",version:"1.0.0",author:{name:"Test"},models:["empty-v1"],fetchMode:"per_task",channelTypes:[${CHANNEL_TYPE_OPENAI}],routes:[{method:"POST",path:"/vendor/empty",type:"submit",decode:"decode",render:"created"}]};
+export const native = {decode:function(ctx){return {kind:"submit",model:"empty-v1",requestBody:ctx.body.value};},created:function(_ctx,task){return {task_id:task.task_id};}};
+export function buildSubmitRequest(){return {url:"https://provider.example.test/submit"}}
+export function parseSubmitResponse(){return {taskId:"upstream"}}
+export function buildQueryRequest(){return {url:"https://provider.example.test/query"}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+`;
+
+const retryChannelPlugin = `
+export const meta = {apiVersion:1,key:"retry-channel-native",name:"Retry Channel",version:"1.0.0",author:{name:"Test"},models:["retry-v1"],fetchMode:"per_task",channelTypes:[${CHANNEL_TYPE_OPENAI}],routes:[{method:"POST",path:"/vendor/retry",type:"submit",decode:"decode",render:"created"}]};
+export const native = {decode:function(ctx){return {kind:"submit",model:"retry-v1",requestBody:ctx.body.value};},created:function(_ctx,task){return {task_id:task.task_id};}};
+export function buildSubmitRequest(){return {url:"https://retry.example.test/submit"}}
+export function parseSubmitResponse(){return {taskId:"upstream"}}
+export function buildQueryRequest(){return {url:"https://retry.example.test/query"}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+`;
+
+const retryVideoPlugin = `
+export const meta = {apiVersion:1,key:"retry-channel-video",name:"Retry Video",version:"1.0.0",author:{name:"Test"},models:["retry-video-v1"],fetchMode:"per_task",protocols:["openai_video"],channelTypes:[${CHANNEL_TYPE_OPENAI}]};
+export function buildSubmitRequest(){return {url:"https://retry-video.example.test/submit",method:"POST",body:{}}}
+export function parseSubmitResponse(){return {taskId:"upstream"}}
+export function buildQueryRequest(){return {url:"https://retry-video.example.test/query"}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+export const protocols = {openai_video: {
+  decodeRequest: function(ctx) {
+    var value = ctx.body && ctx.body.value && typeof ctx.body.value === "object" ? ctx.body.value : {};
+    return {kind:"submit", model: ctx.model, requestBody: value};
+  }
+}};
+`;
+
+async function registerTaskPlugin(e: Env, auth: Record<string, string>, source: string) {
+  const registered = await json(
+    new Request("http://local/api/plugin/task", { method: "POST", headers: auth, body: JSON.stringify({ source, force: true }) }),
+    e,
+  );
+  assert.equal(registered.body.success, true, String(registered.body.message));
+}
+
+test("original native plugin empty-channel is sanitized TaskError JSON", async () => {
+  const { e, auth, sk } = await boot();
+  await registerTaskPlugin(e, auth, emptyChannelPlugin);
+  const hit = await json(
+    new Request("http://local/vendor/empty", {
+      method: "POST",
+      headers: { authorization: "Bearer " + sk, "content-type": "application/json", "x-oneapi-request-id": "empty-channel-req" },
+      body: JSON.stringify({ model: "empty-v1" }),
+    }),
+    e,
+  );
+  assert.equal(hit.res.status, 503, hit.text);
+  assert.deepEqual(Object.keys(hit.body).sort(), ["code", "data", "message"]);
+  assert.equal(hit.body.code, "server_error");
+  assert.equal(hit.body.message, "Task request failed (request id: empty-channel-req)");
+  assert.equal(hit.body.data, null);
+  assert.equal(hit.body.error, undefined);
+});
+
+test("original native RelayTask retry get_channel_failed is sanitized 500 JSON", async () => {
+  const { e, auth, sk } = await boot();
+  await registerTaskPlugin(e, auth, retryChannelPlugin);
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "ModelRatio", value: JSON.stringify({ "retry-v1": 1 }) }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "RetryTimes", value: "1" }),
+    }),
+    e,
+  );
+  const ch = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "retry-native",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-test",
+        models: "retry-v1",
+        group: "default",
+        base_url: "https://retry.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, String(ch.body.message));
+  const channelId = Number((ch.body.data as { id?: number })?.id || 0);
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://retry.example.test/submit") {
+      await e.DB.prepare(`UPDATE abilities SET enabled = 0 WHERE channel_id = ?`).bind(channelId).run();
+      return new Response("upstream boom", { status: 502 });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/retry", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json", "x-oneapi-request-id": "retry-native-req" },
+        body: JSON.stringify({ model: "retry-v1" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 500, hit.text);
+    assert.equal(hit.body.code, "server_error");
+    assert.equal(hit.body.message, "Task request failed (request id: retry-native-req)");
+    assert.equal(hit.body.data, null);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original openai_video RelayTask retry get_channel_failed JSON fields", async () => {
+  const { e, auth, sk } = await boot();
+  await registerTaskPlugin(e, auth, retryVideoPlugin);
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "ModelRatio", value: JSON.stringify({ "retry-video-v1": 1 }) }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "RetryTimes", value: "1" }),
+    }),
+    e,
+  );
+  const ch = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "retry-video",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-test",
+        models: "retry-video-v1",
+        group: "default",
+        base_url: "https://retry-video.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, String(ch.body.message));
+  const channelId = Number((ch.body.data as { id?: number })?.id || 0);
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://retry-video.example.test/submit") {
+      await e.DB.prepare(`UPDATE abilities SET enabled = 0 WHERE channel_id = ?`).bind(channelId).run();
+      return new Response("upstream boom", { status: 502 });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/v1/videos", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "retry-video-v1", prompt: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 500, hit.text);
+    assert.deepEqual(Object.keys(hit.body).sort(), ["code", "data", "message"]);
+    assert.equal(hit.body.code, "get_channel_failed");
+    assert.equal(hit.body.message, noAvailableChannelRetryMessage("default", "retry-video-v1"));
+    assert.equal(hit.body.data, null);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+

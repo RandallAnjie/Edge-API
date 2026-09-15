@@ -397,3 +397,29 @@ test("original unclaimed POST /v1/responses stays on ordinary relay JSON", async
   assert.notEqual(hit.body.object, "response");
   assert.ok(hit.res.status >= 400, hit.text);
 });
+
+test("original openai_responses empty-channel is distributor model_not_found JSON", async () => {
+  const { e, auth, sk } = await boot();
+  await registerResponsesPlugin(e, auth, protocolResponsesPluginSource("endpoint-responses-empty"));
+  const hit = await json(
+    new Request("http://local/v1/responses", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + sk,
+        "content-type": "application/json",
+        "x-oneapi-request-id": "empty-responses-req",
+      },
+      body: JSON.stringify({ model: "resp-v1", input: "hello" }),
+    }),
+    e,
+  );
+  assert.equal(hit.res.status, 503, hit.text);
+  const err = hit.body.error as { message?: string; type?: string; code?: string; param?: unknown };
+  assert.ok(err);
+  assert.deepEqual(Object.keys(err).sort(), ["code", "message", "type"]);
+  assert.equal(err.type, "new_api_error");
+  assert.equal(err.code, "model_not_found");
+  assert.match(String(err.message), /No available channel for model resp-v1 under group default \(distributor\)/);
+  assert.match(String(err.message), /request id: empty-responses-req/);
+});
+

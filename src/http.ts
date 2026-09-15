@@ -113,6 +113,16 @@ export function getChannelFailedMessage(req: Request, group: string, model: stri
   );
 }
 
+/** Original `controller.getChannel` retry error when `CacheGetRandomSatisfiedChannel` returns err. */
+export function getChannelRetryFailedMessage(group: string, model: string, error: string): string {
+  return `获取分组 ${group} 下模型 ${model} 的可用渠道失败（retry）: ${error}`;
+}
+
+/** Original `controller.getChannel` retry error when the selected channel is nil. */
+export function noAvailableChannelRetryMessage(group: string, model: string): string {
+  return `分组 ${group} 下模型 ${model} 的可用渠道不存在（retry）`;
+}
+
 /** Original `i18n.MsgDistributorGroupAccessDenied`. */
 export function groupAccessDeniedMessage(req: Request): string {
   return i18nPair(req, "无权访问该分组", "No permission to access this group");
@@ -355,6 +365,17 @@ export function sanitizedTaskPluginError(
 export function messageWithRequestId(message: string, requestId: string): string {
   if (!requestId) return message;
   return `${message} (request id: ${requestId})`;
+}
+
+/** Original `middleware.abortWithOpenAiMessage` OpenAI envelope (no `param`). */
+export function abortWithOpenAiMessage(status: number, message: string, code = "", requestId = ""): Response {
+  return json(status, {
+    error: {
+      message: messageWithRequestId(message, requestId),
+      type: "new_api_error",
+      code,
+    },
+  });
 }
 
 /** Original `middleware.abortTaskPluginRouteErrorDetail` host fallback JSON. */

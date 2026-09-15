@@ -4695,6 +4695,10 @@ test("original Zhipu, ZhipuV4, Perplexity, Cloudflare, BaiduV2, and MiniMax Conv
     "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/v1/chat/completions",
   );
   assert.equal(
+    buildUpstream(cfCh, "responses", "/v1/responses", "llama-3", { model: "gpt-5.1-high", input: "hi" }).url,
+    "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/v1/responses",
+  );
+  assert.equal(
     buildUpstream(cfCh, "completions", "/v1/completions", "llama-3", cfComp).url,
     "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/run/llama-3",
   );

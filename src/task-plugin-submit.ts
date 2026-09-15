@@ -21,7 +21,18 @@ import {
   type BillingSnapshot,
 } from "./billing-expr.js";
 import { BILLING_MODE_TIERED_EXPR, getBillingMode, resolveTaskBillingExpr } from "./billing-setting.js";
-import { clientIp, json, noAvailableChannelMessage, openaiError, pluginProtocolSubmissionError, taskErrorJson, tokenModelForbiddenMessage } from "./http.js";
+import {
+  abortWithOpenAiMessage,
+  clientIp,
+  getChannelRetryFailedMessage,
+  json,
+  noAvailableChannelMessage,
+  noAvailableChannelRetryMessage,
+  openaiError,
+  pluginProtocolSubmissionError,
+  taskErrorJson,
+  tokenModelForbiddenMessage,
+} from "./http.js";
 import {
   logTaskConsumption,
   taskPluginSnapshotFromMeta,
@@ -1218,6 +1229,26 @@ function nativeSubmitError(prepared: SubmitKind, engine: PluginEngine, err: Nati
   return respondTaskPluginError(engine, prepared.requestContext, err.statusCode, err.message, requestId);
 }
 
+/** Original `middleware.Distribute` `abortWithOpenAiMessage` before `RelayTask`. */
+function distributorAbortChannelError(
+  prepared: SubmitKind,
+  engine: PluginEngine,
+  err: { status: number; code: string; message: string },
+  requestId: string,
+): Response {
+  if (!prepared.protocol) {
+    return respondTaskPluginError(engine, prepared.requestContext, err.status, err.message, requestId);
+  }
+  return abortWithOpenAiMessage(err.status, err.message, err.code, requestId);
+}
+
+function getChannelFailedRetryError(selectGroup: string, model: string, error?: string): NativeTaskError {
+  const message = error
+    ? getChannelRetryFailedMessage(selectGroup, model, error)
+    : noAvailableChannelRetryMessage(selectGroup, model);
+  return taskErr("get_channel_failed", message, 500, true, true);
+}
+
 export type NativeTaskPersistOutcome = {
   row: Record<string, unknown>;
   originModelName: string;
@@ -1290,24 +1321,23 @@ export async function executeNativeTaskSubmission(
     originPin: prepared.origin.pin,
   });
   if (selected.error) {
-    if (prepared.protocol === "openai_responses") {
-      return { error: pluginProtocolSubmissionError({ statusCode: selected.error.status, code: selected.error.code, message: selected.error.message }) };
-    }
-    return { error: openaiError(selected.error.status, selected.error.message, selected.error.code) };
+    return { error: distributorAbortChannelError(prepared, engine, selected.error, requestId) };
   }
   auth.usingGroup = selected.usingGroup;
   let channel = selected.channel;
   if (!channel) {
-    if (prepared.protocol === "openai_responses") {
-      return {
-        error: pluginProtocolSubmissionError({
-          statusCode: 503,
-          code: "no_available_channel",
+    return {
+      error: distributorAbortChannelError(
+        prepared,
+        engine,
+        {
+          status: 503,
+          code: "model_not_found",
           message: noAvailableChannelMessage(req, auth.usingGroup, model),
-        }),
-      };
-    }
-    return { error: openaiError(503, noAvailableChannelMessage(req, auth.usingGroup, model), "no_available_channel") };
+        },
+        requestId,
+      ),
+    };
   }
 
   const retryTimes = await store.optionNum("RetryTimes", 0);
@@ -1352,7 +1382,10 @@ export async function executeNativeTaskSubmission(
     if (!selected.pinned) {
       increaseChannelSelectRetry(selected.selectState);
       const next = await cacheGetRandomSatisfiedChannel(store, selected.selectParam, selected.selectState);
-      if (!next.channel) break;
+      if (next.error || !next.channel) {
+        lastErr = getChannelFailedRetryError(next.selectGroup || auth.usingGroup, model, next.error);
+        break;
+      }
       channel = next.channel;
       if (next.selectGroup && next.selectGroup !== "auto") auth.usingGroup = next.selectGroup;
     }
