@@ -1,6 +1,7 @@
 /** Original `openai.Adaptor` realtime GetRequestURL / SetupRequestHeader / DoWssRequest. */
 
 import {
+  CHANNEL_TYPE_ADVANCED_CUSTOM,
   CHANNEL_TYPE_AZURE,
   CHANNEL_TYPE_CUSTOM,
   CHANNEL_TYPE_OPENAI,
@@ -8,6 +9,10 @@ import {
   parseJson,
 } from "./constants.js";
 import { resolveBaseUrl } from "./catalog.js";
+import {
+  advancedCustomRealtimeSetupHeaders,
+  buildAdvancedCustomRealtimeRequestURL,
+} from "./channel-validate.js";
 import { applyChannelParamOverride, requestHeadersFrom } from "./param-override.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import type { ChannelRow } from "./types.js";
@@ -252,6 +257,9 @@ export async function dialOpenAIRealtimeWebSocket(url: string, headers: Record<s
 }
 
 export function openaiRealtimeUpstream(channel: ChannelRow, req: Request, model: string): { url: string; headers: Record<string, string> } {
+  if (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
+    return advancedCustomRealtimeUpstream(channel, req, model);
+  }
   const apiKey = pickChannelKey(channel.key);
   const upstreamModel = mapModel(channel.model_mapping, model || "gpt-4o-realtime-preview");
   return {
@@ -261,4 +269,45 @@ export function openaiRealtimeUpstream(channel: ChannelRow, req: Request, model:
     }),
     headers: openaiRealtimeDialHeaders(channel, req, apiKey, upstreamModel),
   };
+}
+
+/** Original `advancedcustom.Adaptor` GetRequestURL + SetupRequestHeader + DoWssRequest header override. */
+export function advancedCustomRealtimeUpstream(
+  channel: ChannelRow,
+  req: Request,
+  model: string,
+): { url: string; headers: Record<string, string> } {
+  const apiKey = pickChannelKey(channel.key);
+  const originModel = model || "gpt-4o-realtime-preview";
+  const upstreamModel = mapModel(channel.model_mapping, originModel);
+  const incomingPath = openaiRealtimeRequestURLPath(req).split("?")[0];
+  let url: string;
+  try {
+    url = buildAdvancedCustomRealtimeRequestURL(channel, incomingPath, originModel, upstreamModel);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw Object.assign(new Error(`get request url failed: ${message}`), { status: 500, code: "do_request_failed" });
+  }
+  let headers: Record<string, string>;
+  try {
+    headers = advancedCustomRealtimeSetupHeaders(channel, incomingPath, originModel, apiKey);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw Object.assign(new Error(`setup request header failed: ${message}`), { status: 500, code: "do_request_failed" });
+  }
+  applyChannelParamOverride(
+    channel,
+    null,
+    headers,
+    {
+      requestHeaders: requestHeadersFrom(req),
+      originalModel: originModel,
+      upstreamModel,
+      requestPath: openaiRealtimeRequestURLPath(req),
+    },
+    apiKey,
+    upstreamModel,
+  );
+  headers["Content-Type"] = req.headers.get("Content-Type") || "";
+  return { url, headers };
 }

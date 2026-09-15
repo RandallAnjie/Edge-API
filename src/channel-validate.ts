@@ -4,6 +4,7 @@ import {
   CHANNEL_TYPE_NEW_API,
   CHANNEL_TYPE_TASK_PLUGIN,
   CHANNEL_TYPE_VERTEX,
+  CLAUDE_VERSION,
   parseJson,
 } from "./constants.js";
 import { pickChannelKey } from "./select.js";
@@ -638,6 +639,78 @@ export function buildAdvancedCustomRelayTarget(
   }
   const applied = applyAdvancedCustomAuth(url, { "content-type": "application/json" }, route.auth, apiKey);
   return { url: applied.url, headers: applied.headers, body, method: "POST", converter };
+}
+
+function resolveAdvancedCustomMatchedRoute(
+  channel: ChannelRow,
+  incomingPath: string,
+  originModel: string,
+): AdvancedCustomRoute {
+  const path = incomingPath.split("?")[0];
+  const config = advancedCustomConfigFromSettings(channel.settings);
+  if (!config) throw new Error("advanced_custom is required");
+  const invalid = validateAdvancedCustomConfig(config);
+  if (invalid) throw invalid;
+  const route = matchAdvancedCustomPathForModel(config, path, originModel);
+  if (!route) {
+    throw new Error(`advanced custom channel does not support request path ${path} for model ${originModel}`);
+  }
+  return route;
+}
+
+/** Original `advancedcustom.buildRouteURL` realtime https→wss / http→ws. */
+export function advancedCustomRealtimeWsURL(httpURL: string): string {
+  const parsed = new URL(httpURL);
+  if (parsed.protocol === "https:") parsed.protocol = "wss:";
+  else if (parsed.protocol === "http:") parsed.protocol = "ws:";
+  return parsed.toString();
+}
+
+/** Original `advancedcustom.Adaptor.GetRequestURL` for `RelayModeRealtime`. */
+export function buildAdvancedCustomRealtimeRequestURL(
+  channel: ChannelRow,
+  incomingPath: string,
+  originModel: string,
+  upstreamModel: string,
+): string {
+  const route = resolveAdvancedCustomMatchedRoute(channel, incomingPath, originModel);
+  const upstreamPath = String(route.upstream_path || "")
+    .trim()
+    .replaceAll(ADVANCED_CUSTOM_MODEL_PLACEHOLDER, upstreamModel);
+  const httpURL = resolveAdvancedCustomUpstreamURL(upstreamPath, String(channel.base_url || "").trim());
+  let url = advancedCustomRealtimeWsURL(httpURL);
+  if (route.auth && String(route.auth.type || "").trim() === "query") {
+    url = applyAdvancedCustomAuth(url, {}, route.auth, pickChannelKey(channel.key)).url;
+  }
+  return url;
+}
+
+/** Original `advancedcustom.Adaptor.SetupRequestHeader` for `RelayModeRealtime`. */
+export function advancedCustomRealtimeSetupHeaders(
+  channel: ChannelRow,
+  incomingPath: string,
+  originModel: string,
+  apiKey: string,
+): Record<string, string> {
+  const route = resolveAdvancedCustomMatchedRoute(channel, incomingPath, originModel);
+  const converter = String(route.converter || "").trim() || "none";
+  const headers: Record<string, string> = {};
+  if (!route.auth) {
+    headers.Authorization = "Bearer " + apiKey;
+  } else {
+    const authType = String(route.auth.type || "").trim();
+    if (authType === "header") {
+      headers[String(route.auth.name || "").trim()] = applyAuthTemplate(String(route.auth.value || ""), apiKey);
+    } else if (authType === "query") {
+      /* query auth is applied in GetRequestURL */
+    } else if (authType !== "none") {
+      throw new Error(`invalid advanced custom auth type: ${authType}`);
+    }
+  }
+  if (shouldApplyAdvancedCustomClaudeHeaders(converter)) {
+    headers["anthropic-version"] = CLAUDE_VERSION;
+  }
+  return headers;
 }
 
 function modelsTooLong(models: string): string | null {

@@ -58,7 +58,8 @@ Material changes from upstream:
   (gorilla `Dial` handshake timeout 5s, HTTP 101 `Upgrade: websocket` to
   `wss://spark-api.xf-yun.com/{version}/chat`, no gorilla SDK). OpenAI Realtime uses the original HTTP path
   (gorilla `DefaultDialer` 45s, HTTP 101 `Upgrade: websocket`, `https`→`wss`, Azure
-  `/openai/realtime?deployment=` + `api-key`, preview-only `openai-beta`, no gorilla SDK). Stripe/Epay/Creem/Waffo checkout use HTTP APIs
+  `/openai/realtime?deployment=` + `api-key`, preview-only `openai-beta`, Advanced Custom
+  route `https`→`wss` + route auth, no gorilla SDK). Stripe/Epay/Creem/Waffo checkout use HTTP APIs
   (no vendor SDK). io.net model deployments use the original HTTP API (no
   vendor SDK). Original QuantumNous factory task plugins (`plugins/tasks/*/plugin.js`)
   are embedded and listed/routed with original JSON (`source: "factory"`).
