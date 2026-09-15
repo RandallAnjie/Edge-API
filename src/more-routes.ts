@@ -20,6 +20,7 @@ import { newChallenge, rpFromRequest, verifyAssertion } from "./passkey.js";
 import {
   exchangeCustom,
   exchangeDiscord,
+  discordRedirectUri,
   exchangeGithub,
   exchangeLinuxDO,
   exchangeOidc,
@@ -972,7 +973,6 @@ export function registerMore(r: Router<Env>): void {
       return json(400, { success: false, message: i18nPair(c.req, "未知的 OAuth 提供商", "Unknown OAuth provider") });
     }
     const origin = new URL(c.req.url).origin;
-    const redirect = `${origin}/oauth/${provider}`;
     const code = c.url.searchParams.get("code") || "";
     const state = c.url.searchParams.get("state") || "";
     const errorCode = c.url.searchParams.get("error");
@@ -1134,7 +1134,14 @@ export function registerMore(r: Router<Env>): void {
       if (provider === "discord") {
         const denied = await denyIfDisabled("DiscordOAuthEnabled");
         if (denied) return denied;
-        return finish(await exchangeDiscord(await s.option("DiscordClientId"), await s.option("DiscordClientSecret"), code, redirect));
+        return finish(
+          await exchangeDiscord({
+            clientId: await s.option("DiscordClientId"),
+            secret: await s.option("DiscordClientSecret"),
+            code,
+            redirect: discordRedirectUri(await s.option("ServerAddress")),
+          }),
+        );
       }
       if (provider === "linuxdo") {
         const denied = await denyIfDisabled("LinuxDOOAuthEnabled");

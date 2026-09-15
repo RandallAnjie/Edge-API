@@ -112,31 +112,71 @@ export async function exchangeGithub(clientId: string, secret: string, code: str
   };
 }
 
-export async function exchangeDiscord(clientId: string, secret: string, code: string, redirect: string): Promise<OAuthProfile> {
+/** Original `oauth.DiscordProvider.ExchangeToken` redirect: `ServerAddress + "/oauth/discord"`. */
+export function discordRedirectUri(serverAddress: string): string {
+  return `${serverAddress}/oauth/discord`;
+}
+
+function discordConnectFailed(): OAuthI18nError {
+  return new OAuthI18nError(
+    "无法连接至 Discord 服务器，请稍后重试",
+    "Unable to connect to Discord server, please try again later",
+  );
+}
+
+/** Original `oauth.DiscordProvider.ExchangeToken` / `GetUserInfo`. */
+export async function exchangeDiscord(opts: {
+  clientId: string;
+  secret: string;
+  code: string;
+  redirect: string;
+}): Promise<OAuthProfile> {
   const body = new URLSearchParams({
-    client_id: clientId,
-    client_secret: secret,
+    client_id: opts.clientId,
+    client_secret: opts.secret,
+    code: opts.code,
     grant_type: "authorization_code",
-    code,
-    redirect_uri: redirect,
+    redirect_uri: opts.redirect,
   });
-  const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
-  });
+  let tokenRes: Response;
+  try {
+    tokenRes = await fetch("https://discord.com/api/v10/oauth2/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body,
+    });
+  } catch {
+    throw discordConnectFailed();
+  }
   const tokenJson = (await tokenRes.json()) as { access_token?: string };
-  if (!tokenJson.access_token) throw new Error("Discord 授权失败");
-  const userRes = await fetch("https://discord.com/api/users/@me", {
-    headers: { authorization: `Bearer ${tokenJson.access_token}` },
-  });
-  const u = (await userRes.json()) as { id?: string; username?: string; global_name?: string; email?: string };
-  if (!u.id) throw new Error("无法读取 Discord 用户");
+  if (!tokenJson.access_token) {
+    throw new OAuthI18nError(
+      "Discord 获取 Token 失败，请检查设置",
+      "Failed to get token from Discord, please check settings",
+    );
+  }
+  let userRes: Response;
+  try {
+    userRes = await fetch("https://discord.com/api/v10/users/@me", {
+      headers: { authorization: `Bearer ${tokenJson.access_token}` },
+    });
+  } catch {
+    throw discordConnectFailed();
+  }
+  if (userRes.status !== 200) {
+    throw new OAuthI18nError("获取用户信息失败", "Failed to get user information");
+  }
+  const u = (await userRes.json()) as { id?: string; username?: string; global_name?: string };
+  if (!u.id || !u.username) {
+    throw new OAuthI18nError(
+      "Discord 获取用户信息为空，请检查设置",
+      "Discord returned empty user info, please check settings",
+    );
+  }
   return {
     id: u.id,
-    username: (u.username || `dc_${u.id}`).slice(0, 20),
-    display_name: u.global_name || u.username || u.id,
-    email: u.email,
+    username: u.username,
+    display_name: u.global_name || "",
     field: "discord_id",
   };
 }
