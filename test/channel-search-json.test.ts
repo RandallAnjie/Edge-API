@@ -42,6 +42,11 @@ const ORIGINAL_CHANNEL_JSON_FIELDS = [
   "settings",
 ] as const;
 
+function assertExactChannelKeys(row: Record<string, unknown>) {
+  assert.deepEqual(Object.keys(row).sort(), [...ORIGINAL_CHANNEL_JSON_FIELDS].sort());
+  assert.equal("max_input_tokens" in row, false);
+}
+
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
 }
@@ -170,6 +175,7 @@ test("original SearchChannels JSON matches Channel tags, type_counts, and filter
   for (const k of ORIGINAL_CHANNEL_JSON_FIELDS) {
     assert.ok(k in row, "missing SearchChannels Channel field " + k);
   }
+  assertExactChannelKeys(row);
   assert.equal(row.key, "");
   assert.equal(row.name, "search-openai");
   assert.equal(typeof row.channel_info, "object");
@@ -329,6 +335,7 @@ test("original GetAllChannels JSON ignores keyword and keeps Channel list fields
   for (const k of ORIGINAL_CHANNEL_JSON_FIELDS) {
     assert.ok(k in row, "missing GetAllChannels Channel field " + k);
   }
+  assertExactChannelKeys(row);
   assert.equal(row.key, "");
   assert.equal(typeof row.channel_info, "object");
 
@@ -346,4 +353,23 @@ test("original GetAllChannels JSON ignores keyword and keeps Channel list fields
   );
   const searchNames = ((searched.body.data as { items: { name: string }[] }).items || []).map((c) => c.name);
   assert.deepEqual(searchNames, ["list-alpha-unique"]);
+});
+
+test("original GetChannel JSON is Channel tags without max_input_tokens", async () => {
+  const { e, auth } = await boot();
+  const created = await addChannel(e, auth, {
+    name: "get-channel-json",
+    type: 1,
+    key: "sk-get-channel",
+    models: "gpt-4o-mini",
+    group: "default",
+  });
+  const got = await json(new Request("http://local/api/channel/" + created.id, { headers: auth }), e);
+  assert.equal(got.body.success, true, String(got.body.message));
+  assert.equal(got.body.message, "");
+  const row = got.body.data as Record<string, unknown>;
+  assertExactChannelKeys(row);
+  assert.equal(row.key, "");
+  assert.equal(row.name, "get-channel-json");
+  assert.equal(row.type, 1);
 });

@@ -371,7 +371,6 @@ export function publicChannel(c: ChannelRow, includeKey = false): Record<string,
     param_override: ginStringPtr(c.param_override),
     header_override: ginStringPtr(c.header_override),
     remark: ginStringPtr(c.remark),
-    max_input_tokens: 0,
     channel_info: info,
     settings: c.settings || "",
   };
