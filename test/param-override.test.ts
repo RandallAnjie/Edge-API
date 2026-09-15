@@ -231,8 +231,8 @@ test("original ApplyParamOverrideWithRelayInfo records temperature when debug en
     );
     assert.deepEqual(audit, [
       "copy metadata.target_model -> model",
-      "set temperature = 0.1",
       "set service_tier = flex",
+      "set temperature = 0.1",
     ]);
   } finally {
     setParamOverrideAuditDebugEnabled(false);
