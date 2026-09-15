@@ -339,6 +339,15 @@ export class Store {
     await this.db.prepare("UPDATE users SET quota = quota + ? WHERE id = ?").bind(delta, userId).run();
   }
 
+  /** Original `model.inviteUser` (aff_count / aff_quota / aff_history only, not wallet quota). */
+  async inviteUser(inviterId: number): Promise<void> {
+    const bonus = await this.optionNum("QuotaForInviter", 0);
+    await this.db
+      .prepare("UPDATE users SET aff_count = aff_count + 1, aff_quota = aff_quota + ?, aff_history_quota = aff_history_quota + ? WHERE id = ?")
+      .bind(bonus, bonus, inviterId)
+      .run();
+  }
+
   /** Original `model.TryReserveUserQuota` (wallet PreConsume). */
   async tryHoldUserQuota(userId: number, quota: number): Promise<boolean> {
     if (quota <= 0) return true;

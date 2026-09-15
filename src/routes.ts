@@ -76,6 +76,7 @@ import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
 import { requirePaymentCompliance } from "./payments.js";
 import { storeLogQuota } from "./quota.js";
+import { finishInsertUser } from "./user-insert.js";
 import { notifyAccountSecurityChange } from "./mail.js";
 import { isPasskeyDomainOption, PasskeyDomainError, passkeyDomainHttpError, updatePasskeyDomainOptions } from "./passkey-domains.js";
 import type { Env, UserRow } from "./types.js";
@@ -416,20 +417,7 @@ export function adminRouter(): Router<Env> {
       inviter_id: inviter,
     });
     if (email) await s.updateUser(id, { email, email_verified: 1 });
-    if (inviter) {
-      const bonus = await s.optionNum("QuotaForInviter", 0);
-      const invitee = await s.optionNum("QuotaForInvitee", 0);
-      if (bonus) await s.addQuota(inviter, bonus);
-      if (invitee) await s.addQuota(id, invitee);
-      const inv = await s.getUserById(inviter);
-      if (inv) {
-        await s.updateUser(inviter, {
-          aff_count: (inv.aff_count || 0) + 1,
-          aff_quota: (inv.aff_quota || 0) + bonus,
-          aff_history_quota: (inv.aff_history_quota || 0) + bonus,
-        });
-      }
-    }
+    await finishInsertUser(s, id, inviter);
     if (c.env.GENERATE_DEFAULT_TOKEN === "true" || (await s.optionBool("GenerateDefaultToken", false))) {
       await s.insertToken({
         user_id: id,
@@ -634,7 +622,7 @@ export function adminRouter(): Router<Env> {
     if (await s.getUserByUsername(username, { includeDeleted: true })) return apiFail("用户已存在");
     const role = Number(body.role || ROLE_USER);
     if (role >= u.role) return apiFail("无法创建权限大于等于自己的用户");
-    await s.insertUser({
+    const id = await s.insertUser({
       username,
       password: await hashPassword(body.password),
       display_name: body.display_name || username,
@@ -642,6 +630,7 @@ export function adminRouter(): Router<Env> {
       quota: await s.optionNum("QuotaForNewUser", 0),
       aff_code: generateAffCode(),
     });
+    await finishInsertUser(s, id, 0);
     return apiOk(null);
   });
 

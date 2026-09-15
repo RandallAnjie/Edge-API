@@ -4,6 +4,7 @@ import { nowSec, randomHex } from "./constants.js";
 import { apiFail, apiOk, json } from "./http.js";
 import { notifyAccountSecurityChange } from "./mail.js";
 import { issueSessionSafe, sessionResponse } from "./auth.js";
+import { finishInsertUser } from "./user-insert.js";
 import type { Store } from "./store.js";
 import type { Env, UserRow } from "./types.js";
 import type { Context } from "./router.js";
@@ -198,6 +199,7 @@ export async function loginOrBindOAuth(
       await store.updateUser(id, { [profile.field]: profile.id });
     }
     if (profile.provider_id) await store.upsertUserOAuthBinding(id, profile.provider_id, profile.id);
+    await finishInsertUser(store, id, 0);
     user = await store.getUserById(id);
   }
   if (user && user.status !== 1) return apiFail("用户已被封禁");
