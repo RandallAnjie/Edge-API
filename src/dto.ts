@@ -1329,6 +1329,32 @@ export function publicQuotaData(row: Record<string, unknown>): Record<string, un
   };
 }
 
+/** Original `model.FlowQuotaData` JSON tags (`omitempty` on identity columns). */
+export function publicFlowQuotaData(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    use_group: String(row.use_group || ""),
+    model_name: String(row.model_name || ""),
+    token_used: Number(row.token_used || 0),
+    count: Number(row.count || 0),
+    quota: Number(row.quota || 0),
+  };
+  const userId = Number(row.user_id || 0);
+  if (userId) out.user_id = userId;
+  const username = String(row.username || "");
+  if (username) out.username = username;
+  const nodeName = String(row.node_name || "");
+  if (nodeName) out.node_name = nodeName;
+  const tokenId = Number(row.token_id || 0);
+  if (tokenId) out.token_id = tokenId;
+  const tokenName = String(row.token_name || "");
+  if (tokenName) out.token_name = tokenName;
+  const channelId = Number(row.channel_id || 0);
+  if (channelId) out.channel_id = channelId;
+  const channelName = String(row.channel_name || "");
+  if (channelName) out.channel_name = channelName;
+  return out;
+}
+
 /** Original `controller.ManageUser` encodes a zero `model.User` with only role/status set. */
 export function manageUserView(role: number, status: number): Record<string, unknown> {
   return {

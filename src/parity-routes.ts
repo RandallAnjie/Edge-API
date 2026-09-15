@@ -1,5 +1,5 @@
 import { billingCopies } from "./billing-setting.js";
-import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, GO_ZERO_TIME, ROLE_ROOT, START_TIME, VERSION, csv, nowSec, parseJson, randomHex } from "./constants.js";
+import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, GO_ZERO_TIME, ROLE_ROOT, ROLE_USER, START_TIME, VERSION, csv, nowSec, parseJson, randomHex } from "./constants.js";
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { httpStats, performanceStats, resetMetrics } from "./metrics.js";
 import {
@@ -58,7 +58,7 @@ import {
 } from "./auth.js";
 import { Store } from "./store.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
-import { enrichModelMeta, extractPluginMeta, listAdminModels, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView } from "./dto.js";
+import { enrichModelMeta, extractPluginMeta, listAdminModels, publicFlowQuotaData, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView } from "./dto.js";
 import {
   factoryPluginIcon,
   factoryTaskPluginDetail,
@@ -1369,7 +1369,9 @@ export function registerParity(r: Router<Env>): void {
     if (start <= 0) return apiFail("invalid start_timestamp");
     if (end <= 0) return apiFail("invalid end_timestamp");
     if (end < start) return apiFail("invalid time range");
-    return apiOk(await s.flowQuotaDates(start, end, null, c.url.searchParams.get("username") || "", u.role));
+    return apiOk(
+      (await s.flowQuotaDates(start, end, 0, c.url.searchParams.get("username") || "", u.role)).map(publicFlowQuotaData),
+    );
   });
   r.get("/api/data/flow/self", async (c) => {
     const s = store(c);
@@ -1381,7 +1383,7 @@ export function registerParity(r: Router<Env>): void {
     if (end <= 0) return apiFail("invalid end_timestamp");
     if (end < start) return apiFail("invalid time range");
     if (end - start > 2592000) return apiFail("时间跨度不能超过 1 个月");
-    return apiOk(await s.flowQuotaDates(start, end, u.id, "", u.role));
+    return apiOk((await s.flowQuotaDates(start, end, u.id, "", ROLE_USER)).map(publicFlowQuotaData));
   });
 
   r.get("/api/task/:task_id/artifacts", async (c) => {

@@ -9,6 +9,8 @@ import {
   REDEMPTION_DISABLED,
   REDEMPTION_ENABLED,
   REDEMPTION_USED,
+  ROLE_ADMIN,
+  ROLE_ROOT,
   TOKEN_ENABLED,
   USER_ENABLED,
   csv,
@@ -1102,68 +1104,85 @@ export class Store {
     return results;
   }
 
+  /** Original `model.GetFlowQuotaData` role dimensions + fillFlowTokenNames/fillFlowChannelNames. */
   async flowQuotaDates(
     start: number,
     end: number,
     userId: number | null,
     username = "",
     role = 0,
-  ): Promise<unknown[]> {
+  ): Promise<Record<string, unknown>[]> {
     const where = ["use_group <> ''", "created_at >= ?", "created_at <= ?"];
     const binds: unknown[] = [start, end];
-    if (userId) {
+    const root = role >= ROLE_ROOT;
+    const admin = !root && role >= ROLE_ADMIN;
+    if (!root && !admin) {
       where.push("user_id = ?");
-      binds.push(userId);
-    }
-    if (username) {
+      binds.push(userId ?? 0);
+    } else if (username) {
       where.push("username = ?");
       binds.push(username);
     }
     const w = where.join(" AND ");
     let sql: string;
-    if (userId) {
-      sql = `SELECT token_id, use_group, model_name, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
-             FROM quota_data WHERE ${w} GROUP BY token_id, use_group, model_name ORDER BY quota DESC`;
-    } else if (role >= 100) {
+    if (root) {
       sql = `SELECT user_id, username, node_name, token_id, use_group, model_name, channel_id,
                     SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
              FROM quota_data WHERE ${w}
              GROUP BY user_id, username, node_name, token_id, use_group, model_name, channel_id ORDER BY quota DESC`;
-    } else {
+    } else if (admin) {
       sql = `SELECT user_id, username, use_group, model_name, channel_id,
                     SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
              FROM quota_data WHERE ${w}
              GROUP BY user_id, username, use_group, model_name, channel_id ORDER BY quota DESC`;
+    } else {
+      sql = `SELECT token_id, use_group, model_name, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+             FROM quota_data WHERE ${w} GROUP BY token_id, use_group, model_name ORDER BY quota DESC`;
     }
     const { results } = await this.db.prepare(sql).bind(...binds).all<Record<string, unknown>>();
-    const tokenIds = [...new Set(results.map((r) => Number(r.token_id || 0)).filter(Boolean))];
-    const channelIds = [...new Set(results.map((r) => Number(r.channel_id || 0)).filter(Boolean))];
+    if (root || !admin) await this.fillFlowTokenNames(results);
+    if (root || admin) await this.fillFlowChannelNames(results);
+    return results;
+  }
+
+  /** Original `fillFlowTokenNames`: deleted tokens keep empty `token_name` for localized "deleted (id)". */
+  private async fillFlowTokenNames(rows: Record<string, unknown>[]): Promise<void> {
+    const tokenIds = [...new Set(rows.map((r) => Number(r.token_id || 0)).filter(Boolean))];
+    if (!tokenIds.length) return;
+    const ph = tokenIds.map(() => "?").join(",");
+    const { results: tokens } = await this.db
+      .prepare(`SELECT id, name FROM api_tokens WHERE id IN (${ph})`)
+      .bind(...tokenIds)
+      .all<{ id: number; name: string }>();
     const tokenNames = new Map<number, string>();
+    for (const t of tokens) {
+      if (t.name) tokenNames.set(t.id, t.name);
+    }
+    for (const row of rows) {
+      const name = tokenNames.get(Number(row.token_id || 0));
+      if (name) row.token_name = name;
+    }
+  }
+
+  /** Original `fillFlowChannelNames`: missing channel rows become `channel-%d`. */
+  private async fillFlowChannelNames(rows: Record<string, unknown>[]): Promise<void> {
+    const channelIds = [...new Set(rows.map((r) => Number(r.channel_id || 0)).filter(Boolean))];
+    if (!channelIds.length) return;
+    const ph = channelIds.map(() => "?").join(",");
+    const { results: channels } = await this.db
+      .prepare(`SELECT id, name FROM channels WHERE id IN (${ph})`)
+      .bind(...channelIds)
+      .all<{ id: number; name: string }>();
     const channelNames = new Map<number, string>();
-    if (tokenIds.length) {
-      const ph = tokenIds.map(() => "?").join(",");
-      const { results: tokens } = await this.db
-        .prepare(`SELECT id, name FROM api_tokens WHERE id IN (${ph})`)
-        .bind(...tokenIds)
-        .all<{ id: number; name: string }>();
-      for (const t of tokens) tokenNames.set(t.id, t.name);
+    for (const ch of channels) {
+      if (ch.name) channelNames.set(ch.id, ch.name);
     }
-    if (channelIds.length) {
-      const ph = channelIds.map(() => "?").join(",");
-      const { results: channels } = await this.db
-        .prepare(`SELECT id, name FROM channels WHERE id IN (${ph})`)
-        .bind(...channelIds)
-        .all<{ id: number; name: string }>();
-      for (const ch of channels) channelNames.set(ch.id, ch.name);
+    for (const row of rows) {
+      const channelId = Number(row.channel_id || 0);
+      if (!channelId) continue;
+      const name = channelNames.get(channelId);
+      row.channel_name = name || `channel-${channelId}`;
     }
-    return results.map((r) => {
-      const tokenId = Number(r.token_id || 0);
-      const channelId = Number(r.channel_id || 0);
-      const out: Record<string, unknown> = { ...r };
-      if (tokenId) out.token_name = tokenNames.get(tokenId) || `token-${tokenId}`;
-      if (channelId) out.channel_name = channelNames.get(channelId) || `channel-${channelId}`;
-      return out;
-    });
   }
 
   async insertRedemption(r: Partial<RedemptionRow>): Promise<number> {
