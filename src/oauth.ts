@@ -4,7 +4,7 @@ import { nowSec, randomHex } from "./constants.js";
 import { apiFail, apiFailCode, apiOk, json } from "./http.js";
 import { ERR_TELEGRAM_ACCOUNT_NOT_BOUND } from "./telegram-oauth.js";
 import { notifyAccountSecurityChange } from "./mail.js";
-import { issueSessionSafe, sessionResponse } from "./auth.js";
+import { setupLogin } from "./auth.js";
 import { finishInsertUser } from "./user-insert.js";
 import type { Store } from "./store.js";
 import type { Env, UserRow } from "./types.js";
@@ -223,9 +223,7 @@ export async function loginOrBindOAuth(
     user = await store.getUserById(id);
   }
   if (user && user.status !== 1) return apiFail("用户已被封禁");
-  const issued = await issueSessionSafe(store, env, user!, req, "oauth:" + (profile.slug || profile.field.replace(/_id$/, "")));
-  if (issued instanceof Response) return issued;
-  return sessionResponse(issued);
+  return setupLogin(store, env, user!, req, "oauth:" + (profile.slug || profile.field.replace(/_id$/, "")));
 }
 
 export function oauthAuthorizeUrl(provider: string, clientId: string, redirect: string, extra: Record<string, string> = {}): string {
@@ -259,7 +257,8 @@ export async function wechatIdFromCode(store: Store, code: string): Promise<stri
     headers: { Authorization: token },
   });
   const json = (await res.json()) as { success?: boolean; message?: string; data?: string };
-  if (!json.success || !json.data) throw new Error(json.message || "验证码错误或已过期");
+  if (!json.success) throw new Error(json.message || "");
+  if (!json.data) throw new Error("验证码错误或已过期");
   return json.data;
 }
 

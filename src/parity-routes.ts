@@ -1,5 +1,5 @@
 import { billingCopies } from "./billing-setting.js";
-import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, ROLE_ROOT, ROLE_USER, csv, nowSec, parseJson, randomHex } from "./constants.js";
+import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, ROLE_ROOT, ROLE_USER, USER_ENABLED, csv, nowSec, parseJson, randomHex } from "./constants.js";
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { loadPerformanceSetting, performanceStats, resetMetrics } from "./metrics.js";
 import {
@@ -28,12 +28,9 @@ import {
   requestSubscriptionWaffoPancakePay,
 } from "./subscription-payment.js";
 import { mailConfigured, notifyAccountSecurityChange, sendMail, sixDigitCode } from "./mail.js";
-import {
-  loginOrBindOAuth,
-  verifyTelegramLogin,
-  wechatIdFromCode,
-} from "./oauth.js";
-import { bytesToHex, sha256Bytes } from "./crypto.js";
+import { verifyTelegramLogin, wechatIdFromCode } from "./oauth.js";
+import { bytesToHex, generateAffCode, sha256Bytes } from "./crypto.js";
+import { finishInsertUser } from "./user-insert.js";
 import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-oauth.js";
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
@@ -48,6 +45,7 @@ import {
   dashboardIdentity,
   isResponse,
   issueSessionSafe,
+  setupLogin,
   requireAdmin,
   requireChannel,
   requirePermission,
@@ -380,16 +378,26 @@ export function registerParity(r: Router<Env>): void {
     const code = c.url.searchParams.get("code") || "";
     try {
       const wechatId = await wechatIdFromCode(s, code);
-      const existing = await s.getUserByField("wechat_id", wechatId);
-      const username = existing ? existing.username : `wechat_${(await s.maxUserId()) + 1}`;
-      return loginOrBindOAuth(
-        s,
-        c.env,
-        c.req,
-        { id: wechatId, username, display_name: existing?.display_name || "WeChat User", field: "wechat_id" },
-        null,
-        "login",
-      );
+      const taken = await s.getUserByField("wechat_id", wechatId, { includeDeleted: true });
+      let user = taken && Number(taken.deleted_at || 0) === 0 ? taken : null;
+      if (taken && !user) return apiFail("用户已注销");
+      if (!user) {
+        if (!(await s.optionBool("RegisterEnabled", true))) return apiFail("管理员关闭了新用户注册");
+        const id = await s.insertUser({
+          username: `wechat_${(await s.maxUserId()) + 1}`,
+          display_name: "WeChat User",
+          role: ROLE_USER,
+          status: USER_ENABLED,
+          wechat_id: wechatId,
+          quota: await s.optionNum("QuotaForNewUser", 0),
+          aff_code: generateAffCode(),
+        });
+        await finishInsertUser(s, id, 0);
+        user = await s.getUserById(id);
+        if (!user) return apiFail("用户不存在");
+      }
+      if (user.status !== USER_ENABLED) return apiFail("用户已被封禁");
+      return setupLogin(s, c.env, user, c.req, "wechat");
     } catch (e) {
       return apiFail(e instanceof Error ? e.message : String(e));
     }

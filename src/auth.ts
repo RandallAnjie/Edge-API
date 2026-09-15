@@ -11,6 +11,7 @@ import {
   USER_SESSION_ISSUANCE_LIMIT,
   USER_SESSION_ISSUANCE_WINDOW_SEC,
   nowSec,
+  randomHex,
   tokenModelLimitsMap,
 } from "./constants.js";
 import { canWithPolicies, capabilitiesFromStore, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
@@ -27,6 +28,7 @@ import {
 } from "./crypto.js";
 import {
   apiFail,
+  apiFailCode,
   apiOk,
   clientIp,
   cookieGet,
@@ -613,4 +615,73 @@ export async function issueSessionSafe(
     if (code === "AUTH_SESSION_ISSUANCE_LIMIT") return authSessionIssuanceLimit();
     throw e;
   }
+}
+
+/** Original `service.LoginVerificationTTL`. */
+export const LOGIN_VERIFICATION_TTL_SEC = 300;
+
+/** Original `service.LoginChallenge`. */
+export type LoginChallenge = {
+  require_verification: true;
+  flow_token: string;
+  expires_at: number;
+  methods: { method: string; available: boolean; reason?: string }[];
+};
+
+/**
+ * Original `service.StartLoginVerification`.
+ * Password login keeps its extra `require_2fa` field; WeChat/OAuth use this envelope as-is.
+ */
+export async function startLoginVerification(
+  store: Store,
+  user: UserRow,
+  loginMethod: string,
+): Promise<{ challenge: LoginChallenge | null } | { error: Response }> {
+  const authVersion = Number(user.auth_version || 1) || 1;
+  if (!user.id || authVersion <= 0 || !loginMethod) {
+    return { error: apiFailCode("Verification flow expired", "AUTH_FLOW_INVALID") };
+  }
+  if (user.status !== USER_ENABLED) {
+    return { error: authUnauthorized() };
+  }
+  const hasTwoFA = Number(user.totp_enabled) === 1;
+  const hasPasskey = (await store.listPasskeys(user.id)).length > 0;
+  const passkeyEnabled = await store.optionBool("PasskeyEnabled", true);
+  const methods: LoginChallenge["methods"] = [];
+  if (hasTwoFA) methods.push({ method: "2fa", available: true });
+  if (hasPasskey) {
+    if (passkeyEnabled) methods.push({ method: "passkey", available: true });
+    else methods.push({ method: "passkey", available: false, reason: "Passkey authentication is disabled." });
+  }
+  if (!methods.length) return { challenge: null };
+  if (!methods.some((m) => m.available)) {
+    return { error: apiFailCode("This verification method is currently unavailable.", "SECURITY_METHOD_UNAVAILABLE") };
+  }
+  const flow = randomHex(16);
+  const expires_at = nowSec() + LOGIN_VERIFICATION_TTL_SEC;
+  await store.insertAuthFlow({
+    token: flow,
+    type: hasTwoFA ? "2fa_login" : "login_verify",
+    user_id: user.id,
+    expires_at,
+    payload: JSON.stringify({ auth_version: authVersion, login_method: loginMethod }),
+  });
+  return { challenge: { require_verification: true, flow_token: flow, expires_at, methods } };
+}
+
+/** Original `controller.setupLogin`. */
+export async function setupLogin(
+  store: Store,
+  env: Env,
+  user: UserRow,
+  req: Request,
+  loginMethod: string,
+): Promise<Response> {
+  const started = await startLoginVerification(store, user, loginMethod);
+  if ("error" in started) return started.error;
+  if (started.challenge) return apiOk(started.challenge);
+  const issued = await issueSessionSafe(store, env, user, req, loginMethod);
+  if (issued instanceof Response) return issued;
+  await store.audit(user.id, user.username, "login", `Logged in successfully via ${loginMethod}`, clientIp(req));
+  return sessionResponse(issued);
 }
