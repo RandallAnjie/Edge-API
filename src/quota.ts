@@ -64,6 +64,31 @@ export function formatQuotaOriginal(
   return `＄${usd.toFixed(6)}`;
 }
 
+/** Original `logger.LogQuota` (FormatQuota plus ` 额度` / ` 点额度`). */
+export function logQuota(
+  quota: number,
+  quotaPerUnit: number,
+  displayType = "USD",
+  usdRate = 1,
+  customSymbol = "¤",
+  customRate = 1,
+): string {
+  const type = String(displayType || "USD").toUpperCase();
+  if (type === "TOKENS") return `${quota} 点额度`;
+  return `${formatQuotaOriginal(quota, quotaPerUnit, displayType, usdRate, customSymbol, customRate)} 额度`;
+}
+
+/** Original `logger.LogQuota` using persisted general_setting / QuotaPerUnit options. */
+export async function storeLogQuota(store: Store, quota: number): Promise<string> {
+  const unit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
+  const display =
+    (await store.option("general_setting.quota_display_type")) || (await store.option("QuotaDisplayType")) || "USD";
+  const usdRate = (await store.optionNum("USDExchangeRate", 1)) || 1;
+  const customSymbol = (await store.option("general_setting.custom_currency_symbol")) || "¤";
+  const customRate = Number(await store.option("general_setting.custom_currency_exchange_rate")) || 1;
+  return logQuota(quota, unit, display, usdRate, customSymbol, customRate);
+}
+
 /** Original `NewBillingSession` wallet insufficient messages. */
 export function insufficientWalletQuotaMessage(remain: number, need: number, formattedRemain: string, formattedNeed: string): string {
   if (remain <= 0) return `用户额度不足, 剩余额度: ${formattedRemain}`;

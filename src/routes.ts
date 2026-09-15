@@ -75,6 +75,7 @@ import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
 import { requirePaymentCompliance } from "./payments.js";
+import { storeLogQuota } from "./quota.js";
 import { notifyAccountSecurityChange } from "./mail.js";
 import { isPasskeyDomainOption, PasskeyDomainError, passkeyDomainHttpError, updatePasskeyDomainOptions } from "./passkey-domains.js";
 import type { Env, UserRow } from "./types.js";
@@ -572,7 +573,7 @@ export function adminRouter(): Router<Env> {
     await s.insertCheckin(u.id, today, quota);
     await s.addQuota(u.id, quota);
     await s.updateUser(u.id, { checkin_at: nowSec() });
-    await s.insertLog({ user_id: u.id, type: 4, content: `用户签到，获得额度 ${quota}`, username: u.username, quota });
+    await s.insertLog({ user_id: u.id, type: 4, content: `用户签到，获得额度 ${await storeLogQuota(s, quota)}`, username: u.username, quota });
     return apiOk({ quota_awarded: quota, checkin_date: today }, "签到成功");
   });
 
@@ -1526,7 +1527,7 @@ export function adminRouter(): Router<Env> {
       await s.insertLog({
         user_id: u.id,
         type: 1,
-        content: `通过兑换码充值 ${red.quota}，兑换码ID ${red.id}`,
+        content: `通过兑换码充值 ${await storeLogQuota(s, red.quota)}，兑换码ID ${red.id}`,
         username: u.username,
         quota: red.quota,
       });
