@@ -77,6 +77,7 @@ import {
   parseRealtimeEvent,
   remainingRealtimePreConsume,
   websocketMessageText,
+  type RealtimeUsage,
 } from "./openai-realtime-usage.js";
 import { loadWssPriceData, postWssConsumeQuota, preWssConsumeQuota } from "./openai-realtime-billing.js";
 import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
