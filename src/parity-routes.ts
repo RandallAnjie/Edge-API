@@ -1984,7 +1984,7 @@ export function registerParity(r: Router<Env>): void {
   r.post("/api/creem/webhook", (c) => handleCreemWebhook(store(c), c.req));
   r.post("/api/waffo/webhook", (c) => handleWaffoWebhook(store(c), c.req));
   r.post("/api/waffo/webhook/:env", (c) => genericPayWebhook(c, "waffo"));
-  r.post("/api/waffo-pancake/webhook/:env", (c) => handleWaffoPancakeWebhook(store(c), c.req, c.params.env));
+  r.post("/api/waffo-pancake/webhook/:env", (c) => handleWaffoPancakeWebhook(store(c), c.req, c.params.env, c.env));
 
   r.post("/api/subscription/epay/pay", (c) => requestSubscriptionEpay(c));
   r.post("/api/subscription/stripe/pay", (c) => requestSubscriptionStripePay(c));

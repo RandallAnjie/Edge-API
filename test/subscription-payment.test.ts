@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
 import { hmacSha256Hex, md5Hex } from "../src/crypto.js";
-import { generateWaffoTestKeyPair } from "./waffo-keys.js";
+import { generateWaffoTestKeyPair, signPancakeWebhook } from "./waffo-keys.js";
 import { LOG_TOPUP, ROOT_QUOTA } from "../src/constants.js";
 import { handleFetch } from "../src/worker.js";
 import worker from "../src/worker.js";
@@ -540,18 +540,19 @@ test("original SubscriptionRequestWaffoPancakePay WAFFO_PANCAKE_SUB JSON", async
     assert.match(data.order_id, /^WAFFO_PANCAKE_SUB-\d+-\d+-[0-9a-zA-Z]{6}$/);
 
     await store.setOption("WaffoPancakeProductID", "prod_wallet");
+    e.WAFFO_WEBHOOK_TEST_PUBLIC_KEY = keys.publicKey;
     const raw = JSON.stringify({
       mode: "test",
-      event_type: "order.completed",
+      eventType: "order.completed",
       data: {
-        order_merchant_external_id: data.order_id,
+        orderMerchantExternalId: data.order_id,
         merchantProvidedBuyerIdentity: "new-api-user-1",
       },
     });
     const hook = await json(
       new Request("http://local/api/waffo-pancake/webhook/test", {
         method: "POST",
-        headers: { "X-Waffo-Signature": "sig", "content-type": "application/json" },
+        headers: { "X-Waffo-Signature": await signPancakeWebhook(raw, keys.privateKey), "content-type": "application/json" },
         body: raw,
       }),
       e,

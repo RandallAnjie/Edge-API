@@ -2,6 +2,7 @@ import { DEFAULT_WAFFO_PAY_METHODS, MAX_WALLET_QUOTA, nowSec, parseJson, randomH
 import {
   createWaffoPancakeCheckoutSession,
   formatWaffoPancakeAmount,
+  verifyWaffoPancakeWebhook,
   waffoPancakeBuyerIdentityFromUserId,
 } from "./waffo-pancake.js";
 import {
@@ -20,7 +21,7 @@ import {
   ERR_SUBSCRIPTION_ORDER_NOT_FOUND,
   type Store,
 } from "./store.js";
-import type { UserRow } from "./types.js";
+import type { Env, UserRow } from "./types.js";
 import { parseTrustedRedirectDomains, validateRedirectURL } from "./url-validator.js";
 
 export { PAYMENT_COMPLIANCE_REQUIRED };
@@ -895,73 +896,88 @@ export async function handleWaffoWebhook(store: Store, req: Request): Promise<Re
   });
 }
 
-export async function handleWaffoPancakeWebhook(store: Store, req: Request, envParam: string): Promise<Response> {
+function pancakeWebhookText(status: number, body: string): Response {
+  return new Response(body, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
+}
+
+export async function handleWaffoPancakeWebhook(
+  store: Store,
+  req: Request,
+  envParam: string,
+  processEnv: Env | undefined = undefined,
+): Promise<Response> {
   if (!(await paymentEnabled(store, "waffo_pancake"))) {
-    return new Response("webhook disabled", { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } });
+    return pancakeWebhookText(403, "webhook disabled");
   }
   const expectedEnv = String(envParam || "").trim();
   if (expectedEnv !== "test" && expectedEnv !== "prod") {
-    return new Response("unknown env", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+    return pancakeWebhookText(404, "unknown env");
   }
   let raw = "";
   try {
     raw = await req.text();
   } catch {
-    return new Response("bad request", { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } });
+    return pancakeWebhookText(400, "bad request");
   }
   const signature = req.headers.get("X-Waffo-Signature") || "";
-  if (!signature) {
-    return new Response("invalid signature", { status: 401, headers: { "content-type": "text/plain; charset=utf-8" } });
+  let event;
+  try {
+    event = await verifyWaffoPancakeWebhook(raw, signature, {
+      WAFFO_WEBHOOK_TEST_PUBLIC_KEY: processEnv?.WAFFO_WEBHOOK_TEST_PUBLIC_KEY,
+      WAFFO_WEBHOOK_PROD_PUBLIC_KEY: processEnv?.WAFFO_WEBHOOK_PROD_PUBLIC_KEY,
+      WAFFO_WEBHOOK_PUBLIC_KEY: processEnv?.WAFFO_WEBHOOK_PUBLIC_KEY,
+    });
+  } catch {
+    return pancakeWebhookText(401, "invalid signature");
   }
-  const event = parseJson<{
-    mode?: string;
-    event_type?: string;
-    eventType?: string;
-    type?: string;
-    data?: { order_id?: string; orderId?: string; orderMerchantExternalId?: string; order_merchant_external_id?: string };
-  }>(raw, {});
-  const mode = String(event.mode || "").trim();
-  if (mode && mode.toLowerCase() !== expectedEnv) {
-    return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+  if (event.mode.trim().toLowerCase() !== expectedEnv.toLowerCase()) {
+    return pancakeWebhookText(200, "OK");
   }
-  const eventType = String(event.event_type || event.eventType || event.type || "").toLowerCase();
-  if (eventType === "order.completed" || eventType === "order_completed") {
-    const trade = String(
-      event.data?.order_merchant_external_id ||
-        event.data?.orderMerchantExternalId ||
-        event.data?.order_id ||
-        event.data?.orderId ||
-        "",
-    );
-    if (trade) {
-      if (trade.startsWith("WAFFO_PANCAKE_SUB-")) {
-        const order = await store.getSubscriptionOrderByTrade(trade);
-        if (!order || String(order.payment_provider || "") !== "waffo_pancake") {
-          return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
-        }
-        const identity = String(
-          (event.data as { merchantProvidedBuyerIdentity?: string; merchant_provided_buyer_identity?: string } | undefined)
-            ?.merchantProvidedBuyerIdentity ||
-            (event.data as { merchant_provided_buyer_identity?: string } | undefined)?.merchant_provided_buyer_identity ||
-            "",
-        ).trim();
-        if (identity !== `new-api-user-${Number(order.user_id || 0)}`) {
-          return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
-        }
-        const result = await tryCompleteSubscriptionOrder(store, trade, raw, "waffo_pancake", "");
-        if (result !== "completed") {
-          return new Response("retry", { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });
-        }
-        return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
-      }
-      try {
-        await store.rechargeWaffoPancake(trade);
-      } catch {
-        return new Response("retry", { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });
-      }
-    }
+  if (event.eventType !== "order.completed") return pancakeWebhookText(200, "OK");
+  const rawTradeNo = String(event.data.orderMerchantExternalId || "").trim();
+  if (rawTradeNo.startsWith("WAFFO_PANCAKE_SUB-")) {
+    const trade = await resolveWaffoPancakeSubscriptionTradeNo(store, event);
+    if (!trade) return pancakeWebhookText(200, "OK");
+    const result = await tryCompleteSubscriptionOrder(store, trade, raw, "waffo_pancake", "");
+    if (result !== "completed") return pancakeWebhookText(500, "retry");
+    return pancakeWebhookText(200, "OK");
   }
-  return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+  const trade = await resolveWaffoPancakeTradeNo(store, event);
+  if (!trade) return pancakeWebhookText(200, "OK");
+  try {
+    await store.rechargeWaffoPancake(trade);
+  } catch {
+    return pancakeWebhookText(500, "retry");
+  }
+  return pancakeWebhookText(200, "OK");
+}
+
+async function resolveWaffoPancakeTradeNo(
+  store: Store,
+  event: { data: { orderMerchantExternalId?: string; merchantProvidedBuyerIdentity?: string } },
+): Promise<string | null> {
+  const tradeNo = String(event.data.orderMerchantExternalId || "").trim();
+  if (!tradeNo) return null;
+  const row = await store.getTopupByTrade(tradeNo);
+  if (!row || String(row.payment_provider || "") !== "waffo_pancake") return null;
+  const expected = waffoPancakeBuyerIdentityFromUserId(Number(row.user_id || 0));
+  const actual = String(event.data.merchantProvidedBuyerIdentity || "").trim();
+  if (actual !== expected) return null;
+  return tradeNo;
+}
+
+async function resolveWaffoPancakeSubscriptionTradeNo(
+  store: Store,
+  event: { data: { orderMerchantExternalId?: string; merchantProvidedBuyerIdentity?: string } },
+): Promise<string | null> {
+  const tradeNo = String(event.data.orderMerchantExternalId || "").trim();
+  if (!tradeNo) return null;
+  const order = await store.getSubscriptionOrderByTrade(tradeNo);
+  if (!order || String(order.payment_provider || "") !== "waffo_pancake") return null;
+  const expected = waffoPancakeBuyerIdentityFromUserId(Number(order.user_id || 0));
+  const actual = String(event.data.merchantProvidedBuyerIdentity || "").trim();
+  if (actual !== expected) return null;
+  return tradeNo;
 }
 
 export async function tryCompleteSubscriptionOrder(

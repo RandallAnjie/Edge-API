@@ -374,3 +374,173 @@ export async function createWaffoPancakeCheckoutSession(
     tokenExpiresAt: String(tok.expiresAt || ""),
   };
 }
+
+/** Original `pancake.DefaultWebhookToleranceMS`. */
+export const WAFFO_PANCAKE_WEBHOOK_TOLERANCE_MS = 5 * 60 * 1000;
+
+/** Original SDK `builtinTestPublicKey`. */
+const BUILTIN_TEST_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxnmRY6yMMA3lVqmAU6ZG
+b1sjL/+r/z6E+ZjkXaDAKiqOhk9rpazni0bNsGXwmftTPk9jy2wn+j6JHODD/WH/
+SCnSfvKkLIjy4Hk7BuCgB174C0ydan7J+KgXLkOwgCAxxB68t2tezldwo74ZpXgn
+F49opzMvQ9prEwIAWOE+kV9iK6gx/AckSMtHIHpUesoPDkldpmFHlB2qpf1vsFTZ
+5kD6DmGl+2GIVK01aChy2lk8pLv0yUMu18v44sLkO5M44TkGPJD9qG09wrvVG2wp
+OTVCn1n5pP8P+HRLcgzbUB3OlZVfdFurn6EZwtyL4ZD9kdkQ4EZE/9inKcp3c1h4
+xwIDAQAB
+-----END PUBLIC KEY-----`;
+
+/** Original SDK `builtinProdPublicKey`. */
+const BUILTIN_PROD_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz+xApdTIb4ua+DgZKQ54
+iBsD82ybyhGCLRETONW4Jgbb3A8DUM1LqBk6r/CmTOCHqLalTQHNigvP3R5zkDNX
+iRJz6gA4MJ/+8K0+mnEE2RISQzN+Qu65TNd6svb+INm/kMaftY4uIXr6y6kchtTJ
+dwnQhcKdAL2v7h7IFnkVelQsKxDdb2PqX8xX/qwd01iXvMcpCCaXovUwZsxH2QN5
+ZKBTseJivbhUeyJCco4fdUyxOMHe2ybCVhyvim2uxAl1nkvL5L8RCWMCAV55LLo0
+9OhmLahz/DYNu13YLVP6dvIT09ZFBYU6Owj1NxdinTynlJCFS9VYwBgmftosSE1U
+dwIDAQAB
+-----END PUBLIC KEY-----`;
+
+export type WaffoPancakeWebhookProcessEnv = {
+  WAFFO_WEBHOOK_TEST_PUBLIC_KEY?: string;
+  WAFFO_WEBHOOK_PROD_PUBLIC_KEY?: string;
+  WAFFO_WEBHOOK_PUBLIC_KEY?: string;
+};
+
+export type WaffoPancakeWebhookEvent = {
+  id: string;
+  timestamp: string;
+  eventType: string;
+  eventId: string;
+  storeId: string;
+  storeName: string;
+  mode: string;
+  data: {
+    orderId?: string;
+    orderMerchantExternalId?: string;
+    merchantProvidedBuyerIdentity?: string;
+  };
+};
+
+function normalizePublicKeyPem(raw: string): string {
+  if (!raw.trim()) throw new Error("public key is empty; provide an RSA public key in PEM format");
+  const pemStr = raw.replace(/\\n/g, "\n").replace(/\r\n/g, "\n").trim();
+  const spkiHeader = "-----BEGIN PUBLIC KEY-----";
+  const spkiFooter = "-----END PUBLIC KEY-----";
+  const pkcs1Header = "-----BEGIN RSA PUBLIC KEY-----";
+  const pkcs1Footer = "-----END RSA PUBLIC KEY-----";
+  const hasPkcs1 = pemStr.includes(pkcs1Header);
+  const hasSpki = pemStr.includes(spkiHeader);
+  if (hasPkcs1 || hasSpki) {
+    const stripped = pemStr
+      .replace(spkiHeader, "")
+      .replace(spkiFooter, "")
+      .replace(pkcs1Header, "")
+      .replace(pkcs1Footer, "");
+    const b64 = stripWhitespace(stripped);
+    if (!b64) throw new Error("public key contains PEM headers but no key data");
+    const header = hasPkcs1 ? pkcs1Header : spkiHeader;
+    const footer = hasPkcs1 ? pkcs1Footer : spkiFooter;
+    return `${header}\n${wrap64(b64)}\n${footer}`;
+  }
+  const b64 = stripWhitespace(pemStr);
+  if (!/^[A-Za-z0-9+/]+=*$/.test(b64)) {
+    throw new Error("public key is not valid PEM or base64; expected an RSA public key in PEM format or raw base64");
+  }
+  return `${spkiHeader}\n${wrap64(b64)}\n${spkiFooter}`;
+}
+
+async function importPancakePublicKey(raw: string): Promise<CryptoKey> {
+  const pem = normalizePublicKeyPem(raw);
+  const der = pemToDer(pem);
+  return crypto.subtle.importKey(
+    "spki",
+    copyBytes(der) as BufferSource,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+}
+
+function parseSignatureHeader(header: string): { t: string; v1: string } {
+  let t = "";
+  let v1 = "";
+  for (const pair of header.split(",")) {
+    const eq = pair.indexOf("=");
+    if (eq < 0) continue;
+    const key = pair.slice(0, eq).trim();
+    const val = pair.slice(eq + 1).trim();
+    if (key === "t") t = val;
+    if (key === "v1") v1 = val;
+  }
+  if (!t || !v1) throw new Error("malformed X-Waffo-Signature header: missing t or v1");
+  return { t, v1 };
+}
+
+async function resolveWebhookKey(
+  envName: "test" | "prod",
+  processEnv: WaffoPancakeWebhookProcessEnv,
+): Promise<CryptoKey> {
+  const perEnv = envName === "test" ? processEnv.WAFFO_WEBHOOK_TEST_PUBLIC_KEY : processEnv.WAFFO_WEBHOOK_PROD_PUBLIC_KEY;
+  const raw = perEnv || processEnv.WAFFO_WEBHOOK_PUBLIC_KEY || (envName === "test" ? BUILTIN_TEST_PUBLIC_KEY : BUILTIN_PROD_PUBLIC_KEY);
+  return importPancakePublicKey(raw);
+}
+
+async function verifySignatureInput(key: CryptoKey, signatureInput: string, v1: string): Promise<boolean> {
+  try {
+    const sig = stdB64ToBytes(v1);
+    return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, copyBytes(sig) as BufferSource, new TextEncoder().encode(signatureInput));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Original `pancake.VerifyWebhookTyped` with nil options (auto prod, then test).
+ */
+export async function verifyWaffoPancakeWebhook(
+  payload: string,
+  signatureHeader: string,
+  processEnv: WaffoPancakeWebhookProcessEnv = {},
+): Promise<WaffoPancakeWebhookEvent> {
+  if (!signatureHeader) throw new Error("missing X-Waffo-Signature header");
+  const { t, v1 } = parseSignatureHeader(signatureHeader);
+  const ts = Number(t);
+  if (!Number.isFinite(ts)) throw new Error("invalid timestamp in X-Waffo-Signature header");
+  const now = Date.now();
+  if (Math.abs(now - ts) > WAFFO_PANCAKE_WEBHOOK_TOLERANCE_MS) {
+    throw new Error("webhook timestamp outside tolerance window (possible replay attack)");
+  }
+  const signatureInput = `${t}.${payload}`;
+  const prodKey = await resolveWebhookKey("prod", processEnv);
+  if (await verifySignatureInput(prodKey, signatureInput, v1)) return unmarshalWebhookEvent(payload);
+  const testKey = await resolveWebhookKey("test", processEnv);
+  if (!(await verifySignatureInput(testKey, signatureInput, v1))) {
+    throw new Error("invalid webhook signature (tried both prod and test keys)");
+  }
+  return unmarshalWebhookEvent(payload);
+}
+
+function unmarshalWebhookEvent(payload: string): WaffoPancakeWebhookEvent {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(payload) as Record<string, unknown>;
+  } catch {
+    throw new Error("decode webhook event");
+  }
+  const data = (parsed.data && typeof parsed.data === "object" ? parsed.data : {}) as Record<string, unknown>;
+  return {
+    id: String(parsed.id || ""),
+    timestamp: String(parsed.timestamp || ""),
+    eventType: String(parsed.eventType || ""),
+    eventId: String(parsed.eventId || ""),
+    storeId: String(parsed.storeId || ""),
+    storeName: String(parsed.storeName || ""),
+    mode: String(parsed.mode || ""),
+    data: {
+      orderId: data.orderId == null ? undefined : String(data.orderId),
+      orderMerchantExternalId: data.orderMerchantExternalId == null ? undefined : String(data.orderMerchantExternalId),
+      merchantProvidedBuyerIdentity:
+        data.merchantProvidedBuyerIdentity == null ? undefined : String(data.merchantProvidedBuyerIdentity),
+    },
+  };
+}

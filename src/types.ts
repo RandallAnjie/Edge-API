@@ -63,6 +63,12 @@ export interface Env {
   LINUX_DO_USER_ENDPOINT?: string;
   /** Original `TRUSTED_REDIRECT_DOMAINS` (comma-separated; empty rejects custom pay redirects). */
   TRUSTED_REDIRECT_DOMAINS?: string;
+  /** Original pancake SDK `WAFFO_WEBHOOK_TEST_PUBLIC_KEY`. */
+  WAFFO_WEBHOOK_TEST_PUBLIC_KEY?: string;
+  /** Original pancake SDK `WAFFO_WEBHOOK_PROD_PUBLIC_KEY`. */
+  WAFFO_WEBHOOK_PROD_PUBLIC_KEY?: string;
+  /** Original pancake SDK `WAFFO_WEBHOOK_PUBLIC_KEY`. */
+  WAFFO_WEBHOOK_PUBLIC_KEY?: string;
 }
 
 export interface ExecutionContextLike {

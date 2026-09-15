@@ -5,7 +5,7 @@ import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { Store } from "../src/store.js";
 import { formatWaffoPancakeAmount, waffoPancakeBuyerIdentityFromUserId } from "../src/waffo-pancake.js";
-import { generateWaffoTestKeyPair } from "./waffo-keys.js";
+import { generateWaffoTestKeyPair, signPancakeWebhook } from "./waffo-keys.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 const MERCHANT_ID = "MER_1234567890abcdefghijKL";
@@ -311,6 +311,122 @@ test("original RequestWaffoPancakePay TOKENS stored amount and RequestWaffoPanca
     assert.equal(rows.length, 1);
     assert.equal(rows[0].amount, 3);
     assert.equal(Number(rows[0].money), 3);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("original WaffoPancakeWebhook signature, env, mode, and buyer-identity JSON", async () => {
+  const { e, auth, store } = await boot();
+  const keys = await generateWaffoTestKeyPair();
+  await confirmCompliance(e, auth);
+  await store.setOption("WaffoPancakeMerchantID", MERCHANT_ID);
+  await store.setOption("WaffoPancakePrivateKey", keys.privateKey);
+  await store.setOption("WaffoPancakeProductID", PRODUCT_ID);
+  e.WAFFO_WEBHOOK_TEST_PUBLIC_KEY = keys.publicKey;
+
+  const staging = await json(new Request("http://local/api/waffo-pancake/webhook/staging", { method: "POST" }), e);
+  assert.equal(staging.res.status, 404);
+  assert.equal(staging.text, "unknown env");
+
+  const missingSig = await json(
+    new Request("http://local/api/waffo-pancake/webhook/test", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }),
+    e,
+  );
+  assert.equal(missingSig.res.status, 401);
+  assert.equal(missingSig.text, "invalid signature");
+
+  const raw = JSON.stringify({
+    mode: "test",
+    eventType: "order.completed",
+    data: { orderMerchantExternalId: "missing", merchantProvidedBuyerIdentity: "new-api-user-1" },
+  });
+  const badSig = await json(
+    new Request("http://local/api/waffo-pancake/webhook/test", {
+      method: "POST",
+      headers: { "X-Waffo-Signature": "t=1,v1=AAAA", "content-type": "application/json" },
+      body: raw,
+    }),
+    e,
+  );
+  assert.equal(badSig.res.status, 401);
+  assert.equal(badSig.text, "invalid signature");
+
+  const origFetch = globalThis.fetch;
+  const mock = mockPancakeSdk(origFetch);
+  try {
+    const paid = await pay(e, auth, { amount: 10 });
+    assert.equal(paid.body.message, "success", paid.text);
+    const orderId = String((paid.body.data as { order_id: string }).order_id);
+    const mismatchMode = JSON.stringify({
+      mode: "prod",
+      eventType: "order.completed",
+      data: { orderMerchantExternalId: orderId, merchantProvidedBuyerIdentity: "new-api-user-1" },
+    });
+    const modeHook = await json(
+      new Request("http://local/api/waffo-pancake/webhook/test", {
+        method: "POST",
+        headers: { "X-Waffo-Signature": await signPancakeWebhook(mismatchMode, keys.privateKey), "content-type": "application/json" },
+        body: mismatchMode,
+      }),
+      e,
+    );
+    assert.equal(modeHook.res.status, 200);
+    assert.equal(modeHook.text, "OK");
+    assert.equal((await pancakeRows(store))[0].status, "pending");
+
+    const otherEvent = JSON.stringify({
+      mode: "test",
+      eventType: "order.created",
+      data: { orderMerchantExternalId: orderId, merchantProvidedBuyerIdentity: "new-api-user-1" },
+    });
+    const otherHook = await json(
+      new Request("http://local/api/waffo-pancake/webhook/test", {
+        method: "POST",
+        headers: { "X-Waffo-Signature": await signPancakeWebhook(otherEvent, keys.privateKey), "content-type": "application/json" },
+        body: otherEvent,
+      }),
+      e,
+    );
+    assert.equal(otherHook.text, "OK");
+    assert.equal((await pancakeRows(store))[0].status, "pending");
+
+    const badIdentity = JSON.stringify({
+      mode: "test",
+      eventType: "order.completed",
+      data: { orderMerchantExternalId: orderId, merchantProvidedBuyerIdentity: "new-api-user-9" },
+    });
+    const identityHook = await json(
+      new Request("http://local/api/waffo-pancake/webhook/test", {
+        method: "POST",
+        headers: { "X-Waffo-Signature": await signPancakeWebhook(badIdentity, keys.privateKey), "content-type": "application/json" },
+        body: badIdentity,
+      }),
+      e,
+    );
+    assert.equal(identityHook.text, "OK");
+    assert.equal((await pancakeRows(store))[0].status, "pending");
+
+    const completed = JSON.stringify({
+      mode: "test",
+      eventType: "order.completed",
+      data: { orderMerchantExternalId: orderId, merchantProvidedBuyerIdentity: "new-api-user-1" },
+    });
+    const okHook = await json(
+      new Request("http://local/api/waffo-pancake/webhook/test", {
+        method: "POST",
+        headers: { "X-Waffo-Signature": await signPancakeWebhook(completed, keys.privateKey), "content-type": "application/json" },
+        body: completed,
+      }),
+      e,
+    );
+    assert.equal(okHook.res.status, 200);
+    assert.equal(okHook.text, "OK");
+    assert.equal((await pancakeRows(store))[0].status, "success");
   } finally {
     mock.restore();
   }
