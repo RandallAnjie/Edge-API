@@ -49,7 +49,7 @@ function newRegistryState(): TaskPluginSyncState {
 function parseState(raw: string): TaskPluginSyncState {
   const parsed = parseJson<Partial<TaskPluginSyncState> | null>(raw, null);
   if (!parsed || typeof parsed !== "object") return newRegistryState();
-  const last = parsed.lastRebuild && typeof parsed.lastRebuild === "object" ? parsed.lastRebuild : {};
+  const last = (parsed.lastRebuild && typeof parsed.lastRebuild === "object" ? parsed.lastRebuild : {}) as TaskPluginRebuildOutcomeView;
   return {
     hashes: parsed.hashes && typeof parsed.hashes === "object" ? { ...parsed.hashes } : {},
     errors: parsed.errors && typeof parsed.errors === "object" ? { ...parsed.errors } : {},
