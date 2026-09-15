@@ -1110,6 +1110,10 @@ export class Store {
     requestId?: string;
     group?: string;
     upstreamRequestId?: string;
+    /** Original GetAllLogs: `created_at desc, id desc`. GetUserLogs / GetLogByTokenId: `id desc`. */
+    order?: "created_at_id" | "id";
+    /** Original GetAllLogs fills `ChannelName` from a channel id→name map after fetch. */
+    fillChannelNames?: boolean;
   }): Promise<{ items: LogRow[]; total: number }> {
     const where: string[] = ["1=1"];
     const binds: unknown[] = [];
@@ -1160,13 +1164,33 @@ export class Store {
       .prepare(`SELECT COUNT(*) as c FROM request_logs WHERE ${w}`)
       .bind(...binds)
       .first<{ c: number }>();
+    const orderSql =
+      opts.order === "created_at_id"
+        ? "request_logs.created_at DESC, request_logs.id DESC"
+        : "request_logs.id DESC";
     const { results } = await this.db
-      .prepare(
-        `SELECT request_logs.*, channels.name as channel_name FROM request_logs LEFT JOIN channels ON channels.id = request_logs.channel_id WHERE ${w} ORDER BY request_logs.id DESC LIMIT ? OFFSET ?`,
-      )
+      .prepare(`SELECT * FROM request_logs WHERE ${w} ORDER BY ${orderSql} LIMIT ? OFFSET ?`)
       .bind(...binds, opts.limit, opts.offset)
       .all<LogRow>();
-    return { items: results ?? [], total: num(totalRow?.c) };
+    const items = results ?? [];
+    if (opts.fillChannelNames) await this.fillLogChannelNames(items);
+    return { items, total: num(totalRow?.c) };
+  }
+
+  /** Original GetAllLogs channel map fill. Missing channels stay `""` (not `channel-%d`). */
+  private async fillLogChannelNames(logs: LogRow[]): Promise<void> {
+    const channelIds = [...new Set(logs.map((log) => Number(log.channel_id || 0)).filter(Boolean))];
+    if (!channelIds.length) return;
+    const ph = channelIds.map(() => "?").join(",");
+    const { results: channels } = await this.db
+      .prepare(`SELECT id, name FROM channels WHERE id IN (${ph})`)
+      .bind(...channelIds)
+      .all<{ id: number; name: string }>();
+    const channelMap = new Map<number, string>();
+    for (const ch of channels) channelMap.set(ch.id, ch.name);
+    for (const log of logs) {
+      log.channel_name = channelMap.get(Number(log.channel_id || 0)) || "";
+    }
   }
 
   async logStat(opts: {

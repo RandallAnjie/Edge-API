@@ -1208,6 +1208,7 @@ export function registerMore(r: Router<Env>): void {
       offset: 0,
       limit: MAX_RECENT_ITEMS,
       tokenId: auth.token.id,
+      order: "id",
     });
     return apiOk(publicUserLogs(items, 0));
   });

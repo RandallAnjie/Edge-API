@@ -1294,6 +1294,8 @@ export function adminRouter(): Router<Env> {
         requestId: c.url.searchParams.get("request_id") || undefined,
         group: c.url.searchParams.get("group") || undefined,
         upstreamRequestId: c.url.searchParams.get("upstream_request_id") || undefined,
+        order: "created_at_id",
+        fillChannelNames: true,
       });
       return apiOk(pageData(items.map((row) => publicLog(row, u.role)), total, q));
     } catch (e) {
@@ -1319,6 +1321,7 @@ export function adminRouter(): Router<Env> {
         requestId: c.url.searchParams.get("request_id") || undefined,
         group: c.url.searchParams.get("group") || undefined,
         upstreamRequestId: c.url.searchParams.get("upstream_request_id") || undefined,
+        order: "id",
       });
       return apiOk(pageData(publicUserLogs(items, q.offset), total, q));
     } catch (e) {
