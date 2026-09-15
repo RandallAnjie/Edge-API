@@ -42,6 +42,7 @@ export const CHANNEL_AUTO_DISABLED = 3;
 export const CHANNEL_TYPE_OPENAI = 1;
 export const CHANNEL_TYPE_MIDJOURNEY = 2;
 export const CHANNEL_TYPE_AZURE = 3;
+export const CHANNEL_TYPE_CUSTOM = 8;
 export const CHANNEL_TYPE_MIDJOURNEY_PLUS = 5;
 export const CHANNEL_TYPE_OLLAMA = 4;
 export const CHANNEL_TYPE_PALM = 11;
@@ -124,6 +125,8 @@ export const DEFAULT_GROUP = "default";
 export const ROOT_QUOTA = 100_000_000;
 export const DEFAULT_TOKEN_QUOTA = 500_000;
 export const AZURE_API_VERSION = "2025-04-01-preview";
+/** Original `constant.AzureNoRemoveDotTime` (Unix seconds). */
+export const AZURE_NO_REMOVE_DOT_TIME = Date.UTC(2025, 4, 10) / 1000;
 export const CLAUDE_VERSION = "2023-06-01";
 /** Original `constant.MaxFileDownloadMB` default from `MAX_FILE_DOWNLOAD_MB`. */
 export const MAX_FILE_DOWNLOAD_MB = 64;

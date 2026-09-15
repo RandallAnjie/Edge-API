@@ -42,7 +42,7 @@ QuantumNous [new-api](https://github.com/QuantumNous/new-api) 的 **RandallFlare
 - `POST /v1/video/generations`、`GET /v1/video/generations/:id`、`POST /v1/videos/:id/remix`
 - `POST /v1/videos`、`GET /v1/videos/:id`、`GET /v1/videos/:id/content`、`GET /v1/responses/:id`
 - `POST/GET /v1/tasks/:key`（产物可写入可选 R2）
-- `GET /v1/realtime` WebSocket 升级代理
+- `GET /v1/realtime` WebSocket 升级代理（原 gorilla Dial：`wss://`、Azure `api-key`、preview-only `openai-beta`）
 - Gemini 原生 `POST /v1beta/models/{model}:generateContent`
 - `GET /v1/models`、`GET /v1/models/:model`
 - Files / fine-tunes / images/variations 与上游一致返回 501

@@ -68,6 +68,7 @@ import { openaiFromMokaEmbedding } from "./moka-convert.js";
 import { openaiFromJinaRerank } from "./jina-convert.js";
 import { openaiFromSiliconFlowRerank } from "./siliconflow-convert.js";
 import { openaiFromPalmResponse, palmUpstreamToOpenAIChat } from "./palm-convert.js";
+import { dialOpenAIRealtimeWebSocket, openaiRealtimeUpstream } from "./openai-realtime.js";
 import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
 import {
   parseVolcengineAuth,
@@ -2493,28 +2494,20 @@ export async function proxyRealtime(req: Request, channel: ChannelRow, model: st
   if (typeof WebSocketPair === "undefined") {
     return openaiError(501, "当前运行时不支持 WebSocket", "not_implemented");
   }
+  const target = openaiRealtimeUpstream(channel, req, model);
+  let ws: WebSocket;
+  try {
+    ws = (await dialOpenAIRealtimeWebSocket(target.url, target.headers)) as unknown as WebSocket;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = Number((err as { status?: number }).status || 500);
+    const code = String((err as { code?: string }).code || "do_request_failed");
+    return openaiError(status, message, code);
+  }
   const pair = new WebSocketPair();
   const client = pair[0];
   const server = pair[1];
-  const base = resolveBaseUrl(channel.type, channel.base_url);
-  const apiKey = pickChannelKey(channel.key);
-  const mapped = applyModelMapping(channel, model || "gpt-4o-realtime-preview");
-  const url = joinUrl(base, `/v1/realtime?model=${encodeURIComponent(mapped)}`);
-  const headers: Record<string, string> = {
-    Upgrade: "websocket",
-    Authorization: `Bearer ${apiKey}`,
-    "OpenAI-Beta": "realtime=v1",
-  };
-  const protocol = req.headers.get("sec-websocket-protocol");
-  if (protocol) headers["Sec-WebSocket-Protocol"] = protocol;
-  const upstream = await fetch(url, { headers });
-  const ws = (upstream as Response & { webSocket?: WebSocket }).webSocket;
-  if (!ws) {
-    const text = await upstream.text().catch(() => "");
-    return openaiError(502, text.slice(0, 400) || "上游未升级为 WebSocket", "upstream_error");
-  }
   (server as unknown as { accept(): void }).accept();
-  (ws as unknown as { accept(): void }).accept();
   server.addEventListener("message", (ev: MessageEvent) => {
     try {
       ws.send(ev.data as string);
@@ -2543,10 +2536,16 @@ export async function proxyRealtime(req: Request, channel: ChannelRow, model: st
   };
   server.addEventListener("close", close);
   ws.addEventListener("close", close);
-  return new Response(null, {
+  const protocol = req.headers.get("sec-websocket-protocol") || "";
+  const init = {
     status: 101,
     webSocket: client,
     headers: protocol ? { "sec-websocket-protocol": protocol.split(",")[0].trim() } : undefined,
-  } as ResponseInit);
+  } as ResponseInit;
+  try {
+    return new Response(null, init);
+  } catch {
+    return { status: 101, ok: false, headers: new Headers(init.headers), webSocket: client, text: async () => "" } as unknown as Response;
+  }
 }
 
