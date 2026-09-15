@@ -4,6 +4,7 @@ import {
   DEFAULT_GROUP_RATIO,
   DEFAULT_OPTIONS,
   LOG_CONSUME,
+  LOG_TOPUP,
   NAME_RULE_EXACT,
   REDEMPTION_DISABLED,
   REDEMPTION_ENABLED,
@@ -39,6 +40,13 @@ import type {
 } from "./types.js";
 
 export { SCHEMA_SQL, ensureSchema };
+
+/** Original `model.ErrSubscriptionOrderNotFound`. */
+export const ERR_SUBSCRIPTION_ORDER_NOT_FOUND = "subscription order not found";
+/** Original `model.ErrSubscriptionOrderStatusInvalid`. */
+export const ERR_SUBSCRIPTION_ORDER_STATUS_INVALID = "subscription order status invalid";
+/** Original `model.ErrPaymentMethodMismatch`. */
+export const ERR_PAYMENT_METHOD_MISMATCH = "payment method mismatch";
 
 function num(v: unknown, d = 0): number {
   const n = Number(v);
@@ -1928,6 +1936,7 @@ export class Store {
     payment_provider?: string;
     status?: string;
     complete_time?: number;
+    created_at?: number;
   }): Promise<number> {
     const r = await this.db
       .prepare(
@@ -1942,7 +1951,7 @@ export class Store {
         row.payment_provider ?? "",
         row.complete_time ?? 0,
         row.status ?? "success",
-        nowSec(),
+        row.created_at ?? nowSec(),
       )
       .run();
     return Number(r.meta.last_row_id || 0);
@@ -1990,6 +1999,167 @@ export class Store {
     }
     vals.push(id);
     await this.db.prepare(`UPDATE topups SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  /** Original `model.GetSubscriptionOrderByTradeNo`. */
+  async getSubscriptionOrderByTrade(tradeNo: string): Promise<Record<string, unknown> | null> {
+    if (!tradeNo) return null;
+    return this.db.prepare("SELECT * FROM subscription_orders WHERE trade_no = ?").bind(tradeNo).first<Record<string, unknown>>();
+  }
+
+  /** Original `SubscriptionOrder.Insert`. */
+  async insertSubscriptionOrder(row: {
+    user_id: number;
+    plan_id: number;
+    money: number;
+    trade_no: string;
+    payment_method: string;
+    payment_provider: string;
+    status?: string;
+    create_time?: number;
+  }): Promise<number> {
+    const created = row.create_time ?? nowSec();
+    const r = await this.db
+      .prepare(
+        `INSERT INTO subscription_orders (
+           user_id, plan_id, money, trade_no, payment_method, payment_provider, status, create_time, complete_time, provider_payload
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '')`,
+      )
+      .bind(
+        row.user_id,
+        row.plan_id,
+        row.money,
+        row.trade_no,
+        row.payment_method,
+        row.payment_provider,
+        row.status ?? "pending",
+        created,
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateSubscriptionOrder(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(id);
+    await this.db.prepare(`UPDATE subscription_orders SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  /** Original `model.upsertSubscriptionTopUpTx`. */
+  async upsertSubscriptionTopup(order: {
+    user_id: number;
+    money: number;
+    trade_no: string;
+    payment_method: string;
+    create_time: number;
+  }): Promise<void> {
+    const now = nowSec();
+    const existing = await this.getTopupByTrade(order.trade_no);
+    if (!existing) {
+      await this.insertTopup({
+        user_id: order.user_id,
+        amount: 0,
+        money: order.money,
+        trade_no: order.trade_no,
+        payment_method: order.payment_method,
+        payment_provider: "",
+        status: "success",
+        complete_time: now,
+        created_at: order.create_time || now,
+      });
+      return;
+    }
+    const method = String(existing.payment_method || "");
+    if (!method) {
+      await this.updateTopup(Number(existing.id), {
+        money: order.money,
+        payment_method: order.payment_method,
+        complete_time: now,
+        status: "success",
+      });
+      return;
+    }
+    if (method !== order.payment_method) throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    await this.updateTopup(Number(existing.id), {
+      money: order.money,
+      complete_time: now,
+      status: "success",
+    });
+  }
+
+  /** Original `model.CompleteSubscriptionOrder` (idempotent). */
+  async completeSubscriptionOrder(
+    tradeNo: string,
+    providerPayload: string,
+    expectedPaymentProvider: string,
+    actualPaymentMethod: string,
+  ): Promise<void> {
+    if (!tradeNo) throw new Error("tradeNo is empty");
+    const order = await this.getSubscriptionOrderByTrade(tradeNo);
+    if (!order) throw new Error(ERR_SUBSCRIPTION_ORDER_NOT_FOUND);
+    if (expectedPaymentProvider && String(order.payment_provider || "") !== expectedPaymentProvider) {
+      throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    }
+    if (String(order.status) === "success") return;
+    if (String(order.status) !== "pending") throw new Error(ERR_SUBSCRIPTION_ORDER_STATUS_INVALID);
+    const plan = await this.getPlan(Number(order.plan_id || 0));
+    if (!plan) throw new Error("record not found");
+    const userId = Number(order.user_id || 0);
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error("record not found");
+    let paymentMethod = String(order.payment_method || "");
+    if (actualPaymentMethod && paymentMethod !== actualPaymentMethod) paymentMethod = actualPaymentMethod;
+    await this.createUserSubscriptionFromPlan(userId, plan, "order");
+    await this.upsertSubscriptionTopup({
+      user_id: userId,
+      money: Number(order.money || 0),
+      trade_no: String(order.trade_no || tradeNo),
+      payment_method: paymentMethod,
+      create_time: Number(order.create_time || 0),
+    });
+    const now = nowSec();
+    await this.updateSubscriptionOrder(Number(order.id), {
+      status: "success",
+      complete_time: now,
+      payment_method: paymentMethod,
+      provider_payload: providerPayload || String(order.provider_payload || ""),
+    });
+    const money = Number(order.money || 0);
+    await this.insertLog({
+      user_id: userId,
+      username: user.username || "",
+      type: LOG_TOPUP,
+      content: `订阅购买成功，套餐: ${String(plan.title || "")}，支付金额: ${money.toFixed(2)}，支付方式: ${paymentMethod}`,
+    });
+  }
+
+  /** Original `model.ExpireSubscriptionOrder`. */
+  async expireSubscriptionOrder(tradeNo: string, expectedPaymentProvider: string): Promise<void> {
+    if (!tradeNo) throw new Error("tradeNo is empty");
+    const order = await this.getSubscriptionOrderByTrade(tradeNo);
+    if (!order) throw new Error(ERR_SUBSCRIPTION_ORDER_NOT_FOUND);
+    if (expectedPaymentProvider && String(order.payment_provider || "") !== expectedPaymentProvider) {
+      throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    }
+    if (String(order.status) !== "pending") return;
+    await this.updateSubscriptionOrder(Number(order.id), { status: "expired", complete_time: nowSec() });
+  }
+
+  /** Original `model.UpdatePendingTopUpStatus`. */
+  async updatePendingTopupStatus(tradeNo: string, expectedPaymentProvider: string, targetStatus: string): Promise<void> {
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("topup not found");
+    if (expectedPaymentProvider && String(row.payment_provider || "") !== expectedPaymentProvider) {
+      throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    }
+    if (String(row.status) !== "pending") throw new Error("topup status invalid");
+    await this.updateTopup(Number(row.id), { status: targetStatus, complete_time: nowSec() });
   }
 
   async upsertPerfMetric(row: {

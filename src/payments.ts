@@ -2,7 +2,10 @@ import { MAX_WALLET_QUOTA, nowSec, parseJson, randomHex } from "./constants.js";
 import { hmacSha256Hex, sha1Hex, timingSafeEqualStr } from "./crypto.js";
 import { apiFail, json, payErr, payOk, readJson } from "./http.js";
 import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
-import type { Store } from "./store.js";
+import {
+  ERR_SUBSCRIPTION_ORDER_NOT_FOUND,
+  type Store,
+} from "./store.js";
 import type { UserRow } from "./types.js";
 
 export { PAYMENT_COMPLIANCE_REQUIRED };
@@ -56,7 +59,7 @@ export async function paymentEnabled(store: Store, kind: "stripe" | "epay" | "cr
   return paymentConfigured(store, kind);
 }
 
-async function stripeSecret(store: Store): Promise<string> {
+export async function stripeSecret(store: Store): Promise<string> {
   return (await store.option("StripeApiSecret")) || (await store.option("StripeApiKey")) || (await store.option("StripeSecretKey"));
 }
 
@@ -315,7 +318,35 @@ export async function handleStripeWebhook(store: Store, req: Request): Promise<R
       return new Response(null, { status: 200 });
     }
     const trade = String(obj.client_reference_id || (obj.metadata as { trade_no?: string } | undefined)?.trade_no || "");
-    if (trade) await completePendingTopup(store, trade);
+    if (trade) {
+      const result = await tryCompleteSubscriptionOrder(
+        store,
+        trade,
+        raw,
+        "stripe",
+        "",
+      );
+      if (result === "completed" || result === "rejected") return new Response(null, { status: 200 });
+      await completePendingTopup(store, trade);
+    }
+  } else if (event.type === "checkout.session.expired") {
+    const obj = event.data?.object || {};
+    if (String(obj.status || "") !== "expired") return new Response(null, { status: 200 });
+    const trade = String(obj.client_reference_id || "");
+    if (trade) {
+      try {
+        await store.expireSubscriptionOrder(trade, "stripe");
+        return new Response(null, { status: 200 });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg !== ERR_SUBSCRIPTION_ORDER_NOT_FOUND) return new Response(null, { status: 200 });
+      }
+      try {
+        await store.updatePendingTopupStatus(trade, "stripe", "expired");
+      } catch {
+        /* original logs missing/invalid wallet orders and still 200 */
+      }
+    }
   }
   return new Response(null, { status: 200 });
 }
@@ -582,6 +613,11 @@ export async function handleCreemWebhook(store: Store, req: Request): Promise<Re
     if (event.object?.order?.status && event.object.order.status !== "paid") return new Response(null, { status: 200 });
     const trade = String(event.object?.request_id || "");
     if (!trade) return new Response(null, { status: 400 });
+    const result = await tryCompleteSubscriptionOrder(store, trade, raw, "creem", "");
+    if (result === "completed") return new Response(null, { status: 200 });
+    if (result === "rejected") return new Response(null, { status: 500 });
+    const orderType = String((event.object?.order as { type?: string } | undefined)?.type || "onetime");
+    if (orderType && orderType !== "onetime") return new Response(null, { status: 200 });
     await completePendingTopup(store, trade);
   }
   return new Response(null, { status: 200 });
@@ -643,9 +679,48 @@ export async function handleWaffoPancakeWebhook(store: Store, req: Request, envP
         event.data?.orderId ||
         "",
     );
-    if (trade) await completePendingTopup(store, trade);
+    if (trade) {
+      if (trade.startsWith("WAFFO_PANCAKE_SUB-")) {
+        const order = await store.getSubscriptionOrderByTrade(trade);
+        if (!order || String(order.payment_provider || "") !== "waffo_pancake") {
+          return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+        }
+        const identity = String(
+          (event.data as { merchantProvidedBuyerIdentity?: string; merchant_provided_buyer_identity?: string } | undefined)
+            ?.merchantProvidedBuyerIdentity ||
+            (event.data as { merchant_provided_buyer_identity?: string } | undefined)?.merchant_provided_buyer_identity ||
+            "",
+        ).trim();
+        if (identity !== `new-api-user-${Number(order.user_id || 0)}`) {
+          return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+        }
+        const result = await tryCompleteSubscriptionOrder(store, trade, raw, "waffo_pancake", "");
+        if (result !== "completed") {
+          return new Response("retry", { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });
+        }
+        return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+      }
+      await completePendingTopup(store, trade);
+    }
   }
   return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+}
+
+export async function tryCompleteSubscriptionOrder(
+  store: Store,
+  tradeNo: string,
+  providerPayload: string,
+  expectedPaymentProvider: string,
+  actualPaymentMethod: string,
+): Promise<"completed" | "not_found" | "rejected"> {
+  try {
+    await store.completeSubscriptionOrder(tradeNo, providerPayload, expectedPaymentProvider, actualPaymentMethod);
+    return "completed";
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg === ERR_SUBSCRIPTION_ORDER_NOT_FOUND) return "not_found";
+    return "rejected";
+  }
 }
 
 export async function completePendingTopup(store: Store, tradeNo: string): Promise<boolean> {

@@ -19,6 +19,14 @@ import {
   requirePaymentCompliance,
   topupInfo,
 } from "./payments.js";
+import {
+  handleSubscriptionEpayNotify,
+  handleSubscriptionEpayReturn,
+  requestSubscriptionCreemPay,
+  requestSubscriptionEpay,
+  requestSubscriptionStripePay,
+  requestSubscriptionWaffoPancakePay,
+} from "./subscription-payment.js";
 import { mailConfigured, notifyAccountSecurityChange, sendMail, sixDigitCode } from "./mail.js";
 import {
   loginOrBindOAuth,
@@ -30,7 +38,7 @@ import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-o
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
-import { apiFail, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, paymentReturnPath, strconvAtoi, taskArtifactError } from "./http.js";
+import { apiFail, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, strconvAtoi, taskArtifactError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -863,10 +871,10 @@ export function registerParity(r: Router<Env>): void {
     return resetPlanSubscriptions(c, s, Number(body.plan_id), userId, Boolean(body.advance_reset_time));
   });
 
-  r.post("/api/subscription/epay/notify", (c) => handleEpayNotify(store(c), c.req, c.url));
-  r.get("/api/subscription/epay/notify", (c) => handleEpayNotify(store(c), c.req, c.url));
-  r.get("/api/subscription/epay/return", (c) => subscriptionEpayReturn(c));
-  r.post("/api/subscription/epay/return", (c) => subscriptionEpayReturn(c));
+  r.post("/api/subscription/epay/notify", (c) => handleSubscriptionEpayNotify(c));
+  r.get("/api/subscription/epay/notify", (c) => handleSubscriptionEpayNotify(c));
+  r.get("/api/subscription/epay/return", (c) => handleSubscriptionEpayReturn(c));
+  r.post("/api/subscription/epay/return", (c) => handleSubscriptionEpayReturn(c));
 
   r.post("/api/option/payment_compliance", async (c) => {
     const s = store(c);
@@ -1730,10 +1738,10 @@ export function registerParity(r: Router<Env>): void {
   r.post("/api/waffo/webhook/:env", (c) => genericPayWebhook(c, "waffo"));
   r.post("/api/waffo-pancake/webhook/:env", (c) => handleWaffoPancakeWebhook(store(c), c.req, c.params.env));
 
-  r.post("/api/subscription/epay/pay", async (c) => payKind(c, "epay"));
-  r.post("/api/subscription/stripe/pay", async (c) => payKind(c, "stripe"));
-  r.post("/api/subscription/creem/pay", async (c) => payKind(c, "creem"));
-  r.post("/api/subscription/waffo-pancake/pay", async (c) => payKind(c, "waffo_pancake"));
+  r.post("/api/subscription/epay/pay", (c) => requestSubscriptionEpay(c));
+  r.post("/api/subscription/stripe/pay", (c) => requestSubscriptionStripePay(c));
+  r.post("/api/subscription/creem/pay", (c) => requestSubscriptionCreemPay(c));
+  r.post("/api/subscription/waffo-pancake/pay", (c) => requestSubscriptionWaffoPancakePay(c));
 
   r.get("/api/perf-metrics", async (c) => {
     const model = c.url.searchParams.get("model");
@@ -1811,29 +1819,6 @@ async function fetchUptimeGroup(
     return result;
   }
   return result;
-}
-
-/** Original `controller.SubscriptionEpayReturn` — browser return redirects to `/wallet?pay=`. */
-async function subscriptionEpayReturn(c: C): Promise<Response> {
-  const s = store(c);
-  const server = await s.option("ServerAddress");
-  const redirect = (suffix: string) =>
-    new Response(null, { status: 302, headers: { location: paymentReturnPath(server, suffix), "cache-control": "no-store" } });
-  const params = new URLSearchParams();
-  if (c.req.method === "POST") {
-    const ct = c.req.headers.get("content-type") || "";
-    if (ct.includes("application/x-www-form-urlencoded")) {
-      const text = await c.req.text();
-      for (const [k, v] of new URLSearchParams(text)) params.set(k, v);
-    } else {
-      for (const [k, v] of c.url.searchParams) params.set(k, v);
-    }
-  } else {
-    for (const [k, v] of c.url.searchParams) params.set(k, v);
-  }
-  if (![...params.keys()].length) return redirect("/wallet?pay=fail");
-  if (!(await s.option("EpayId"))) return redirect("/wallet?pay=fail");
-  return redirect("/wallet?pay=fail");
 }
 
 async function ollamaOp(c: C, action: "pull" | "delete"): Promise<Response> {
@@ -2163,10 +2148,6 @@ async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waff
   if (kind === "creem") return requestCreemPay(s, user, c.req, body as { product_id?: string; payment_method?: string });
   if (kind === "waffo_pancake") return requestWaffoPancakePay(s, user, c.req, body as { amount?: number });
   return requestWaffoPay(s, user, c.req, body as { amount?: number });
-}
-
-async function payKind(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waffo_pancake"): Promise<Response> {
-  return payUser(c, kind);
 }
 
 async function genericPayWebhook(c: C, kind: string): Promise<Response> {

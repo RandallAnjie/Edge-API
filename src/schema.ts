@@ -327,6 +327,21 @@ CREATE TABLE IF NOT EXISTS user_subscriptions (
   created_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS subscription_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
+  money REAL NOT NULL DEFAULT 0,
+  trade_no TEXT NOT NULL UNIQUE,
+  payment_method TEXT NOT NULL DEFAULT '',
+  payment_provider TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  create_time INTEGER NOT NULL DEFAULT 0,
+  complete_time INTEGER NOT NULL DEFAULT 0,
+  provider_payload TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_orders_user ON subscription_orders(user_id);
+CREATE INDEX IF NOT EXISTS idx_subscription_orders_plan ON subscription_orders(plan_id);
 CREATE TABLE IF NOT EXISTS subscription_pre_consume_records (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id TEXT NOT NULL UNIQUE,
