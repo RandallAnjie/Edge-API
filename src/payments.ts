@@ -585,27 +585,76 @@ export async function requestEpay(
   return json(200, { message: "success", data: params, url: submitUrl, success: true });
 }
 
-export async function handleEpayNotify(store: Store, req: Request, url: URL): Promise<Response> {
-  const params = url.searchParams;
-  let trade = params.get("out_trade_no") || "";
-  let status = params.get("trade_status") || params.get("status") || "";
-  let payType = params.get("type") || "";
+/** Original gin `c.Writer.Write([]byte("success"|"fail"))` (HTTP 200). */
+function epayNotifyText(ok: boolean): Response {
+  return new Response(ok ? "success" : "fail", {
+    status: 200,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
+/** Original `EpayNotify` POST `ParseForm`/`PostForm` vs GET query. */
+async function collectEpayNotifyParams(req: Request, url: URL): Promise<Record<string, string> | null> {
+  const params: Record<string, string> = {};
   if (req.method === "POST") {
-    const body = (await readJson(req).catch(() => ({}))) as Record<string, string>;
-    trade = trade || String(body.out_trade_no || "");
-    status = status || String(body.trade_status || body.status || "");
-    payType = payType || String(body.type || "");
+    try {
+      const contentType = (req.headers.get("content-type") || "").toLowerCase();
+      if (contentType.includes("application/json")) return params;
+      new URLSearchParams(await req.text()).forEach((value, key) => {
+        params[key] = value;
+      });
+    } catch {
+      return null;
+    }
+    return params;
   }
-  if (!trade) return new Response("fail", { status: 400 });
-  if (status && status !== "TRADE_SUCCESS" && status !== "success" && status !== "1") {
-    return new Response("fail", { status: 400 });
-  }
+  url.searchParams.forEach((value, key) => {
+    params[key] = value;
+  });
+  return params;
+}
+
+/** Original go-epay `Client.Verify` (case-sensitive MD5, `GenerateParams` digest). */
+async function verifyEpayNotify(
+  params: Record<string, string>,
+  key: string,
+): Promise<{ ok: boolean; tradeNo: string; type: string; tradeStatus: string }> {
+  const provided = params.sign || "";
+  const copy = { ...params };
+  await generateEpayParams(copy, key);
+  return {
+    ok: Boolean(provided) && provided === copy.sign,
+    tradeNo: params.out_trade_no || "",
+    type: params.type || "",
+    tradeStatus: params.trade_status || "",
+  };
+}
+
+/** Original `controller.EpayNotify`. */
+export async function handleEpayNotify(store: Store, req: Request, url: URL): Promise<Response> {
+  if (!(await paymentEnabled(store, "epay"))) return epayNotifyText(false);
+  const params = await collectEpayNotifyParams(req, url);
+  if (!params) return epayNotifyText(false);
+  if (!Object.keys(params).length) return epayNotifyText(false);
+  const address = (await store.option("PayAddress")) || (await store.option("EpayUrl"));
+  const pid = await store.option("EpayId");
+  const key = await store.option("EpayKey");
+  if (!address || !pid || !key) return epayNotifyText(false);
   try {
-    await store.rechargeEpay(trade, payType, clientIp(req));
+    new URL(address);
   } catch {
-    return new Response("fail", { headers: { "content-type": "text/plain" } });
+    return epayNotifyText(false);
   }
-  return new Response("success", { headers: { "content-type": "text/plain" } });
+  const verified = await verifyEpayNotify(params, key);
+  if (!verified.ok) return epayNotifyText(false);
+  if (verified.tradeStatus === "TRADE_SUCCESS") {
+    try {
+      await store.rechargeEpay(verified.tradeNo, verified.type, clientIp(req));
+    } catch {
+      return epayNotifyText(false);
+    }
+  }
+  return epayNotifyText(true);
 }
 
 type CreemProduct = { productId?: string; name?: string; price?: number; quota?: number; currency?: string };

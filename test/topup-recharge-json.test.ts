@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
 import { LOG_TOPUP, ROOT_QUOTA } from "../src/constants.js";
+import { md5Hex } from "../src/crypto.js";
 import { handleFetch } from "../src/worker.js";
 import worker from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
@@ -56,6 +57,21 @@ async function boot() {
   return { e, auth, store: new Store(e.DB) };
 }
 
+async function epaySign(params: Record<string, string>, key: string): Promise<string> {
+  const parts = Object.keys(params)
+    .filter((k) => k !== "sign" && k !== "sign_type" && params[k] !== "")
+    .sort()
+    .map((k) => `${k}=${params[k]}`);
+  return md5Hex(parts.join("&") + key);
+}
+
+async function enableEpay(store: Store) {
+  await store.setOption("PaymentComplianceConfirmed", "true");
+  await store.setOption("PayAddress", "https://epay.example.com");
+  await store.setOption("EpayId", "1001");
+  await store.setOption("EpayKey", "epay-secret");
+}
+
 function parseOther(raw: unknown): Record<string, unknown> {
   assert.equal(typeof raw, "string", "original Log.other is a JSON string");
   return JSON.parse(String(raw)) as Record<string, unknown>;
@@ -71,6 +87,7 @@ async function topupLog(auth: Record<string, string>, e: Env, contentPrefix: str
 
 test("original RechargeEpay credits Amount*QuotaPerUnit and RecordTopupLog JSON", async () => {
   const { e, auth, store } = await boot();
+  await enableEpay(store);
   await store.insertTopup({
     user_id: 1,
     amount: 10,
@@ -80,12 +97,10 @@ test("original RechargeEpay credits Amount*QuotaPerUnit and RecordTopupLog JSON"
     payment_provider: "epay",
     status: "pending",
   });
+  const paid: Record<string, string> = { out_trade_no: "EPAY-1", trade_status: "TRADE_SUCCESS", type: "wxpay" };
+  paid.sign = await epaySign(paid, "epay-secret");
   const notify = await json(
-    new Request(
-      "http://local/api/user/epay/notify?" +
-        new URLSearchParams({ out_trade_no: "EPAY-1", trade_status: "TRADE_SUCCESS", type: "wxpay" }),
-      { headers: { "x-real-ip": "203.0.113.9" } },
-    ),
+    new Request("http://local/api/user/epay/notify?" + new URLSearchParams(paid), { headers: { "x-real-ip": "203.0.113.9" } }),
     e,
   );
   assert.equal(notify.text, "success");
@@ -95,15 +110,19 @@ test("original RechargeEpay credits Amount*QuotaPerUnit and RecordTopupLog JSON"
   const user = await store.getUserById(1);
   assert.equal(user?.quota, ROOT_QUOTA + 5_000_000);
 
+  const againParams: Record<string, string> = { out_trade_no: "EPAY-1", trade_status: "TRADE_SUCCESS" };
+  againParams.sign = await epaySign(againParams, "epay-secret");
   const again = await json(
-    new Request("http://local/api/user/epay/notify?" + new URLSearchParams({ out_trade_no: "EPAY-1", trade_status: "TRADE_SUCCESS" })),
+    new Request("http://local/api/user/epay/notify?" + new URLSearchParams(againParams)),
     e,
   );
   assert.equal(again.text, "success");
   assert.equal((await store.getUserById(1))?.quota, ROOT_QUOTA + 5_000_000);
 
+  const missingParams: Record<string, string> = { out_trade_no: "NO-SUCH", trade_status: "TRADE_SUCCESS" };
+  missingParams.sign = await epaySign(missingParams, "epay-secret");
   const missing = await json(
-    new Request("http://local/api/user/epay/notify?" + new URLSearchParams({ out_trade_no: "NO-SUCH", trade_status: "TRADE_SUCCESS" })),
+    new Request("http://local/api/user/epay/notify?" + new URLSearchParams(missingParams)),
     e,
   );
   assert.equal(missing.text, "fail");
