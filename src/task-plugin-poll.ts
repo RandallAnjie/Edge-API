@@ -240,7 +240,17 @@ async function dispatchPlatformUpdate(
     }
     return;
   }
-  for (const channelTasks of byChannel.values()) {
+  for (const [channelId, channelTasks] of byChannel) {
+    const channel = await store.getChannel(channelId);
+    if (!channel) {
+      const ids = channelTasks.map(rowId).filter((id) => id > 0);
+      await store.bulkUpdateTasksByIds(ids, {
+        fail_reason: `Failed to get channel info, channel ID: ${channelId}`,
+        status: TASK_STATUS_FAILURE,
+        progress: "100%",
+      });
+      continue;
+    }
     for (const task of channelTasks) {
       await refreshNativeQueryTask({ store, engine, row: task });
     }
