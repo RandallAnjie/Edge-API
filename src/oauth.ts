@@ -169,6 +169,16 @@ export async function exchangeLinuxDO(clientId: string, secret: string, code: st
   };
 }
 
+/** Original `oauth.OIDCProvider.ExchangeToken` redirect: `ServerAddress + "/oauth/oidc"`. */
+export function oidcRedirectUri(serverAddress: string): string {
+  return `${serverAddress}/oauth/oidc`;
+}
+
+function oidcConnectFailed(): OAuthI18nError {
+  return new OAuthI18nError("无法连接至 OIDC 服务器，请稍后重试", "Unable to connect to OIDC server, please try again later");
+}
+
+/** Original `oauth.OIDCProvider.ExchangeToken` / `GetUserInfo`. */
 export async function exchangeOidc(opts: {
   tokenUrl: string;
   userInfoUrl: string;
@@ -180,26 +190,48 @@ export async function exchangeOidc(opts: {
   const body = new URLSearchParams({
     client_id: opts.clientId,
     client_secret: opts.secret,
-    grant_type: "authorization_code",
     code: opts.code,
+    grant_type: "authorization_code",
     redirect_uri: opts.redirect,
   });
-  const tokenRes = await fetch(opts.tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body,
-  });
+  let tokenRes: Response;
+  try {
+    tokenRes = await fetch(opts.tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body,
+    });
+  } catch {
+    throw oidcConnectFailed();
+  }
   const tokenJson = (await tokenRes.json()) as { access_token?: string };
-  if (!tokenJson.access_token) throw new Error("OIDC 授权失败");
-  const userRes = await fetch(opts.userInfoUrl, {
-    headers: { authorization: `Bearer ${tokenJson.access_token}` },
-  });
-  const u = (await userRes.json()) as { sub?: string; preferred_username?: string; name?: string; email?: string };
-  if (!u.sub) throw new Error("无法读取 OIDC 用户");
+  if (!tokenJson.access_token) {
+    throw new OAuthI18nError("OIDC 获取 Token 失败，请检查设置", "Failed to get token from OIDC, please check settings");
+  }
+  let userRes: Response;
+  try {
+    userRes = await fetch(opts.userInfoUrl, {
+      headers: { authorization: `Bearer ${tokenJson.access_token}` },
+    });
+  } catch {
+    throw oidcConnectFailed();
+  }
+  if (userRes.status !== 200) {
+    throw new OAuthI18nError("获取用户信息失败", "Failed to get user information");
+  }
+  const u = (await userRes.json()) as {
+    sub?: string;
+    preferred_username?: string;
+    name?: string;
+    email?: string;
+  };
+  if (!u.sub || !u.email) {
+    throw new OAuthI18nError("OIDC 获取用户信息为空，请检查设置", "OIDC returned empty user info, please check settings");
+  }
   return {
     id: u.sub,
-    username: (u.preferred_username || u.email || `oidc_${u.sub}`).slice(0, 20),
-    display_name: u.name || u.preferred_username || u.sub,
+    username: u.preferred_username || "",
+    display_name: u.name || "",
     email: u.email,
     field: "oidc_id",
   };

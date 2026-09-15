@@ -23,6 +23,7 @@ import {
   exchangeGithub,
   exchangeLinuxDO,
   exchangeOidc,
+  oidcRedirectUri,
   getBoundOAuthUserId,
   loginOrBindOAuth,
   newAccessToken,
@@ -1149,7 +1150,7 @@ export function registerMore(r: Router<Env>): void {
             clientId: await s.option("OIDCClientId"),
             secret: await s.option("OIDCClientSecret"),
             code,
-            redirect,
+            redirect: oidcRedirectUri(await s.option("ServerAddress")),
           }),
         );
       }
