@@ -1,5 +1,10 @@
 import { nowSec, parseJson } from "./constants.js";
-import { md5Hex, randomCharsKey, sha1Hex } from "./crypto.js";
+import { md5Hex, randomCharsKey, sha1Hex, getRandomString } from "./crypto.js";
+import {
+  createWaffoPancakeCheckoutSession,
+  formatWaffoPancakeAmount,
+  waffoPancakeBuyerIdentityFromUserId,
+} from "./waffo-pancake.js";
 import { apiFail, json, payErr, payOk, paymentReturnPath, readJson } from "./http.js";
 import {
   requirePaymentCompliance,
@@ -324,10 +329,6 @@ export async function requestSubscriptionCreemPay(c: C): Promise<Response> {
   return payOk({ checkout_url: data.checkout_url, order_id: referenceId });
 }
 
-function waffoPancakeBuyerIdentity(userId: number): string {
-  return `new-api-user-${userId}`;
-}
-
 /** Original `controller.SubscriptionRequestWaffoPancakePay`. */
 export async function requestSubscriptionWaffoPancakePay(c: C): Promise<Response> {
   const s = store(c);
@@ -347,7 +348,7 @@ export async function requestSubscriptionWaffoPancakePay(c: C): Promise<Response
   if (!merchant.trim() || !privateKey.trim()) return apiFail("Waffo Pancake 未配置或密钥无效");
   const user = await s.getUserById(u.id);
   if (!user) return apiFail("用户不存在");
-  const tradeNo = `WAFFO_PANCAKE_SUB-${user.id}-${Date.now()}-${randomCharsKey(6)}`;
+  const tradeNo = `WAFFO_PANCAKE_SUB-${user.id}-${Date.now()}-${getRandomString(6)}`;
   try {
     await s.insertSubscriptionOrder({
       user_id: user.id,
@@ -361,46 +362,26 @@ export async function requestSubscriptionWaffoPancakePay(c: C): Promise<Response
   } catch {
     return payErr("创建订单失败");
   }
-  const endpoint = (await s.option("WaffoPancakeCheckoutUrl")) || "https://api.waffo.com/v1/pancake/checkout";
-  const apiKey = (await s.option("WaffoPancakeApiKey")) || privateKey;
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
-    body: JSON.stringify({
+  try {
+    const session = await createWaffoPancakeCheckoutSession(merchant, privateKey, {
       productId: String(plan.waffo_pancake_product_id),
-      merchantId: merchant,
-      orderMerchantExternalId: tradeNo,
-      buyerIdentity: waffoPancakeBuyerIdentity(user.id),
-      amount: moneyOf(plan).toFixed(2),
-      priceSnapshot: { amount: moneyOf(plan).toFixed(2), taxCategory: "saas" },
+      buyerIdentity: waffoPancakeBuyerIdentityFromUserId(user.id),
+      priceAmount: formatWaffoPancakeAmount(moneyOf(plan)),
       buyerEmail: (user.email || "").trim(),
+      orderMerchantExternalId: tradeNo,
       expiresInSeconds: 45 * 60,
-      successUrl: paymentReturnPath(await s.option("ServerAddress"), "/wallet?show_history=true"),
-    }),
-  });
-  const data = (await res.json().catch(() => ({}))) as {
-    checkout_url?: string;
-    checkoutUrl?: string;
-    session_id?: string;
-    sessionId?: string;
-    expires_at?: number | string;
-    expiresAt?: number | string;
-    token?: string;
-    token_expires_at?: number | string;
-    tokenExpiresAt?: number | string;
-  };
-  const checkoutUrl = data.checkout_url || data.checkoutUrl || "";
-  if (!res.ok || !checkoutUrl) {
+    });
+    return payOk({
+      checkout_url: session.checkoutUrl,
+      session_id: session.sessionId,
+      expires_at: session.expiresAt,
+      order_id: tradeNo,
+      token: session.token,
+      token_expires_at: session.tokenExpiresAt,
+    });
+  } catch {
     const order = await s.getSubscriptionOrderByTrade(tradeNo);
     if (order) await s.updateSubscriptionOrder(Number(order.id), { status: "failed" });
     return payErr("拉起支付失败");
   }
-  return payOk({
-    checkout_url: checkoutUrl,
-    session_id: data.session_id || data.sessionId || "",
-    expires_at: data.expires_at || data.expiresAt || nowSec() + 45 * 60,
-    order_id: tradeNo,
-    token: data.token || "",
-    token_expires_at: data.token_expires_at || data.tokenExpiresAt || nowSec() + 45 * 60,
-  });
 }

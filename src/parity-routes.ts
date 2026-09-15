@@ -2484,18 +2484,18 @@ async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waff
     const text = await c.req.text();
     if (!text.trim()) {
       if (kind === "stripe" || kind === "epay" || kind === "creem") return payErr("参数错误");
-      if (kind === "waffo") bindError = true;
+      if (kind === "waffo" || kind === "waffo_pancake") bindError = true;
       else body = {};
     } else {
       body = JSON.parse(text) as Record<string, unknown>;
     }
   } catch {
     if (kind === "stripe" || kind === "epay" || kind === "creem") return payErr("参数错误");
-    if (kind === "waffo") bindError = true;
+    if (kind === "waffo" || kind === "waffo_pancake") bindError = true;
     else body = {};
   }
   if (!user) {
-    if (kind === "stripe" || kind === "creem" || kind === "waffo") return payErr("用户不存在");
+    if (kind === "stripe" || kind === "creem" || kind === "waffo" || kind === "waffo_pancake") return payErr("用户不存在");
     return apiFail("用户不存在");
   }
   if (kind === "stripe") {
@@ -2509,7 +2509,7 @@ async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waff
   }
   if (kind === "epay") return requestEpay(s, user, c.req, body as { amount?: number; payment_method?: string });
   if (kind === "creem") return requestCreemPay(s, user, c.req, body as { product_id?: string; payment_method?: string });
-  if (kind === "waffo_pancake") return requestWaffoPancakePay(s, user, c.req, body as { amount?: number });
+  if (kind === "waffo_pancake") return requestWaffoPancakePay(s, user, c.req, body as { amount?: number }, bindError);
   return requestWaffoPay(
     s,
     user,

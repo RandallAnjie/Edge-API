@@ -266,7 +266,7 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   WaffoUnitPrice: "1",
   WaffoPayMethods: JSON.stringify(DEFAULT_WAFFO_PAY_METHODS),
   WaffoPancakeReturnURL: "",
-  WaffoPancakeUnitPrice: "8",
+  WaffoPancakeUnitPrice: "1",
   WaffoPancakeStoreID: "",
   GroupRatio: JSON.stringify(DEFAULT_GROUP_RATIO),
   ModelRatio: DEFAULT_MODEL_RATIO_JSON,

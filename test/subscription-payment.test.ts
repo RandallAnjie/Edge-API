@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
 import { hmacSha256Hex, md5Hex } from "../src/crypto.js";
+import { generateWaffoTestKeyPair } from "./waffo-keys.js";
 import { LOG_TOPUP, ROOT_QUOTA } from "../src/constants.js";
 import { handleFetch } from "../src/worker.js";
 import worker from "../src/worker.js";
@@ -476,8 +477,9 @@ test("original SubscriptionRequestCreemPay checkout_url/order_id JSON", async ()
 test("original SubscriptionRequestWaffoPancakePay WAFFO_PANCAKE_SUB JSON", async () => {
   const { e, auth, store } = await boot();
   await confirmCompliance(e, auth);
-  await store.setOption("WaffoPancakeMerchantID", "mch_1");
-  await store.setOption("WaffoPancakePrivateKey", "pk_test");
+  const keys = await generateWaffoTestKeyPair();
+  await store.setOption("WaffoPancakeMerchantID", "MER_1234567890abcdefghijKL");
+  await store.setOption("WaffoPancakePrivateKey", keys.privateKey);
   const planId = await createPlan(e, auth, {
     title: "Pancake Sub",
     total_amount: 300,
@@ -485,22 +487,27 @@ test("original SubscriptionRequestWaffoPancakePay WAFFO_PANCAKE_SUB JSON", async
     duration_value: 30,
     price_amount: 3.5,
     upgrade_group: "vip",
-    waffo_pancake_product_id: "prod_sub_pancake",
+    waffo_pancake_product_id: "PROD_2234567890abcdefghijKL",
   });
   const origFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(typeof input === "string" || input instanceof URL ? input : input.url);
-    if (url.includes("pancake/checkout") || url.includes("waffo.com")) {
+    if (url.endsWith("/v1/actions/auth/issue-session-token")) {
+      return new Response(JSON.stringify({ data: { token: "tok_sub", expiresAt: "2026-05-13T01:00:00Z" } }), {
+        status: 200,
+      });
+    }
+    if (url.endsWith("/v1/actions/checkout/create-session")) {
       const body = JSON.parse(String(init?.body || "{}")) as { orderMerchantExternalId?: string; productId?: string };
-      assert.equal(body.productId, "prod_sub_pancake");
+      assert.equal(body.productId, "PROD_2234567890abcdefghijKL");
       assert.match(String(body.orderMerchantExternalId), /^WAFFO_PANCAKE_SUB-/);
       return new Response(
         JSON.stringify({
-          checkout_url: "https://pay.waffo.com/pancake/sub",
-          session_id: "sess_sub",
-          expires_at: 1710002700,
-          token: "tok_sub",
-          token_expires_at: 1710002700,
+          data: {
+            sessionId: "sess_sub",
+            checkoutUrl: "https://pay.waffo.com/pancake/sub",
+            expiresAt: "2026-05-13T00:45:00Z",
+          },
         }),
         { status: 200 },
       );
@@ -525,11 +532,11 @@ test("original SubscriptionRequestWaffoPancakePay WAFFO_PANCAKE_SUB JSON", async
       token: string;
       token_expires_at: number | string;
     };
-    assert.equal(data.checkout_url, "https://pay.waffo.com/pancake/sub");
+    assert.equal(data.checkout_url, "https://pay.waffo.com/pancake/sub#token=tok_sub");
     assert.equal(data.session_id, "sess_sub");
-    assert.equal(data.expires_at, 1710002700);
+    assert.equal(data.expires_at, "2026-05-13T00:45:00Z");
     assert.equal(data.token, "tok_sub");
-    assert.equal(data.token_expires_at, 1710002700);
+    assert.equal(data.token_expires_at, "2026-05-13T01:00:00Z");
     assert.match(data.order_id, /^WAFFO_PANCAKE_SUB-\d+-\d+-[0-9a-zA-Z]{6}$/);
 
     await store.setOption("WaffoPancakeProductID", "prod_wallet");

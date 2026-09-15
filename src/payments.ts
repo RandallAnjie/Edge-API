@@ -1,5 +1,10 @@
 import { DEFAULT_WAFFO_PAY_METHODS, MAX_WALLET_QUOTA, nowSec, parseJson, randomHex } from "./constants.js";
 import {
+  createWaffoPancakeCheckoutSession,
+  formatWaffoPancakeAmount,
+  waffoPancakeBuyerIdentityFromUserId,
+} from "./waffo-pancake.js";
+import {
   getRandomString,
   hmacSha256Hex,
   md5Hex,
@@ -44,9 +49,9 @@ export async function paymentConfigured(store: Store, kind: "stripe" | "epay" | 
   }
   if (kind === "waffo_pancake") {
     return (
-      Boolean(await store.option("WaffoPancakeMerchantID")) &&
-      Boolean((await store.option("WaffoPancakePrivateKey")) || (await store.option("WaffoPancakeApiKey"))) &&
-      Boolean(await store.option("WaffoPancakeProductID"))
+      Boolean((await store.option("WaffoPancakeMerchantID")).trim()) &&
+      Boolean((await store.option("WaffoPancakePrivateKey")).trim()) &&
+      Boolean((await store.option("WaffoPancakeProductID")).trim())
     );
   }
   if (!(await store.optionBool("WaffoEnabled", false))) return false;
@@ -243,7 +248,8 @@ export async function requestAmount(
 ): Promise<Response> {
   const amount = Number(body.amount || 0);
   const minKey = kind === "stripe" ? "StripeMinTopUp" : kind === "waffo" ? "WaffoMinTopUp" : kind === "waffo_pancake" ? "WaffoPancakeMinTopUp" : "MinTopup";
-  const min = await minTopup(store, minKey, 1);
+  const min =
+    kind === "waffo" || kind === "waffo_pancake" ? await store.optionNum(minKey, 1) : await minTopup(store, minKey, 1);
   if (amount < min) return payErr(`充值数量不能小于 ${min}`);
   if (kind === "stripe" && amount > 10000) return payErr("充值数量不能大于 10000");
   const invalid = await rejectInvalidTopUpQuota(store, user.id, amount);
@@ -254,7 +260,7 @@ export async function requestAmount(
       : kind === "waffo"
         ? await store.optionNum("WaffoUnitPrice", 1)
         : kind === "waffo_pancake"
-          ? await store.optionNum("WaffoPancakeUnitPrice", 8)
+          ? await store.optionNum("WaffoPancakeUnitPrice", 1)
           : await store.optionNum("Price", 7.3);
   const money = await payMoneyFor(store, amount, user.group, unit);
   if (money <= 0.01) return payErr("充值金额过低");
@@ -748,61 +754,64 @@ export async function requestWaffoPancakePay(
   user: UserRow,
   req: Request,
   body: { amount?: number },
+  bindError = false,
 ): Promise<Response> {
+  void req;
   if (!(await paymentEnabled(store, "waffo_pancake"))) return payErr("Waffo Pancake 配置不完整");
+  if (bindError) return payErr("参数错误");
   const amount = Number(body.amount || 0);
-  const min = await store.optionNum("WaffoPancakeMinTopUp", await store.optionNum("MinTopup", 1));
+  const min = await store.optionNum("WaffoPancakeMinTopUp", 1);
   if (amount < min) return payErr(`充值数量不能小于 ${min}`);
   const invalid = await rejectInvalidTopUpQuota(store, user.id, amount);
   if (invalid) return invalid;
-  const money = await payMoneyFor(store, amount, user.group, await store.optionNum("WaffoPancakeUnitPrice", 8));
-  if (money <= 0.01) return payErr("充值金额过低");
-  const trade = `WAFFO_PANCAKE-${user.id}-${Date.now()}-${randomHex(3)}`;
-  await store.insertTopup({
-    user_id: user.id,
-    amount,
-    money,
-    trade_no: trade,
-    payment_method: "waffo_pancake",
-    payment_provider: "waffo_pancake",
-    status: "pending",
-  });
-  const endpoint = (await store.option("WaffoPancakeCheckoutUrl")) || "https://api.waffo.com/v1/pancake/checkout";
-  const apiKey = (await store.option("WaffoPancakeApiKey")) || (await store.option("WaffoPancakePrivateKey"));
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
-    body: JSON.stringify({
-      productId: await store.option("WaffoPancakeProductID"),
-      merchantId: await store.option("WaffoPancakeMerchantID"),
-      orderMerchantExternalId: trade,
-      amount: money.toFixed(2),
-      buyerEmail: user.email || "",
-      expiresInSeconds: 45 * 60,
-      successUrl: paymentReturnPath(req, "/wallet?show_history=true"),
-    }),
-  });
-  const data = (await res.json().catch(() => ({}))) as {
-    checkout_url?: string;
-    checkoutUrl?: string;
-    session_id?: string;
-    sessionId?: string;
-    expires_at?: number | string;
-    expiresAt?: number | string;
-    token?: string;
-    token_expires_at?: number | string;
-    tokenExpiresAt?: number | string;
-  };
-  const checkoutUrl = data.checkout_url || data.checkoutUrl || "";
-  if (!res.ok || !checkoutUrl) return payErr("拉起支付失败");
-  return payOk({
-    checkout_url: checkoutUrl,
-    session_id: data.session_id || data.sessionId || "",
-    expires_at: data.expires_at || data.expiresAt || nowSec() + 45 * 60,
-    order_id: trade,
-    token: data.token || "",
-    token_expires_at: data.token_expires_at || data.tokenExpiresAt || nowSec() + 45 * 60,
-  });
+  const money = await payMoneyFor(store, amount, user.group, await store.optionNum("WaffoPancakeUnitPrice", 1));
+  if (money < 0.01) return payErr("充值金额过低");
+  const trade = `WAFFO_PANCAKE-${user.id}-${Date.now()}-${getRandomString(6)}`;
+  let storedAmount = amount;
+  if ((await quotaDisplayType(store)) === "TOKENS") {
+    const qpu = await store.optionNum("QuotaPerUnit", 500000);
+    storedAmount = qpu > 0 ? Math.trunc(amount / qpu) : amount;
+    if (storedAmount < 1) storedAmount = 1;
+  }
+  let topupId = 0;
+  try {
+    topupId = await store.insertTopup({
+      user_id: user.id,
+      amount: storedAmount,
+      money,
+      trade_no: trade,
+      payment_method: "waffo_pancake",
+      payment_provider: "waffo_pancake",
+      status: "pending",
+    });
+  } catch {
+    return payErr("创建订单失败");
+  }
+  try {
+    const session = await createWaffoPancakeCheckoutSession(
+      await store.option("WaffoPancakeMerchantID"),
+      await store.option("WaffoPancakePrivateKey"),
+      {
+        productId: await store.option("WaffoPancakeProductID"),
+        buyerIdentity: waffoPancakeBuyerIdentityFromUserId(user.id),
+        priceAmount: formatWaffoPancakeAmount(money),
+        buyerEmail: (user.email || "").trim(),
+        orderMerchantExternalId: trade,
+        expiresInSeconds: 45 * 60,
+      },
+    );
+    return payOk({
+      checkout_url: session.checkoutUrl,
+      session_id: session.sessionId,
+      expires_at: session.expiresAt,
+      order_id: trade,
+      token: session.token,
+      token_expires_at: session.tokenExpiresAt,
+    });
+  } catch {
+    if (topupId) await store.updateTopup(topupId, { status: "failed" });
+    return payErr("拉起支付失败");
+  }
 }
 
 export async function requestHttpPay(
