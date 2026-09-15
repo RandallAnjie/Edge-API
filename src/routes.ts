@@ -1640,24 +1640,24 @@ async function billingSub(c: C): Promise<Response> {
   const tokenStat = await s.optionBool("DisplayTokenStatEnabled", true);
   let remain = auth.user.quota;
   let used = auth.user.used_quota;
-  let expiredTime = auth.token.expired_time;
+  let expiredTime = 0;
+  let unlimited = false;
   if (tokenStat) {
     remain = auth.token.remain_quota;
     used = auth.token.used_quota;
+    expiredTime = auth.token.expired_time;
+    unlimited = Boolean(auth.token.unlimited_quota);
   }
   let amount = await quotaDisplayAmount(s, remain + used);
-  if (auth.token.unlimited_quota) amount = 100000000;
-  return new Response(
-    JSON.stringify({
-      object: "billing_subscription",
-      has_payment_method: true,
-      soft_limit_usd: amount,
-      hard_limit_usd: amount,
-      system_hard_limit_usd: amount,
-      access_until: expiredTime > 0 ? expiredTime : 0,
-    }),
-    { headers: { "content-type": "application/json" } },
-  );
+  if (unlimited) amount = 100000000;
+  return json(200, {
+    object: "billing_subscription",
+    has_payment_method: true,
+    soft_limit_usd: amount,
+    hard_limit_usd: amount,
+    system_hard_limit_usd: amount,
+    access_until: expiredTime > 0 ? expiredTime : 0,
+  });
 }
 
 async function billingUsage(c: C): Promise<Response> {
@@ -1668,11 +1668,8 @@ async function billingUsage(c: C): Promise<Response> {
   const tokenStat = await s.optionBool("DisplayTokenStatEnabled", true);
   const quota = tokenStat ? auth.token.used_quota : auth.user.used_quota;
   const amount = await quotaDisplayAmount(s, quota);
-  return new Response(
-    JSON.stringify({
-      object: "list",
-      total_usage: amount * 100,
-    }),
-    { headers: { "content-type": "application/json" } },
-  );
+  return json(200, {
+    object: "list",
+    total_usage: amount * 100,
+  });
 }

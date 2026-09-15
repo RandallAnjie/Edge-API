@@ -141,9 +141,13 @@ Material changes from upstream:
   `dto.GeminiModel` zero-value JSON (`baseModelId` / `supportedGenerationMethods`
   / etc. null, `nextPageToken: null`). Extra-OK: OpenAI `ListModels` still
   fills `supported_endpoint_types` from the pricing cache (`[]` until
-  GetPricing, not null). Original `controller.ChannelListModels` returns the
+  GetPricing, not null).   Original `controller.ChannelListModels` returns the
   static UniqBy-first catalog with `supported_endpoint_types: null` (not
-  pricing-cache or channel-type endpoint arrays).
+  pricing-cache or channel-type endpoint arrays). Original
+  `controller.GetSubscription` / `GetUsage` use token remain/used/expired and
+  unlimited `100000000` only when `DisplayTokenStatEnabled`; otherwise user
+  quota/`used_quota` and `access_until: 0`. Extra-OK: gin billing JSON has no
+  Cache-Control; worker `json()` still sends `no-store`.
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented
