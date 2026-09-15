@@ -18,7 +18,6 @@ import {
   xaiSseToOpenAIChat,
   nativeClaudeGeminiConvertError,
   nativeOpenAIConvertEndpointError,
-  estimatePromptTokens,
   extractGeminiModelAction,
   geminiToOpenAIChat,
   openaiFromAnthropicResponse,
@@ -37,7 +36,6 @@ import {
   sseOpenAIFromText,
   emptyOpenAIUsageCounts,
   usageFromOpenAI,
-  type ChatMessage,
   convertClaudeMessagesToGeminiGenerateContent,
   convertGeminiGenerateContentToClaudeMessages,
   geminiResponseToClaudeMessages,
@@ -116,6 +114,7 @@ import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import { abortWithOpenAiMessage, clientIp, groupAccessDeniedMessage, json, modelNameRequiredMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyGetAndValidateRequest } from "./valid-request.js";
+import { estimateRequestPromptTokens, getTokenCountMeta } from "./token-count.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, channelParamOverrideMap, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import { removeDisabledFields, usesRemoveDisabledFields, type ChannelDisabledFieldSettings } from "./relay-disabled-fields.js";
 import {
@@ -1719,17 +1718,27 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   const usedChannel: string[] = [];
   const requestStarted = Date.now();
 
-  const promptEst = estimatePromptTokens(
-    asObj(opts.body).messages as ChatMessage[] | undefined,
-    typeof asObj(opts.body).prompt === "string" ? String(asObj(opts.body).prompt) : undefined,
-  );
+  const tokenMeta = getTokenCountMeta({
+    mode,
+    clientFormat,
+    path,
+    body: opts.body,
+    model,
+  });
+  const promptEst = estimateRequestPromptTokens({
+    mode,
+    clientFormat,
+    path,
+    body: opts.body,
+    model,
+  });
   const billingRequestInput = {
     headers: requestHeadersFrom(opts.req),
     body: asObj(opts.body),
   };
   let tieredSnapshot: import("./billing-expr.js").BillingSnapshot | null = null;
   try {
-    const maxTokens = Number(asObj(opts.body).max_tokens || asObj(opts.body).max_completion_tokens || 0);
+    const maxTokens = tokenMeta.maxTokens || Number(asObj(opts.body).max_tokens || asObj(opts.body).max_completion_tokens || 0);
     tieredSnapshot = await captureTieredBillingSnapshot(
       store,
       model,

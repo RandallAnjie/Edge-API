@@ -217,7 +217,7 @@ Material changes from upstream:
   Original `GetAndValidAudioRequest` requires `model` for speech and
   transcription/translation (no whisper-1 default), defaults empty
   `response_format` to `json` on non-speech, and `IsStream` is
-  `stream_format == "sse"`. Original `GetAndValidateEmbeddingRequest`
+  `stream_format == "sse"`.   Original `GetAndValidateEmbeddingRequest`
   rejects nil `input` (`input is empty`; `""` / `[]` pass) and drops
   unknown JSON keys. Original `GetAndValidateRerankRequest` rejects
   empty `query` / `documents`. Original `GetAndValidateGeminiRequest`
@@ -225,7 +225,14 @@ Material changes from upstream:
   Original `GetAndValidateTextRequest` requires chat `messages` unless
   FIM `prefix`/`suffix`, defaults `web_search_options.search_context_size`
   to `medium`, and rejects `max_tokens` above `MaxInt32/2`. Original
-  Responses `input` is required except `/v1/responses/compact`. Extra-OK:
+  Responses `input` is required except `/v1/responses/compact`. Original
+  `GetTokenCountMeta` / `CountRequestToken` estimate pre-consume tokens
+  from Audio `Input` (rune count unless model contains `gpt`), embedding
+  `ParseInput` joined with newlines, rerank documents+query, Gemini
+  contents text, and OpenAI chat extras (`tools*8 + messages*3 + names*3 + 3`).
+  Extra-OK: OpenAI-text models use `len/4` instead of tiktoken; media
+  tokens are not fetched; transcription/translation duration is 0.
+  Extra-OK:
   GetAndValid runs after distributor model check and before channel
   select, so invalid bodies 400 even when no channel exists; `/v1/engines/:model/embeddings`
   keeps Path2RelayMode embedding validation rather than original
