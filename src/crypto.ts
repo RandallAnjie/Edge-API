@@ -481,6 +481,25 @@ export async function signWaffoBody(body: string, base64PrivateKey: string): Pro
   }
 }
 
+/** Original waffo-go `utils.Verify`: SHA256withRSA over the raw body string. */
+export async function verifyWaffoBody(body: string, base64Signature: string, base64PublicKey: string): Promise<boolean> {
+  if (!base64Signature || !base64PublicKey) return false;
+  try {
+    const der = stdB64ToBytes(base64PublicKey);
+    const sig = stdB64ToBytes(base64Signature);
+    const key = await crypto.subtle.importKey(
+      "spki",
+      copyBytes(der) as BufferSource,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    return crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, copyBytes(sig) as BufferSource, new TextEncoder().encode(body));
+  } catch {
+    return false;
+  }
+}
+
 function pemToDer(pem: string): Uint8Array {
   const b64 = pem
     .replace(/-----BEGIN [^-]+-----/, "")

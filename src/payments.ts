@@ -14,6 +14,7 @@ import {
   timingSafeEqualStr,
   validateWaffoPrivateKey,
   validateWaffoPublicKey,
+  verifyWaffoBody,
 } from "./crypto.js";
 import { apiFail, clientIp, json, payErr, payOk, paymentReturnPath as serverPaymentReturnPath, readJson } from "./http.js";
 import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
@@ -868,32 +869,124 @@ export async function handleCreemWebhook(store: Store, req: Request): Promise<Re
   return new Response(null, { status: 200 });
 }
 
-export async function handleWaffoWebhook(store: Store, req: Request): Promise<Response> {
-  if (!(await paymentEnabled(store, "waffo"))) return new Response(null, { status: 403 });
-  const raw = await req.text();
-  const signature = req.headers.get("X-SIGNATURE") || req.headers.get("x-signature") || "";
-  if (!signature) return new Response(null, { status: 400 });
-  const event = parseJson<{
-    eventType?: string;
-    result?: { merchantOrderID?: string; merchantOrderId?: string; orderStatus?: string };
-    merchantOrderId?: string;
-  }>(raw, {});
-  const trade = String(event.result?.merchantOrderID || event.result?.merchantOrderId || event.merchantOrderId || "");
-  const orderStatus = String(event.result?.orderStatus || "");
-  if (trade && (!orderStatus || orderStatus === "PAY_SUCCESS")) {
-    try {
-      await store.rechargeWaffo(trade, clientIp(req));
-    } catch {
-      return new Response(JSON.stringify({ code: "FAIL" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }
-  }
-  return new Response(JSON.stringify({ code: "SUCCESS" }), {
+const WAFFO_PAYMENT_EVENT = "PAYMENT_NOTIFICATION";
+const WAFFO_WEBHOOK_SUCCESS_BODY = '{"message":"success"}';
+const WAFFO_WEBHOOK_FAILED_BODY = '{"message":"failed"}';
+
+const WAFFO_PAYMENT_STRING_FIELDS = [
+  "paymentRequestId",
+  "merchantOrderId",
+  "acquiringOrderId",
+  "orderStatus",
+  "orderAction",
+  "orderCurrency",
+  "orderAmount",
+  "userCurrency",
+  "finalDealAmount",
+  "orderDescription",
+  "orderRequestedAt",
+  "orderExpiredAt",
+  "orderUpdatedAt",
+  "orderCompletedAt",
+  "extendInfo",
+  "refundExpiryAt",
+  "cancelRedirectUrl",
+] as const;
+
+const WAFFO_PAYMENT_OBJECT_FIELDS = ["merchantInfo", "userInfo", "goodsInfo", "addressInfo", "paymentInfo"] as const;
+
+function abortStatus(status: number): Response {
+  return new Response(null, { status });
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Original waffo-go `WebhookHandler.BuildSuccessResponse` / `BuildFailedResponse`. */
+async function sendWaffoWebhookResponse(privateKey: string, success: boolean): Promise<Response> {
+  const body = success ? WAFFO_WEBHOOK_SUCCESS_BODY : WAFFO_WEBHOOK_FAILED_BODY;
+  const signature = (await signWaffoBody(body, privateKey)) || "";
+  return new Response(body, {
     status: 200,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "X-SIGNATURE": signature,
+    },
   });
+}
+
+/** Original `encoding/json` into `webhookPayloadWithSubInfo` / `PaymentNotificationResult`. */
+function parseWaffoPaymentResult(result: unknown): { merchantOrderId: string; orderStatus: string } | null {
+  if (result == null) return { merchantOrderId: "", orderStatus: "" };
+  if (!isJsonObject(result)) return null;
+  for (const field of WAFFO_PAYMENT_STRING_FIELDS) {
+    if (field in result && result[field] != null && typeof result[field] !== "string") return null;
+  }
+  for (const field of WAFFO_PAYMENT_OBJECT_FIELDS) {
+    if (field in result && result[field] != null && !isJsonObject(result[field])) return null;
+  }
+  if ("subscriptionInfo" in result && result.subscriptionInfo != null && !isJsonObject(result.subscriptionInfo)) return null;
+  if (
+    "orderFailedReason" in result &&
+    result.orderFailedReason != null &&
+    typeof result.orderFailedReason !== "string" &&
+    !isJsonObject(result.orderFailedReason)
+  ) {
+    return null;
+  }
+  return {
+    merchantOrderId: typeof result.merchantOrderId === "string" ? result.merchantOrderId : "",
+    orderStatus: typeof result.orderStatus === "string" ? result.orderStatus : "",
+  };
+}
+
+/** Original `controller.WaffoWebhook` + `handleWaffoPayment` + `sendWaffoWebhookResponse`. */
+export async function handleWaffoWebhook(store: Store, req: Request): Promise<Response> {
+  if (!(await paymentEnabled(store, "waffo"))) return abortStatus(403);
+  let raw = "";
+  try {
+    raw = await req.text();
+  } catch {
+    return abortStatus(400);
+  }
+  const creds = await waffoCredentials(store);
+  if (!creds) return abortStatus(500);
+  const signature = req.headers.get("X-SIGNATURE") || "";
+  if (!(await verifyWaffoBody(raw, signature, creds.publicKey))) return abortStatus(400);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return sendWaffoWebhookResponse(creds.privateKey, false);
+  }
+  if (parsed === null) return sendWaffoWebhookResponse(creds.privateKey, true);
+  if (!isJsonObject(parsed)) return sendWaffoWebhookResponse(creds.privateKey, false);
+  if ("eventType" in parsed && parsed.eventType != null && typeof parsed.eventType !== "string") {
+    return sendWaffoWebhookResponse(creds.privateKey, false);
+  }
+  const eventType = typeof parsed.eventType === "string" ? parsed.eventType : "";
+  if (eventType !== WAFFO_PAYMENT_EVENT) return sendWaffoWebhookResponse(creds.privateKey, true);
+
+  const payment = parseWaffoPaymentResult(parsed.result);
+  if (!payment) return sendWaffoWebhookResponse(creds.privateKey, false);
+  if (payment.orderStatus !== "PAY_SUCCESS") {
+    if (payment.merchantOrderId) {
+      try {
+        await store.updatePendingTopupStatus(payment.merchantOrderId, "waffo", "failed");
+      } catch {
+        /* original ignores not-found / status-invalid and still acks */
+      }
+    }
+    return sendWaffoWebhookResponse(creds.privateKey, true);
+  }
+  try {
+    await store.rechargeWaffo(payment.merchantOrderId, clientIp(req));
+  } catch {
+    return sendWaffoWebhookResponse(creds.privateKey, false);
+  }
+  return sendWaffoWebhookResponse(creds.privateKey, true);
 }
 
 function pancakeWebhookText(status: number, body: string): Response {
