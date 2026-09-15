@@ -407,6 +407,80 @@ export async function md5Hex(message: string): Promise<string> {
   }
 }
 
+function stdB64ToBytes(s: string): Uint8Array {
+  const bin = atob(s.replace(/\s/g, ""));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function bytesToStdB64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function copyBytes(u: Uint8Array): ArrayBuffer {
+  const out = new Uint8Array(u.byteLength);
+  out.set(u);
+  return out.buffer;
+}
+
+/** Original waffo-go `utils.ValidatePrivateKey` (Base64 PKCS#8 RSA). */
+export async function validateWaffoPrivateKey(base64PrivateKey: string): Promise<boolean> {
+  if (!base64PrivateKey) return false;
+  try {
+    const der = stdB64ToBytes(base64PrivateKey);
+    await crypto.subtle.importKey(
+      "pkcs8",
+      copyBytes(der) as BufferSource,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Original waffo-go `utils.ValidatePublicKey` (Base64 X.509 SPKI RSA). */
+export async function validateWaffoPublicKey(base64PublicKey: string): Promise<boolean> {
+  if (!base64PublicKey) return false;
+  try {
+    const der = stdB64ToBytes(base64PublicKey);
+    await crypto.subtle.importKey(
+      "spki",
+      copyBytes(der) as BufferSource,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Original waffo-go `utils.Sign`: SHA256withRSA over the JSON body, Base64 signature. */
+export async function signWaffoBody(body: string, base64PrivateKey: string): Promise<string | null> {
+  try {
+    const der = stdB64ToBytes(base64PrivateKey);
+    const key = await crypto.subtle.importKey(
+      "pkcs8",
+      copyBytes(der) as BufferSource,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(body));
+    return bytesToStdB64(sig);
+  } catch {
+    return null;
+  }
+}
+
 function pemToDer(pem: string): Uint8Array {
   const b64 = pem
     .replace(/-----BEGIN [^-]+-----/, "")

@@ -16,6 +16,7 @@ import { CHANNEL_BASE_URLS, CHANNEL_TYPES, channelDefaultBaseURLs } from "../src
 import { relayErrorHandler } from "../src/http.js";
 import { taskPluginSyncRevision } from "../src/dto.js";
 import type { ChannelRow, Env, ExecutionContextLike } from "../src/types.js";
+import { generateWaffoTestKeyPair } from "./waffo-keys.js";
 
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
@@ -784,6 +785,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
       }),
       e,
     );
+    const waffoKeys = await generateWaffoTestKeyPair();
     await json(
       new Request("http://local/api/option/", {
         method: "PUT",
@@ -796,7 +798,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
       new Request("http://local/api/option/", {
         method: "PUT",
         headers: auth,
-        body: JSON.stringify({ key: "WaffoPrivateKey", value: "wk_private" }),
+        body: JSON.stringify({ key: "WaffoPrivateKey", value: waffoKeys.privateKey }),
       }),
       e,
     );
@@ -804,14 +806,14 @@ test("original JSON fields for status, models, deployments, performance, data, u
       new Request("http://local/api/option/", {
         method: "PUT",
         headers: auth,
-        body: JSON.stringify({ key: "WaffoPublicCert", value: "wk_cert" }),
+        body: JSON.stringify({ key: "WaffoPublicCert", value: waffoKeys.publicKey }),
       }),
       e,
     );
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(typeof input === "string" || input instanceof URL ? input : input.url);
       if (url.includes("waffo")) {
-        return new Response(JSON.stringify({ payment_url: "https://pay.waffo.com/x", orderAction: "https://pay.waffo.com/x" }), { status: 200 });
+        return new Response(JSON.stringify({ code: "0", data: { orderAction: "https://pay.waffo.com/x" } }), { status: 200 });
       }
       if (url.includes("/v1/dashboard/billing/subscription")) {
         return new Response(JSON.stringify({ hard_limit_usd: 20, has_payment_method: true }), { status: 200 });

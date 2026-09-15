@@ -2478,20 +2478,26 @@ async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waff
   const u = await requireUser(c, s);
   if (isResponse(u)) return u;
   const user = await s.getUserById(u.id);
-  let body: Record<string, unknown>;
+  let body: Record<string, unknown> = {};
+  let bindError = false;
   try {
     const text = await c.req.text();
     if (!text.trim()) {
       if (kind === "stripe" || kind === "epay" || kind === "creem") return payErr("参数错误");
-      body = {};
+      if (kind === "waffo") bindError = true;
+      else body = {};
     } else {
       body = JSON.parse(text) as Record<string, unknown>;
     }
   } catch {
     if (kind === "stripe" || kind === "epay" || kind === "creem") return payErr("参数错误");
-    body = {};
+    if (kind === "waffo") bindError = true;
+    else body = {};
   }
-  if (!user) return kind === "stripe" ? payErr("用户不存在") : apiFail("用户不存在");
+  if (!user) {
+    if (kind === "stripe" || kind === "creem" || kind === "waffo") return payErr("用户不存在");
+    return apiFail("用户不存在");
+  }
   if (kind === "stripe") {
     return requestStripePay(
       s,
@@ -2504,7 +2510,13 @@ async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waff
   if (kind === "epay") return requestEpay(s, user, c.req, body as { amount?: number; payment_method?: string });
   if (kind === "creem") return requestCreemPay(s, user, c.req, body as { product_id?: string; payment_method?: string });
   if (kind === "waffo_pancake") return requestWaffoPancakePay(s, user, c.req, body as { amount?: number });
-  return requestWaffoPay(s, user, c.req, body as { amount?: number });
+  return requestWaffoPay(
+    s,
+    user,
+    c.req,
+    body as { amount?: number; pay_method_index?: number; pay_method_type?: string; pay_method_name?: string },
+    bindError,
+  );
 }
 
 async function genericPayWebhook(c: C, kind: string): Promise<Response> {

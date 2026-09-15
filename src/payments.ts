@@ -1,5 +1,14 @@
-import { MAX_WALLET_QUOTA, nowSec, parseJson, randomHex } from "./constants.js";
-import { getRandomString, hmacSha256Hex, md5Hex, sha1Hex, timingSafeEqualStr } from "./crypto.js";
+import { DEFAULT_WAFFO_PAY_METHODS, MAX_WALLET_QUOTA, nowSec, parseJson, randomHex } from "./constants.js";
+import {
+  getRandomString,
+  hmacSha256Hex,
+  md5Hex,
+  sha1Hex,
+  signWaffoBody,
+  timingSafeEqualStr,
+  validateWaffoPrivateKey,
+  validateWaffoPublicKey,
+} from "./crypto.js";
 import { apiFail, clientIp, json, payErr, payOk, paymentReturnPath as serverPaymentReturnPath, readJson } from "./http.js";
 import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
 import {
@@ -243,7 +252,7 @@ export async function requestAmount(
     kind === "stripe"
       ? await store.optionNum("StripeUnitPrice", 8)
       : kind === "waffo"
-        ? await store.optionNum("WaffoUnitPrice", 8)
+        ? await store.optionNum("WaffoUnitPrice", 1)
         : kind === "waffo_pancake"
           ? await store.optionNum("WaffoPancakeUnitPrice", 8)
           : await store.optionNum("Price", 7.3);
@@ -555,58 +564,182 @@ export async function requestCreemPay(
   return payOk({ checkout_url: data.checkout_url, order_id: trade });
 }
 
+type WaffoPayMethod = { name?: string; payMethodType?: string; payMethodName?: string };
+
+const WAFFO_ZERO_DECIMAL = new Set(["IDR", "JPY", "KRW", "VND"]);
+const WAFFO_SDK_VERSION = "waffo-go/1.3.2";
+const WAFFO_API_VERSION = "1.0.0";
+
+async function waffoPayMethods(store: Store): Promise<WaffoPayMethod[]> {
+  const raw = await store.option("WaffoPayMethods");
+  if (!raw) return DEFAULT_WAFFO_PAY_METHODS;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return DEFAULT_WAFFO_PAY_METHODS;
+    return parsed as WaffoPayMethod[];
+  } catch {
+    return DEFAULT_WAFFO_PAY_METHODS;
+  }
+}
+
+function formatWaffoAmount(amount: number, currency: string): string {
+  if (WAFFO_ZERO_DECIMAL.has(currency.toUpperCase())) return amount.toFixed(0);
+  return amount.toFixed(2);
+}
+
+function waffoRedirectUrl(orderAction: string): string {
+  if (!orderAction) return "";
+  try {
+    const action = JSON.parse(orderAction) as { actionType?: string; webUrl?: string; deeplinkUrl?: string };
+    if (action.actionType === "DEEPLINK" && action.deeplinkUrl) return action.deeplinkUrl;
+    return action.webUrl || "";
+  } catch {
+    return "";
+  }
+}
+
+async function waffoCredentials(store: Store): Promise<{
+  apiKey: string;
+  privateKey: string;
+  publicKey: string;
+  sandbox: boolean;
+} | null> {
+  const sandbox = await store.optionBool("WaffoSandbox", false);
+  const apiKey = sandbox ? await store.option("WaffoSandboxApiKey") : await store.option("WaffoApiKey");
+  const privateKey = sandbox ? await store.option("WaffoSandboxPrivateKey") : await store.option("WaffoPrivateKey");
+  const publicKey = sandbox ? await store.option("WaffoSandboxPublicCert") : await store.option("WaffoPublicCert");
+  if (!apiKey || !privateKey || !publicKey) return null;
+  if (!(await validateWaffoPrivateKey(privateKey)) || !(await validateWaffoPublicKey(publicKey))) return null;
+  return { apiKey, privateKey, publicKey, sandbox };
+}
+
 export async function requestWaffoPay(
   store: Store,
   user: UserRow,
   req: Request,
   body: { amount?: number; pay_method_index?: number; pay_method_type?: string; pay_method_name?: string },
+  bindError = false,
 ): Promise<Response> {
+  void req;
   if (!(await store.optionBool("WaffoEnabled", false))) return payErr("Waffo 支付未启用");
-  if (!(await paymentConfigured(store, "waffo"))) return payErr("支付配置错误");
+  if (bindError) return payErr("参数错误");
   const amount = Number(body.amount || 0);
-  const min = await store.optionNum("WaffoMinTopUp", await store.optionNum("MinTopup", 1));
+  const min = await store.optionNum("WaffoMinTopUp", 1);
   if (amount < min) return payErr(`充值数量不能小于 ${min}`);
   const invalid = await rejectInvalidTopUpQuota(store, user.id, amount);
   if (invalid) return invalid;
-  const money = await payMoneyFor(store, amount, user.group, await store.optionNum("WaffoUnitPrice", 8));
+  const methods = await waffoPayMethods(store);
+  let resolvedType = "";
+  let resolvedName = "";
+  if (body.pay_method_index != null && String(body.pay_method_index) !== "") {
+    const idx = Number(body.pay_method_index);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= methods.length) return payErr("不支持的支付方式");
+    resolvedType = String(methods[idx]?.payMethodType || "");
+    resolvedName = String(methods[idx]?.payMethodName || "");
+  } else if (String(body.pay_method_type || "")) {
+    const type = String(body.pay_method_type);
+    const name = String(body.pay_method_name || "");
+    const match = methods.find((m) => m.payMethodType === type && m.payMethodName === name);
+    if (!match) return payErr("不支持的支付方式");
+    resolvedType = String(match.payMethodType || "");
+    resolvedName = String(match.payMethodName || "");
+  }
+  const money = await payMoneyFor(store, amount, user.group, await store.optionNum("WaffoUnitPrice", 1));
   if (money < 0.01) return payErr("充值金额过低");
-  const trade = `WAFFO-${user.id}-${Date.now()}-${randomHex(3)}`;
-  await store.insertTopup({
-    user_id: user.id,
-    amount,
-    money,
-    trade_no: trade,
-    payment_method: "waffo",
-    payment_provider: "waffo",
-    status: "pending",
-  });
-  const endpoint = (await store.option("WaffoCheckoutUrl")) || "https://api.waffo.com/v1/checkout";
-  const apiKey = await store.option("WaffoApiKey");
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { authorization: "Bearer " + apiKey, "content-type": "application/json" },
-    body: JSON.stringify({
-      paymentRequestId: trade,
-      merchantOrderId: trade,
-      orderAmount: money.toFixed(2),
-      notifyUrl: (await store.option("WaffoNotifyUrl")) || `${new URL(req.url).origin}/api/waffo/webhook`,
-      successRedirectURL: paymentReturnPath(req, "/wallet?show_history=true"),
-      failedRedirectURL: paymentReturnPath(req, "/wallet?show_history=true"),
-      payMethodIndex: body.pay_method_index,
-      payMethodType: body.pay_method_type,
-      payMethodName: body.pay_method_name,
+  const trade = `WAFFO-${user.id}-${Date.now()}-${getRandomString(6)}`;
+  let storedAmount = amount;
+  if ((await quotaDisplayType(store)) === "TOKENS") {
+    const qpu = await store.optionNum("QuotaPerUnit", 500000);
+    storedAmount = Math.max(qpu > 0 ? Math.trunc(amount / qpu) : amount, 1);
+  }
+  let topupId = 0;
+  try {
+    topupId = await store.insertTopup({
+      user_id: user.id,
+      amount: storedAmount,
+      money,
+      trade_no: trade,
+      payment_method: "waffo",
+      payment_provider: "waffo",
+      status: "pending",
+    });
+  } catch {
+    return payErr("创建订单失败");
+  }
+  const creds = await waffoCredentials(store);
+  if (!creds) {
+    if (topupId) await store.updateTopup(topupId, { status: "failed" });
+    return payErr("支付配置错误");
+  }
+  const currency = (await store.option("WaffoCurrency")) || "USD";
+  const appName = ((await store.option("SystemName")) || "New API").trim() || "New API";
+  const notifyOverride = await store.option("WaffoNotifyUrl");
+  const notifyUrl = notifyOverride || `${await callbackAddress(store)}/api/waffo/webhook`;
+  const returnOverride = await store.option("WaffoReturnUrl");
+  const returnUrl = returnOverride || serverPaymentReturnPath(await store.option("ServerAddress"), "/wallet?show_history=true");
+  const paymentInfo: Record<string, string> = { productName: "ONE_TIME_PAYMENT" };
+  if (resolvedType) paymentInfo.payMethodType = resolvedType;
+  if (resolvedName) paymentInfo.payMethodName = resolvedName;
+  const payload: Record<string, unknown> = {
+    paymentRequestId: trade,
+    merchantOrderId: trade,
+    orderCurrency: currency,
+    orderAmount: formatWaffoAmount(money, currency),
+    orderDescription: `Recharge ${amount} credits`,
+    orderRequestedAt: new Date().toISOString(),
+    notifyUrl,
+    successRedirectUrl: returnUrl,
+    failedRedirectUrl: returnUrl,
+    userInfo: {
       userId: String(user.id),
-      userEmail: user.email || "",
-    }),
-  });
-  const data = (await res.json().catch(() => ({}))) as {
-    payment_url?: string;
-    checkout_url?: string;
-    url?: string;
-    orderAction?: string;
+      userEmail: `${user.id}@examples.com`,
+      userTerminal: "WEB",
+    },
+    paymentInfo,
+    goodsInfo: {
+      goodsName: `Recharge ${amount} credits`,
+      appName,
+    },
   };
-  const paymentUrl = data.payment_url || data.checkout_url || data.url || data.orderAction || "";
-  if (!res.ok || !paymentUrl) return payErr("拉起支付失败");
+  const merchantId = await store.option("WaffoMerchantId");
+  if (merchantId) payload.merchantInfo = { merchantId };
+  const bodyJson = JSON.stringify(payload);
+  const signature = await signWaffoBody(bodyJson, creds.privateKey);
+  if (!signature) {
+    await store.updateTopup(topupId, { status: "failed" });
+    return payErr("支付配置错误");
+  }
+  const endpoint =
+    (await store.option("WaffoCheckoutUrl")) ||
+    (creds.sandbox ? "https://api-sandbox.waffo.com/api/v1/order/create" : "https://api.waffo.com/api/v1/order/create");
+  let res: Response;
+  try {
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-API-KEY": creds.apiKey,
+        "X-SIGNATURE": signature,
+        "X-API-VERSION": WAFFO_API_VERSION,
+        "X-SDK-VERSION": WAFFO_SDK_VERSION,
+      },
+      body: bodyJson,
+    });
+  } catch {
+    await store.updateTopup(topupId, { status: "failed" });
+    return payErr("拉起支付失败");
+  }
+  const data = (await res.json().catch(() => ({}))) as {
+    code?: string;
+    msg?: string;
+    data?: { orderAction?: string; payment_url?: string };
+  };
+  if (String(data.code ?? "") !== "0" || !data.data) {
+    await store.updateTopup(topupId, { status: "failed" });
+    return payErr("拉起支付失败");
+  }
+  const orderAction = String(data.data.orderAction || "");
+  const paymentUrl = waffoRedirectUrl(orderAction) || orderAction;
   return payOk({ payment_url: paymentUrl, order_id: trade });
 }
 

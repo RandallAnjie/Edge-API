@@ -167,6 +167,12 @@ export const DEFAULT_SIDEBAR_MODULES_ADMIN = JSON.stringify({
   },
 });
 
+export const DEFAULT_WAFFO_PAY_METHODS = [
+  { name: "Card", icon: "/pay-card.png", payMethodType: "CREDITCARD,DEBITCARD", payMethodName: "" },
+  { name: "Apple Pay", icon: "/pay-apple.png", payMethodType: "APPLEPAY", payMethodName: "APPLEPAY" },
+  { name: "Google Pay", icon: "/pay-google.png", payMethodType: "GOOGLEPAY", payMethodName: "GOOGLEPAY" },
+];
+
 export const DEFAULT_OPTIONS: Record<string, string> = {
   ...NESTED_OPTION_DEFAULTS,
   SystemName: "New API",
@@ -256,9 +262,9 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   WaffoNotifyUrl: "",
   WaffoReturnUrl: "",
   WaffoSubscriptionReturnUrl: "",
-  WaffoCurrency: "CNY",
-  WaffoUnitPrice: "8",
-  WaffoPayMethods: "[]",
+  WaffoCurrency: "",
+  WaffoUnitPrice: "1",
+  WaffoPayMethods: JSON.stringify(DEFAULT_WAFFO_PAY_METHODS),
   WaffoPancakeReturnURL: "",
   WaffoPancakeUnitPrice: "8",
   WaffoPancakeStoreID: "",
