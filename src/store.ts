@@ -183,6 +183,16 @@ export function parseChannelStatusFilter(statusParam: string): number {
 // AddAbilities. A second concurrent repair returns this exact string via ApiError.
 let channelFixRunning = false;
 
+export function tryLockChannelFix(): boolean {
+  if (channelFixRunning) return false;
+  channelFixRunning = true;
+  return true;
+}
+
+export function unlockChannelFix(): void {
+  channelFixRunning = false;
+}
+
 export class Store {
   constructor(private db: D1Database) {}
 
@@ -867,10 +877,9 @@ export class Store {
   }
 
   async fixAbilities(): Promise<{ success: number; fails: number }> {
-    if (channelFixRunning) {
+    if (!tryLockChannelFix()) {
       throw new Error("已经有一个修复任务在运行中，请稍后再试");
     }
-    channelFixRunning = true;
     try {
       await this.db.exec("DELETE FROM abilities");
       const { results } = await this.db.prepare("SELECT * FROM channels").all<ChannelRow>();
@@ -900,7 +909,7 @@ export class Store {
       }
       return { success, fails };
     } finally {
-      channelFixRunning = false;
+      unlockChannelFix();
     }
   }
 

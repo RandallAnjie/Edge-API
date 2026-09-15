@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
-import { Store } from "../src/store.js";
+import { Store, tryLockChannelFix, unlockChannelFix } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -60,18 +60,19 @@ async function addChannel(e: Env, auth: Record<string, string>): Promise<number>
 }
 
 test("POST /api/channel/fix TryLock matches original FixAbility ApiError JSON", async () => {
-  const { e, auth, store } = await boot();
+  const { e, auth } = await boot();
   await addChannel(e, auth);
-  const held = store.fixAbilities();
-  const busy = await json(new Request("http://local/api/channel/fix", { method: "POST", headers: auth }), e);
-  const done = await held;
-  assert.equal(busy.res.status, 200);
-  assert.equal(busy.body.success, false);
-  assert.equal(busy.body.message, "已经有一个修复任务在运行中，请稍后再试");
-  assert.equal(busy.body.data, null);
-  assert.equal("error" in busy.body, false);
-  assert.ok(done.success >= 1);
-  assert.equal(done.fails, 0);
+  assert.equal(tryLockChannelFix(), true);
+  try {
+    const busy = await json(new Request("http://local/api/channel/fix", { method: "POST", headers: auth }), e);
+    assert.equal(busy.res.status, 200);
+    assert.equal(busy.body.success, false);
+    assert.equal(busy.body.message, "已经有一个修复任务在运行中，请稍后再试");
+    assert.equal(busy.body.data, null);
+    assert.equal("error" in busy.body, false);
+  } finally {
+    unlockChannelFix();
+  }
 });
 
 test("POST /api/channel/fix success JSON matches original data.success/fails", async () => {
