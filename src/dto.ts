@@ -1,4 +1,11 @@
-import { billingCopies, getBillingExpr, getBillingMode } from "./billing-setting.js";
+import {
+  billingCopies,
+  getBillingExpr,
+  getBillingMode,
+  getPluginBillingExpr,
+  resolveTaskBillingExpr,
+  taskExprCompatible,
+} from "./billing-setting.js";
 import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_CREATED } from "./channel-models.js";
 import { clearChannelInfoPublic } from "./channel-info.js";
 import {
@@ -26,7 +33,7 @@ import {
   getModelPriceFromMap,
   getModelRatioFromMap,
 } from "./ratio-setting.js";
-import { pluginUsageByModel, listRoutingPlugins } from "./task-plugin-factory.js";
+import { pluginUsageByModel, listRoutingPlugins, type RoutingPlugin } from "./task-plugin-factory.js";
 import { pluginModelNames, pluginUsageForModel } from "./plugin-meta.js";
 import {
   getModelQuotaTypes,
@@ -408,6 +415,53 @@ function overlayCustomEndpoints(
   return next;
 }
 
+function compareRoutingPluginKey(a: { key: string }, b: { key: string }): number {
+  return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+}
+
+/** Original `updatePricing` `BillingPluginVariants` from `PluginsByModel` + `ResolveTaskBillingExpr`. */
+function billingPluginVariants(
+  providers: RoutingPlugin[],
+  model: string,
+  pluginExprs: Record<string, string>,
+  billingMode: Record<string, string>,
+  billingExpr: Record<string, string>,
+  modelRatio: Record<string, number>,
+  modelPrice: Record<string, number>,
+): Record<string, unknown>[] {
+  return providers.map((provider) => {
+    const usage = pluginUsageForModel(provider.meta, model);
+    const schema =
+      usage.usageSchema && typeof usage.usageSchema === "object" ? usage.usageSchema : {};
+    const resolved = resolveTaskBillingExpr(provider.key, model, "", {
+      pluginExprs,
+      modes: billingMode,
+      exprs: billingExpr,
+      modelRatio,
+      modelPrice,
+    });
+    let expression = resolved.expr;
+    let mode = "ratio";
+    if (resolved.exists || getBillingMode(model, billingMode, modelRatio, modelPrice) === "tiered_expr") {
+      mode = "tiered_expr";
+    }
+    if (mode === "tiered_expr" && !taskExprCompatible(expression, schema)) expression = "";
+    const variant: Record<string, unknown> = {
+      plugin_key: provider.key,
+      plugin_name: String(provider.meta.name || provider.key),
+      billing_expr: expression,
+      billing_mode: mode,
+      billing_usage_schema: schema,
+    };
+    const icon = String(provider.meta.icon || "");
+    if (icon) variant.icon = icon;
+    if (Array.isArray(usage.usageExamples) && usage.usageExamples.length) {
+      variant.billing_usage_examples = usage.usageExamples;
+    }
+    return variant;
+  });
+}
+
 export async function buildPricing(
   store: Store,
   userGroup = "",
@@ -431,6 +485,10 @@ export async function buildPricing(
   const audioCompletionRatio = parseJson<Record<string, number>>(await store.option("AudioCompletionRatio"), {});
   const billingMode = parseJson<Record<string, string>>(await store.option("billing_setting.billing_mode"), {});
   const billingExpr = parseJson<Record<string, string>>(await store.option("billing_setting.billing_expr"), {});
+  const pluginBillingExpr = parseJson<Record<string, string>>(
+    await store.option("billing_setting.plugin_billing_expr"),
+    {},
+  );
   const allMeta = (await store.listModelMeta()) as Record<string, unknown>[];
   const vendors = (await store.listVendors()) as { id: number; name: string; description?: string; icon?: string }[];
   const usable = await userUsableGroups(store, userGroup);
@@ -459,6 +517,7 @@ export async function buildPricing(
       pluginsByModel.set(modelName, list);
     }
   }
+  for (const list of pluginsByModel.values()) list.sort(compareRoutingPluginKey);
   const supported: Record<string, { path: string; method: string }> = {};
   for (const name of names) {
     let endpoints = typesByModel.get(name) || [];
@@ -532,19 +591,23 @@ export async function buildPricing(
       if (Array.isArray(examples) && examples.length) item.billing_usage_examples = examples;
     }
     const providers = pluginsByModel.get(name) || [];
-    if (providers.length >= 2 && item.billing_mode === "tiered_expr") {
-      item.billing_plugin_variants = providers.map((provider) => {
-        const usage = pluginUsageForModel(provider.meta, name);
-        return {
-          plugin_key: provider.key,
-          plugin_name: String(provider.meta.name || provider.key),
-          icon: provider.meta.icon ? String(provider.meta.icon) : undefined,
-          billing_expr: String(item.billing_expr || ""),
-          billing_mode: "tiered_expr",
-          billing_usage_schema: usage.usageSchema || {},
-          billing_usage_examples: usage.usageExamples,
-        };
-      });
+    let hasProviderOverride = false;
+    for (const provider of providers) {
+      if (getPluginBillingExpr(pluginBillingExpr, provider.key, name) !== undefined) {
+        hasProviderOverride = true;
+        break;
+      }
+    }
+    if (hasProviderOverride || (providers.length >= 2 && item.billing_mode === "tiered_expr")) {
+      item.billing_plugin_variants = billingPluginVariants(
+        providers,
+        name,
+        pluginBillingExpr,
+        billingMode,
+        billingExpr,
+        modelRatio,
+        modelPrice,
+      );
     }
     pricing.push(item);
   }

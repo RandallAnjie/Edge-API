@@ -383,9 +383,14 @@ export async function listTaskPluginOptions(store: Store): Promise<Record<string
   return options;
 }
 
+function comparePluginKey(a: { key: string }, b: { key: string }): number {
+  return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+}
+
 export async function pluginUsageByModel(store: Store): Promise<Map<string, Record<string, unknown>>> {
   const out = new Map<string, Record<string, unknown>>();
-  for (const plugin of await listRoutingPlugins(store)) {
+  const plugins = (await listRoutingPlugins(store)).slice().sort(comparePluginKey);
+  for (const plugin of plugins) {
     for (const name of pluginModelNames(plugin.meta)) {
       if (!out.has(name)) {
         const usage = pluginUsageForModel(plugin.meta, name);
