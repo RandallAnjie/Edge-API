@@ -86,7 +86,7 @@ import {
   updateCustomOAuthProvider,
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
-import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
+import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -2088,10 +2088,21 @@ async function generateUserAccessToken(c: C): Promise<Response> {
   return apiOk(token);
 }
 
+/** Original `i18n.MsgTokenGetInfoFailed`. */
+function tokenGetInfoFailedMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "獲取令牌資訊失敗，請稍後重試";
+    case "zh-CN":
+      return "获取令牌信息失败，请稍后重试";
+    default:
+      return "Failed to get token info, please try again later";
+  }
+}
+
+/** Original `controller.GetTokenUsage`. */
 async function tokenUsage(c: C): Promise<Response> {
   const s = store(c);
-  const gated = await authenticateTokenReadOnly(c, s);
-  if (gated instanceof Response) return gated;
   const authHeader = c.req.headers.get("authorization") || "";
   if (!authHeader) return json(401, { success: false, message: "No Authorization header" });
   const parts = authHeader.split(" ");
@@ -2100,7 +2111,7 @@ async function tokenUsage(c: C): Promise<Response> {
   }
   const tokenKey = parts[1].startsWith("sk-") ? parts[1].slice(3) : parts[1];
   const token = await s.getTokenByKey(tokenKey);
-  if (!token) return apiFail("获取令牌信息失败，请稍后重试");
+  if (!token) return apiFail(tokenGetInfoFailedMessage(c.req));
   const remain = Number(token.remain_quota || 0);
   const used = Number(token.used_quota || 0);
   const expiredAt = token.expired_time === -1 ? 0 : token.expired_time;

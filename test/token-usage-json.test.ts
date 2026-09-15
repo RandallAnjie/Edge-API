@@ -130,3 +130,90 @@ test("original GetTokenUsage JSON uses GetModelLimitsMap including empty keys", 
   assert.equal(spacedLimits[" gpt-4 "], true);
   assert.equal(spacedLimits["gpt-4"], undefined);
 });
+
+test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const none = await json(new Request("http://local/api/usage/token"), e);
+  assert.equal(none.res.status, 401);
+  assert.equal(none.body.success, false);
+  assert.equal(none.body.message, "No Authorization header");
+  assert.equal(none.body.code, undefined);
+
+  const badScheme = await json(
+    new Request("http://local/api/usage/token", { headers: { authorization: "Token x" } }),
+    e,
+  );
+  assert.equal(badScheme.res.status, 401);
+  assert.equal(badScheme.body.success, false);
+  assert.equal(badScheme.body.message, "Invalid Bearer token");
+
+  const extraParts = await json(
+    new Request("http://local/api/usage/token", { headers: { authorization: "Bearer sk-foo extra" } }),
+    e,
+  );
+  assert.equal(extraParts.res.status, 401);
+  assert.equal(extraParts.body.message, "Invalid Bearer token");
+
+  const missing = await json(
+    new Request("http://local/api/usage/token", { headers: { authorization: "Bearer sk-missing-usage" } }),
+    e,
+  );
+  assert.equal(missing.res.status, 200);
+  assert.equal(missing.body.success, false);
+  assert.equal(missing.body.message, "Failed to get token info, please try again later");
+
+  const missingZh = await json(
+    new Request("http://local/api/usage/token", {
+      headers: { authorization: "Bearer sk-missing-usage", "accept-language": "zh-CN" },
+    }),
+    e,
+  );
+  assert.equal(missingZh.body.message, "获取令牌信息失败，请稍后重试");
+
+  const missingTw = await json(
+    new Request("http://local/api/usage/token", {
+      headers: { authorization: "Bearer sk-missing-usage", "accept-language": "zh-TW" },
+    }),
+    e,
+  );
+  assert.equal(missingTw.body.message, "獲取令牌資訊失敗，請稍後重試");
+
+  const created = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "disabled-usage", remain_quota: 10, unlimited_quota: false }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const createdData = created.body.data as { id: number; key: string };
+  const disabled = await json(
+    new Request("http://local/api/token/?status_only=true", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ id: createdData.id, status: 2 }),
+    }),
+    e,
+  );
+  assert.equal(disabled.body.success, true, String(disabled.body.message));
+  const usage = await json(
+    new Request("http://local/api/usage/token", { headers: { authorization: "Bearer " + createdData.key } }),
+    e,
+  );
+  assert.equal(usage.res.status, 200, usage.text);
+  assert.equal(usage.body.code, true);
+  assert.equal(usage.body.message, "ok");
+  const data = usage.body.data as Record<string, unknown>;
+  assert.equal(data.object, "token_usage");
+  assert.equal(data.name, "disabled-usage");
+  assert.equal(data.total_granted, 10);
+  assert.equal(data.total_used, 0);
+  assert.equal(data.total_available, 10);
+  assert.equal(data.unlimited_quota, false);
+  assert.equal(data.expires_at, 0);
+});
+
