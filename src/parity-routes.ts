@@ -39,7 +39,7 @@ import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
-import { apiFail, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
+import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -397,12 +397,38 @@ export function registerParity(r: Router<Env>): void {
 
   r.post("/api/oauth/wechat/bind", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as { code?: string };
-    const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider: "wechat", code: String(body.code || "").trim() } });
+    const identity = await dashboardIdentity(c, s);
+    if (!identity) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    if (!(await s.optionBool("WeChatAuthEnabled", false))) return apiFail("管理员未开启通过微信登录以及注册");
+    let body: { code?: unknown };
+    try {
+      body = (await readJson(c.req)) as { code?: unknown };
+    } catch {
+      return apiFail("无效的请求");
+    }
+    if (!body || typeof body !== "object") return apiFail("无效的请求");
+    const code = String(body.code || "").trim();
+    const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider: "wechat", code } });
     if (isResponse(proof)) return proof;
     try {
-      const wechatId = await wechatIdFromCode(s, body.code || "");
-      await s.updateUser(proof.userId, { wechat_id: wechatId });
+      const wechatId = await wechatIdFromCode(s, code);
+      if (await s.getUserByField("wechat_id", wechatId, { includeDeleted: true })) {
+        return apiFail("该微信账号已被绑定");
+      }
+      const bound = await s.bindUserColumnForSession(proof, "wechat_id", wechatId);
+      if (bound === "already_claimed") {
+        return apiFailCode("This external account is already bound.", "ACCOUNT_ALREADY_BOUND");
+      }
+      if (bound === "session_invalid") {
+        return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+      }
+      if (bound === "binding_changed") {
+        return json(409, {
+          success: false,
+          code: "ACCOUNT_SECURITY_STATE_CHANGED",
+          message: "Account bindings have changed. Start this operation again.",
+        });
+      }
       const user = await s.getUserById(proof.userId);
       const notification_warning = await notifyAccountSecurityChange(s, user?.email || "", "WeChat account linked");
       return apiOk({ notification_warning });
