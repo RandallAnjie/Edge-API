@@ -260,6 +260,8 @@ export function imagenUsage(imageCount: number): {
   cachedCreationTokens: number;
   completionImageTokens: number;
   completionAudioTokens: number;
+  textTokens: number;
+  completionTextTokens: number;
   usageSemantic: string;
   claudeCacheCreation5mTokens: number;
   claudeCacheCreation1hTokens: number;
@@ -278,6 +280,8 @@ export function imagenUsage(imageCount: number): {
     cachedCreationTokens: 0,
     completionImageTokens: 0,
     completionAudioTokens: 0,
+    textTokens: 0,
+    completionTextTokens: 0,
     usageSemantic: "",
     claudeCacheCreation5mTokens: 0,
     claudeCacheCreation1hTokens: 0,
