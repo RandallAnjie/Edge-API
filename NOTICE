@@ -141,7 +141,9 @@ Material changes from upstream:
   `dto.GeminiModel` zero-value JSON (`baseModelId` / `supportedGenerationMethods`
   / etc. null, `nextPageToken: null`). Extra-OK: OpenAI `ListModels` still
   fills `supported_endpoint_types` from the pricing cache (`[]` until
-  GetPricing, not null).
+  GetPricing, not null). Original `controller.ChannelListModels` returns the
+  static UniqBy-first catalog with `supported_endpoint_types: null` (not
+  pricing-cache or channel-type endpoint arrays).
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented

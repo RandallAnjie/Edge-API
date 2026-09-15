@@ -1483,8 +1483,16 @@ export function modelNotFoundError(modelId: string): Record<string, unknown> {
   };
 }
 
+/** Original `controller.ChannelListModels`: `lo.UniqBy` first id, static OpenAIModels (endpoint types nil). */
 export function channelListModels(): Record<string, unknown>[] {
-  return ADAPTOR_MODELS.map((m) => openAIModel(m.id, m.owned_by));
+  const seen = new Set<string>();
+  const out: Record<string, unknown>[] = [];
+  for (const model of ADAPTOR_MODELS) {
+    if (seen.has(model.id)) continue;
+    seen.add(model.id);
+    out.push(catalogOpenAIModel(model));
+  }
+  return out;
 }
 
 export function ownerForChannelType(type: number): string {

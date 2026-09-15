@@ -546,7 +546,7 @@ test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, Lis
   const chModels = await json(new Request("http://local/api/channel/models", { headers: auth }), e);
   assert.equal(chModels.body.data[0].object, "model");
   assert.equal(chModels.body.data[0].created, 1626777600);
-  assert.ok(Array.isArray(chModels.body.data[0].supported_endpoint_types));
+  assert.equal(chModels.body.data[0].supported_endpoint_types, null);
 
   const unknownGroup = await json(new Request("http://local/api/user/models?group=does-not-exist", { headers: auth }), e);
   assert.deepEqual(unknownGroup.body.data, []);
