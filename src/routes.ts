@@ -1619,7 +1619,7 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    return apiOk(dashboardListModels());
+    return apiOk(await dashboardListModels(s));
   });
 
   r.post("/pg/chat/completions", async (c) => {

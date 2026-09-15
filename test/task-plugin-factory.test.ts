@@ -279,3 +279,56 @@ test("original factory task-plugin list JSON, options usageSchema, native routes
   assert.equal(klingOv.factory_meta?.key, "kling");
   assert.equal(klingOv.meta.name, "Kling Override");
 });
+
+test("original DashboardListModels overlays routing plugin Meta.Models by channelTypes", async () => {
+  const { e, auth } = await boot();
+
+  const dash = await json(new Request("http://local/api/models", { headers: auth }), e);
+  assert.equal(dash.body.success, true, String(dash.body.message));
+  const data = dash.body.data as Record<string, string[]>;
+  assert.deepEqual(data["1"], ["sora-2", "sora-2-pro"]);
+  assert.deepEqual(data["36"], ["suno_music", "suno_lyrics"]);
+  assert.deepEqual(data["50"], ["kling-v1", "kling-v1-6", "kling-v2-master"]);
+  assert.deepEqual(data["51"], ["jimeng_vgfm_t2v_l20"]);
+  assert.deepEqual(data["52"], ["viduq2", "viduq1", "vidu2.0", "vidu1.5"]);
+  assert.deepEqual(data["55"], ["sora-2", "sora-2-pro"]);
+  assert.ok(data["17"].includes("wan3.0-video"));
+  assert.ok(data["24"].includes("veo-3.0-generate-001"));
+  assert.ok(data["45"].includes("doubao-seedance-1-0-pro-250528"));
+  assert.ok(data["54"].includes("doubao-seedance-1-0-pro-250528"));
+  assert.equal("61" in data, false);
+
+  const uploaded = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        source: `export const meta = {apiVersion:1,key:"dash-overlay",name:"Dash Overlay",version:"1.0.0",author:{name:"Test"},channelTypes:[1999],models:["dash-overlay-v1"],fetchMode:"per_task",routes:[],protocols:[],allowedHosts:[],auth:{type:"none"}};
+export function buildSubmitRequest(){return {url:"https://provider.example/submit"}}
+export function parseSubmitResponse(){return {taskId:"upstream"}}
+export function buildQueryRequest(){return {url:"https://provider.example"}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+`,
+      }),
+    }),
+    e,
+  );
+  assert.equal(uploaded.body.success, true, String(uploaded.body.message));
+  const withOverride = await json(new Request("http://local/api/models", { headers: auth }), e);
+  assert.deepEqual((withOverride.body.data as Record<string, string[]>)["1999"], ["dash-overlay-v1"]);
+  assert.deepEqual((withOverride.body.data as Record<string, string[]>)["1"], ["sora-2", "sora-2-pro"]);
+
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "TaskPluginEnabled", value: "false" }),
+    }),
+    e,
+  );
+  const disabled = await json(new Request("http://local/api/models", { headers: auth }), e);
+  const off = disabled.body.data as Record<string, string[]>;
+  assert.ok(off["1"].includes("gpt-4o-mini"));
+  assert.equal("50" in off, false);
+  assert.equal("1999" in off, false);
+});

@@ -84,6 +84,8 @@ export const CHANNEL_TYPE_ADVANCED_CUSTOM = 58;
 export const CHANNEL_TYPE_SUB2API = 59;
 export const CHANNEL_TYPE_NEW_API = 60;
 export const CHANNEL_TYPE_TASK_PLUGIN = 61;
+/** Original `constant.ChannelTypeDummy` (count sentinel; do not add channel types after this). */
+export const CHANNEL_TYPE_DUMMY = 62;
 
 /** Original `constant.TaskPlatformSuno`. */
 export const TASK_PLATFORM_SUNO = "suno";

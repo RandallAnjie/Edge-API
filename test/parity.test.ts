@@ -532,7 +532,10 @@ test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, Lis
   const dash = await json(new Request("http://local/api/models", { headers: auth }), e);
   assert.equal(dash.body.success, true);
   assert.ok(Array.isArray(dash.body.data["1"]));
-  assert.ok(dash.body.data["1"].includes("gpt-4o-mini"));
+  assert.deepEqual(dash.body.data["1"], ["sora-2", "sora-2-pro"]);
+  assert.deepEqual(dash.body.data["50"], ["kling-v1", "kling-v1-6", "kling-v2-master"]);
+  assert.ok((dash.body.data["17"] as string[]).includes("wan3.0-video"));
+  assert.equal((dash.body.data["1"] as string[]).includes("gpt-4o-mini"), false);
 
   const adminMeta = await json(new Request("http://local/api/models/", { headers: auth }), e);
   assert.equal(adminMeta.body.success, true);

@@ -3,6 +3,7 @@ import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_
 import { clearChannelInfoPublic } from "./channel-info.js";
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
+  CHANNEL_TYPE_TASK_PLUGIN,
   DEFAULT_GROUP_RATIO,
   NAME_RULE_CONTAINS,
   NAME_RULE_EXACT,
@@ -1292,9 +1293,22 @@ export function publicUserLogs(rows: LogRow[], startIdx: number): Record<string,
   });
 }
 
-export function dashboardListModels(): Record<string, string[]> {
+/**
+ * Original `controller.DashboardListModels`: copy adaptor `channelId2Models`, then
+ * replace each type with `jsplugin.DefaultRegistry.GetByChannelType(t).Meta.Models`
+ * (`channelTypes` 0 and `ChannelTypeTaskPlugin` are skipped).
+ */
+export async function dashboardListModels(store: Store): Promise<Record<string, string[]>> {
   const out: Record<string, string[]> = {};
   for (const [id, models] of Object.entries(CHANNEL_TYPE_MODELS)) out[id] = [...models];
+  for (const plugin of await listRoutingPlugins(store)) {
+    const types = Array.isArray(plugin.meta.channelTypes) ? plugin.meta.channelTypes.map((item) => Number(item)) : [];
+    const models = pluginModelNames(plugin.meta);
+    for (const channelType of types) {
+      if (!channelType || channelType === CHANNEL_TYPE_TASK_PLUGIN) continue;
+      out[String(channelType)] = [...models];
+    }
+  }
   return out;
 }
 
