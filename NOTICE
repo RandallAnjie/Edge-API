@@ -188,6 +188,13 @@ Material changes from upstream:
   25, `completion_ratio` 20, `model_price` 0.3). WSS stays `ws: true` without
   `audio: true`. Extra-OK: binary speech with no usage audio tokens still uses
   `PostTextConsumeQuota` like original AudioHelper.
+  Original `helper.modelPriceHelperTiered` freezes `RelayInfo.TieredBillingSnapshot`
+  before upstream (`estimated_completion_tokens` defaults to `8192` when
+  `max_tokens` is omitted in a paid group). `TryTieredSettle` uses that
+  snapshot's `expr_string` / estimated_* even if `billing_setting.billing_expr`
+  changes mid-request. Missing tiered expressions are HTTP 400
+  `model_price_error`. Extra-OK: channel-test still builds a snapshot at settle
+  when it has no pre-consume RelayInfo.
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented

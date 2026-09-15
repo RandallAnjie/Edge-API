@@ -198,6 +198,7 @@ import { openaiImageDataCount } from "./image-billing.js";
 import {
   billingUsageFromOpenAICounts,
   cacheCreationTokensTotal,
+  captureTieredBillingSnapshot,
   injectTieredBillingInfo,
   resolveRelayTieredQuota,
   type BillingUsage,
@@ -1395,6 +1396,8 @@ type SettleLogExtra = {
   imageChannelType?: number;
   requestHeaders?: Record<string, string>;
   actualImageCount?: number;
+  tieredSnapshot?: import("./billing-expr.js").BillingSnapshot;
+  billingRequestInput?: import("./billing-expr.js").BillingRequestInput;
 };
 
 async function settle(
@@ -1427,6 +1430,9 @@ async function settle(
     channelType: extra.imageChannelType,
     headers: extra.requestHeaders,
     actualImageCount: extra.actualImageCount,
+    snapshot: extra.tieredSnapshot,
+    request: extra.billingRequestInput,
+    preConsumedQuota: extra.tieredSnapshot?.estimatedQuotaAfterGroup,
   });
   let quota = tiered ? tiered.quota : await computeQuota(store, model, auth.usingGroup, prompt, completion);
   const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
@@ -1606,11 +1612,32 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     asObj(opts.body).messages as ChatMessage[] | undefined,
     typeof asObj(opts.body).prompt === "string" ? String(asObj(opts.body).prompt) : undefined,
   );
+  const billingRequestInput = {
+    headers: requestHeadersFrom(opts.req),
+    body: asObj(opts.body),
+  };
+  let tieredSnapshot: import("./billing-expr.js").BillingSnapshot | null = null;
+  try {
+    const maxTokens = Number(asObj(opts.body).max_tokens || asObj(opts.body).max_completion_tokens || 0);
+    tieredSnapshot = await captureTieredBillingSnapshot(
+      store,
+      model,
+      auth.usingGroup,
+      promptEst,
+      { maxTokens },
+      billingRequestInput,
+      { relayMode: mode, channelType: first.type, imageBody: asObj(opts.body) },
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return openaiError(400, message, "model_price_error");
+  }
+  const preNeed = tieredSnapshot ? tieredSnapshot.estimatedQuotaAfterGroup : Math.max(1, promptEst);
   const precheck = remainingOk(
     auth.user.quota,
     auth.token.remain_quota,
     Boolean(auth.token.unlimited_quota),
-    Math.max(1, promptEst),
+    preNeed,
   );
   if (precheck) return openaiError(403, precheck, "insufficient_quota");
 
@@ -2020,6 +2047,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       imageBody: asObj(opts.body),
       imageChannelType: channel.type,
       requestHeaders: requestHeadersFrom(opts.req),
+      tieredSnapshot: tieredSnapshot || undefined,
+      billingRequestInput,
     };
 
     if (!res.ok) {

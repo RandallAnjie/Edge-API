@@ -9,10 +9,12 @@ import {
 } from "./billing-setting.js";
 import {
   computeTieredQuotaWithRequest,
+  emptyTokenParams,
   exprHashString,
   exprVersion,
   runExprWithRequest,
   usedVars,
+  usesFixedPricing,
   type BillingRequestInput,
   type BillingSnapshot,
   type TokenParams,
@@ -214,6 +216,8 @@ export type RelayTieredSettleOpts = {
   headers?: Record<string, string>;
   relayMode?: string;
   actualImageCount?: number;
+  /** original `RelayInfo.TieredBillingSnapshot` frozen by ModelPriceHelper */
+  snapshot?: BillingSnapshot | null;
 };
 
 function settleRequestInput(snap: BillingSnapshot, opts?: RelayTieredSettleOpts): BillingRequestInput {
@@ -260,6 +264,85 @@ function applyEstimatedTrace(snap: BillingSnapshot, request: BillingRequestInput
   }
 }
 
+/** Original `helper.defaultTieredPreConsumeMaxTokens`. */
+export const DEFAULT_TIERED_PRE_CONSUME_MAX_TOKENS = 8192;
+
+/**
+ * original `helper.modelPriceHelperTiered` frozen `RelayInfo.TieredBillingSnapshot`.
+ * Returns null when the model is not `tiered_expr`.
+ */
+export async function captureTieredBillingSnapshot(
+  store: Store,
+  model: string,
+  group: string,
+  promptTokens: number,
+  meta: { maxTokens?: number } = {},
+  requestInput: BillingRequestInput = {},
+  opts?: { relayMode?: string; channelType?: number; imageBody?: Record<string, unknown> },
+): Promise<BillingSnapshot | null> {
+  const modelRatio = parseJson<Record<string, unknown>>(await store.option("ModelRatio"), {});
+  const modelPrice = parseJson<Record<string, unknown>>(await store.option("ModelPrice"), {});
+  const modes = parseJson<Record<string, string>>(await store.option("billing_setting.billing_mode"), {});
+  const exprs = parseJson<Record<string, string>>(await store.option("billing_setting.billing_expr"), {});
+  if (getBillingMode(model, modes, modelRatio, modelPrice) !== BILLING_MODE_TIERED_EXPR) return null;
+  const expr = getBillingExpr(model, modes, exprs, modelRatio, modelPrice);
+  if (!expr) {
+    throw new Error(`model ${model} is configured as tiered_expr but has no billing expression`);
+  }
+  const exprHash = exprHashString(expr);
+  if (opts?.relayMode === "realtime" && usesFixedPricing(expr)) {
+    throw new Error("fixed pricing is not supported for Realtime requests");
+  }
+  const ratios = await quotaRatios(store, model, group);
+  let estimatedCompletionTokens = Math.max(0, Math.trunc(Number(meta.maxTokens || 0)));
+  if (estimatedCompletionTokens === 0 && ratios.groupRatio !== 0) {
+    estimatedCompletionTokens = DEFAULT_TIERED_PRE_CONSUME_MAX_TOKENS;
+  }
+  let request: BillingRequestInput = { ...requestInput };
+  const vars = usedVars(expr);
+  if (vars?.image_count && opts?.relayMode === "images" && opts.imageBody) {
+    request = resolveImageBillingRequestInput(opts.imageBody, opts.channelType || 0, request);
+  }
+  const quotaPerUnit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
+  const params = {
+    ...emptyTokenParams(),
+    p: promptTokens,
+    c: estimatedCompletionTokens,
+    len: promptTokens,
+  };
+  let trace;
+  try {
+    trace = runExprWithRequest(expr, {}, params, request);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`model ${model} tiered expr run failed: ${message}`);
+  }
+  const quotaBeforeGroup = (trace.cost / 1_000_000) * quotaPerUnit;
+  const rounded = quotaRoundChecked(quotaBeforeGroup * ratios.groupRatio);
+  if (rounded.clamp) {
+    throw new Error(`model ${model} tiered expr run failed: quota round ${rounded.clamp.kind}`);
+  }
+  return {
+    billingMode: BILLING_MODE_TIERED_EXPR,
+    modelName: model,
+    exprString: expr,
+    exprHash,
+    groupRatio: ratios.groupRatio,
+    estimatedPromptTokens: promptTokens,
+    estimatedCompletionTokens,
+    estimatedQuotaBeforeGroup: quotaBeforeGroup,
+    estimatedQuotaAfterGroup: rounded.quota,
+    estimatedTier: trace.matchedTier,
+    estimatedBillingUnit: trace.billingUnit,
+    estimatedImageCount: trace.imageCount,
+    estimatedFixedPrice: trace.fixedPrice,
+    quotaPerUnit,
+    exprVersion: exprVersion(expr),
+    taskUsageBilling: false,
+    usageFacts: {},
+  };
+}
+
 /** Original `service.TryTieredSettle` + frozen `BillingRequestInput.ImageCount`. */
 export async function resolveRelayTieredQuota(
   store: Store,
@@ -269,43 +352,53 @@ export async function resolveRelayTieredQuota(
   isClaudeUsageSemantic: boolean,
   opts?: RelayTieredSettleOpts,
 ): Promise<{ quota: number; snap: BillingSnapshot; result: TieredResult | null } | null> {
-  const modelRatio = parseJson<Record<string, unknown>>(await store.option("ModelRatio"), {});
-  const modelPrice = parseJson<Record<string, unknown>>(await store.option("ModelPrice"), {});
-  const modes = parseJson<Record<string, string>>(await store.option("billing_setting.billing_mode"), {});
-  const exprs = parseJson<Record<string, string>>(await store.option("billing_setting.billing_expr"), {});
-  if (getBillingMode(model, modes, modelRatio, modelPrice) !== BILLING_MODE_TIERED_EXPR) return null;
-  const expr = getBillingExpr(model, modes, exprs, modelRatio, modelPrice);
-  if (!expr) return null;
-  const ratios = await quotaRatios(store, model, group);
-  const quotaPerUnit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
-  const vars = usedVars(expr);
+  let snap = opts?.snapshot ? { ...opts.snapshot, usageFacts: { ...(opts.snapshot.usageFacts || {}) } } : null;
   let request: BillingRequestInput = { ...(opts?.request || {}), headers: opts?.headers || opts?.request?.headers };
-  if (vars?.image_count && opts?.relayMode === "images" && opts.imageBody) {
-    request = resolveImageBillingRequestInput(opts.imageBody, opts.channelType || 0, request);
+  if (!snap) {
+    const modelRatio = parseJson<Record<string, unknown>>(await store.option("ModelRatio"), {});
+    const modelPrice = parseJson<Record<string, unknown>>(await store.option("ModelPrice"), {});
+    const modes = parseJson<Record<string, string>>(await store.option("billing_setting.billing_mode"), {});
+    const exprs = parseJson<Record<string, string>>(await store.option("billing_setting.billing_expr"), {});
+    if (getBillingMode(model, modes, modelRatio, modelPrice) !== BILLING_MODE_TIERED_EXPR) return null;
+    const expr = getBillingExpr(model, modes, exprs, modelRatio, modelPrice);
+    if (!expr) return null;
+    const ratios = await quotaRatios(store, model, group);
+    const quotaPerUnit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
+    const vars = usedVars(expr);
+    if (vars?.image_count && opts?.relayMode === "images" && opts.imageBody) {
+      request = resolveImageBillingRequestInput(opts.imageBody, opts.channelType || 0, request);
+    }
+    snap = {
+      billingMode: BILLING_MODE_TIERED_EXPR,
+      modelName: model,
+      exprString: expr,
+      exprHash: exprHashString(expr),
+      groupRatio: ratios.groupRatio,
+      estimatedPromptTokens: usage.prompt_tokens,
+      estimatedCompletionTokens: usage.completion_tokens,
+      estimatedQuotaBeforeGroup: 0,
+      estimatedQuotaAfterGroup: 0,
+      estimatedTier: "",
+      quotaPerUnit,
+      exprVersion: exprVersion(expr),
+      taskUsageBilling: false,
+      usageFacts: {},
+    };
+    const params = buildTieredTokenParams(usage, isClaudeUsageSemantic, vars);
+    applyEstimatedTrace(snap, request, params);
+  } else {
+    const vars = usedVars(snap.exprString);
+    if (!opts?.request && vars?.image_count && opts?.relayMode === "images" && opts.imageBody) {
+      request = resolveImageBillingRequestInput(opts.imageBody, opts.channelType || 0, request);
+    }
   }
-  const snap: BillingSnapshot = {
-    billingMode: BILLING_MODE_TIERED_EXPR,
-    modelName: model,
-    exprString: expr,
-    exprHash: exprHashString(expr),
-    groupRatio: ratios.groupRatio,
-    estimatedPromptTokens: usage.prompt_tokens,
-    estimatedCompletionTokens: usage.completion_tokens,
-    estimatedQuotaBeforeGroup: 0,
-    estimatedQuotaAfterGroup: 0,
-    estimatedTier: "",
-    quotaPerUnit,
-    exprVersion: exprVersion(expr),
-    taskUsageBilling: false,
-    usageFacts: {},
-  };
+  const vars = usedVars(snap.exprString);
   const params = buildTieredTokenParams(usage, isClaudeUsageSemantic, vars);
-  applyEstimatedTrace(snap, request, params);
   const billingImageCount =
     opts?.billingImageCount != null
       ? opts.billingImageCount
       : updateBillingImageCount(Number(opts?.actualImageCount || 0), snap.estimatedImageCount);
-  const settled = tryTieredSettle(snap, params, { ...opts, request, billingImageCount });
+  const settled = tryTieredSettle(snap, params, { ...opts, request, billingImageCount, preConsumedQuota: opts?.preConsumedQuota ?? snap.estimatedQuotaAfterGroup });
   if (!settled.ok) return null;
   return { quota: settled.quota, snap, result: settled.result };
 }
