@@ -466,7 +466,7 @@ export function convertResponsesToChatCompletionsRequest(body: Record<string, un
 /** Original `oairesponses.OpenAIResponsesRequestToGeminiChat`. */
 export function convertResponsesToGeminiRequest(
   body: Record<string, unknown>,
-  opts: { originModelName?: string; upstreamModelName?: string; settings?: ReasoningHostSettings } = {},
+  opts: ConvertGeminiOpts = {},
 ): Record<string, unknown> {
   return convertOpenAIResponsesRequestToGeminiChat(body, opts);
 }

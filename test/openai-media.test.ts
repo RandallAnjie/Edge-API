@@ -232,7 +232,6 @@ test("original OpenAI→Claude and OpenAI→Gemini ConvertRequest HTTP image JSO
     assert.deepEqual(parts[1].source, { type: "base64", media_type: "image/png", data: bytesToB64(png) });
     assert.equal("url" in (parts[1].source as object), false);
 
-    captured = undefined;
     const geminiChat = await json(
       new Request("http://local/v1/chat/completions", {
         method: "POST",
@@ -254,6 +253,7 @@ test("original OpenAI→Claude and OpenAI→Gemini ConvertRequest HTTP image JSO
     );
     assert.equal(geminiChat.res.status, 200, geminiChat.text);
     if (!captured) throw new Error("missing gemini openai image upstream");
+    assert.match(captured.url, /generativelanguage\.googleapis\.com/);
     const contents = captured.body.contents as { parts: Record<string, unknown>[] }[];
     assert.equal(contents[0].parts[0].text, "what is this");
     assert.deepEqual(contents[0].parts[1].inlineData, { mimeType: "image/png", data: bytesToB64(png) });
