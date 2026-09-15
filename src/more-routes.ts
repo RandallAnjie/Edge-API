@@ -27,10 +27,17 @@ import {
   loginOrBindOAuth,
   newAccessToken,
   oauthProviderKnown,
-  verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
-import { newTelegramOAuthFlow, telegramAuthorizationURL, type TelegramOAuthFlow } from "./telegram-oauth.js";
+import {
+  ERR_TELEGRAM_OAUTH_FAILED,
+  exchangeTelegramOAuth,
+  newTelegramOAuthFlow,
+  telegramAuthorizationURL,
+  telegramConfigurationError,
+  TelegramOAuthError,
+  type TelegramOAuthFlow,
+} from "./telegram-oauth.js";
 import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues, vendorRecordVersion } from "./dto.js";
 import { billingCopies } from "./billing-setting.js";
 import { DEFAULT_MODEL_RATIO_JSON } from "./ratio-defaults.js";
@@ -980,6 +987,7 @@ export function registerMore(r: Router<Env>): void {
     const payload = parseJson<{
       provider?: string;
       intent?: string;
+      telegram?: TelegramOAuthFlow;
       verification?: { scope?: string; context_hash?: string; provider_user_id?: string; auth_version?: number; session_version?: number };
     }>(flow.payload, {});
     if (payload.provider && payload.provider !== provider) {
@@ -989,10 +997,19 @@ export function registerMore(r: Router<Env>): void {
     if ((intent === "bind" || intent === "verify") && (!identity || identity.userId !== flow.user_id)) {
       return json(403, { success: false, message: i18nPair(c.req, "state 参数为空或不匹配", "State parameter is empty or mismatched") });
     }
-    await s.deleteAuthFlow(state);
+    if (provider === "telegram") {
+      const configErr = await telegramConfigurationError(s);
+      if (configErr) return apiFailCode(configErr.message, configErr.code);
+      if (!payload.telegram?.code_verifier || !payload.telegram.client_id || !payload.telegram.redirect_uri) {
+        return apiFailCode("Verification flow expired", "AUTH_FLOW_INVALID");
+      }
+    } else {
+      await s.deleteAuthFlow(state);
+    }
     const bindUser = intent === "bind" ? existing : null;
 
     if (errorCode) {
+      if (provider === "telegram") await s.deleteAuthFlow(state);
       return apiFail(c.url.searchParams.get("error_description") || errorCode);
     }
 
@@ -1044,8 +1061,19 @@ export function registerMore(r: Router<Env>): void {
         );
       }
       if (provider === "telegram") {
-        if (!(await s.optionBool("TelegramOAuthEnabled", false))) return apiFail("Telegram 未启用");
-        return finish(await verifyTelegramLogin(s, c.url.searchParams));
+        try {
+          const telegramUser = await exchangeTelegramOAuth(s, code, payload.telegram!);
+          await s.deleteAuthFlow(state);
+          return finish({
+            id: telegramUser.id,
+            username: telegramUser.username,
+            display_name: telegramUser.display_name,
+            field: "telegram_id",
+          });
+        } catch (e) {
+          if (e instanceof TelegramOAuthError) return apiFailCode(e.message, e.code);
+          return apiFailCode(ERR_TELEGRAM_OAUTH_FAILED, "TELEGRAM_OAUTH_FAILED");
+        }
       }
       if (provider === "wechat") {
         return apiFail("请使用 /api/oauth/wechat");

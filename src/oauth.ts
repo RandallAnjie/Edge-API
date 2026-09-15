@@ -1,7 +1,8 @@
 import { generateAffCode, generateTokenKey } from "./crypto.js";
 import { hmacSha256Hex, sha256Bytes, timingSafeEqualStr } from "./crypto.js";
 import { nowSec, randomHex } from "./constants.js";
-import { apiFail, apiOk, json } from "./http.js";
+import { apiFail, apiFailCode, apiOk, json } from "./http.js";
+import { ERR_TELEGRAM_ACCOUNT_NOT_BOUND } from "./telegram-oauth.js";
 import { notifyAccountSecurityChange } from "./mail.js";
 import { issueSessionSafe, sessionResponse } from "./auth.js";
 import { finishInsertUser } from "./user-insert.js";
@@ -181,7 +182,7 @@ export async function loginOrBindOAuth(
     user = await store.getUserByField(profile.field, profile.id);
   }
   if (!user) {
-    if (profile.field === "telegram_id") return apiFail("该 Telegram 账号尚未绑定");
+    if (profile.field === "telegram_id") return apiFailCode(ERR_TELEGRAM_ACCOUNT_NOT_BOUND, "TELEGRAM_ACCOUNT_NOT_BOUND");
     if (!(await store.optionBool("RegisterEnabled", true))) return apiFail("管理员关闭了新用户注册");
     const bound = await store.getUserByField(profile.field, profile.id, { includeDeleted: true });
     if (bound) return apiFail("该 OAuth 账号已被绑定");
