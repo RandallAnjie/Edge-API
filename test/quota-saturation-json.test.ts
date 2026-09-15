@@ -314,10 +314,19 @@ test("original PostWssConsumeQuota attachQuotaSaturation QuotaFromDecimal JSON",
   const channelId = Number((ch.body.data as { id: number }).id);
   const channel = await store.getChannel(channelId);
   assert.ok(channel);
-  const sk = await createSk(e, auth);
-  const token = await store.getTokenByKey(sk);
-  const user = await store.getUserByUsername("root");
-  assert.ok(token && user);
+  const tok = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "wss-sat", remain_quota: 100000, unlimited_quota: true }),
+    }),
+    e,
+  );
+  assert.equal(tok.body.success, true, String(tok.body.message));
+  const token = await store.getTokenById(Number((tok.body.data as { id: number }).id));
+  assert.ok(token);
+  const user = await store.getUserById(token.user_id);
+  assert.ok(user);
   const usage = realtimeUsageFromJSON({
     total_tokens: 1,
     input_tokens: 1,
