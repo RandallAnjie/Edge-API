@@ -3975,7 +3975,7 @@ test("original FetchCodexChannelModels, advanced-custom fetch, GetPricing endpoi
     const setupData = setup.body.data as { status: boolean; root_init: boolean; database_type: string };
     assert.equal(setupData.status, false);
     assert.equal(setupData.root_init, false);
-    assert.equal(setupData.database_type, "d1");
+    assert.equal(setupData.database_type, "sqlite");
 
     const setupDone = await json(new Request("http://local/api/setup"), e);
     const done = setupDone.body.data as { status: boolean; root_init: boolean; database_type: string };

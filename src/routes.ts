@@ -227,7 +227,7 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const done = await s.setupDone();
     if (done) return apiOk({ status: true, root_init: false, database_type: "" });
-    return apiOk({ status: false, root_init: await s.rootExists(), database_type: "d1" });
+    return apiOk({ status: false, root_init: await s.rootExists(), database_type: "sqlite" });
   });
 
   r.post("/api/setup", async (c) => {
