@@ -222,7 +222,7 @@ test("original Volcengine TTS websocket binary JSON is sent upstream and audio b
     if (url === VOLC_TTS_WS_URL || url === "https://tts.example/v1/audio/speech") {
       if (headers.get("Upgrade") === "websocket") {
         const ws = new MockVolcTtsSocket();
-        return Object.assign(new Response(null, { status: 101 }), { webSocket: ws });
+        return { status: 101, ok: false, headers: new Headers(), webSocket: ws, text: async () => "" } as unknown as Response;
       }
       const raw = typeof init?.body === "string" ? init.body : "";
       httpCalls.push({ url, headers, body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {} });
@@ -351,7 +351,7 @@ test("original Volcengine TTS websocket error frame JSON", async () => {
         },
         close() {},
       };
-      return Object.assign(new Response(null, { status: 101 }), { webSocket: ws });
+      return { status: 101, ok: false, headers: new Headers(), webSocket: ws, text: async () => "" } as unknown as Response;
     }
     return new Response("unexpected", { status: 500 });
   }) as typeof fetch;
