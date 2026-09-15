@@ -330,7 +330,7 @@ test("original expired SystemTask lock fails old run JSON and claims legacy pend
   assert.equal(currentTask.task_id, secondId);
   assert.equal(currentTask.status, "running");
   assert.equal(currentTask.locked_by, "runner-b");
-  assert.equal(currentTask.active_key, SYSTEM_TASK_TYPE_LOG_CLEANUP);
+  assert.equal("active_key" in currentTask, false);
 });
 
 test("original ExpireStaleSystemTaskLocks JSON fails old run and allows a new StartLogCleanupTask", async () => {
