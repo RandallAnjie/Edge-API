@@ -208,9 +208,15 @@ Material changes from upstream:
   `tool_use` only when priced; reserved names skipped;
   `ImageGenerationCallCounter` completed-output cap `MaxImageN`;
   Claude `claude_web_search_requests`; Gemini grounding
-  `gemini_google_search_call`). Extra-OK: search-preview still also bills
+  `gemini_google_search_call`).   Extra-OK: search-preview still also bills
   from the model-name suffix when `RelayMode` is not Responses (original
-  `calculateTextToolCallSurcharge`). HTTP PostAudio uses original
+  `calculateTextToolCallSurcharge`). Original
+  `GetAndValidOpenAIImageRequest` multipart `/v1/images/edits` parses `n` /
+  `stream` / `quality` / `parameters` into the ImageRequest body (gpt-image-1
+  quality default `standard`, default `n` 1, `strconv.ParseBool` stream).
+  Extra-OK: audio multipart still uses `body: {}` plus the `model` form field;
+  Ali `ImageCount(true)` still runs after channel select.
+  HTTP PostAudio uses original
   `calculateAudioQuota` (`QuotaFromDecimal`, details text/audio tokens,
   map `GetCompletionRatio` / `GetAudioRatio` / `GetAudioCompletionRatio`,
   zero `TotalTokens` unless fixed-price).

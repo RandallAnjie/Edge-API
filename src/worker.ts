@@ -23,6 +23,7 @@ import { requestHeadersFrom } from "./param-override.js";
 import type { ClientFormat } from "./relay.js";
 import type { RelayMode } from "./upstream.js";
 import { extractGeminiModelAction } from "./convert.js";
+import { getAndValidOpenAIImageEditMultipart } from "./image-billing.js";
 import { ensureSchema } from "./schema.js";
 import { Store } from "./store.js";
 import { hit } from "./metrics.js";
@@ -383,6 +384,31 @@ async function handleRelayAfterAuth(
     if (ct.includes("multipart/form-data")) {
       rawBody = await req.arrayBuffer();
       rawContentType = ct;
+      if (mode === "images") {
+        let imageBody: Record<string, unknown>;
+        try {
+          imageBody = getAndValidOpenAIImageEditMultipart(rawBody, rawContentType);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return openaiError(400, message, "invalid_request");
+        }
+        return relay({
+          req,
+          env,
+          store,
+          auth,
+          mode,
+          clientFormat: "openai",
+          model: String(imageBody.model || url.searchParams.get("model") || ""),
+          body: imageBody,
+          stream: Boolean(imageBody.stream),
+          path,
+          ctx,
+          rawBody,
+          rawContentType,
+          method: req.method,
+        });
+      }
       const modelField = extractFormField(rawBody, "model") || url.searchParams.get("model") || "";
       return relay({
         req,

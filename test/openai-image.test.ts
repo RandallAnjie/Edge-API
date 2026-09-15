@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CHANNEL_TYPE_ALI, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER } from "../src/constants.js";
 import { convertOpenAIImageEditForm, detectImageMimeType, usesOpenAIImageEditAdaptor } from "../src/openai-image-convert.js";
+import { getAndValidOpenAIImageEditMultipart, resolveImageBillingRequestInput } from "../src/image-billing.js";
 import { parseMultipartForm } from "../src/multipart-form.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
@@ -190,4 +191,69 @@ test("original OpenAI multipart image edits ConvertImageRequest is re-serialized
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+function editFields(fields: Record<string, string>, withImage = false): { buf: ArrayBuffer; ct: string } {
+  const boundary = "----OpenAIImageEditValid";
+  let raw = "";
+  for (const [name, value] of Object.entries(fields)) {
+    raw += `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+  }
+  if (withImage) {
+    raw += `--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="input.png"\r\nContent-Type: application/octet-stream\r\n\r\nfake image\r\n`;
+  }
+  raw += `--${boundary}--\r\n`;
+  return { buf: latin1Buffer(raw), ct: `multipart/form-data; boundary=${boundary}` };
+}
+
+test("original GetAndValidOpenAIImageRequest multipart stream/n/quality JSON", () => {
+  const { buf, ct } = editFields(
+    { model: "gpt-image-1", prompt: "edit this image", stream: "true", n: "3" },
+    true,
+  );
+  const req = getAndValidOpenAIImageEditMultipart(buf, ct);
+  assert.equal(req.model, "gpt-image-1");
+  assert.equal(req.prompt, "edit this image");
+  assert.equal(req.stream, true);
+  assert.equal(req.n, 3);
+  assert.equal(req.quality, "standard");
+  const billing = resolveImageBillingRequestInput(req, CHANNEL_TYPE_OPENAI);
+  assert.equal(billing.imageCount, 3);
+  assert.equal((billing.body as { n?: number }).n, 3);
+  assert.equal(JSON.stringify(billing.body || {}).includes("fake image"), false);
+  assert.equal(JSON.stringify(billing.body || {}).includes("edit this image"), false);
+
+  const { buf: badStream, ct: badStreamCt } = editFields({ model: "gpt-image-1", prompt: "x", stream: "notabool" });
+  assert.throws(() => getAndValidOpenAIImageEditMultipart(badStream, badStreamCt), /invalid stream value/);
+
+  const { buf: badN, ct: badNCt } = editFields({ model: "gpt-image-1", prompt: "x", n: "-22904832" });
+  assert.throws(() => getAndValidOpenAIImageEditMultipart(badN, badNCt), /n must be an integer between 1 and 128/);
+});
+
+test("original multipart image edits invalid stream/n HTTP JSON", async () => {
+  const { e, sk } = await boot();
+  const { buf, ct } = editFields({ model: "gpt-image-1", prompt: "edit this image", stream: "notabool" });
+  const hit = await json(
+    new Request("http://local/v1/images/edits", {
+      method: "POST",
+      headers: { authorization: "Bearer " + sk, "content-type": ct },
+      body: buf,
+    }),
+    e,
+  );
+  assert.equal(hit.res.status, 400);
+  assert.match(String((hit.body.error as { message?: string })?.message || ""), /invalid stream value/);
+  assert.equal((hit.body.error as { code?: string }).code, "invalid_request");
+
+  const { buf: badN, ct: badNCt } = editFields({ model: "gpt-image-1", prompt: "edit this image", n: "-22904832" });
+  const nHit = await json(
+    new Request("http://local/v1/images/edits", {
+      method: "POST",
+      headers: { authorization: "Bearer " + sk, "content-type": badNCt },
+      body: badN,
+    }),
+    e,
+  );
+  assert.equal(nHit.res.status, 400);
+  assert.match(String((nHit.body.error as { message?: string })?.message || ""), /n must be an integer between 1 and 128/);
 });
