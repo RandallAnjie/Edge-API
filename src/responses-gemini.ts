@@ -5,11 +5,13 @@ import {
   attachThoughtSignature,
   cleanFunctionParameters,
   GEMINI_MIME,
+  geminiUnsupportedMimeError,
   hasFunctionCallContent,
   openAIToolChoiceToConfig,
   removeAdditionalProperties,
   type ConvertGeminiOpts,
 } from "./gemini-convert.js";
+import { fileSourceIdentifier } from "./file-source.js";
 import {
   applyToOpenAIChat,
   asClientError,
@@ -222,20 +224,20 @@ function contentPartFileSource(part: Record<string, unknown>): { data: string; m
   return { data, mime };
 }
 
-function resolveGeminiMedia(source: { data: string; mime: string }): { data: string; mime: string } {
+function resolveGeminiMedia(source: { data: string; mime: string }, opts: ConvertGeminiOpts = {}): { data: string; mime: string } {
   const decoded = decodeDataURL(source.data);
   if (decoded) return { data: decoded.data, mime: decoded.mime || source.mime };
+  if (opts.resolveMedia) {
+    const resolved = opts.resolveMedia(source.data);
+    if (resolved) return resolved;
+  }
   if (/^[A-Za-z0-9+/=\s]+$/.test(source.data) && source.mime) {
     return { data: source.data.replace(/\s+/g, ""), mime: source.mime };
   }
   return { data: source.data, mime: source.mime };
 }
 
-function supportedMimeList(): string[] {
-  return Object.keys(GEMINI_MIME);
-}
-
-function responsesContentPartToGeminiParts(part: Record<string, unknown>): Record<string, unknown>[] {
+function responsesContentPartToGeminiParts(part: Record<string, unknown>, opts: ConvertGeminiOpts = {}): Record<string, unknown>[] {
   const partType = str(part.type).trim();
   switch (partType) {
     case "input_text":
@@ -251,12 +253,10 @@ function responsesContentPartToGeminiParts(part: Record<string, unknown>): Recor
     case "input_video": {
       const source = contentPartFileSource(part);
       if (!source) return [];
-      const resolved = resolveGeminiMedia(source);
+      const resolved = resolveGeminiMedia(source, opts);
       const mime = resolved.mime.toLowerCase();
       if (!GEMINI_MIME[mime]) {
-        throw new Error(
-          `mime type is not supported by Gemini: '${resolved.mime}', url: '${source.data}', supported types are: ${supportedMimeList().join(" ")}`,
-        );
+        throw new Error(geminiUnsupportedMimeError(resolved.mime, fileSourceIdentifier(source.data)));
       }
       return [{ inlineData: { mimeType: resolved.mime, data: resolved.data } }];
     }
@@ -265,10 +265,10 @@ function responsesContentPartToGeminiParts(part: Record<string, unknown>): Recor
   }
 }
 
-function responsesInputContentToGeminiParts(content: unknown): Record<string, unknown>[] {
+function responsesInputContentToGeminiParts(content: unknown, opts: ConvertGeminiOpts = {}): Record<string, unknown>[] {
   const parts: Record<string, unknown>[] = [];
   for (const part of contentParts(content)) {
-    parts.push(...responsesContentPartToGeminiParts(part));
+    parts.push(...responsesContentPartToGeminiParts(part, opts));
   }
   return parts;
 }
@@ -448,7 +448,7 @@ export function convertOpenAIResponsesRequestToGeminiChat(
       continue;
     }
     const role = responsesGeminiRole(item);
-    const parts = responsesInputContentToGeminiParts(item.content);
+    const parts = responsesInputContentToGeminiParts(item.content, opts);
     if (role === "system") {
       for (const part of parts) {
         if (typeof part.text === "string" && part.text) systemTexts.push(part.text);

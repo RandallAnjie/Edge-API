@@ -175,6 +175,24 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON is sent upstrea
     assert.equal(captured.body.max_completion_tokens, 16);
     assert.equal("max_tokens" in captured.body, false);
 
+    const xaiResponses = await json(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "grok-3-mini-high",
+          input: "hi",
+        }),
+      }),
+      e,
+    );
+    assert.equal(xaiResponses.res.status, 200, xaiResponses.text);
+    if (!captured) throw new Error("missing grok-3-mini responses upstream");
+    assert.equal(captured.url, "https://api.x.ai/v1/responses");
+    assert.equal(captured.body.model, "grok-3-mini-high");
+    assert.equal("reasoning" in captured.body, false);
+    assert.equal("reasoning_effort" in captured.body, false);
+
     const v4 = await json(
       new Request("http://local/v1/chat/completions", {
         method: "POST",

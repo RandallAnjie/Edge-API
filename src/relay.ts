@@ -52,6 +52,7 @@ import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
 import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
 import { compactUuid, looksLikeSse } from "./openai-usage.js";
 import { convertAwsClaudeRequest, isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
+import { openAIHttpMediaDialect, prefetchOpenAIHttpMedia } from "./openai-media.js";
 import { applyAwsAkskAuth } from "./aws-auth.js";
 import { decodeAwsEventStreamResponse } from "./aws-eventstream.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding, ollamaUpstreamToOpenAIChat } from "./ollama-convert.js";
@@ -357,6 +358,19 @@ async function convertOutbound(
   let o = asObj(body);
   const origin = originModel || String(o.model || "");
   const upstream = mappedModel || String(o.model || "");
+  const mediaDialect = openAIHttpMediaDialect({
+    client,
+    channelType,
+    kind,
+    mode,
+    converter: extras.converter,
+    upstreamModel: upstream,
+  });
+  let resolveMedia: ((url: string) => { data: string; mime: string } | null) | undefined;
+  if (mediaDialect) {
+    const media = await prefetchOpenAIHttpMedia(o, mediaDialect);
+    resolveMedia = (url) => media.get(url) ?? null;
+  }
   if (usesTextHelperStreamOptions(client, mode, Boolean(extras.viaResponses))) {
     o = applyTextHelperStreamOptions(o, channelType);
   }
@@ -375,6 +389,7 @@ async function convertOutbound(
       channelOtherSettings: extras.channelOtherSettings,
       passThrough: extras.passThrough,
       applyViaResponsesChatParamOverride: extras.applyViaResponsesChatParamOverride,
+      resolveMedia,
     });
   }
   if (client === "gemini") {
@@ -393,6 +408,7 @@ async function convertOutbound(
       converter: extras.converter || "none",
       requestPath: extras.requestPath,
       isStream: extras.isStream ?? Boolean(o.stream),
+      resolveMedia,
     };
     if (client === "anthropic") return convertAdvancedCustomClaudeRequest(o, convertOpts);
     if (client === "gemini") return convertAdvancedCustomGeminiRequest(o, convertOpts);
@@ -689,6 +705,7 @@ async function convertOutbound(
       requestPath: extras.requestPath,
       systemPrompt: extras.systemPrompt,
       systemPromptOverride: extras.systemPromptOverride,
+      resolveMedia,
     });
     if (channelType === CHANNEL_TYPE_ANTHROPIC) return o;
     if (channelType === CHANNEL_TYPE_GEMINI) return o;
@@ -700,6 +717,7 @@ async function convertOutbound(
           max_tokens: o.max_output_tokens ?? o.max_tokens,
         },
         settings,
+        resolveMedia,
       );
     }
     if (kind === "gemini") {
@@ -710,6 +728,7 @@ async function convertOutbound(
           max_tokens: o.max_output_tokens ?? o.max_tokens,
         },
         settings,
+        resolveMedia,
       );
     }
     return o;
@@ -725,6 +744,7 @@ async function convertOutbound(
       responseId: extras.responseId,
       cohereSafetySetting: extras.cohereSafetySetting,
       channelKey: extras.channelKey,
+      resolveMedia,
     });
     if (kind !== "anthropic" && kind !== "gemini") {
       o = applyTextHelperSystemPromptIfNeeded(o, extras) as Record<string, unknown>;
@@ -732,8 +752,8 @@ async function convertOutbound(
     if (kind === "anthropic" || kind === "gemini") return o;
     body = o;
   }
-  if (kind === "anthropic" && client === "openai") return openaiToAnthropic(o, settings);
-  if (kind === "gemini" && client === "openai") return openaiToGemini(o, settings);
+  if (kind === "anthropic" && client === "openai") return openaiToAnthropic(o, settings, resolveMedia);
+  if (kind === "gemini" && client === "openai") return openaiToGemini(o, settings, resolveMedia);
   if (kind === "openai" && client === "anthropic") return anthropicToOpenAI(o);
   if (kind === "openai" && client === "gemini") {
     const model = String(o.model || "");

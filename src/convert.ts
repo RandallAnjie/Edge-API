@@ -6,7 +6,7 @@ import {
   convertOpenAIResponsesAdaptorRequest,
   type ReasoningHostSettings,
 } from "./reasoning.js";
-import { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
+import { convertClaudeRequest, convertOpenAIChatToClaude, type ConvertClaudeOpts } from "./claude-convert.js";
 import { convertOpenAIResponsesRequestToClaudeMessages } from "./responses-claude.js";
 import { convertOpenAIResponsesRequestToGeminiChat } from "./responses-gemini.js";
 import { convertGeminiEmbeddingRequest, convertGeminiRequest, convertOpenAIChatToGemini } from "./gemini-convert.js";
@@ -15,7 +15,7 @@ import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC,
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertGeminiImageFromOpenAI, convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
-import { convertDeepSeekClaudeRequest, convertDeepSeekOpenAIRequest, convertDeepSeekResponsesRequest, convertVolcOpenAIRequest, convertXaiImageRequest, convertXaiOpenAIRequest, openaiFromXaiResponse, xaiSseToOpenAIChat } from "./vendor-convert.js";
+import { convertDeepSeekClaudeRequest, convertDeepSeekOpenAIRequest, convertDeepSeekResponsesRequest, convertVolcOpenAIRequest, convertXaiImageRequest, convertXaiOpenAIRequest, convertXaiResponsesRequest, openaiFromXaiResponse, xaiSseToOpenAIChat } from "./vendor-convert.js";
 import { convertVolcTTSRequest, VOLC_TTS_UNSUPPORTED_AUDIO } from "./volc-tts.js";
 import { convertBaiduEmbeddingRequest, convertBaiduOpenAIRequest } from "./baidu-convert.js";
 import { convertCohereOpenAIRequest, convertCohereRerankRequest } from "./cohere-convert.js";
@@ -105,11 +105,16 @@ export function estimatePromptTokens(messages: ChatMessage[] | undefined, prompt
 }
 
 /** Original `service.ConvertRequest(..., RelayFormatClaude)` for OpenAI chat. */
-export function openaiToAnthropic(body: Record<string, unknown>, settings: ReasoningHostSettings = {}): Record<string, unknown> {
+export function openaiToAnthropic(
+  body: Record<string, unknown>,
+  settings: ReasoningHostSettings = {},
+  resolveMedia?: ConvertClaudeOpts["resolveMedia"],
+): Record<string, unknown> {
   return convertOpenAIChatToClaude(body, {
     originModelName: String(body.model || ""),
     upstreamModelName: String(body.model || ""),
     settings,
+    resolveMedia,
   });
 }
 
@@ -139,11 +144,16 @@ export function anthropicToOpenAI(body: Record<string, unknown>): Record<string,
 }
 
 /** Original `service.ConvertRequest(..., RelayFormatGemini)` for OpenAI chat. */
-export function openaiToGemini(body: Record<string, unknown>, settings: ReasoningHostSettings = {}): Record<string, unknown> {
+export function openaiToGemini(
+  body: Record<string, unknown>,
+  settings: ReasoningHostSettings = {},
+  resolveMedia?: ConvertClaudeOpts["resolveMedia"],
+): Record<string, unknown> {
   return convertOpenAIChatToGemini(body, {
     originModelName: String(body.model || ""),
     upstreamModelName: String(body.model || ""),
     settings,
+    resolveMedia,
   });
 }
 
@@ -407,6 +417,11 @@ export type ConvertOpenAIOpts = {
    * Ignored for Anthropic (`*ClaudeRequest` type assert fails in original).
    */
   applyViaResponsesChatParamOverride?: (chat: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * Original `relaymedia.ResolveBase64Data` for OpenAI HTTP file sources.
+   * convertOutbound prefetches GetBase64Data so ConvertOpenAIRequest stays sync.
+   */
+  resolveMedia?: ConvertClaudeOpts["resolveMedia"];
 };
 
 export { convertClaudeRequest, convertOpenAIChatToClaude } from "./claude-convert.js";
@@ -499,7 +514,7 @@ export {
   delegatesClaudeToOpenAIAdaptor,
   usesClaudeAdaptorForClaudeRequest,
 };
-export { convertDeepSeekClaudeRequest, convertDeepSeekResponsesRequest, convertXaiImageRequest, openaiFromXaiResponse, xaiSseToOpenAIChat };
+export { convertDeepSeekClaudeRequest, convertDeepSeekResponsesRequest, convertXaiImageRequest, convertXaiResponsesRequest, openaiFromXaiResponse, xaiSseToOpenAIChat };
 export { openaiChatToClaudeResponse, openaiChatToGeminiResponse } from "./openai-format-convert.js";
 export {
   streamResponseOpenAI2Claude,
@@ -614,6 +629,7 @@ function convertAdvancedCustomOpenAIRequest(body: Record<string, unknown>, opts:
       originModelName: opts.originModelName,
       upstreamModelName: opts.upstreamModelName,
       settings,
+      resolveMedia: opts.resolveMedia,
     });
   }
   if (converter === CONVERTER_CHAT_TO_RESPONSES) {
@@ -624,6 +640,7 @@ function convertAdvancedCustomOpenAIRequest(body: Record<string, unknown>, opts:
       originModelName: opts.originModelName,
       upstreamModelName: opts.upstreamModelName,
       settings,
+      resolveMedia: opts.resolveMedia,
     });
   }
   throw converterDoesNotSupport(converter, "chat");
@@ -645,6 +662,7 @@ function convertAdvancedCustomOpenAIResponsesRequest(body: Record<string, unknow
       originModelName: opts.originModelName,
       upstreamModelName: opts.upstreamModelName,
       settings,
+      resolveMedia: opts.resolveMedia,
     });
   }
   throw converterDoesNotSupport(converter, "responses");
@@ -818,6 +836,7 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
       originModelName: opts.originModelName,
       upstreamModelName: suffixed.upstreamModelName,
       settings,
+      resolveMedia: opts.resolveMedia,
     });
   }
   if (opts.channelType === CHANNEL_TYPE_VERTEX) {
@@ -829,6 +848,7 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
       originModelName: opts.originModelName,
       upstreamModelName: suffixed.upstreamModelName,
       settings,
+      resolveMedia: opts.resolveMedia,
     });
   }
   if (opts.channelType === CHANNEL_TYPE_OLLAMA) {
@@ -984,6 +1004,7 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
       originModelName: opts.originModelName,
       upstreamModelName: suffixed.upstreamModelName,
       settings,
+      resolveMedia: opts.resolveMedia,
     });
   }
   if (opts.channelType === CHANNEL_TYPE_GEMINI || kind === "gemini") {
@@ -997,6 +1018,7 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
       originModelName: opts.originModelName,
       upstreamModelName: suffixed.upstreamModelName,
       settings,
+      resolveMedia: opts.resolveMedia,
     });
   }
   if (opts.channelType === CHANNEL_TYPE_MOONSHOT) {
@@ -1118,10 +1140,19 @@ export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opt
       originModelName: opts.originModelName,
       upstreamModelName: suffixed.upstreamModelName,
       settings,
+      resolveMedia: opts.resolveMedia,
     });
   }
   if (opts.channelType === CHANNEL_TYPE_GEMINI) {
     return convertOpenAIResponsesRequestToGeminiChat(suffixed.body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+      resolveMedia: opts.resolveMedia,
+    });
+  }
+  if (opts.channelType === CHANNEL_TYPE_XAI) {
+    return convertXaiResponsesRequest(suffixed.body, {
       originModelName: opts.originModelName,
       upstreamModelName: suffixed.upstreamModelName,
       settings,

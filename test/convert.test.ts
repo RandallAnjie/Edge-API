@@ -16,6 +16,7 @@ import {
   convertVolcClaudeRequest,
   convertDeepSeekClaudeRequest,
   convertXaiImageRequest,
+  convertXaiResponsesRequest,
   openaiFromXaiResponse,
   xaiSseToOpenAIChat,
   nativeClaudeGeminiConvertError,
@@ -2436,6 +2437,35 @@ test("original OpenAI→Claude ConvertRequest golden JSON fields", () => {
   assert.deepEqual(messages[3], { role: "user", content: "Summarize." });
 });
 
+test("original OpenAI→Claude ConvertOpenAIRequest resolveMedia HTTP image JSON fields", () => {
+  const out = convertOpenAIRequest(
+    {
+      model: "claude-3-haiku-20240307",
+      max_tokens: 32,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "what is this" },
+            { type: "image_url", image_url: { url: "https://cdn.example/cat.png" } },
+          ],
+        },
+      ],
+    },
+    {
+      channelType: CHANNEL_TYPE_ANTHROPIC,
+      originModelName: "claude-3-haiku-20240307",
+      upstreamModelName: "claude-3-haiku-20240307",
+      resolveMedia: () => ({ data: "aGVsbG8=", mime: "image/png" }),
+    },
+  );
+  const parts = (out.messages as { content: { type: string; source?: { type: string; media_type: string; data: string } }[] }[])[0]
+    .content;
+  assert.equal(parts[1].type, "image");
+  assert.deepEqual(parts[1].source, { type: "base64", media_type: "image/png", data: "aGVsbG8=" });
+  assert.equal("url" in (parts[1].source || {}), false);
+});
+
 test("original Claude ConvertOpenAIRequest injects default max_tokens and thinking adapter JSON", () => {
   const missing = convertOpenAIRequest(
     { model: "claude-3-5-sonnet", messages: [{ role: "user", content: "hi" }] },
@@ -3540,6 +3570,33 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () =
   assert.equal(grokMini.reasoning_effort, "high");
   assert.equal(grokMini.max_completion_tokens, 16);
   assert.equal("max_tokens" in grokMini, false);
+
+  const xaiResponsesHigh = convertOpenAIResponsesRequest(
+    { model: "grok-3-mini-high", input: "hi" },
+    { channelType: CHANNEL_TYPE_XAI, originModelName: "grok-3-mini-high", upstreamModelName: "grok-3-mini-high" },
+  );
+  assert.equal(xaiResponsesHigh.model, "grok-3-mini-high");
+  assert.equal("reasoning" in xaiResponsesHigh, false);
+  const xaiResponsesEmpty = convertXaiResponsesRequest(
+    { input: "hi" },
+    { originModelName: "grok-3", upstreamModelName: "grok-3" },
+  );
+  assert.equal(xaiResponsesEmpty.model, "grok-3");
+  const xaiResponsesFilled = convertOpenAIResponsesRequest(
+    { input: "hi" },
+    { channelType: CHANNEL_TYPE_XAI, originModelName: "grok-3", upstreamModelName: "grok-3" },
+  );
+  assert.equal(xaiResponsesFilled.model, "grok-3");
+  const xaiResponsesPassThrough = convertOpenAIResponsesRequest(
+    { input: "hi" },
+    {
+      channelType: CHANNEL_TYPE_XAI,
+      originModelName: "grok-3",
+      upstreamModelName: "grok-3",
+      settings: { passThrough: true },
+    },
+  );
+  assert.equal(xaiResponsesPassThrough.model, "grok-3");
 
   const xaiImage = convertOpenAIRequest(
     {

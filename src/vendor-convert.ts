@@ -79,6 +79,13 @@ export function convertXaiImageRequest(body: Record<string, unknown>): Record<st
   return out;
 }
 
+/** Original `xai.Adaptor.ConvertOpenAIResponsesRequest`. Does not run openai.Adaptor suffix stripping. */
+export function convertXaiResponsesRequest(body: Record<string, unknown>, opts: VendorConvertOpts): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...body };
+  if (!String(out.model || "") && opts.upstreamModelName) out.model = opts.upstreamModelName;
+  return out;
+}
+
 /** Original `deepseek.Adaptor.ConvertOpenAIRequest` / `applyDeepSeekV4OpenAIThinkingSuffix`. */
 export function convertDeepSeekOpenAIRequest(body: Record<string, unknown>, opts: VendorConvertOpts): Record<string, unknown> {
   const settings = opts.settings || {};

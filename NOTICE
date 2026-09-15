@@ -56,6 +56,12 @@ Material changes from upstream:
   `source.type=url` to base64 via original GetBase64Data JSON (`type`, `media_type`,
   `data`, omit empty `url`). Extra-OK: skip gin file-source context cache, Worker
   download proxy, ValidateSSRFProtectedFetchURL, and HEIF `decodeImageConfig`.
+  OpenAI chat/Responses ConvertRequest HTTP image URLs are rewritten to Claude
+  `source.type=base64` / Gemini `inlineData` via original GetBase64Data
+  (`get file data failed: …` / `get file data from '…' failed: …`). Extra-OK:
+  ConvertOpenAIRequest stays sync; URL fetch runs in convertOutbound before
+  ConvertRequest. xAI ConvertOpenAIResponsesRequest fills empty `model` from
+  UpstreamModelName and does not run openai.Adaptor reasoning-suffix stripping.
   Volcengine TTS uses the original HTTP path
   (`wss://openspeech.bytedance.com/api/v1/tts/ws_binary` binary frames, or
   `{base}/v1/audio/speech` JSON `code` 3000, no Volc SDK). Xunfei SparkDesk uses the original HTTP path

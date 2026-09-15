@@ -146,6 +146,16 @@ export function smartDetectMimeType(headers: Headers, url: string, fileBytes: Ui
   return "application/octet-stream";
 }
 
+/** Original `types.FileSource.GetIdentifier` for URL and base64 sources. */
+export function fileSourceIdentifier(raw: string): string {
+  const data = String(raw || "");
+  if (data.startsWith("http://") || data.startsWith("https://")) {
+    return data.length > 100 ? data.slice(0, 100) + "..." : data;
+  }
+  if (data.length > 50) return "base64:" + data.slice(0, 50) + "...";
+  return "base64:" + data;
+}
+
 /**
  * Original `service.GetBase64Data` for `types.NewURLFileSource`.
  * Extra-OK: skip gin context cache, Worker download proxy, and `ValidateSSRFProtectedFetchURL`.

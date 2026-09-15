@@ -22,6 +22,7 @@ import {
   type ReasoningHostSettings,
   type ReasoningIntent,
 } from "./reasoning.js";
+import { fileSourceIdentifier } from "./file-source.js";
 
 export type ConvertGeminiOpts = {
   originModelName?: string;
@@ -52,6 +53,15 @@ export const GEMINI_MIME: Record<string, boolean> = {
   "video/mpegps": true,
   "video/flv": true,
 };
+
+/** Original `sharedgemini.SupportedMimeTypesList` plus Go `%v` slice formatting. */
+export function geminiSupportedMimeTypesList(): string[] {
+  return Object.keys(GEMINI_MIME);
+}
+
+export function geminiUnsupportedMimeError(mimeType: string, identifier: string): string {
+  return `mime type is not supported by Gemini: '${mimeType}', url: '${identifier}', supported types are: [${geminiSupportedMimeTypesList().join(" ")}]`;
+}
 
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -644,7 +654,7 @@ export function convertOpenAIChatToGemini(body: OpenAIChatBody, opts: ConvertGem
         if (!resolved) continue;
         const mime = resolved.mime.toLowerCase();
         if (!GEMINI_MIME[mime]) {
-          throw asClientError(new Error(`mime type is not supported by Gemini: '${resolved.mime}', url: '${url}'`));
+          throw new Error(geminiUnsupportedMimeError(resolved.mime, fileSourceIdentifier(url)));
         }
         parts.push({ inlineData: { mimeType: resolved.mime, data: resolved.data } });
       }

@@ -1,7 +1,7 @@
 /** Original `relay/channel/advancedcustom` ConvertRequestByID hops. Does not import convert.ts. */
 
-import { convertOpenAIChatToClaude } from "./claude-convert.js";
-import { convertOpenAIChatToGemini } from "./gemini-convert.js";
+import { convertOpenAIChatToClaude, type ConvertClaudeOpts } from "./claude-convert.js";
+import { convertOpenAIChatToGemini, type ConvertGeminiOpts } from "./gemini-convert.js";
 import {
   applyToOpenAIChat,
   applyToOpenAIResponses,
@@ -851,14 +851,14 @@ export function convertGeminiContentToOpenAIChat(
 
 export function convertAdvancedCustomChatToClaude(
   body: Record<string, unknown>,
-  opts: { originModelName?: string; upstreamModelName?: string; settings?: ReasoningHostSettings } = {},
+  opts: ConvertClaudeOpts = {},
 ): Record<string, unknown> {
   return convertOpenAIChatToClaude(body, opts);
 }
 
 export function convertAdvancedCustomChatToGemini(
   body: Record<string, unknown>,
-  opts: { originModelName?: string; upstreamModelName?: string; settings?: ReasoningHostSettings } = {},
+  opts: ConvertGeminiOpts = {},
 ): Record<string, unknown> {
   return convertOpenAIChatToGemini(body, opts);
 }
