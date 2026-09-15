@@ -179,6 +179,7 @@ import { applyFetchModelsHeaderOverrides, applyModelMapping, buildUpstream, join
 import { channelKind, isChannelSpecialBase, resolveBaseUrl } from "./catalog.js";
 import {
   anthropicModel,
+  catalogOpenAIModel,
   consumeLogOther,
   geminiModel,
   groupInUserUsableGroups,
@@ -189,7 +190,7 @@ import {
   requestAutoGroups,
 } from "./dto.js";
 import { tokenAllowsModel } from "./auth.js";
-import { ADAPTOR_MODELS } from "./channel-models.js";
+import { OPENAI_MODELS_MAP } from "./channel-models.js";
 import { factoryPluginMeta, listRoutingPlugins } from "./task-plugin-factory.js";
 import { hasModelBillingConfig } from "./billing-setting.js";
 import { getModelSupportEndpointTypes } from "./pricing-cache.js";
@@ -2440,7 +2441,7 @@ export async function listModelsForAuth(store: Store, auth: AuthToken, format: C
   }
   const preferredTypes = await store.preferredModelOwnerChannelTypes(userModelNames, ownerGroups);
   const openaiModels = userModelNames.map((id) => {
-    const staticHit = ADAPTOR_MODELS.find((m) => m.id === id);
+    const staticHit = OPENAI_MODELS_MAP[id];
     const channelType = preferredTypes[id];
     const ownedBy = channelType != null ? ownerForChannelType(channelType) : staticHit?.owned_by || "custom";
     return openAIModel(id, ownedBy, getModelSupportEndpointTypes(id));
@@ -2471,26 +2472,21 @@ export async function listModelsForAuth(store: Store, auth: AuthToken, format: C
   });
 }
 
-export async function retrieveModel(store: Store, auth: AuthToken, model: string, format: ClientFormat = "openai"): Promise<Response> {
-  const staticHit = ADAPTOR_MODELS.find((m) => m.id === model);
-  const groups =
-    auth.usingGroup === "auto"
-      ? await requestAutoGroups(store, auth.token, auth.user.group || "default")
-      : [auth.usingGroup];
-  const enabled = (await store.enabledModelsForGroups(groups.length ? groups : [auth.usingGroup])).includes(model);
-  if (!staticHit && !enabled) {
+/** Original `controller.RetrieveModel`: static `openAIModelsMap` only (custom enabled models are not found). */
+export function retrieveModel(model: string, format: ClientFormat = "openai"): Response {
+  const staticHit = OPENAI_MODELS_MAP[model];
+  if (!staticHit) {
     return new Response(JSON.stringify(modelNotFoundError(model)), {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8" },
     });
   }
-  const ownedBy = staticHit?.owned_by || "custom";
   if (format === "anthropic") {
-    return new Response(JSON.stringify(anthropicModel(model)), {
+    return new Response(JSON.stringify(anthropicModel(staticHit.id)), {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
   }
-  return new Response(JSON.stringify(openAIModel(model, ownedBy)), {
+  return new Response(JSON.stringify(catalogOpenAIModel(staticHit)), {
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 }

@@ -6,7 +6,13 @@ import {
   resolveTaskBillingExpr,
   taskExprCompatible,
 } from "./billing-setting.js";
-import { ADAPTOR_MODELS, CHANNEL_TYPE_MODELS, CHANNEL_TYPE_OWNERS, OPENAI_MODEL_CREATED } from "./channel-models.js";
+import {
+  ADAPTOR_MODELS,
+  CHANNEL_TYPE_MODELS,
+  CHANNEL_TYPE_OWNERS,
+  OPENAI_MODEL_CREATED,
+  type AdaptorModel,
+} from "./channel-models.js";
 import { clearChannelInfoPublic } from "./channel-info.js";
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
@@ -1423,6 +1429,17 @@ export function openAIModel(id: string, ownedBy = "custom", endpointTypes?: stri
   };
 }
 
+/** Original `controller.RetrieveModel` static `openAIModelsMap` row (`SupportedEndpointTypes` nil → JSON null). */
+export function catalogOpenAIModel(model: AdaptorModel): Record<string, unknown> {
+  return {
+    id: model.id,
+    object: "model",
+    created: OPENAI_MODEL_CREATED,
+    owned_by: model.owned_by,
+    supported_endpoint_types: null,
+  };
+}
+
 export function anthropicModel(id: string): Record<string, unknown> {
   return {
     id,
@@ -1432,8 +1449,23 @@ export function anthropicModel(id: string): Record<string, unknown> {
   };
 }
 
+/** Original `dto.GeminiModel` zero-value JSON (no omitempty; nil slice/`any` → null). */
 export function geminiModel(id: string): Record<string, unknown> {
-  return { name: id, displayName: id };
+  return {
+    name: id,
+    baseModelId: null,
+    version: null,
+    displayName: id,
+    description: null,
+    inputTokenLimit: null,
+    outputTokenLimit: null,
+    supportedGenerationMethods: null,
+    thinking: null,
+    temperature: null,
+    maxTemperature: null,
+    topP: null,
+    topK: null,
+  };
 }
 
 export function openaiModelList(models: Record<string, unknown>[]): Record<string, unknown> {

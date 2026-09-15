@@ -3300,3 +3300,9 @@ export const ADAPTOR_MODELS: AdaptorModel[] = [
     "owned_by": "lingyiwanwu"
   }
 ];
+
+/** Original `controller.openAIModelsMap`: last duplicate id wins. */
+export const OPENAI_MODELS_MAP: Record<string, AdaptorModel> = Object.create(null) as Record<string, AdaptorModel>;
+for (const model of ADAPTOR_MODELS) {
+  OPENAI_MODELS_MAP[model.id] = model;
+}

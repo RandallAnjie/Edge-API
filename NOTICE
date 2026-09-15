@@ -134,6 +134,14 @@ Material changes from upstream:
   `No available account instance`. Extra-OK: worker testChannel is a local
   HTTP tester, not the full gin Relay helper; disable uses mapped attempt
   errors; empty OpenAI `error.code` stays `bad_response_status_code`.
+  Original `controller.RetrieveModel` looks up only `openAIModelsMap`
+  (HTTP 200 `model_not_found` with `param:"model"` when missing, even if
+  the model is enabled on a channel) and returns the static catalog row
+  with `supported_endpoint_types: null`. Gemini `ListModels` uses original
+  `dto.GeminiModel` zero-value JSON (`baseModelId` / `supportedGenerationMethods`
+  / etc. null, `nextPageToken: null`). Extra-OK: OpenAI `ListModels` still
+  fills `supported_endpoint_types` from the pricing cache (`[]` until
+  GetPricing, not null).
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented

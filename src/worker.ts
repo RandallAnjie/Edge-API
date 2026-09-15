@@ -225,7 +225,7 @@ async function handleRelayAfterAuth(
     const model = decodeURIComponent(path.slice("/v1/models/".length));
     const fmt: ClientFormat =
       req.headers.get("x-api-key") && req.headers.get("anthropic-version") ? "anthropic" : "openai";
-    return retrieveModel(store, auth, model, fmt);
+    return retrieveModel(model, fmt);
   }
 
   if (isMjRelayRequest(path)) {
