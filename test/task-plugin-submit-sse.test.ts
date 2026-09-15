@@ -139,7 +139,7 @@ function submitContext(requestBody: Record<string, unknown> = {}): Record<string
   };
 }
 
-function parseLikeOriginal(source: string, body: string, contentType: string, requestBody: Record<string, unknown> = {}) {
+async function parseLikeOriginal(source: string, body: string, contentType: string, requestBody: Record<string, unknown> = {}) {
   const loaded = compilePlugin(source);
   const context = submitContext(requestBody);
   const descriptor = buildNativeSubmitDescriptor(loaded.engine, context, "https://provider.example");
@@ -192,11 +192,11 @@ function parseLikeOriginal(source: string, body: string, contentType: string, re
     if (acceptedStream) parsed.noRetry = true;
     return { error: parsed };
   }
-  applyNativeSubmitCompletionUsage(loaded.engine, parsed, submitInfo);
+  await applyNativeSubmitCompletionUsage(loaded.engine, parsed, submitInfo);
   return { parsed };
 }
 
-test("original TaskSubmitStreamContract JSON fields", () => {
+test("original TaskSubmitStreamContract JSON fields", async () => {
   const cases: { name: string; body: string; contentType: string; valid: boolean }[] = [
     {
       name: "multiline and CRLF",
@@ -223,7 +223,7 @@ test("original TaskSubmitStreamContract JSON fields", () => {
   ];
   for (const tc of cases) {
     const requestBody = tc.name === "undeclared stream" ? { responseType: "json" } : {};
-    const got = parseLikeOriginal(documentStreamPlugin, tc.body, tc.contentType, requestBody);
+    const got = await parseLikeOriginal(documentStreamPlugin, tc.body, tc.contentType, requestBody);
     if (!tc.valid) {
       assert.ok(got.error, tc.name);
       assert.equal(got.error?.noRetry, true, tc.name + " " + got.error?.message);
@@ -247,7 +247,7 @@ test("original TaskSubmitStreamContract JSON fields", () => {
   }
 });
 
-test("original TaskSubmitDeltaStreamContract JSON fields", () => {
+test("original TaskSubmitDeltaStreamContract JSON fields", async () => {
   const first = '{"changes":[{"op":"set","path":[],"value":{"document":"hello","units":2}}]}';
   const last = '{"changes":[{"op":"appendText","path":["document"],"value":"world"},{"op":"set","path":["units"],"value":0}],"complete":true}';
   const cases: { name: string; frames: string[]; valid: boolean }[] = [
@@ -261,7 +261,7 @@ test("original TaskSubmitDeltaStreamContract JSON fields", () => {
   ];
   for (const tc of cases) {
     const stream = tc.frames.map((frame) => "data: " + frame + "\n\n").join("");
-    const got = parseLikeOriginal(documentDeltaPlugin, stream, "text/event-stream");
+    const got = await parseLikeOriginal(documentDeltaPlugin, stream, "text/event-stream");
     if (!tc.valid) {
       assert.ok(got.error, tc.name);
       assert.equal(got.error?.noRetry, true, tc.name + " " + got.error?.message);

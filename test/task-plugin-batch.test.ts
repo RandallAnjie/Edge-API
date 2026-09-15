@@ -35,7 +35,7 @@ function taskRow(upstreamId: string, originModel = ""): Record<string, unknown> 
 test("original TaskAdaptorBatchBridge JSON fields", async () => {
   const loaded = compilePlugin(batchMockPlugin);
   const tasks = [taskRow("task-a"), taskRow("task-b")];
-  const packed = buildNativeBatchQueryContext(loaded.engine, tasks, "secret", "https://provider.example");
+  const packed = await buildNativeBatchQueryContext(loaded.engine, tasks, "secret", "https://provider.example");
   assert.equal(isNativeQueryError(packed), false);
   if (isNativeQueryError(packed)) return;
   const descriptor = buildNativeBatchQueryDescriptor(loaded.engine, packed.ctx, packed.taskContexts, "https://provider.example");
@@ -125,7 +125,7 @@ export function parseBatchResult(){return [];}
 `;
   const loaded = compilePlugin(source);
   const tasks = [taskRow("task-a", "model-a"), taskRow("task-b", "model-b")];
-  const packed = buildNativeBatchQueryContext(loaded.engine, tasks, "secret", "https://provider.example");
+  const packed = await buildNativeBatchQueryContext(loaded.engine, tasks, "secret", "https://provider.example");
   assert.equal(isNativeQueryError(packed), false);
   if (isNativeQueryError(packed)) return;
   for (const taskCtx of packed.taskContexts) {

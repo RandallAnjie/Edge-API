@@ -10,6 +10,7 @@ import type { Store } from "./store.js";
 import type { ChannelRow } from "./types.js";
 import { refundTaskQuota, settleTaskBillingOnComplete } from "./task-plugin-billing.js";
 import { validatedCompletionUsageFacts } from "./task-plugin-usage.js";
+import { channelSettingProxy, resolvePluginAuth } from "./vertex-auth.js";
 
 export const MAX_TASK_PLUGIN_PERSISTED_JSON_BYTES = 1 << 20;
 export const TASK_POLL_MAX_FAILURES = 20;
@@ -104,15 +105,6 @@ function allowedHosts(meta: Record<string, unknown>): string[] {
   return Array.isArray(meta.allowedHosts) ? meta.allowedHosts.map((item) => String(item)) : [];
 }
 
-function resolvePluginAuth(meta: Record<string, unknown>, apiKey: string): { auth: Record<string, unknown>; apiKey?: string; authError?: string } {
-  const authMeta = isPlainObject(meta.auth) ? meta.auth : {};
-  const typeName = String(authMeta.type || "").trim();
-  if (!typeName || typeName === "none" || typeName === "api_key") {
-    return { auth: { authHeader: apiKey }, apiKey };
-  }
-  return { auth: {}, authError: "oauth2_jwt credentials are not available on workerd" };
-}
-
 function hookMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -191,12 +183,13 @@ function parsePluginState(privateData: Record<string, unknown>): unknown {
 }
 
 /** Original `TaskAdaptor.queryContext`. */
-export function buildNativeQueryContext(
+export async function buildNativeQueryContext(
   engine: PluginEngine,
   task: Record<string, unknown> | null,
   apiKey: string,
   baseUrl: string,
-): Record<string, unknown> | NativeQueryError {
+  proxy = "",
+): Promise<Record<string, unknown> | NativeQueryError> {
   const ctx: Record<string, unknown> = {
     taskId: "",
     publicTaskId: "",
@@ -233,11 +226,11 @@ export function buildNativeQueryContext(
     if (typeof privateData.key === "string" && privateData.key) key = privateData.key;
   }
   const meta = pluginMeta(engine);
-  const resolved = resolvePluginAuth(meta, key);
+  const resolved = await resolvePluginAuth(meta, key, proxy);
+  if (resolved.authError) return { code: "auth_error", message: resolved.authError };
   ctx.auth = resolved.auth;
   ctx.authHeader = resolved.auth.authHeader;
   if (resolved.apiKey != null) ctx.apiKey = resolved.apiKey;
-  if (resolved.authError) return { code: "auth_error", message: resolved.authError };
   return ctx;
 }
 
@@ -269,24 +262,25 @@ export function buildNativeQueryDescriptor(
 }
 
 /** Original `TaskAdaptor.batchQueryContext`. */
-export function buildNativeBatchQueryContext(
+export async function buildNativeBatchQueryContext(
   engine: PluginEngine,
   tasks: (Record<string, unknown> | null)[],
   apiKey: string,
   baseUrl: string,
-): { ctx: Record<string, unknown>; taskContexts: Record<string, unknown>[] } | NativeQueryError {
+  proxy = "",
+): Promise<{ ctx: Record<string, unknown>; taskContexts: Record<string, unknown>[] } | NativeQueryError> {
   const taskContexts: Record<string, unknown>[] = [];
   for (const task of tasks) {
-    const taskCtx = buildNativeQueryContext(engine, task, apiKey, baseUrl);
+    const taskCtx = await buildNativeQueryContext(engine, task, apiKey, baseUrl, proxy);
     if (isNativeQueryError(taskCtx)) return taskCtx;
     taskContexts.push(taskCtx);
   }
   const ctx: Record<string, unknown> = { baseUrl, tasks: taskContexts };
-  const resolved = resolvePluginAuth(pluginMeta(engine), apiKey);
+  const resolved = await resolvePluginAuth(pluginMeta(engine), apiKey, proxy);
+  if (resolved.authError) return { code: "auth_error", message: resolved.authError };
   ctx.auth = resolved.auth;
   ctx.authHeader = resolved.auth.authHeader;
   if (resolved.apiKey != null) ctx.apiKey = resolved.apiKey;
-  if (resolved.authError) return { code: "auth_error", message: resolved.authError };
   return { ctx, taskContexts };
 }
 
@@ -775,10 +769,11 @@ export async function refreshNativeQueryTask(opts: {
   const privateData = parsePrivateData(opts.row);
   const apiKey = String(privateData.key || pickChannelKey(channel.key || ""));
   const baseUrl = resolveBaseUrl(Number(channel.type || 0), channel.base_url || "");
+  const proxy = channelSettingProxy(channel.setting);
   if (String(pluginMeta(opts.engine).fetchMode || "per_task") === "batch") {
-    return refreshNativeBatchQueryTask(opts, apiKey, baseUrl);
+    return refreshNativeBatchQueryTask(opts, apiKey, baseUrl, proxy);
   }
-  const queryContext = buildNativeQueryContext(opts.engine, opts.row, apiKey, baseUrl);
+  const queryContext = await buildNativeQueryContext(opts.engine, opts.row, apiKey, baseUrl, proxy);
   if (isNativeQueryError(queryContext)) {
     const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, 0, queryContext.message);
     return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);
@@ -830,8 +825,9 @@ async function refreshNativeBatchQueryTask(
   },
   apiKey: string,
   baseUrl: string,
+  proxy = "",
 ): Promise<Record<string, unknown>> {
-  const packed = buildNativeBatchQueryContext(opts.engine, [opts.row], apiKey, baseUrl);
+  const packed = await buildNativeBatchQueryContext(opts.engine, [opts.row], apiKey, baseUrl, proxy);
   if (isNativeQueryError(packed)) {
     const failed = recordPollFailure(opts.row, POLL_HOOK_ERROR, 0, packed.message);
     return persistTaskRow(opts.store, opts.row, failed, null, opts.engine);

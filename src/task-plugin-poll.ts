@@ -28,6 +28,7 @@ import {
   TASK_STATUS_FAILURE,
   TASK_STATUS_UNKNOWN,
 } from "./task-plugin-query.js";
+import { channelSettingProxy } from "./vertex-auth.js";
 import type { Store } from "./store.js";
 import type { Env } from "./types.js";
 
@@ -136,7 +137,7 @@ async function updateBatchChannel(opts: {
   const privateData = parseJson<Record<string, unknown>>(String(sample?.private_data || "{}"), {});
   const apiKey = String(privateData.key || pickChannelKey(channel.key || ""));
   const baseUrl = resolveBaseUrl(Number(channel.type || 0), channel.base_url || "");
-  const packed = buildNativeBatchQueryContext(opts.engine, opts.tasks, apiKey, baseUrl);
+  const packed = await buildNativeBatchQueryContext(opts.engine, opts.tasks, apiKey, baseUrl, channelSettingProxy(channel.setting));
   if (isNativeQueryError(packed)) {
     for (const task of opts.tasks) {
       const failed = recordPollFailure(task, "hook_error", 0, packed.message);

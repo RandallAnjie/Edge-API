@@ -58,6 +58,7 @@ import { applyBaiduAccessToken, convertBaiduEmbeddingRequest, openaiFromBaiduEmb
 import { convertCohereRerankRequest, openaiFromCohereResponse, openaiFromCohereRerank, cohereUpstreamToOpenAIChat } from "./cohere-convert.js";
 import { completeCozeNonStreamChat, openaiFromCozeDetailResponse, cozeUpstreamToOpenAIChat, type CozeUsage } from "./coze-convert.js";
 import { openaiFromDifyResponse, difyUpstreamToOpenAIChat, convertDifyOpenAIRequestWithUploads } from "./dify-convert.js";
+import { applyVertexAdcAuth } from "./vertex-auth.js";
 import { applyZhipuV3Authorization, openaiFromZhipuResponse, openaiFromZhipuV4Image, zhipuUpstreamToOpenAIChat } from "./zhipu-convert.js";
 import { cloudflareUpstreamToOpenAIChat, openaiFromCloudflareResponse } from "./cloudflare-convert.js";
 import { applyTencentTc3Authorization, openaiFromTencentResponse, tencentUpstreamToOpenAIChat, tencentUsesNativeAdaptor } from "./tencent-convert.js";
@@ -1691,6 +1692,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     try {
       if (channel.type === CHANNEL_TYPE_BAIDU) {
         target.url = await applyBaiduAccessToken(target.url, pickChannelKey(channel.key));
+      }
+      if (channel.type === CHANNEL_TYPE_VERTEX) {
+        await applyVertexAdcAuth(channel, target.headers, target.apiKey || pickChannelKey(channel.key));
       }
       if (channel.type === CHANNEL_TYPE_ZHIPU) {
         await applyZhipuV3Authorization(target.headers, pickChannelKey(channel.key));

@@ -9,6 +9,7 @@ import {
   CHANNEL_TYPE_REPLICATE,
   CHANNEL_TYPE_SILICONFLOW,
   CHANNEL_TYPE_TENCENT,
+  CHANNEL_TYPE_VERTEX,
   CHANNEL_TYPE_VOLC,
   CHANNEL_TYPE_XUNFEI,
   CHANNEL_TYPE_ZHIPU,
@@ -30,6 +31,7 @@ import {
   isOpenAIReasoningOModel,
 } from "./convert.js";
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest } from "./baidu-convert.js";
+import { applyVertexAdcAuth } from "./vertex-auth.js";
 import { applyZhipuV3Authorization } from "./zhipu-convert.js";
 import { applyTencentTc3Authorization, tencentUsesNativeAdaptor } from "./tencent-convert.js";
 import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
@@ -566,6 +568,9 @@ export async function testChannel(
   try {
     if (channel.type === CHANNEL_TYPE_BAIDU) {
       target.url = await applyBaiduAccessToken(target.url, pickChannelKey(channel.key));
+    }
+    if (channel.type === CHANNEL_TYPE_VERTEX) {
+      await applyVertexAdcAuth(channel, target.headers, target.apiKey || pickChannelKey(channel.key));
     }
     if (channel.type === CHANNEL_TYPE_ZHIPU) {
       await applyZhipuV3Authorization(target.headers, pickChannelKey(channel.key));

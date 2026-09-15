@@ -53,9 +53,9 @@ import {
   getModelRegion,
   vertexActionSuffix,
   vertexClaudeURLModel,
-  vertexProjectIdFromKey,
   vertexRequestMode,
 } from "./vertex-convert.js";
+import { decodeVertexCredentialsFile } from "./vertex-auth.js";
 import { CHANNEL_SPECIAL_BASES, channelKind, defaultBaseUrl, resolveBaseUrl } from "./catalog.js";
 import { isGeminiEmbeddingModel } from "./gemini-convert.js";
 import { usesOpenAIAdaptor } from "./openai-adaptor.js";
@@ -89,6 +89,7 @@ export interface UpstreamTarget {
   headers: Record<string, string>;
   body: unknown;
   method: string;
+  apiKey?: string;
 }
 
 export function joinUrl(base: string, path: string): string {
@@ -235,7 +236,7 @@ export function buildUpstream(
       (payloadIsObject(body) && Boolean((body as { stream?: boolean }).stream));
     const suffix = vertexActionSuffix(mode, upstreamModel, stream);
     const urlModel = mode === "claude" ? vertexClaudeURLModel(upstreamModel) : upstreamModel;
-    const projectID = vertexProjectIdFromKey(apiKey);
+    const projectID = keyType === "api_key" ? "" : decodeVertexCredentialsFile(apiKey).project_id;
     if (keyType === "api_key") {
       if (mode === "opensource") throw new Error("unsupported request mode");
       const built =
@@ -258,7 +259,7 @@ export function buildUpstream(
       upstreamModel: relayInfo.upstreamModel || upstreamModel,
       requestPath: relayInfo.requestPath || requestPath,
     }, apiKey, upstreamModel);
-    return { url, headers, body: payload, method };
+    return { url, headers, body: payload, method, apiKey };
   }
 
   if (channel.type === CHANNEL_TYPE_DEEPSEEK) {

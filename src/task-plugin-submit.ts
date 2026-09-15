@@ -54,6 +54,7 @@ import {
   type NativeSubmitPart,
 } from "./task-plugin-submit-body.js";
 import { applyCompletionUsageFacts, buildNativeQueryContext, isNativeQueryError, type NativeTaskInfo } from "./task-plugin-query.js";
+import { channelSettingProxy, resolvePluginAuth } from "./vertex-auth.js";
 import { parseSubmitMediaType, readSubmitEvents } from "./task-plugin-submit-sse.js";
 import {
   applyOtherRatiosToFloat,
@@ -109,6 +110,7 @@ export type NativeSubmitInfo = {
   channelType: number;
   usingGroup: string;
   isModelMapped: boolean;
+  proxy?: string;
 };
 
 /** Original `service.BillingSession` hold for native RelayTask. */
@@ -501,15 +503,6 @@ function requiredCapabilities(meta: Record<string, unknown>): string[] {
   return Array.isArray(meta.requiredCapabilities) ? meta.requiredCapabilities.map((item) => String(item)) : [];
 }
 
-function resolvePluginAuth(meta: Record<string, unknown>, apiKey: string): { auth: Record<string, unknown>; apiKey?: string; authError?: string } {
-  const authMeta = isPlainObject(meta.auth) ? meta.auth : {};
-  const typeName = String(authMeta.type || "").trim();
-  if (!typeName || typeName === "none" || typeName === "api_key") {
-    return { auth: { authHeader: apiKey }, apiKey };
-  }
-  return { auth: {}, authError: "oauth2_jwt credentials are not available on workerd" };
-}
-
 function userAcceptsUnsetRatio(settingsRaw: unknown): boolean {
   const settings =
     typeof settingsRaw === "string"
@@ -626,14 +619,14 @@ export function shouldRetryNativeTaskRelay(err: NativeTaskError, remaining: numb
 }
 
 /** Original `TaskAdaptor.submitContext`. */
-export function buildNativeSubmitContext(opts: {
+export async function buildNativeSubmitContext(opts: {
   engine: PluginEngine;
   requestContext: RouteRequestContext;
   requestBody: unknown;
   req: Request;
   info: NativeSubmitInfo;
   originTasks?: { taskId: string; upstreamTaskId: string; action: string; status: string; data: unknown }[];
-}): Record<string, unknown> {
+}): Promise<Record<string, unknown>> {
   const meta = pluginMeta(opts.engine);
   const ctx = routeRequestJSValue(opts.requestContext);
   ctx.requestBody = pluginJsonValue(opts.requestBody ?? opts.requestContext.requestBody ?? {});
@@ -658,11 +651,14 @@ export function buildNativeSubmitContext(opts: {
   ctx.upstreamModel = opts.info.upstreamModelName;
   ctx.baseUrl = opts.info.channelBaseUrl;
   ctx.userSetting = {};
-  const resolved = resolvePluginAuth(meta, opts.info.apiKey);
+  const resolved = await resolvePluginAuth(meta, opts.info.apiKey, opts.info.proxy || "");
+  if (resolved.authError) {
+    ctx.authError = resolved.authError;
+    return ctx;
+  }
   ctx.auth = resolved.auth;
   ctx.authHeader = resolved.auth.authHeader;
   if (resolved.apiKey != null) ctx.apiKey = resolved.apiKey;
-  if (resolved.authError) ctx.authError = resolved.authError;
   return ctx;
 }
 
@@ -821,17 +817,17 @@ async function doNativeSubmitRequest(
 }
 
 /** Original ParseResponse extractUsageOnComplete on immediate SUCCESS. */
-export function applyNativeSubmitCompletionUsage(
+export async function applyNativeSubmitCompletionUsage(
   engine: PluginEngine,
   parsed: NativeSubmitParsed,
   info: NativeSubmitInfo,
-): void {
+): Promise<void> {
   const immediate = parsed.immediate;
   if (!immediate || String(immediate.status || "") !== "SUCCESS") return;
   if (!engine.hasCallablePath("extractUsageOnComplete")) return;
   const privateData: Record<string, unknown> = { upstream_task_id: parsed.upstreamTaskId };
   if (parsed.pluginState != null) privateData.plugin_state = parsed.pluginState;
-  const queryContext = buildNativeQueryContext(
+  const queryContext = await buildNativeQueryContext(
     engine,
     {
       task_id: info.publicTaskId,
@@ -845,6 +841,7 @@ export function applyNativeSubmitCompletionUsage(
     },
     info.apiKey,
     info.channelBaseUrl,
+    info.proxy || "",
   );
   if (isNativeQueryError(queryContext)) return;
   try {
@@ -1040,7 +1037,7 @@ async function relayTaskSubmitOnce(opts: {
   }
   info.upstreamModelName = mapped;
   info.isModelMapped = mapped !== info.originModelName;
-  const submitContext = buildNativeSubmitContext({
+  const submitContext = await buildNativeSubmitContext({
     engine: opts.engine,
     requestContext: opts.prepared.requestContext,
     requestBody: opts.prepared.requestBody,
@@ -1178,7 +1175,7 @@ async function relayTaskSubmitOnce(opts: {
     if (upstream.acceptedStream) parsed.noRetry = true;
     return parsed;
   }
-  applyNativeSubmitCompletionUsage(opts.engine, parsed, info);
+  await applyNativeSubmitCompletionUsage(opts.engine, parsed, info);
   if (parsed.immediate && String(parsed.immediate.status || "") === "FAILURE") {
     quota = 0;
   } else if (snapshot) {
@@ -1341,6 +1338,7 @@ export async function executeNativeTaskSubmission(
       channelType: channel.type,
       usingGroup: auth.usingGroup,
       isModelMapped: false,
+      proxy: channelSettingProxy(channel.setting),
     };
     const result = await relayTaskSubmitOnce({ engine, prepared, req, channel, info, store, auth, billing, pluginKey: plugin.key });
     if (!("statusCode" in result)) {

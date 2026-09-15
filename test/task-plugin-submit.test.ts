@@ -238,7 +238,7 @@ test("original buildSubmitRequest ValidateRequestURL host JSON", () => {
   }
 });
 
-test("original submitContext JSON fields for factory plugins", () => {
+test("original submitContext JSON fields for factory plugins", async () => {
   const source = `
 export const meta = {apiVersion:1,key:"ctx-test",name:"Ctx",version:"1.0.0",author:{name:"Test"},models:["alias"],fetchMode:"per_task"};
 export function buildSubmitRequest(ctx) {
@@ -254,7 +254,7 @@ export function parseTaskResult(){return {status:"SUCCESS"};}
     headers: { "content-type": "application/json", accept: "application/json" },
     body: "{}",
   });
-  const submitContext = buildNativeSubmitContext({
+  const submitContext = await buildNativeSubmitContext({
     engine: loaded.engine,
     requestContext: {
       path: "/vendor/jobs",

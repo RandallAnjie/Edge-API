@@ -112,7 +112,7 @@ test("original mime.FormatMediaType form-data disposition JSON", () => {
   assert.equal(formatMediaType("form-data", { name: 'quote"name' }), 'form-data; name="quote\\"name"');
 });
 
-test("original TaskAdaptorBuildsMultipartFromOpaqueFileReference JSON", () => {
+test("original TaskAdaptorBuildsMultipartFromOpaqueFileReference JSON", async () => {
   const source = `
 export const meta = {apiVersion:1,key:"multipart",name:"Multipart",version:"1.0.0",author:{name:"Test"},models:["m"],fetchMode:"per_task"};
 export function buildSubmitRequest(ctx) { return {url:ctx.baseUrl+"/submit",bodyType:"multipart",parts:[{name:"model",value:"m"},{name:"input_reference",fileRef:ctx.files[0].ref}]}; }
@@ -120,7 +120,7 @@ export function parseSubmitResponse(ctx,r){return {taskId:"1"}} export function 
 `;
   const loaded = compilePlugin(source, { key: "multipart", version: "1.0.0" });
   const files = [{ ref: "request_file:input_reference", field: "input_reference", filename: "ref.png", mimeType: "image/png", size: 11 }];
-  const submitContext = buildNativeSubmitContext({
+  const submitContext = await buildNativeSubmitContext({
     engine: loaded.engine,
     requestContext: {
       path: "/v1/videos",

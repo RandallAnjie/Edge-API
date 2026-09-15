@@ -2711,6 +2711,26 @@ test("original Vertex ConvertOpenAIRequest Claude wrap, Gemini id strip, imagen,
   );
   assert.equal(jsonUrl.headers["x-goog-user-project"], "proj-1");
 
+  let decodeThrew = false;
+  try {
+    buildUpstream(
+      testChannel({
+        type: CHANNEL_TYPE_VERTEX,
+        key: "not-json",
+        other: JSON.stringify({ default: "us-central1" }),
+        models: "claude-3-5-sonnet-20241022",
+      }),
+      "chat",
+      "/v1/chat/completions",
+      "claude-3-5-sonnet-20241022",
+      claude,
+    );
+  } catch (err) {
+    decodeThrew = true;
+    assert.match(String(err), /failed to decode credentials file:/);
+  }
+  assert.equal(decodeThrew, true);
+
   let threw = false;
   try {
     buildUpstream(

@@ -107,9 +107,9 @@ test("original NormalizeTaskAction and GetUpstreamTaskID JSON", () => {
   assert.equal(getUpstreamTaskID({ task_id: "task_public", private_data: "{}" }), "task_public");
 });
 
-test("original queryContext JSON fields omit requestBody", () => {
+test("original queryContext JSON fields omit requestBody", async () => {
   const loaded = compilePlugin(querySource, { key: "query-ctx", version: "1.0.0" });
-  const queryContext = buildNativeQueryContext(
+  const queryContext = await buildNativeQueryContext(
     loaded.engine,
     {
       task_id: "task_public",
@@ -145,7 +145,7 @@ test("original queryContext JSON fields omit requestBody", () => {
   assert.equal((body.keys as string[]).includes("requestBody"), false);
 });
 
-test("original FetchTask queryContext model identities JSON", () => {
+test("original FetchTask queryContext model identities JSON", async () => {
   const source = `
 export const meta = {apiVersion:1,key:"query-model",name:"Query Model",version:"1.0.0",author:{name:"Test"},models:["alias"],fetchMode:"per_task"};
 export function buildSubmitRequest(ctx){return {url:ctx.baseUrl+"/submit"}}
@@ -154,7 +154,7 @@ export function buildQueryRequest(ctx){return {url:ctx.baseUrl+"/tasks/"+ctx.mod
 export function parseTaskResult(){return {status:"SUCCESS"}}
 `;
   const loaded = compilePlugin(source, { key: "query-model", version: "1.0.0" });
-  const mapped = buildNativeQueryContext(
+  const mapped = await buildNativeQueryContext(
     loaded.engine,
     {
       task_id: "task_public",
@@ -171,7 +171,7 @@ export function parseTaskResult(){return {status:"SUCCESS"}}
   if (isNativeQueryError(mappedDesc)) return;
   assert.equal(mappedDesc.url, "https://provider.example/tasks/alias/declared-model/t1");
 
-  const unmapped = buildNativeQueryContext(
+  const unmapped = await buildNativeQueryContext(
     loaded.engine,
     {
       task_id: "task_public",
@@ -189,15 +189,15 @@ export function parseTaskResult(){return {status:"SUCCESS"}}
   assert.equal(unmappedDesc.url, "https://provider.example/tasks/alias/alias/t1");
 });
 
-function queryContextOrThrow(value: ReturnType<typeof buildNativeQueryContext>): Record<string, unknown> {
+function queryContextOrThrow(value: Awaited<ReturnType<typeof buildNativeQueryContext>>): Record<string, unknown> {
   if (isNativeQueryError(value)) throw new Error(value.message);
   return value;
 }
 
-test("original parseTaskResult hookHTTPResponse and plugin state JSON", () => {
+test("original parseTaskResult hookHTTPResponse and plugin state JSON", async () => {
   const loaded = compilePlugin(querySource, { key: "query-ctx", version: "1.0.0" });
   const queryContext = queryContextOrThrow(
-    buildNativeQueryContext(
+    await buildNativeQueryContext(
       loaded.engine,
       {
         task_id: "task_public",
