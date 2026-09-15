@@ -28,7 +28,12 @@ import {
 } from "./ratio-setting.js";
 import { pluginUsageByModel, listRoutingPlugins } from "./task-plugin-factory.js";
 import { pluginModelNames, pluginUsageForModel } from "./plugin-meta.js";
-import { replaceModelSupportEndpointTypes } from "./pricing-cache.js";
+import {
+  getModelQuotaTypes,
+  getModelSupportEndpointTypes,
+  replaceModelQuotaTypes,
+  replaceModelSupportEndpointTypes,
+} from "./pricing-cache.js";
 import type { Store } from "./store.js";
 import type { ChannelRow, LogRow, RedemptionRow, TokenRow, UserRow } from "./types.js";
 
@@ -543,6 +548,9 @@ export async function buildPricing(
     }
     pricing.push(item);
   }
+  const nextQuota: Record<string, number> = {};
+  for (const item of pricing) nextQuota[String(item.model_name)] = Number(item.quota_type ?? 0);
+  replaceModelQuotaTypes(nextQuota);
   if (pricing[0]) pricing[0].pricing_version = PRICING_ITEM_VERSION;
   const filtered = pricing.filter((item) => {
     const groups = item.enable_groups as string[];
@@ -1000,7 +1008,7 @@ export function publicModelMeta(
   const endpointsRaw = String(row.endpoints || "");
   const fromJson = parseJson<unknown>(endpointsRaw, null);
   const supportedFromRow = Array.isArray(fromJson) ? fromJson.filter((x) => typeof x === "string") : [];
-  const supported = extra.supported_endpoints?.length ? extra.supported_endpoints : supportedFromRow;
+  const supported = extra.supported_endpoints !== undefined ? extra.supported_endpoints : supportedFromRow;
   const created = Number(row.created_time || row.created_at || 0);
   const out: Record<string, unknown> = {
     id: Number(row.id || 0),
@@ -1093,24 +1101,12 @@ function fillModelSquareStates(
 
 export async function enrichModelMeta(store: Store, rows: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
   if (!rows.length) return [];
+  await buildPricing(store);
   const configured = await configuredModelChannels(store);
   const connections = await store.listEnabledModelConnections();
   const allMeta = (await store.listModelMeta()) as Record<string, unknown>[];
   const available = new Set(connections.map((c) => c.model));
   const square = fillModelSquareStates(rows, allMeta, configured, available);
-  const modelPrice = parseJson<Record<string, number>>(await store.option("ModelPrice"), {});
-  const quotaByModel = new Map<string, number>();
-  for (const name of available) {
-    quotaByModel.set(name, getModelPriceFromMap(name, modelPrice).configured ? 1 : 0);
-  }
-  const endpointsByModel = new Map<string, string[]>();
-  for (const conn of connections) {
-    let existing = endpointsByModel.get(conn.model) || [];
-    for (const et of endpointTypesForChannel(conn.channel_type, conn.model)) {
-      existing = appendPricingEndpoint(existing, et);
-    }
-    endpointsByModel.set(conn.model, existing);
-  }
   return rows.map((row) => {
     const modelName = String(row.model_name || "");
     const rule = Number(row.name_rule || 0);
@@ -1130,8 +1126,8 @@ export async function enrichModelMeta(store: Store, rows: Record<string, unknown
       names.add(conn.model);
       groups.add(conn.group);
       channels.set(conn.channel_id, { name: conn.channel_name, type: conn.channel_type });
-      for (const et of endpointsByModel.get(conn.model) || []) endpoints.add(et);
-      if (quotaByModel.has(conn.model)) quotas.add(quotaByModel.get(conn.model)!);
+      for (const et of getModelSupportEndpointTypes(conn.model)) endpoints.add(et);
+      for (const quota of getModelQuotaTypes(conn.model)) quotas.add(quota);
     }
     const bound_channels = [...channels.values()].sort((a, b) => (a.name === b.name ? a.type - b.type : a.name.localeCompare(b.name)));
     const enable_groups = [...groups].sort();
