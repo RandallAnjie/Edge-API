@@ -38,7 +38,16 @@ test("vendored web source is the original TanStack router tree", () => {
   const pkg = JSON.parse(readFileSync(join(root, "web/package.json"), "utf8")) as { name: string };
   assert.equal(pkg.name, "newapi-web");
   const legacy = readFileSync(join(root, "web/src/lib/legacy-route.ts"), "utf8");
-  assert.match(legacy, /#\//);
   assert.match(legacy, /legacyConsoleRoutes/);
   assert.match(legacy, /\/console\/channel/);
+  assert.match(legacy, /\/console\/token/);
+  assert.match(legacy, /function buildTargetHref\(targetPath: string, source: URL\)/);
+  assert.doesNotMatch(legacy, /liftHashRouter/);
+  assert.doesNotMatch(legacy, /#\//);
+  const index = readFileSync(join(root, "public/index.html"), "utf8");
+  const bundledName = index.match(/\/static\/js\/(index\.[^"]+\.js)/)?.[1];
+  assert.ok(bundledName);
+  const bundled = readFileSync(join(root, "public/static/js", bundledName), "utf8");
+  assert.match(bundled, /legacy-route\.invalid/);
+  assert.doesNotMatch(bundled, /startsWith\("#\/"\)/);
 });
