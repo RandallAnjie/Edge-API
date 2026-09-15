@@ -1749,14 +1749,19 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (channel.type === CHANNEL_TYPE_XUNFEI) {
         try {
           parseXunfeiAuth(pickChannelKey(channel.key));
+          res = await runXunfeiChat(asObj(outbound), pickChannelKey(channel.key), {
+            stream: opts.stream,
+            requestUrl: opts.req.url,
+          });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          return openaiError(500, message, "channel:invalid_key");
+          if (message === "invalid auth") return openaiError(500, message, "channel:invalid_key");
+          lastErr = message;
+          lastStatus = 500;
+          if (autoDisable) await store.autoDisableChannel(channel.id);
+          if (!lastAttempt && retryable(500, retryRanges)) continue;
+          return openaiError(500, message, "do_request_failed");
         }
-        res = await runXunfeiChat(asObj(outbound), pickChannelKey(channel.key), {
-          stream: opts.stream,
-          requestUrl: opts.req.url,
-        });
       } else if (channel.type === CHANNEL_TYPE_VOLC && mode === "audio_speech" && volcTtsIsStream(asObj(outbound))) {
         try {
           parseVolcengineAuth(pickChannelKey(channel.key));

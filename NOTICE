@@ -54,7 +54,9 @@ Material changes from upstream:
   the original HTTP path (Bedrock `InvokeModel` / `InvokeModelWithResponseStream`
   + SigV4 service `bedrock`, no AWS SDK). Volcengine TTS uses the original HTTP path
   (`wss://openspeech.bytedance.com/api/v1/tts/ws_binary` binary frames, or
-  `{base}/v1/audio/speech` JSON `code` 3000, no Volc SDK). Stripe/Epay/Creem/Waffo checkout use HTTP APIs
+  `{base}/v1/audio/speech` JSON `code` 3000, no Volc SDK). Xunfei SparkDesk uses the original HTTP path
+  (gorilla `Dial` handshake timeout 5s, HTTP 101 `Upgrade: websocket` to
+  `wss://spark-api.xf-yun.com/{version}/chat`, no gorilla SDK). Stripe/Epay/Creem/Waffo checkout use HTTP APIs
   (no vendor SDK). io.net model deployments use the original HTTP API (no
   vendor SDK). Original QuantumNous factory task plugins (`plugins/tasks/*/plugin.js`)
   are embedded and listed/routed with original JSON (`source: "factory"`).

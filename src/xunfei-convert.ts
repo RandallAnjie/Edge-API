@@ -253,12 +253,23 @@ type WsLike = {
   readyState?: number;
   send(data: string): void;
   close(): void;
+  accept?(): void;
   addEventListener(type: string, fn: (ev: { data?: unknown }) => void): void;
 };
 
-async function openXunfeiWebSocket(url: string): Promise<WsLike> {
-  const WS = (globalThis as { WebSocket?: { new (url: string): WsLike; OPEN?: number } }).WebSocket;
-  if (!WS) throw new Error("websocket not available");
+type WsCtor = { new (url: string): WsLike; OPEN?: number };
+
+/** Original gorilla `websocket.Dialer.HandshakeTimeout`. */
+export const XUNFEI_WS_HANDSHAKE_TIMEOUT_MS = 5000;
+
+/** Original gorilla `websocket.ErrBadHandshake`. */
+export const XUNFEI_WS_BAD_HANDSHAKE = "websocket: bad handshake";
+
+function xunfeiWebSocketCtor(): WsCtor | undefined {
+  return (globalThis as { WebSocket?: WsCtor }).WebSocket;
+}
+
+async function openXunfeiWebSocketViaConstructor(url: string, WS: WsCtor): Promise<WsLike> {
   return new Promise((resolve, reject) => {
     const ws = new WS(url);
     const open = () => resolve(ws);
@@ -268,12 +279,40 @@ async function openXunfeiWebSocket(url: string): Promise<WsLike> {
   });
 }
 
+/**
+ * Original `xunfeiMakeRequest` gorilla `Dial(authUrl, nil)` with `HandshakeTimeout: 5s`.
+ * workerd has no `WebSocket` constructor and no gorilla SDK: `fetch` + `Upgrade: websocket`,
+ * requiring HTTP 101 and a `webSocket` (same as Volc TTS / OpenAI realtime).
+ */
+export async function dialXunfeiWebSocket(url: string): Promise<WsLike> {
+  let res: (Response & { webSocket?: WsLike }) | undefined;
+  try {
+    res = (await fetch(url, {
+      headers: { Upgrade: "websocket" },
+      signal: AbortSignal.timeout(XUNFEI_WS_HANDSHAKE_TIMEOUT_MS),
+    })) as Response & { webSocket?: WsLike };
+  } catch (err) {
+    const WS = xunfeiWebSocketCtor();
+    if (WS) return openXunfeiWebSocketViaConstructor(url, WS);
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+  const ws = res.webSocket;
+  if (ws) {
+    if (res.status !== 101) throw new Error(XUNFEI_WS_BAD_HANDSHAKE);
+    if (typeof ws.accept === "function") ws.accept();
+    return ws;
+  }
+  const WS = xunfeiWebSocketCtor();
+  if (WS) return openXunfeiWebSocketViaConstructor(url, WS);
+  throw new Error(XUNFEI_WS_BAD_HANDSHAKE);
+}
+
 /** Original `xunfeiMakeRequest` over the WebSocket API. */
 export async function xunfeiCollectResponses(
   authUrl: string,
   payload: Record<string, unknown>,
 ): Promise<Record<string, unknown>[]> {
-  const ws = await openXunfeiWebSocket(authUrl);
+  const ws = await dialXunfeiWebSocket(authUrl);
   const out: Record<string, unknown>[] = [];
   await new Promise<void>((resolve, reject) => {
     let settled = false;

@@ -8,6 +8,7 @@ import {
   CHANNEL_TYPE_SUBMODEL,
   CHANNEL_TYPE_XUNFEI,
 } from "../src/constants.js";
+import { XUNFEI_WS_BAD_HANDSHAKE, XUNFEI_WS_HANDSHAKE_TIMEOUT_MS } from "../src/xunfei-convert.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
@@ -95,6 +96,7 @@ class MockWebSocket {
   addEventListener(type: string, fn: WsListener) {
     (this.listeners[type] ||= []).push(fn);
   }
+  accept() {}
   send(data: string) {
     MockWebSocket.sent.push({ url: this.url, data });
     queueMicrotask(() => {
@@ -487,5 +489,119 @@ test("original Xunfei, Submodel, Replicate, Sub2API, NewAPI, and Jimeng ConvertO
   } finally {
     globalThis.fetch = origFetch;
     (globalThis as unknown as { WebSocket: typeof OrigWebSocket }).WebSocket = OrigWebSocket;
+  }
+});
+
+test("original Xunfei gorilla Dial is HTTP 101 Upgrade websocket and bad handshake is do_request_failed", async () => {
+  const { e, auth, sk } = await boot();
+  await addChannel(e, auth, {
+    name: "xunfei-dial",
+    type: CHANNEL_TYPE_XUNFEI,
+    key: "appid|apiSecret|apiKey",
+    models: "SparkDesk-v3.1",
+    group: "default",
+  });
+
+  const origFetch = globalThis.fetch;
+  const OrigWebSocket = globalThis.WebSocket;
+  const origTimeout = AbortSignal.timeout;
+  let handshakeMs: number | undefined;
+  let denyHandshake = false;
+  const handshake: { url: string; upgrade: string | null; authorization: string | null; method: string }[] = [];
+  MockWebSocket.instances = [];
+  MockWebSocket.sent = [];
+  AbortSignal.timeout = ((ms: number) => {
+    handshakeMs = ms;
+    return origTimeout.call(AbortSignal, ms);
+  }) as typeof AbortSignal.timeout;
+  try {
+    (globalThis as { WebSocket?: unknown }).WebSocket = undefined;
+  } catch {
+    Object.defineProperty(globalThis, "WebSocket", { configurable: true, writable: true, value: undefined });
+  }
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const headers = new Headers(init?.headers);
+    if (url.startsWith("wss://spark-api.xf-yun.com/")) {
+      handshake.push({
+        url,
+        upgrade: headers.get("Upgrade"),
+        authorization: headers.get("Authorization"),
+        method: String(init?.method || "GET"),
+      });
+      if (denyHandshake) return new Response("upgrade rejected", { status: 400 });
+      const ws = new MockWebSocket(url);
+      ws.readyState = MockWebSocket.OPEN;
+      return { status: 101, ok: false, headers: new Headers(), webSocket: ws, text: async () => "" } as unknown as Response;
+    }
+    return new Response("unexpected " + url, { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const xfChat = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "SparkDesk-v3.1",
+          messages: [{ role: "user", content: "hi spark" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(xfChat.res.status, 200, xfChat.text);
+    assert.equal(handshake.length, 1);
+    assert.equal(handshake[0].upgrade, "websocket");
+    assert.equal(handshake[0].authorization, null);
+    assert.equal(handshake[0].method, "GET");
+    assert.equal(handshake[0].url.startsWith("wss://spark-api.xf-yun.com/v3.1/chat?"), true);
+    assert.equal(handshakeMs, XUNFEI_WS_HANDSHAKE_TIMEOUT_MS);
+    assert.equal(MockWebSocket.sent.length, 1);
+    const xfSent = JSON.parse(MockWebSocket.sent[0].data) as Record<string, unknown>;
+    assert.deepEqual(xfSent.header, { app_id: "appid" });
+    assert.equal((xfChat.body.choices as { message: { content: string }; finish_reason: string }[])[0].message.content, "hello spark");
+    assert.equal((xfChat.body.choices as { finish_reason: string }[])[0].finish_reason, "stop");
+    assert.equal(xfChat.body.object, "chat.completion");
+    assert.equal((xfChat.body.usage as { total_tokens: number }).total_tokens, 5);
+
+    const xfStream = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "SparkDesk-v3.1",
+          stream: true,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(xfStream.res.status, 200, xfStream.text);
+    assert.match(xfStream.text, /"model":"SparkDesk"/);
+    assert.match(xfStream.text, /hello spark/);
+    assert.match(xfStream.text, /data: \[DONE\]/);
+
+    denyHandshake = true;
+    const xfBad = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "SparkDesk-v3.1",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(xfBad.res.status, 500, xfBad.text);
+    assert.equal((xfBad.body.error as { message?: string }).message, XUNFEI_WS_BAD_HANDSHAKE);
+    assert.equal((xfBad.body.error as { code?: string }).code, "do_request_failed");
+    assert.equal((xfBad.body.error as { type?: string }).type, "new_api_error");
+    assert.equal((xfBad.body.error as { param?: string }).param, "");
+  } finally {
+    globalThis.fetch = origFetch;
+    AbortSignal.timeout = origTimeout;
+    if (OrigWebSocket) (globalThis as unknown as { WebSocket: typeof OrigWebSocket }).WebSocket = OrigWebSocket;
   }
 });
