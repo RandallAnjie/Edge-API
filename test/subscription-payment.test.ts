@@ -94,7 +94,7 @@ async function epaySign(params: Record<string, string>, key: string): Promise<st
   return md5Hex(parts.join("&") + key);
 }
 
-async function stripeSignature(secret: string, raw: string, t = "1710000000"): Promise<string> {
+async function stripeSignature(secret: string, raw: string, t = String(Math.floor(Date.now() / 1000))): Promise<string> {
   const v1 = await hmacSha256Hex(secret, `${t}.${raw}`);
   return `t=${t},v1=${v1}`;
 }

@@ -352,75 +352,173 @@ export async function requestStripePay(
   return payOk({ pay_link: data.url });
 }
 
+const STRIPE_SIGNATURE_TOLERANCE_SEC = 300;
+
+function abortStripe(status: number): Response {
+  return new Response(null, { status });
+}
+
+/** Original stripe-go `webhook.parseSignatureHeader` (`t=` + `v1=` hex only, exact `k=v` pairs). */
+function parseStripeSignatureHeader(header: string): { timestamp: number; signatures: string[] } | null {
+  if (!header) return null;
+  const signatures: string[] = [];
+  let timestamp = 0;
+  for (const pair of header.split(",")) {
+    const parts = pair.split("=");
+    if (parts.length !== 2) return null;
+    const key = parts[0];
+    const value = parts[1];
+    if (key === "t") {
+      if (!/^-?\d+$/.test(value)) return null;
+      timestamp = Number(value);
+    } else if (key === "v1") {
+      if (/^[0-9a-fA-F]+$/.test(value) && value.length % 2 === 0) signatures.push(value.toLowerCase());
+    }
+  }
+  if (!signatures.length) return null;
+  return { timestamp, signatures };
+}
+
+/**
+ * Original stripe-go `webhook.ConstructEventWithOptions` with
+ * `IgnoreAPIVersionMismatch: true` and default 300s tolerance.
+ */
+async function constructStripeEvent(
+  payload: string,
+  header: string,
+  secret: string,
+): Promise<Record<string, unknown> | null> {
+  const parsed = parseStripeSignatureHeader(header);
+  if (!parsed) return null;
+  if (Date.now() / 1000 - parsed.timestamp > STRIPE_SIGNATURE_TOLERANCE_SEC) return null;
+  const expected = await hmacSha256Hex(secret, `${parsed.timestamp}.${payload}`);
+  let matched = false;
+  for (const signature of parsed.signatures) {
+    if (timingSafeEqualStr(expected, signature)) {
+      matched = true;
+      break;
+    }
+  }
+  if (!matched) return null;
+  try {
+    const event = JSON.parse(payload) as unknown;
+    if (event === null) return {};
+    if (!isJsonObject(event)) return null;
+    if ("type" in event && event.type != null && typeof event.type !== "string") return null;
+    if ("data" in event && event.data != null && !isJsonObject(event.data)) return null;
+    return event;
+  } catch {
+    return null;
+  }
+}
+
+/** Original stripe-go `Event.GetObjectValue` for a top-level checkout-session field. */
+function stripeGetObjectValue(event: Record<string, unknown>, key: string): string {
+  const data = isJsonObject(event.data) ? event.data : null;
+  const object = data && isJsonObject(data.object) ? data.object : null;
+  if (!object || !(key in object) || object[key] == null) return "";
+  const node = object[key];
+  if (typeof node === "string" || typeof node === "number" || typeof node === "boolean") return String(node);
+  return "";
+}
+
+/** Original `fulfillOrder` `common.GetJsonString` payload (encoding/json sorted keys). */
+function stripeFulfillPayload(event: Record<string, unknown>): string {
+  return JSON.stringify({
+    amount_total: stripeGetObjectValue(event, "amount_total"),
+    currency: stripeGetObjectValue(event, "currency").toUpperCase(),
+    customer: stripeGetObjectValue(event, "customer"),
+    event_type: typeof event.type === "string" ? event.type : "",
+  });
+}
+
+async function stripeFulfillOrder(
+  store: Store,
+  event: Record<string, unknown>,
+  referenceId: string,
+  customerId: string,
+  callerIp: string,
+): Promise<void> {
+  if (!referenceId) return;
+  const result = await tryCompleteSubscriptionOrder(store, referenceId, stripeFulfillPayload(event), "stripe", "");
+  if (result === "completed" || result === "rejected") return;
+  try {
+    await store.rechargeStripe(referenceId, customerId, callerIp);
+  } catch {
+    /* original logs Recharge errors and still returns 200 */
+  }
+}
+
+async function stripeSessionAsyncPaymentFailed(store: Store, event: Record<string, unknown>): Promise<void> {
+  const referenceId = stripeGetObjectValue(event, "client_reference_id");
+  if (!referenceId) return;
+  const row = await store.getTopupByTrade(referenceId);
+  if (!row) return;
+  if (String(row.payment_provider || "") !== "stripe") return;
+  if (String(row.status) !== "pending") return;
+  try {
+    await store.updateTopup(Number(row.id), { status: "failed" });
+  } catch {
+    /* original logs Update errors and still returns 200 */
+  }
+}
+
+async function stripeSessionExpired(store: Store, event: Record<string, unknown>): Promise<void> {
+  const referenceId = stripeGetObjectValue(event, "client_reference_id");
+  if (stripeGetObjectValue(event, "status") !== "expired") return;
+  if (!referenceId) return;
+  try {
+    await store.expireSubscriptionOrder(referenceId, "stripe");
+    return;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg !== ERR_SUBSCRIPTION_ORDER_NOT_FOUND) return;
+  }
+  try {
+    await store.updatePendingTopupStatus(referenceId, "stripe", "expired");
+  } catch {
+    /* original logs missing/invalid wallet orders and still 200 */
+  }
+}
+
+/** Original `controller.StripeWebhook`. */
 export async function handleStripeWebhook(store: Store, req: Request): Promise<Response> {
-  if (!(await paymentEnabled(store, "stripe"))) return new Response(null, { status: 403 });
+  if (!(await paymentEnabled(store, "stripe"))) return abortStripe(403);
+  let raw = "";
+  try {
+    raw = await req.text();
+  } catch {
+    return abortStripe(503);
+  }
   const secret = await store.option("StripeWebhookSecret");
-  const raw = await req.text();
-  if (secret) {
-    const header = req.headers.get("stripe-signature") || "";
-    const parts = Object.fromEntries(
-      header.split(",").map((p) => {
-        const [k, ...rest] = p.split("=");
-        return [k.trim(), rest.join("=")];
-      }),
+  const event = await constructStripeEvent(raw, req.headers.get("Stripe-Signature") || "", secret);
+  if (!event) return abortStripe(400);
+  const eventType = typeof event.type === "string" ? event.type : "";
+  const callerIp = clientIp(req);
+  if (eventType === "checkout.session.completed") {
+    if (stripeGetObjectValue(event, "status") !== "complete") return abortStripe(200);
+    if (stripeGetObjectValue(event, "payment_status") !== "paid") return abortStripe(200);
+    await stripeFulfillOrder(
+      store,
+      event,
+      stripeGetObjectValue(event, "client_reference_id"),
+      stripeGetObjectValue(event, "customer"),
+      callerIp,
     );
-    const signed = `${parts.t}.${raw}`;
-    const expected = await hmacSha256Hex(secret, signed);
-    if (!timingSafeEqualStr(expected, parts.v1 || "")) return new Response(null, { status: 400 });
+  } else if (eventType === "checkout.session.async_payment_succeeded") {
+    await stripeFulfillOrder(
+      store,
+      event,
+      stripeGetObjectValue(event, "client_reference_id"),
+      stripeGetObjectValue(event, "customer"),
+      callerIp,
+    );
+  } else if (eventType === "checkout.session.async_payment_failed") {
+    await stripeSessionAsyncPaymentFailed(store, event);
+  } else if (eventType === "checkout.session.expired") {
+    await stripeSessionExpired(store, event);
   }
-  const event = parseJson<{ type?: string; data?: { object?: Record<string, unknown> } }>(raw, {});
-  if (
-    event.type === "checkout.session.completed" ||
-    event.type === "checkout.session.async_payment_succeeded"
-  ) {
-    const obj = event.data?.object || {};
-    const status = String(obj.status || "");
-    const paymentStatus = String(obj.payment_status || "");
-    if (event.type === "checkout.session.completed" && status && status !== "complete") {
-      return new Response(null, { status: 200 });
-    }
-    if (event.type === "checkout.session.completed" && paymentStatus && paymentStatus !== "paid") {
-      return new Response(null, { status: 200 });
-    }
-    const trade = String(obj.client_reference_id || (obj.metadata as { trade_no?: string } | undefined)?.trade_no || "");
-    if (trade) {
-      const result = await tryCompleteSubscriptionOrder(
-        store,
-        trade,
-        raw,
-        "stripe",
-        "",
-      );
-      if (result === "completed" || result === "rejected") return new Response(null, { status: 200 });
-      const customer = obj.customer;
-      const customerId =
-        typeof customer === "string" ? customer : String((customer as { id?: string } | undefined)?.id || "");
-      try {
-        await store.rechargeStripe(trade, customerId, clientIp(req));
-      } catch {
-        /* original StripeWebhook logs Recharge errors and still returns 200 */
-      }
-    }
-  } else if (event.type === "checkout.session.expired") {
-    const obj = event.data?.object || {};
-    if (String(obj.status || "") !== "expired") return new Response(null, { status: 200 });
-    const trade = String(obj.client_reference_id || "");
-    if (trade) {
-      try {
-        await store.expireSubscriptionOrder(trade, "stripe");
-        return new Response(null, { status: 200 });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg !== ERR_SUBSCRIPTION_ORDER_NOT_FOUND) return new Response(null, { status: 200 });
-      }
-      try {
-        await store.updatePendingTopupStatus(trade, "stripe", "expired");
-      } catch {
-        /* original logs missing/invalid wallet orders and still 200 */
-      }
-    }
-  }
-  return new Response(null, { status: 200 });
+  return abortStripe(200);
 }
 
 export async function requestEpay(
