@@ -6,6 +6,9 @@ export const BILLING_MODE_TIERED_EXPR = "tiered_expr";
 
 /** Original `billing_setting.builtinBillingExpr`. */
 export const BUILTIN_BILLING_EXPR: Record<string, string> = {
+  "gpt-image-2": `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`,
+  "gpt-image-2.5-sunburst": `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`,
+  "gpt-image-2.5-flare": `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`,
   "gpt-6-astra":
     'len <= 272000 ? tier("standard", p * 10 + c * 50 + cr * 1 + cc * 12.5) : tier("long_context", p * 20 + c * 75 + cr * 2 + cc * 25)',
 };
