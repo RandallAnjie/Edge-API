@@ -6,7 +6,7 @@
  * Extra-OK: OpenAI-model `CountTextToken` uses `EstimateToken` (tiktoken-go is not bundled).
  */
 
-import { quotaFromDecimalChecked, quotaFromFloat } from "./task-plugin-usage.js";
+import { quotaFromDecimalChecked, quotaFromFloat, type QuotaClamp } from "./task-plugin-usage.js";
 import { generateTextOtherInfo, RELAY_FORMAT_OPENAI_REALTIME } from "./log-info-generate.js";
 
 /** Original `dto.RealtimeEventType*` client events. */
@@ -592,7 +592,7 @@ export function remainingRealtimePreConsume(state: OpenaiRealtimeHandlerState): 
 }
 
 /** Original `service.calculateAudioQuota`. */
-export function calculateAudioQuota(info: AudioQuotaInfo): { quota: number; clamp: { op: string; kind: string; original: number; clamped: number } | null } {
+export function calculateAudioQuota(info: AudioQuotaInfo): { quota: number; clamp: QuotaClamp | null } {
   if (info.usePrice) {
     return quotaFromDecimalChecked(info.modelPrice * info.quotaPerUnit * info.groupRatio);
   }
