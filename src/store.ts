@@ -1892,6 +1892,34 @@ export class Store {
     return missing.length === 0 ? null : missing;
   }
 
+  /**
+   * Original `model.GetPreferredModelOwnerChannelTypes`.
+   * Highest `priority`, then `weight`, then lowest `channel_id`; first-seen model wins.
+   */
+  async preferredModelOwnerChannelTypes(modelNames: string[], groups: string[]): Promise<Record<string, number>> {
+    const names = [...new Set(modelNames.filter(Boolean))];
+    const result: Record<string, number> = {};
+    if (!names.length) return result;
+    const groupList = [...new Set(groups.filter(Boolean))];
+    const namePh = names.map(() => "?").join(",");
+    let sql = `SELECT abilities.model as model, channels.type as channel_type
+      FROM abilities
+      JOIN channels ON abilities.channel_id = channels.id
+      WHERE abilities.model IN (${namePh}) AND abilities.enabled = 1 AND channels.status = ?`;
+    const binds: unknown[] = [...names, CHANNEL_ENABLED];
+    if (groupList.length) {
+      sql += ` AND abilities."group" IN (${groupList.map(() => "?").join(",")})`;
+      binds.push(...groupList);
+    }
+    sql += ` ORDER BY COALESCE(abilities.priority, 0) DESC, abilities.weight DESC, abilities.channel_id ASC`;
+    const { results } = await this.db.prepare(sql).bind(...binds).all<{ model: string; channel_type: number }>();
+    for (const row of results) {
+      if (result[row.model] != null) continue;
+      result[row.model] = Number(row.channel_type);
+    }
+    return result;
+  }
+
   async hasCheckedIn(userId: number, date: string): Promise<boolean> {
     const row = await this.db
       .prepare("SELECT id FROM checkins WHERE user_id = ? AND checkin_date = ?")

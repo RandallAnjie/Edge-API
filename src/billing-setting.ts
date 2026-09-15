@@ -59,6 +59,25 @@ export function getBillingExpr(
   return undefined;
 }
 
+/**
+ * Original `helper.HasModelBillingConfig`.
+ * Price or configured ratio counts; self-use fallback ratio does not.
+ * Tiered mode counts only when the expression is present and non-whitespace.
+ */
+export function hasModelBillingConfig(
+  modelName: string,
+  modelPrice: Record<string, unknown> | Record<string, number> = {},
+  modelRatio: Record<string, unknown> | Record<string, number> = {},
+  persistedModes: Record<string, string> = {},
+  persistedExprs: Record<string, string> = {},
+): boolean {
+  if (getModelPriceFromMap(modelName, modelPrice).configured) return true;
+  if (hasConfiguredModelRatio(modelName, modelRatio)) return true;
+  if (getBillingMode(modelName, persistedModes, modelRatio, modelPrice) !== BILLING_MODE_TIERED_EXPR) return false;
+  const expr = getBillingExpr(modelName, persistedModes, persistedExprs, modelRatio, modelPrice);
+  return Boolean(expr && expr.trim());
+}
+
 /** Original `GetBillingModeCopy` + `GetBillingExprCopy`. */
 /** Original `billing_setting.PluginBillingExprKey`. */
 export function pluginBillingExprLookupKey(pluginKey: string, model: string): string {

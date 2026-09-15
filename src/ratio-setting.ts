@@ -41,6 +41,14 @@ export function tokenModelLimitAllows(
   return Boolean(limit[routingMatchModelName(model, settings)]);
 }
 
+/**
+ * Original `controller.ListModels` token-limit check: exact name or
+ * `RoutingMatchModelName` only (no FormatMatchingModelName extra key).
+ */
+export function listModelsTokenLimitAllows(limit: Record<string, boolean>, modelName: string): boolean {
+  return Boolean(limit[modelName] || limit[routingMatchModelName(modelName)]);
+}
+
 function numberMap(map: Record<string, unknown> | Record<string, number> | undefined): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [key, value] of Object.entries(map || {})) {

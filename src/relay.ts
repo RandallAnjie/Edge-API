@@ -1,4 +1,4 @@
-import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_PALM, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson } from "./constants.js";
+import { csv, CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_AWS, CHANNEL_TYPE_BAIDU, CHANNEL_TYPE_BAIDU_V2, CHANNEL_TYPE_CLOUDFLARE, CHANNEL_TYPE_CODEX, CHANNEL_TYPE_COHERE, CHANNEL_TYPE_COZE, CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_DIFY, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_JIMENG, CHANNEL_TYPE_JINA, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOKA, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_OLLAMA, CHANNEL_TYPE_PALM, CHANNEL_TYPE_REPLICATE, CHANNEL_TYPE_SILICONFLOW, CHANNEL_TYPE_SUB2API, CHANNEL_TYPE_SUBMODEL, CHANNEL_TYPE_TASK_PLUGIN, CHANNEL_TYPE_TENCENT, CHANNEL_TYPE_VERTEX, CHANNEL_TYPE_VOLC, CHANNEL_TYPE_XAI, CHANNEL_TYPE_XUNFEI, CHANNEL_TYPE_ZHIPU, CHANNEL_TYPE_ZHIPU_V4, CLAUDE_VERSION, LOG_CONSUME, LOG_ERROR, parseBool, parseJson, tokenModelLimitsMap } from "./constants.js";
 import { recordRelayPerf } from "./perf-metrics.js";
 import {
   anthropicToOpenAI,
@@ -155,6 +155,8 @@ import {
 import { tokenAllowsModel } from "./auth.js";
 import { ADAPTOR_MODELS } from "./channel-models.js";
 import { factoryPluginMeta, listRoutingPlugins } from "./task-plugin-factory.js";
+import { hasModelBillingConfig } from "./billing-setting.js";
+import { listModelsTokenLimitAllows } from "./ratio-setting.js";
 
 export type ClientFormat = "openai" | "anthropic" | "gemini";
 
@@ -2245,29 +2247,41 @@ export async function listModelsForAuth(store: Store, auth: AuthToken, format: C
     auth.usingGroup === "auto"
       ? await requestAutoGroups(store, auth.token, auth.user.group || "default")
       : [auth.usingGroup];
-  const names = (await store.enabledModelsForGroups(groups.length ? groups : [auth.usingGroup])).filter((id) =>
-    tokenAllowsModel(auth.token, id),
-  );
-  const channels = await store.enabledChannels();
-  const ownerByModel = new Map<string, string>();
-  for (const ch of channels) {
-    const owner = ownerForChannelType(ch.type);
-    for (const m of csv(ch.models)) {
-      if (!ownerByModel.has(m)) ownerByModel.set(m, owner);
-    }
+  const ownerGroups = groups.length ? groups : [auth.usingGroup];
+  const names = await store.enabledModelsForGroups(ownerGroups);
+  const selfUse = await store.optionBool("SelfUseModeEnabled", false);
+  const settings = parseJson<Record<string, unknown>>(auth.user.settings || "", {});
+  const acceptUnset = selfUse || Boolean(settings.accept_unset_model_ratio_model);
+  const modelPrice = parseJson<Record<string, unknown>>(await store.option("ModelPrice"), {});
+  const modelRatio = parseJson<Record<string, unknown>>(await store.option("ModelRatio"), {});
+  const billingMode = parseJson<Record<string, string>>(await store.option("billing_setting.billing_mode"), {});
+  const billingExpr = parseJson<Record<string, string>>(await store.option("billing_setting.billing_expr"), {});
+  const modelLimitEnable = Boolean(auth.token.model_limits_enabled);
+  const tokenModelLimit = modelLimitEnable ? tokenModelLimitsMap(String(auth.token.model_limits || "")) : {};
+  const userModelNames: string[] = [];
+  for (const modelName of names) {
+    if (modelLimitEnable && !listModelsTokenLimitAllows(tokenModelLimit, modelName)) continue;
+    if (!acceptUnset && !hasModelBillingConfig(modelName, modelPrice, modelRatio, billingMode, billingExpr)) continue;
+    userModelNames.push(modelName);
   }
-  const openaiModels = names.map((id) => openAIModel(id, ownerByModel.get(id) || "custom"));
+  const preferredTypes = await store.preferredModelOwnerChannelTypes(userModelNames, ownerGroups);
+  const openaiModels = userModelNames.map((id) => {
+    const staticHit = ADAPTOR_MODELS.find((m) => m.id === id);
+    const channelType = preferredTypes[id];
+    const ownedBy = channelType != null ? ownerForChannelType(channelType) : staticHit?.owned_by || "custom";
+    return openAIModel(id, ownedBy);
+  });
   if (format === "gemini") {
     return new Response(
       JSON.stringify({
-        models: names.map((id) => geminiModel(id)),
+        models: userModelNames.map((id) => geminiModel(id)),
         nextPageToken: null,
       }),
       { headers: { "content-type": "application/json; charset=utf-8" } },
     );
   }
   if (format === "anthropic") {
-    const data = names.map((id) => anthropicModel(id));
+    const data = userModelNames.map((id) => anthropicModel(id));
     return new Response(
       JSON.stringify({
         data,
