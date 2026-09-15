@@ -3,7 +3,6 @@ import { CHANNEL_MANUAL_DISABLED, CHANNEL_TYPE_OLLAMA, ROLE_ROOT, ROLE_USER, USE
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { loadPerformanceSetting, performanceStats, resetMetrics } from "./metrics.js";
 import {
-  completePendingTopup,
   handleCreemWebhook,
   handleEpayNotify,
   handleStripeWebhook,
@@ -1082,8 +1081,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const counts = await s.counts();
-    return apiOk({ ...performanceStats(await loadPerformanceSetting(s)), counts });
+    return apiOk(performanceStats(await loadPerformanceSetting(s)));
   });
   r.delete("/api/performance/disk_cache", async (c) => {
     const s = store(c);
@@ -1997,7 +1995,6 @@ export function registerParity(r: Router<Env>): void {
   r.post("/api/stripe/webhook", (c) => handleStripeWebhook(store(c), c.req));
   r.post("/api/creem/webhook", (c) => handleCreemWebhook(store(c), c.req));
   r.post("/api/waffo/webhook", (c) => handleWaffoWebhook(store(c), c.req));
-  r.post("/api/waffo/webhook/:env", (c) => genericPayWebhook(c, "waffo"));
   r.post("/api/waffo-pancake/webhook/:env", (c) => handleWaffoPancakeWebhook(store(c), c.req, c.params.env, c.env));
 
   r.post("/api/subscription/epay/pay", (c) => requestSubscriptionEpay(c));
@@ -2531,15 +2528,6 @@ async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waff
     body as { amount?: number; pay_method_index?: number; pay_method_type?: string; pay_method_name?: string },
     bindError,
   );
-}
-
-async function genericPayWebhook(c: C, kind: string): Promise<Response> {
-  const s = store(c);
-  const body = (await readJson(c.req).catch(() => ({}))) as { trade_no?: string; metadata?: { trade_no?: string }; id?: string };
-  const trade = body.trade_no || body.metadata?.trade_no || "";
-  if (trade) await completePendingTopup(s, trade);
-  void kind;
-  return apiOk({ received: true });
 }
 
 export { sessionViews, paymentEnabled };

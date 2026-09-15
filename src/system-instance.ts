@@ -1,5 +1,4 @@
 import { START_TIME, VERSION, nowSec } from "./constants.js";
-import { httpStats } from "./metrics.js";
 import type { Store } from "./store.js";
 import type { Env } from "./types.js";
 
@@ -108,7 +107,6 @@ export function buildSystemInstanceInfo(env: Env, identity: NodeIdentity, hostna
       memory: { usage_percent: memoryUsagePercent() },
       storage: { total_bytes: 0, used_bytes: 0, free_bytes: 0, used_percent: 0 },
     },
-    extra: { http_stats: httpStats() },
   };
 }
 

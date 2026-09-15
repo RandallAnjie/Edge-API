@@ -267,6 +267,9 @@ test("original JSON fields for status, models, deployments, performance, data, u
 
   const perf = await json(new Request("http://local/api/performance/stats", { headers: auth }), e);
   const pd = perf.body.data as Record<string, unknown>;
+  for (const extra of ["runtime", "version", "start_time", "last_reset", "http_stats", "counts"]) {
+    assert.equal(extra in pd, false, "extra GetPerformanceStats key " + extra);
+  }
   const cache = pd.cache_stats as Record<string, unknown>;
   assert.equal(typeof cache.active_disk_files, "number");
   assert.equal(typeof cache.current_disk_usage_bytes, "number");
@@ -317,6 +320,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
   assert.equal(typeof instInfo.runtime.started_at, "number");
   assert.equal(instInfo.host.hostname, "edge-api");
   assert.equal(typeof instInfo.resources.cpu.usage_percent, "number");
+  assert.equal("extra" in instInfo, false);
 
   const topup = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
   const ti = topup.body.data as Record<string, unknown>;
@@ -1255,6 +1259,9 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
   for (const k of ["cache_stats", "memory_stats", "disk_cache_info", "disk_space_info", "config"]) {
     assert.ok(k in pd, "missing performance field " + k);
   }
+  for (const extra of ["runtime", "version", "start_time", "last_reset", "http_stats", "counts"]) {
+    assert.equal(extra in pd, false, "extra GetPerformanceStats key " + extra);
+  }
   const cache = pd.cache_stats as Record<string, unknown>;
   for (const k of [
     "active_disk_files",
@@ -1341,6 +1348,8 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
   const stTest = await json(new Request("http://local/api/status/test", { headers: auth }), e);
   assert.equal(stTest.body.success, true);
   assert.equal(stTest.body.message, "Server is running");
+  assert.equal("data" in stTest.body, false);
+  assert.deepEqual(Object.keys(stTest.body.http_stats as object).sort(), ["active_connections"]);
   assert.equal(typeof (stTest.body.http_stats as { active_connections: number }).active_connections, "number");
 
   const higher = await json(

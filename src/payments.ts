@@ -659,6 +659,11 @@ export async function handleEpayNotify(store: Store, req: Request, url: URL): Pr
 
 type CreemProduct = { productId?: string; name?: string; price?: number; quota?: number; currency?: string };
 
+/** Original `genCreemLink` host: live vs `CreemTestMode` test API. No checkout-URL option override. */
+export function creemCheckoutApiUrl(testMode: boolean): string {
+  return testMode ? "https://test-api.creem.io/v1/checkouts" : "https://api.creem.io/v1/checkouts";
+}
+
 export async function requestCreemPay(
   store: Store,
   user: UserRow,
@@ -697,7 +702,7 @@ export async function requestCreemPay(
   const apiKey = await store.option("CreemApiKey");
   if (!apiKey) return payErr("拉起支付失败");
   const testMode = await store.optionBool("CreemTestMode", false);
-  const endpoint = (await store.option("CreemCheckoutUrl")) || (testMode ? "https://test-api.creem.io/v1/checkouts" : "https://api.creem.io/v1/checkouts");
+  const endpoint = creemCheckoutApiUrl(testMode);
   const res = await fetch(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": apiKey },

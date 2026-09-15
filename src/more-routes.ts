@@ -193,6 +193,15 @@ async function handlePasskeyDomainUpdate(
   }
 }
 
+/** Original `model.PingDB` 10s throttle. */
+let lastDbPingMs = 0;
+
+async function pingDb(db: Env["DB"]): Promise<void> {
+  if (Date.now() - lastDbPingMs < 10_000) return;
+  await db.prepare("SELECT 1").first();
+  lastDbPingMs = Date.now();
+}
+
 export function registerMore(r: Router<Env>): void {
   r.get("/api/user-agreement", async (c) => serveRevalidatedJSON(c.req, await store(c).option("UserAgreement")));
   r.get("/api/privacy-policy", async (c) => serveRevalidatedJSON(c.req, await store(c).option("PrivacyPolicy")));
@@ -201,17 +210,15 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
+    try {
+      await pingDb(c.env.DB);
+    } catch {
+      return json(503, { success: false, message: "数据库连接失败" });
+    }
     return json(200, {
       success: true,
       message: "Server is running",
       http_stats: httpStats(),
-      data: {
-        d1: true,
-        kv: Boolean(c.env.KV),
-        r2: Boolean(c.env.R2),
-        version: (await import("./constants.js")).VERSION,
-        users: (await s.counts()).users,
-      },
     });
   });
 

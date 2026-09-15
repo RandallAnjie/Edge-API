@@ -277,3 +277,11 @@ test("original WaffoWebhook sandbox credentials verify and sign JSON", async () 
   await assertSignedMessage(out, keys, "success");
   assert.equal((await store.getTopupByTrade("WAFFO-sandbox"))?.status, "success");
 });
+
+test("original router has no POST /api/waffo/webhook/:env", async () => {
+  const { e } = await boot();
+  const extra = await json(new Request("http://local/api/waffo/webhook/prod", { method: "POST", body: "{}" }), e);
+  assert.equal(extra.res.status, 404);
+  assert.equal((extra.body.error as { type?: string })?.type, "invalid_request_error");
+  assert.equal((extra.body.error as { message?: string })?.message, "Invalid URL (POST /api/waffo/webhook/prod)");
+});

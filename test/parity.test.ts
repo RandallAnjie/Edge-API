@@ -254,6 +254,7 @@ test("system-info, task plugin upsert, original token usage, sessions view", asy
   assert.equal(info.body.data[0].info.schema_version, 1);
   assert.equal(info.body.data[0].info.runtime.goos, "workerd");
   assert.equal(info.body.data[0].info.node.source, "hostname");
+  assert.equal("extra" in info.body.data[0].info, false);
 
   const plugin = await json(
     new Request("http://local/api/plugin/task", {

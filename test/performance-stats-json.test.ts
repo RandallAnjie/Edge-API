@@ -110,3 +110,33 @@ test("original GetPerformanceStats cache_stats bytes follow performance_setting 
   assert.equal(afterData.cache_stats.disk_cache_threshold_bytes, 25 * 1024 * 1024);
   assert.equal(afterData.cache_stats.disk_cache_max_bytes, 512 * 1024 * 1024);
 });
+
+test("original GetPerformanceStats data keys match PerformanceStats JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const perf = await json(new Request("http://local/api/performance/stats", { headers: auth }), e);
+  assert.equal(perf.body.success, true, String(perf.body.message));
+  const data = perf.body.data as Record<string, unknown>;
+  assert.deepEqual(Object.keys(data).sort(), ["cache_stats", "config", "disk_cache_info", "disk_space_info", "memory_stats"]);
+  for (const extra of ["runtime", "version", "start_time", "last_reset", "http_stats", "counts"]) {
+    assert.equal(extra in data, false, "extra GetPerformanceStats key " + extra);
+  }
+  const cache = data.cache_stats as { current_memory_usage_bytes: number };
+  assert.equal(cache.current_memory_usage_bytes, 0);
+});
+
+test("original TestStatus envelope JSON has StatsInfo only", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const st = await json(new Request("http://local/api/status/test", { headers: auth }), e);
+  assert.equal(st.res.status, 200);
+  assert.equal(st.body.success, true);
+  assert.equal(st.body.message, "Server is running");
+  assert.equal("data" in st.body, false);
+  assert.deepEqual(Object.keys(st.body).sort(), ["http_stats", "message", "success"]);
+  const stats = st.body.http_stats as Record<string, unknown>;
+  assert.deepEqual(Object.keys(stats), ["active_connections"]);
+  assert.equal(stats.active_connections, 0);
+});

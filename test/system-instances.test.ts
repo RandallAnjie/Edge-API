@@ -99,6 +99,7 @@ test("original ListSystemInstances SystemInstanceInfo JSON fields", async () => 
   assert.equal(typeof info.resources.storage.used_bytes, "number");
   assert.equal(typeof info.resources.storage.free_bytes, "number");
   assert.equal(typeof info.resources.storage.used_percent, "number");
+  assert.equal("extra" in info, false);
 
   const persisted = await e.DB.prepare("SELECT node_name, info FROM system_instances").all<{ node_name: string; info: string }>();
   assert.equal(persisted.results.length, 1);

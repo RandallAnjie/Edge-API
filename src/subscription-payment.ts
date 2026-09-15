@@ -7,6 +7,7 @@ import {
 } from "./waffo-pancake.js";
 import { apiFail, json, payErr, payOk, paymentReturnPath, readJson } from "./http.js";
 import {
+  creemCheckoutApiUrl,
   requirePaymentCompliance,
   stripeSecret,
   tryCompleteSubscriptionOrder,
@@ -306,8 +307,7 @@ export async function requestSubscriptionCreemPay(c: C): Promise<Response> {
     return payErr("创建订单失败");
   }
   const apiKey = await s.option("CreemApiKey");
-  const endpoint =
-    (await s.option("CreemCheckoutUrl")) || (testMode ? "https://test-api.creem.io/v1/checkouts" : "https://api.creem.io/v1/checkouts");
+  const endpoint = creemCheckoutApiUrl(testMode);
   const res = await fetch(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": apiKey },

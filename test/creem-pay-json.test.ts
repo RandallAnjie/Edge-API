@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
+import { creemCheckoutApiUrl } from "../src/payments.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { Store } from "../src/store.js";
@@ -141,6 +142,43 @@ test("original RequestCreemPay checkout JSON: ref_ sha1 trade, empty email, meta
     assert.equal(payload.metadata?.reference_id, data.order_id);
     assert.equal(payload.metadata?.product_name, "Pack");
     assert.equal(payload.metadata?.quota, "500000");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original genCreemLink uses CreemTestMode hosts and ignores CreemCheckoutUrl", async () => {
+  assert.equal(creemCheckoutApiUrl(false), "https://api.creem.io/v1/checkouts");
+  assert.equal(creemCheckoutApiUrl(true), "https://test-api.creem.io/v1/checkouts");
+
+  const { e, auth, store } = await boot();
+  await store.setOption(
+    "CreemProducts",
+    JSON.stringify([{ productId: "prod_1", name: "Pack", price: 10, quota: 500000, currency: "USD" }]),
+  );
+  await store.setOption("CreemApiKey", "ck_test");
+  await store.setOption("CreemCheckoutUrl", "https://evil.example/v1/checkouts");
+  await store.setOption("CreemTestMode", "true");
+  const origFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    urls.push(String(input));
+    void init;
+    return new Response(JSON.stringify({ checkout_url: "https://checkout.creem.io/pay", id: "ch_1" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const testMode = await pay(e, auth, { product_id: "prod_1", payment_method: "creem" });
+    assert.equal(testMode.body.message, "success", String(testMode.body.data));
+    assert.equal(urls.at(-1), "https://test-api.creem.io/v1/checkouts");
+
+    await store.setOption("CreemTestMode", "false");
+    const live = await pay(e, auth, { product_id: "prod_1", payment_method: "creem" });
+    assert.equal(live.body.message, "success", String(live.body.data));
+    assert.equal(urls.at(-1), "https://api.creem.io/v1/checkouts");
+    assert.equal(urls.some((u) => u.includes("evil.example")), false);
   } finally {
     globalThis.fetch = origFetch;
   }
