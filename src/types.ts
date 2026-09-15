@@ -176,7 +176,7 @@ export interface ChannelRow {
   status_code_mapping: string;
   priority: number;
   auto_ban: number;
-  tag: string;
+  tag: string | null;
   header_override: string;
   param_override: string;
   remark: string;

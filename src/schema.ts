@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS channels (
   status_code_mapping TEXT NOT NULL DEFAULT '',
   priority INTEGER NOT NULL DEFAULT 0,
   auto_ban INTEGER NOT NULL DEFAULT 1,
-  tag TEXT NOT NULL DEFAULT '',
+  tag TEXT,
   header_override TEXT NOT NULL DEFAULT '',
   param_override TEXT NOT NULL DEFAULT '',
   remark TEXT NOT NULL DEFAULT '',
@@ -806,6 +806,54 @@ async function migrateModelMetaSoftDelete(db: D1Database): Promise<void> {
   `);
 }
 
+/** Original GORM `Channel.Tag *string` is nullable (JSON null vs ""). */
+async function migrateChannelsTagNullable(db: D1Database): Promise<void> {
+  const row = await db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'channels'").first<{ sql: string }>();
+  if (!row?.sql || !/tag TEXT NOT NULL/i.test(row.sql)) return;
+  await db.exec(`
+    CREATE TABLE channels__tagptr (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type INTEGER NOT NULL DEFAULT 1,
+      key TEXT NOT NULL DEFAULT '',
+      status INTEGER NOT NULL DEFAULT 1,
+      name TEXT NOT NULL,
+      weight INTEGER NOT NULL DEFAULT 1,
+      created_time INTEGER NOT NULL DEFAULT 0,
+      test_time INTEGER NOT NULL DEFAULT 0,
+      response_time INTEGER NOT NULL DEFAULT 0,
+      base_url TEXT NOT NULL DEFAULT '',
+      other TEXT NOT NULL DEFAULT '',
+      models TEXT NOT NULL DEFAULT '',
+      "group" TEXT NOT NULL DEFAULT 'default',
+      used_quota INTEGER NOT NULL DEFAULT 0,
+      model_mapping TEXT NOT NULL DEFAULT '',
+      status_code_mapping TEXT NOT NULL DEFAULT '',
+      priority INTEGER NOT NULL DEFAULT 0,
+      auto_ban INTEGER NOT NULL DEFAULT 1,
+      tag TEXT,
+      header_override TEXT NOT NULL DEFAULT '',
+      param_override TEXT NOT NULL DEFAULT '',
+      remark TEXT NOT NULL DEFAULT '',
+      settings TEXT NOT NULL DEFAULT '',
+      openai_organization TEXT NOT NULL DEFAULT '',
+      test_model TEXT NOT NULL DEFAULT '',
+      balance TEXT NOT NULL DEFAULT '',
+      balance_updated_time INTEGER NOT NULL DEFAULT 0,
+      other_info TEXT NOT NULL DEFAULT '',
+      channel_info TEXT NOT NULL DEFAULT '',
+      setting TEXT NOT NULL DEFAULT ''
+    );
+    INSERT INTO channels__tagptr (
+      id, type, key, status, name, weight, created_time, test_time, response_time, base_url, other, models, "group", used_quota, model_mapping, status_code_mapping, priority, auto_ban, tag, header_override, param_override, remark, settings, openai_organization, test_model, balance, balance_updated_time, other_info, channel_info, setting
+    )
+    SELECT id, type, key, status, name, weight, created_time, test_time, response_time, base_url, other, models, "group", used_quota, model_mapping, status_code_mapping, priority, auto_ban, NULLIF(tag, ''), header_override, param_override, remark, settings, openai_organization, test_model, balance, balance_updated_time, other_info, channel_info, setting
+    FROM channels;
+    DROP TABLE channels;
+    ALTER TABLE channels__tagptr RENAME TO channels;
+    CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
+  `);
+}
+
 export async function ensureSchema(db: D1Database): Promise<void> {
   if (schemaReady.has(db)) return;
   await db.exec(SCHEMA_SQL);
@@ -817,6 +865,7 @@ export async function ensureSchema(db: D1Database): Promise<void> {
     }
   }
   await migrateModelMetaSoftDelete(db);
+  await migrateChannelsTagNullable(db);
   const now = Math.floor(Date.now() / 1000);
   await db.exec(
     `INSERT OR IGNORE INTO casbin_rule (ptype, v0, v1, v2, v3, v4, v5) VALUES ('p', 'role:admin', 'channel', 'read', 'allow', '', '');

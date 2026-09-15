@@ -761,7 +761,7 @@ export function channelFieldsFromBody(ch: Record<string, unknown>): Partial<Chan
     status_code_mapping: typeof ch.status_code_mapping === "string" ? ch.status_code_mapping : String(ch.status_code_mapping || ""),
     priority: Number(ch.priority || 0),
     auto_ban: ch.auto_ban == null ? 1 : Number(ch.auto_ban),
-    tag: String(ch.tag || ""),
+    tag: ch.tag == null ? null : String(ch.tag),
     header_override: asText(ch.header_override),
     param_override: asText(ch.param_override),
     remark: String(ch.remark || ""),
@@ -772,6 +772,25 @@ export function channelFieldsFromBody(ch: Record<string, unknown>): Partial<Chan
     other_info: String(ch.other_info || ""),
     balance: String(ch.balance ?? ""),
   };
+}
+
+/** Original `controller.ChannelBatch` ShouldBindJSON (`ids []int`, `tag *string`). */
+export function parseChannelBatch(
+  body: unknown,
+): { ok: true; ids: number[]; tag: string | null } | { ok: false } {
+  if (body == null || typeof body !== "object" || Array.isArray(body)) return { ok: false };
+  const rec = body as Record<string, unknown>;
+  if (!Array.isArray(rec.ids) || rec.ids.length === 0) return { ok: false };
+  const ids: number[] = [];
+  for (const id of rec.ids) {
+    if (typeof id !== "number" || !Number.isInteger(id)) return { ok: false };
+    ids.push(id);
+  }
+  if (!Object.prototype.hasOwnProperty.call(rec, "tag") || rec.tag === null) {
+    return { ok: true, ids, tag: null };
+  }
+  if (typeof rec.tag !== "string") return { ok: false };
+  return { ok: true, ids, tag: rec.tag };
 }
 
 function tempChannel(partial: Partial<ChannelRow>): ChannelRow {

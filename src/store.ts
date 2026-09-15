@@ -839,7 +839,7 @@ export class Store {
         c.status_code_mapping ?? "",
         c.priority ?? 0,
         c.auto_ban ?? 1,
-        c.tag ?? "",
+        c.tag ?? null,
         c.header_override ?? "",
         c.param_override ?? "",
         c.remark ?? "",
@@ -926,6 +926,17 @@ export class Store {
     await this.db.prepare(`UPDATE channels SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
     const ch = await this.getChannel(id);
     if (ch) await this.replaceChannelAbilities(ch);
+  }
+
+  async batchSetChannelTag(ids: number[], tag: string | null): Promise<void> {
+    if (!ids.length) return;
+    const ph = ids.map(() => "?").join(",");
+    await this.db
+      .prepare(`UPDATE channels SET tag = ? WHERE id IN (${ph})`)
+      .bind(tag, ...ids)
+      .run();
+    const channels = await this.getChannelsByIds(ids);
+    for (const ch of channels) await this.replaceChannelAbilities(ch);
   }
 
   async deleteChannel(id: number): Promise<void> {

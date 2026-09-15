@@ -104,7 +104,7 @@ import { decodeIconDataURI } from "./jsplugin-icon.js";
 import { currentRoutingGeneration, preflightRoutingConflict, routingMetaFromRecord } from "./jsplugin-preflight.js";
 import { validateV1Meta } from "./jsplugin-validate.js";
 import { getTaskPluginListRuntime, getTaskPluginRuntimeStatus, syncTaskPluginsOnce } from "./task-plugin-sync.js";
-import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
+import { goJSONKind, goUnmarshalJSON, parseChannelBatch } from "./channel-validate.js";
 import { rpFromRequest } from "./passkey.js";
 import { passkeyDomainHttpError, passkeySettingsSnapshot, selectPasskeyBeginRpIDs } from "./passkey-domains.js";
 import { calcNextResetTime, publicPlan } from "./subscription.js";
@@ -836,10 +836,20 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { ids?: number[]; tag?: string };
-    if (!body.ids?.length) return apiFail("参数错误");
-    for (const id of body.ids) await s.updateChannel(id, { tag: body.tag || "" });
-    return apiOk(body.ids.length);
+    let body: unknown;
+    try {
+      body = await readJson(c.req);
+    } catch {
+      return apiFail("参数错误");
+    }
+    const parsed = parseChannelBatch(body);
+    if (!parsed.ok) return apiFail("参数错误");
+    try {
+      await s.batchSetChannelTag(parsed.ids, parsed.tag);
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
+    return apiOk(parsed.ids.length);
   });
 
   r.get("/api/channel/tag/models", async (c) => {

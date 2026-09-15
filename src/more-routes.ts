@@ -87,6 +87,7 @@ import {
   updateCustomOAuthProvider,
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
+import { parseChannelBatch } from "./channel-validate.js";
 import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -1288,10 +1289,19 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { ids?: number[] };
-    if (!body.ids?.length) return apiFail("参数错误");
-    const n = await s.deleteChannelsBatch(body.ids);
-    return apiOk(n);
+    let body: unknown;
+    try {
+      body = await readJson(c.req);
+    } catch {
+      return apiFail("参数错误");
+    }
+    const parsed = parseChannelBatch(body);
+    if (!parsed.ok) return apiFail("参数错误");
+    try {
+      return apiOk(await s.deleteChannelsBatch(parsed.ids));
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.post("/api/channel/tag/enabled", async (c) => {
