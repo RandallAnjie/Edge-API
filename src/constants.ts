@@ -455,6 +455,18 @@ export function csv(raw: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Original `Token.GetModelLimitsMap`.
+ * Empty `ModelLimits` → `{}`. Otherwise `strings.Split(..., ",")` with no trim
+ * and empty fragments kept as `""` keys.
+ */
+export function tokenModelLimitsMap(raw: string): Record<string, boolean> {
+  const limitsMap: Record<string, boolean> = {};
+  if (raw === "") return limitsMap;
+  for (const limit of raw.split(",")) limitsMap[limit] = true;
+  return limitsMap;
+}
+
 export function csvHas(raw: string, item: string): boolean {
   const items = csv(raw);
   return items.length === 0 ? false : items.includes(item);

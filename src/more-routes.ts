@@ -5,6 +5,7 @@ import {
   parseJson,
   randomHex,
   generateVerificationCode,
+  tokenModelLimitsMap,
 } from "./constants.js";
 import {
   generateBackupCodes,
@@ -1958,12 +1959,6 @@ async function tokenUsage(c: C): Promise<Response> {
   const remain = Number(token.remain_quota || 0);
   const used = Number(token.used_quota || 0);
   const expiredAt = token.expired_time === -1 ? 0 : token.expired_time;
-  const limits = String(token.model_limits || "")
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean);
-  const modelLimits: Record<string, boolean> = {};
-  for (const m of limits) modelLimits[m] = true;
   return json(200, {
     success: true,
     code: true,
@@ -1975,7 +1970,7 @@ async function tokenUsage(c: C): Promise<Response> {
       total_used: used,
       total_available: remain,
       unlimited_quota: Boolean(token.unlimited_quota),
-      model_limits: modelLimits,
+      model_limits: tokenModelLimitsMap(String(token.model_limits || "")),
       model_limits_enabled: Boolean(token.model_limits_enabled),
       expires_at: expiredAt,
     },
