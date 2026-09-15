@@ -23,6 +23,7 @@ import {
   type ReasoningIntent,
 } from "./reasoning.js";
 import { fileSourceIdentifier } from "./file-source.js";
+import { openAIChatPartToFileSource, resolveOpenAIChatFileSource, wrapOpenAIChatFileError } from "./openai-media.js";
 
 export type ConvertGeminiOpts = {
   originModelName?: string;
@@ -137,11 +138,19 @@ function decodeDataURL(url: string): { data: string; mime: string } | null {
   return { mime: m[1], data: m[2].replace(/\s+/g, "") };
 }
 
-function resolveImage(url: string, opts: ConvertGeminiOpts): { data: string; mime: string } | null {
-  const dataURL = decodeDataURL(url);
-  if (dataURL) return dataURL;
-  if (opts.resolveMedia) return opts.resolveMedia(url);
-  return null;
+function resolveChatFileSource(
+  part: Record<string, unknown>,
+  opts: ConvertGeminiOpts,
+): { data: string; mime: string; identifier: string } | null {
+  const source = openAIChatPartToFileSource(part);
+  if (!source) return null;
+  try {
+    const resolved = resolveOpenAIChatFileSource(source, opts.resolveMedia);
+    if (!resolved) return null;
+    return { ...resolved, identifier: fileSourceIdentifier(source.data) };
+  } catch (err) {
+    throw wrapOpenAIChatFileError("gemini", fileSourceIdentifier(source.data), err);
+  }
 }
 
 function parseStopSequences(stop: unknown): string[] {
@@ -647,14 +656,11 @@ export function convertOpenAIChatToGemini(body: OpenAIChatBody, opts: ConvertGem
         }
         if (!hasMarkdownImage) parts.push({ text });
       } else {
-        const image = asObj(part.image_url || part.imageUrl);
-        const url = typeof image.url === "string" ? image.url : typeof part.url === "string" ? String(part.url) : "";
-        if (!url) continue;
-        const resolved = resolveImage(url, opts);
+        const resolved = resolveChatFileSource(part, opts);
         if (!resolved) continue;
         const mime = resolved.mime.toLowerCase();
         if (!GEMINI_MIME[mime]) {
-          throw new Error(geminiUnsupportedMimeError(resolved.mime, fileSourceIdentifier(url)));
+          throw new Error(geminiUnsupportedMimeError(resolved.mime, resolved.identifier));
         }
         parts.push({ inlineData: { mimeType: resolved.mime, data: resolved.data } });
       }

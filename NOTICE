@@ -56,8 +56,9 @@ Material changes from upstream:
   `source.type=url` to base64 via original GetBase64Data JSON (`type`, `media_type`,
   `data`, omit empty `url`). Extra-OK: skip gin file-source context cache, Worker
   download proxy, ValidateSSRFProtectedFetchURL, and HEIF `decodeImageConfig`.
-  OpenAI chat/Responses ConvertRequest HTTP image URLs are rewritten to Claude
-  `source.type=base64` / Gemini `inlineData` via original GetBase64Data
+  OpenAI chat/Responses ConvertRequest HTTP image, file, input_audio, and
+  video_url sources are rewritten to Claude `source.type=base64` /
+  Gemini `inlineData` via original `MediaContent.ToFileSource` + GetBase64Data
   (`get file data failed: …` / `get file data from '…' failed: …`). Extra-OK:
   ConvertOpenAIRequest stays sync; URL fetch runs in convertOutbound before
   ConvertRequest. xAI ConvertOpenAIResponsesRequest fills empty `model` from

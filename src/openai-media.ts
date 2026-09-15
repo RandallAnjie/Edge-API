@@ -11,8 +11,17 @@ import { fileSourceIdentifier, getBase64DataFromUrl } from "./file-source.js";
 
 export type OpenAIHttpMediaDialect = "claude" | "gemini";
 
+export type OpenAIFileSource = { data: string; mime: string };
+
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+function interface2String(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
 }
 
 function isHttpUrl(data: string): boolean {
@@ -55,6 +64,80 @@ function partHttpUrl(part: Record<string, unknown>): string {
   }
   if (type) return nestedMediaData(part.url);
   return "";
+}
+
+/**
+ * Original `dto.MediaContent.ToFileSource` for OpenAI chat ConvertRequest.
+ * Extra-OK: also reads `imageUrl` camelCase used by existing worker tests.
+ */
+export function openAIChatPartToFileSource(part: Record<string, unknown>): OpenAIFileSource | null {
+  const type = String(part.type || "").trim();
+  if (type === "image_url") {
+    const img = asObj(part.image_url ?? part.imageUrl);
+    const url = interface2String(img.url);
+    if (!url) return null;
+    return { data: url, mime: interface2String(img.mime_type) };
+  }
+  if (type === "input_audio") {
+    const audio = asObj(part.input_audio);
+    const data = interface2String(audio.data);
+    if (!data) return null;
+    const format = interface2String(audio.format).trim();
+    return { data, mime: format ? `audio/${format}` : "" };
+  }
+  if (type === "file") {
+    const file = asObj(part.file);
+    const fileData = interface2String(file.file_data);
+    if (!fileData) return null;
+    return { data: fileData, mime: "" };
+  }
+  if (type === "video_url") {
+    const video = asObj(part.video_url);
+    const url = interface2String(video.url);
+    if (!url) return null;
+    return { data: url, mime: "" };
+  }
+  return null;
+}
+
+/**
+ * Original `service.loadFromBase64` / `types.NewFileSourceFromData` for non-HTTP sources.
+ * HTTP sources use `resolveMedia` populated by prefetch GetBase64Data.
+ */
+export function resolveOpenAIChatFileSource(
+  source: OpenAIFileSource,
+  resolveMedia?: (url: string) => { data: string; mime: string } | null,
+): { data: string; mime: string } | null {
+  const data = String(source.data || "");
+  if (isHttpUrl(data)) return resolveMedia?.(data) ?? null;
+
+  let mime = "";
+  let clean = data;
+  if (data.startsWith("data:")) {
+    const idx = data.indexOf(",");
+    if (idx !== -1) {
+      const header = data.slice(0, idx);
+      clean = data.slice(idx + 1);
+      if (header.includes(":") && header.includes(";")) {
+        const mimeStart = header.indexOf(":") + 1;
+        const mimeEnd = header.indexOf(";");
+        if (mimeStart < mimeEnd) mime = header.slice(mimeStart, mimeEnd);
+      }
+    }
+  }
+  if (source.mime) mime = source.mime;
+  try {
+    atob(clean);
+  } catch (err) {
+    throw new Error(`failed to decode base64 data: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { data: clean, mime };
+}
+
+export function wrapOpenAIChatFileError(dialect: OpenAIHttpMediaDialect, identifier: string, err: unknown): Error {
+  const detail = err instanceof Error ? err.message : String(err);
+  if (dialect === "claude") return new Error(`get file data failed: ${detail}`);
+  return new Error(`get file data from '${identifier}' failed: ${detail}`);
 }
 
 /** Original `types.NewFileSourceFromData` HTTP prefix used by OpenAI ConvertRequest. */
@@ -141,9 +224,7 @@ export async function prefetchOpenAIHttpMedia(
       const got = await getBase64DataFromUrl(url);
       map.set(url, { data: got.data, mime: got.mimeType });
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      if (dialect === "claude") throw new Error(`get file data failed: ${detail}`);
-      throw new Error(`get file data from '${fileSourceIdentifier(url)}' failed: ${detail}`);
+      throw wrapOpenAIChatFileError(dialect, fileSourceIdentifier(url), err);
     }
   }
   return map;

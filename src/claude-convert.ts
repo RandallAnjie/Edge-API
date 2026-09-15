@@ -1,5 +1,11 @@
 /** Original `relaykit/relayconvert/internal/oai_chat/to_claude_messages_req.go` + `claude.Adaptor.ConvertClaudeRequest`. */
 
+import { fileSourceIdentifier } from "./file-source.js";
+import {
+  openAIChatPartToFileSource,
+  resolveOpenAIChatFileSource,
+  wrapOpenAIChatFileError,
+} from "./openai-media.js";
 import {
   asClientError,
   claudeDefaultMaxTokensFor,
@@ -50,12 +56,6 @@ function isStringContent(content: unknown): boolean {
   return typeof content === "string" || content == null;
 }
 
-function decodeDataURL(url: string): { data: string; mime: string } | null {
-  const m = String(url).match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/i);
-  if (!m) return null;
-  return { mime: m[1], data: m[2].replace(/\s+/g, "") };
-}
-
 /** Original `sharedclaude.FunctionParametersToInputSchema`. */
 export function functionParametersToInputSchema(parameters: unknown): Record<string, unknown> {
   const params = parameters && typeof parameters === "object" && !Array.isArray(parameters) ? { ...(parameters as Record<string, unknown>) } : {};
@@ -96,10 +96,10 @@ function parseToolCalls(message: Record<string, unknown>): { id: string; name: s
   });
 }
 
-function parseOpenAIParts(content: unknown): { type: string; text?: string; url?: string }[] {
+function parseOpenAIParts(content: unknown): { type: string; text?: string }[] {
   if (typeof content === "string") return content ? [{ type: "text", text: content }] : [];
   if (!Array.isArray(content)) return [];
-  const parts: { type: string; text?: string; url?: string }[] = [];
+  const parts: { type: string; text?: string }[] = [];
   for (const item of content) {
     if (typeof item === "string") {
       if (item) parts.push({ type: "text", text: item });
@@ -107,23 +107,36 @@ function parseOpenAIParts(content: unknown): { type: string; text?: string; url?
     }
     const o = asObj(item);
     const type = String(o.type || "text");
-    if (type === "text") {
-      if (typeof o.text === "string" && o.text) parts.push({ type: "text", text: o.text });
-      continue;
-    }
-    const image = asObj(o.image_url || o.imageUrl);
-    const url = typeof image.url === "string" ? image.url : typeof o.url === "string" ? o.url : "";
-    if (url) parts.push({ type, url });
-    else if (typeof o.text === "string" && o.text) parts.push({ type: "text", text: o.text });
+    if (type === "text" && typeof o.text === "string" && o.text) parts.push({ type: "text", text: o.text });
   }
   return parts;
 }
 
-function resolveImage(url: string, opts: ConvertClaudeOpts): { data: string; mime: string } | null {
-  const dataURL = decodeDataURL(url);
-  if (dataURL) return dataURL;
-  if (opts.resolveMedia) return opts.resolveMedia(url);
-  return null;
+function openaiContentParts(content: unknown): Record<string, unknown>[] {
+  if (typeof content === "string") return content ? [{ type: "text", text: content }] : [];
+  if (!Array.isArray(content)) return [];
+  const parts: Record<string, unknown>[] = [];
+  for (const item of content) {
+    if (typeof item === "string") {
+      if (item) parts.push({ type: "text", text: item });
+    } else if (item && typeof item === "object") {
+      parts.push(asObj(item));
+    }
+  }
+  return parts;
+}
+
+function resolveChatFileSource(
+  part: Record<string, unknown>,
+  opts: ConvertClaudeOpts,
+): { data: string; mime: string } | null {
+  const source = openAIChatPartToFileSource(part);
+  if (!source) return null;
+  try {
+    return resolveOpenAIChatFileSource(source, opts.resolveMedia);
+  } catch (err) {
+    throw wrapOpenAIChatFileError("claude", fileSourceIdentifier(source.data), err);
+  }
 }
 
 function suffixFrom(opts: ConvertClaudeOpts, model: string): ReasoningIntent {
@@ -369,13 +382,12 @@ export function convertOpenAIChatToClaude(body: OpenAIChatBody, opts: ConvertCla
       claudeMessage.content = text;
     } else {
       const claudeMedia: Record<string, unknown>[] = [];
-      for (const part of parseOpenAIParts(message.content)) {
-        if (part.type === "text") {
-          if (part.text) claudeMedia.push({ type: "text", text: part.text });
+      for (const part of openaiContentParts(message.content)) {
+        if (String(part.type || "text") === "text") {
+          if (typeof part.text === "string" && part.text) claudeMedia.push({ type: "text", text: part.text });
           continue;
         }
-        if (!part.url) continue;
-        const resolved = resolveImage(part.url, opts);
+        const resolved = resolveChatFileSource(part, opts);
         if (!resolved) continue;
         const media: Record<string, unknown> = { source: { type: "base64", media_type: resolved.mime, data: resolved.data } };
         media.type = resolved.mime.startsWith("application/pdf") ? "document" : "image";

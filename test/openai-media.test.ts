@@ -4,8 +4,10 @@ import { CHANNEL_TYPE_ANTHROPIC, CHANNEL_TYPE_GEMINI } from "../src/constants.js
 import {
   collectOpenAIHttpMediaUrls,
   fileSourceIdentifier,
+  openAIChatPartToFileSource,
   openAIHttpMediaDialect,
   prefetchOpenAIHttpMedia,
+  resolveOpenAIChatFileSource,
 } from "../src/openai-media.js";
 import { geminiUnsupportedMimeError } from "../src/gemini-convert.js";
 import { createMemoryD1 } from "./d1-memory.js";
@@ -100,9 +102,48 @@ test("original OpenAI ConvertRequest collects HTTP file source URLs", () => {
     }),
     ["https://cdn.example/a.png", "https://cdn.example/b.png"],
   );
+  assert.deepEqual(
+    collectOpenAIHttpMediaUrls({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "file", file: { file_data: "https://cdn.example/doc.pdf" } },
+            { type: "video_url", video_url: { url: "https://cdn.example/v.mp4" } },
+            { type: "file", file: { file_data: "data:application/pdf;base64,AAA" } },
+          ],
+        },
+      ],
+    }),
+    ["https://cdn.example/doc.pdf", "https://cdn.example/v.mp4"],
+  );
   assert.equal(openAIHttpMediaDialect({ client: "openai", channelType: CHANNEL_TYPE_ANTHROPIC, kind: "anthropic" }), "claude");
   assert.equal(openAIHttpMediaDialect({ client: "openai", channelType: CHANNEL_TYPE_GEMINI, kind: "gemini" }), "gemini");
   assert.equal(openAIHttpMediaDialect({ client: "anthropic", channelType: CHANNEL_TYPE_ANTHROPIC, kind: "anthropic" }), undefined);
+});
+
+test("original MediaContent.ToFileSource and loadFromBase64 JSON fields", () => {
+  assert.deepEqual(openAIChatPartToFileSource({ type: "file", file: { file_data: "data:application/pdf;base64,AAA" } }), {
+    data: "data:application/pdf;base64,AAA",
+    mime: "",
+  });
+  assert.deepEqual(openAIChatPartToFileSource({ type: "input_audio", input_audio: { data: "YWE=", format: "wav" } }), {
+    data: "YWE=",
+    mime: "audio/wav",
+  });
+  assert.deepEqual(openAIChatPartToFileSource({ type: "video_url", video_url: { url: "https://cdn.example/v.mp4" } }), {
+    data: "https://cdn.example/v.mp4",
+    mime: "",
+  });
+  assert.equal(openAIChatPartToFileSource({ type: "file", file: { filename: "a.pdf" } }), null);
+  assert.deepEqual(resolveOpenAIChatFileSource({ data: "data:application/pdf;base64,JVBERi0=", mime: "" }), {
+    data: "JVBERi0=",
+    mime: "application/pdf",
+  });
+  assert.deepEqual(
+    resolveOpenAIChatFileSource({ data: "data:image/png;base64,YWE=", mime: "image/jpeg" }),
+    { data: "YWE=", mime: "image/jpeg" },
+  );
 });
 
 test("original OpenAI→Claude ConvertRequest HTTP image GetBase64Data wrap JSON", async () => {
@@ -276,6 +317,77 @@ test("original OpenAI→Claude and OpenAI→Gemini ConvertRequest HTTP image JSO
       (fail.body.error as { message: string }).message,
       "get file data failed: failed to download file, status code: 404",
     );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original OpenAI→Claude ConvertRequest HTTP file ToFileSource document JSON", async () => {
+  const { e, auth, sk } = await boot();
+  const ch = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "claude-pdf",
+        type: CHANNEL_TYPE_ANTHROPIC,
+        key: "sk-ant",
+        models: "claude-3-haiku-20240307",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, String(ch.body.message));
+  const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
+  const origFetch = globalThis.fetch;
+  let captured: Record<string, unknown> | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://cdn.example/doc.pdf") {
+      return new Response(pdf as unknown as BodyInit, { headers: { "content-type": "application/pdf" } });
+    }
+    const raw = typeof init?.body === "string" ? init.body : "";
+    captured = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    return new Response(
+      JSON.stringify({
+        id: "msg_pdf",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "pdf" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 8, output_tokens: 2 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const claude = await json(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-3-haiku-20240307",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "summarize" },
+                { type: "file", file: { file_data: "https://cdn.example/doc.pdf" } },
+              ],
+            },
+          ],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 200, claude.text);
+    if (!captured) throw new Error("missing anthropic openai file upstream");
+    const msgs = captured.messages as Record<string, unknown>[];
+    const parts = msgs[0].content as Record<string, unknown>[];
+    assert.deepEqual(parts[0], { type: "text", text: "summarize" });
+    assert.equal(parts[1].type, "document");
+    assert.deepEqual(parts[1].source, { type: "base64", media_type: "application/pdf", data: bytesToB64(pdf) });
   } finally {
     globalThis.fetch = origFetch;
   }

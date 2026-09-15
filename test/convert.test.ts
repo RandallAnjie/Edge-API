@@ -40,6 +40,7 @@ import {
   responsesResponseToChatCompletion,
   chatCompletionToResponsesResponse,
   convertOpenAIChatToClaude,
+  convertOpenAIChatToGemini,
   convertOllamaEmbeddingRequest,
   convertBaiduEmbeddingRequest,
   convertCohereRerankRequest,
@@ -2464,6 +2465,81 @@ test("original OpenAI→Claude ConvertOpenAIRequest resolveMedia HTTP image JSON
   assert.equal(parts[1].type, "image");
   assert.deepEqual(parts[1].source, { type: "base64", media_type: "image/png", data: "aGVsbG8=" });
   assert.equal("url" in (parts[1].source || {}), false);
+});
+
+test("original OpenAI chat ToFileSource file/input_audio/video_url ConvertRequest JSON", () => {
+  const claude = convertOpenAIChatToClaude(
+    {
+      model: "gpt-test",
+      max_tokens: 32,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "read this" },
+            { type: "file", file: { file_data: "data:application/pdf;base64,JVBERi0=" } },
+            { type: "input_audio", input_audio: { data: "YWE=", format: "wav" } },
+          ],
+        },
+      ],
+    },
+    { originModelName: "gpt-test", upstreamModelName: "gpt-test" },
+  );
+  const claudeParts = (claude.messages as { content: Record<string, unknown>[] }[])[0].content;
+  assert.equal(claudeParts[0].type, "text");
+  assert.equal(claudeParts[1].type, "document");
+  assert.deepEqual(claudeParts[1].source, { type: "base64", media_type: "application/pdf", data: "JVBERi0=" });
+  assert.equal(claudeParts[2].type, "image");
+  assert.deepEqual(claudeParts[2].source, { type: "base64", media_type: "audio/wav", data: "YWE=" });
+
+  const gemini = convertOpenAIChatToGemini(
+    {
+      model: "gemini-2.0-flash",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "file", file: { file_data: "data:application/pdf;base64,JVBERi0=" } },
+            { type: "input_audio", input_audio: { data: "YWE=", format: "wav" } },
+            { type: "video_url", video_url: { url: "https://cdn.example/clip.mp4" } },
+          ],
+        },
+      ],
+    },
+    {
+      originModelName: "gemini-2.0-flash",
+      upstreamModelName: "gemini-2.0-flash",
+      resolveMedia: (url) => (url === "https://cdn.example/clip.mp4" ? { data: "bXBlZw==", mime: "video/mp4" } : null),
+    },
+  );
+  const geminiParts = (gemini.contents as { parts: Record<string, unknown>[] }[])[0].parts;
+  assert.deepEqual(geminiParts[0].inlineData, { mimeType: "application/pdf", data: "JVBERi0=" });
+  assert.deepEqual(geminiParts[1].inlineData, { mimeType: "audio/wav", data: "YWE=" });
+  assert.deepEqual(geminiParts[2].inlineData, { mimeType: "video/mp4", data: "bXBlZw==" });
+
+  assert.throws(
+    () =>
+      convertOpenAIChatToClaude(
+        {
+          model: "gpt-test",
+          max_tokens: 32,
+          messages: [{ role: "user", content: [{ type: "file", file: { file_data: "not-base64!!" } }] }],
+        },
+        { originModelName: "gpt-test", upstreamModelName: "gpt-test" },
+      ),
+    /get file data failed: failed to decode base64 data/,
+  );
+  assert.throws(
+    () =>
+      convertOpenAIChatToGemini(
+        {
+          model: "gemini-2.0-flash",
+          messages: [{ role: "user", content: [{ type: "file", file: { file_data: "not-base64!!" } }] }],
+        },
+        { originModelName: "gemini-2.0-flash", upstreamModelName: "gemini-2.0-flash" },
+      ),
+    /get file data from 'base64:not-base64!!' failed: failed to decode base64 data/,
+  );
 });
 
 test("original Claude ConvertOpenAIRequest injects default max_tokens and thinking adapter JSON", () => {
