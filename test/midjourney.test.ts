@@ -82,6 +82,75 @@ async function boot() {
   return { e, auth, store, sk };
 }
 
+test("original MJ empty-channel is distributor model_not_found JSON", async () => {
+  resetSchemaFlag();
+  const e: Env = { DB: createMemoryD1(), SYSTEM_NAME: "Edge API Test" };
+  await json(
+    new Request("http://local/api/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12", confirmPassword: "password12" }),
+    }),
+    e,
+  );
+  const login = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12" }),
+    }),
+    e,
+  );
+  const token = (login.body.data as { access_token: string }).access_token;
+  const auth = { authorization: "Bearer " + token, "content-type": "application/json" };
+  const tk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "mj-empty-token", unlimited_quota: true, group: "default" }),
+    }),
+    e,
+  );
+  const sk = (tk.body.data as { key: string }).key;
+  const created = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "mj-describe-only",
+        type: CHANNEL_TYPE_MIDJOURNEY,
+        key: "mj-secret",
+        models: "mj_describe",
+        group: "default",
+        base_url: "https://mj.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const hit = await json(
+    new Request("http://local/mj/submit/imagine", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + sk,
+        "content-type": "application/json",
+        "x-oneapi-request-id": "mj-empty-req",
+      },
+      body: JSON.stringify({ prompt: "a cat" }),
+    }),
+    e,
+  );
+  assert.equal(hit.res.status, 503, hit.text);
+  const err = hit.body.error as { message?: string; type?: string; code?: string; param?: unknown };
+  assert.ok(err, hit.text);
+  assert.equal("description" in hit.body, false, hit.text);
+  assert.deepEqual(Object.keys(err).sort(), ["code", "message", "type"]);
+  assert.equal(err.type, "new_api_error");
+  assert.equal(err.code, "model_not_found");
+  assert.match(String(err.message), /No available channel for model mj_imagine under group default \(distributor\)/);
+  assert.match(String(err.message), /request id: mj-empty-req/);
+});
+
 test("original CovertMjpActionToModelName and consume content JSON", () => {
   assert.equal(covertMjpActionToModelName("IMAGINE"), "mj_imagine");
   assert.equal(covertMjpActionToModelName("SWAP_FACE"), "swap_face");

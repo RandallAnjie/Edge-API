@@ -1,10 +1,10 @@
 /**
  * Original `relay.RelayMidjourney*` + `controller.RelayMidjourney` on workerd.
  */
-import { channelKind, resolveBaseUrl } from "./catalog.js";
+import { resolveBaseUrl } from "./catalog.js";
 import { selectDistributedChannel } from "./channel-select.js";
 import { CHANNEL_ENABLED, nowMs } from "./constants.js";
-import { json, noAvailableChannelMessage, openaiError } from "./http.js";
+import { abortWithOpenAiMessage, json, noAvailableChannelMessage } from "./http.js";
 import {
   covertMjpActionToModelName,
   generateMjOtherInfo,
@@ -407,10 +407,16 @@ async function pickMjChannel(opts: {
     headers: {},
   });
   if (selected.channel) return selected.channel;
-  const fallback = (await opts.store.enabledChannels()).find((c) => channelKind(c.type) === "mj");
-  if (fallback) return fallback;
-  if (selected.error) return openaiError(selected.error.status, selected.error.message, selected.error.code);
-  return openaiError(503, noAvailableChannelMessage(opts.req, opts.auth.usingGroup, opts.model), "no_available_channel");
+  const requestId = opts.req.headers.get("x-oneapi-request-id") || "";
+  if (selected.error) {
+    return abortWithOpenAiMessage(selected.error.status, selected.error.message, selected.error.code, requestId);
+  }
+  return abortWithOpenAiMessage(
+    503,
+    noAvailableChannelMessage(opts.req, opts.auth.usingGroup, opts.model),
+    "model_not_found",
+    requestId,
+  );
 }
 
 async function relayImageSeed(store: Store, userId: number, mjId: string, req: Request): Promise<Response> {
