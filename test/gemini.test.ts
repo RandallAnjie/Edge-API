@@ -662,3 +662,69 @@ test("original GeminiHelper ClaudeHelper TextHelper channel SystemPrompt HTTP JS
     globalThis.fetch = origFetch;
   }
 });
+
+test("original Gemini ConvertGeminiRequest YouTube fileData mimeType JSON is sent upstream", async () => {
+  const { e, auth, sk } = await boot();
+  const add = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "gemini-yt",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey",
+        models: "gemini-2.0-flash",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(add.body.success, true, String(add.body.message));
+
+  const origFetch = globalThis.fetch;
+  let captured: { url: string; body: Record<string, unknown> } | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    captured = { url: String(input), body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {} };
+    return new Response(
+      JSON.stringify({
+        candidates: [{ finishReason: "STOP", content: { role: "model", parts: [{ text: "watched" }] } }],
+        usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2, totalTokenCount: 6 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const relay = await json(
+      new Request("http://local/v1beta/models/gemini-2.0-flash:generateContent", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: "summarize" },
+                { fileData: { fileUri: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" } },
+              ],
+            },
+          ],
+        }),
+      }),
+      e,
+    );
+    assert.equal(relay.res.status, 200, relay.text);
+    if (!captured) throw new Error("missing gemini youtube upstream");
+    assert.equal(
+      captured.url,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=gkey",
+    );
+    const contents = captured.body.contents as { role?: string; parts: Record<string, unknown>[] }[];
+    assert.equal(contents[0].role, "user");
+    assert.deepEqual(contents[0].parts[1].fileData, {
+      fileUri: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      mimeType: "video/webm",
+    });
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

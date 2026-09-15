@@ -420,6 +420,16 @@ export function convertGeminiRequest(body: Record<string, unknown>, opts: Conver
   for (let i = 0; i < contents.length; i++) {
     const content = { ...contents[i] };
     if (i === 0 && !content.role) content.role = "user";
+    const parts = Array.isArray(content.parts) ? (content.parts as unknown[]) : [];
+    for (const rawPart of parts) {
+      if (!rawPart || typeof rawPart !== "object" || Array.isArray(rawPart)) continue;
+      const fileData = (rawPart as Record<string, unknown>).fileData;
+      if (!fileData || typeof fileData !== "object" || Array.isArray(fileData)) continue;
+      const fd = fileData as Record<string, unknown>;
+      if (String(fd.mimeType || "") === "" && String(fd.fileUri || "").includes("www.youtube.com")) {
+        fd.mimeType = "video/webm";
+      }
+    }
     contents[i] = content;
   }
   if (contents.length) req.contents = contents;

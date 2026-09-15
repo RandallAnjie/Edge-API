@@ -7011,6 +7011,30 @@ test("original GeminiHelper ClaudeHelper TextHelper channel SystemPrompt JSON fi
   assert.deepEqual(nativeGemini.systemInstruction, { parts: [{ text: "Answer in English." }] });
   assert.equal((nativeGemini.contents as { role?: string }[])[0].role, "user");
 
+  const youtube = convertGeminiRequest(
+    {
+      contents: [
+        {
+          parts: [
+            { text: "watch" },
+            { fileData: { fileUri: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" } },
+            { fileData: { mimeType: "video/mp4", fileUri: "https://www.youtube.com/watch?v=keep" } },
+            { fileData: { fileUri: "https://youtu.be/nope" } },
+          ],
+        },
+      ],
+    },
+    { originModelName: "gemini-2.0-flash", upstreamModelName: "gemini-2.0-flash" },
+  );
+  const youtubeParts = (youtube.contents as { role?: string; parts: Record<string, unknown>[] }[])[0].parts;
+  assert.equal((youtube.contents as { role?: string }[])[0].role, "user");
+  assert.deepEqual(youtubeParts[1].fileData, {
+    fileUri: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    mimeType: "video/webm",
+  });
+  assert.deepEqual(youtubeParts[2].fileData, { mimeType: "video/mp4", fileUri: "https://www.youtube.com/watch?v=keep" });
+  assert.deepEqual(youtubeParts[3].fileData, { fileUri: "https://youtu.be/nope" });
+
   const claudeMissing = applyClaudeChannelSystemPrompt(
     { model: "claude-3-7-sonnet", max_tokens: 32, messages: [{ role: "user", content: "hi" }] },
     "Answer in English.",
