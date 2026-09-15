@@ -1875,6 +1875,23 @@ export class Store {
     return out;
   }
 
+  /**
+   * Original `model.GetMissingModels`.
+   * Empty enabled list → `[]string{}` JSON `[]`.
+   * Enabled models exist but all have meta → nil slice JSON `null`.
+   */
+  async getMissingModels(): Promise<string[] | null> {
+    const models = await this.enabledModelsAll();
+    if (models.length === 0) return [];
+    const meta = (await this.listModelMeta()) as { model_name: string }[];
+    const existing = new Set(meta.map((m) => m.model_name));
+    const missing: string[] = [];
+    for (const name of models) {
+      if (!existing.has(name)) missing.push(name);
+    }
+    return missing.length === 0 ? null : missing;
+  }
+
   async hasCheckedIn(userId: number, date: string): Promise<boolean> {
     const row = await this.db
       .prepare("SELECT id FROM checkins WHERE user_id = ? AND checkin_date = ?")

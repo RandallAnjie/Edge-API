@@ -1501,10 +1501,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const enabled = await s.enabledModelsAll();
-    const meta = (await s.listModelMeta()) as { model_name: string }[];
-    const have = new Set(meta.map((m) => m.model_name));
-    return apiOk(enabled.filter((m) => !have.has(m)));
+    return apiOk(await s.getMissingModels());
   });
   r.get("/api/models/sync_upstream/preview", async (c) => {
     const s = store(c);

@@ -158,9 +158,8 @@ export async function previewMetadataSync(
     vendorsByName[String(v.name)] = v;
     vendorsById[String(v.id)] = v;
   }
-  const missing = await store.enabledModelsAll();
-  const have = new Set(locals.map((m) => String(m.model_name)));
-  const siteNames = new Set<string>([...Object.keys(localByName), ...missing.filter((n) => !have.has(n))]);
+  const missing = (await store.getMissingModels()) ?? [];
+  const siteNames = new Set<string>([...Object.keys(localByName), ...missing]);
   const allNames = new Set<string>([...siteNames, ...Object.keys(catalog.models)]);
   const names = [...allNames].sort();
   const candidates: Record<string, unknown>[] = [];
