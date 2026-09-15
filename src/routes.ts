@@ -17,6 +17,7 @@ import {
   canManageTargetRole,
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   CHANNEL_TYPE_TASK_PLUGIN,
+  CHANNEL_ENABLED,
   isManageableChannelStatus,
   nowSec,
   parseGoBool,
@@ -51,7 +52,7 @@ import {
   verifyPassword,
   decryptPassword,
 } from "./crypto.js";
-import { apiFail, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, serveRevalidatedJSON, strconvAtoi } from "./http.js";
+import { apiFail, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -69,7 +70,7 @@ import {
   sessionResponse,
   sessionSecret,
 } from "./auth.js";
-import { Store, publicUser, stripChannelKey } from "./store.js";
+import { Store, publicUser, stripChannelKey, parseChannelStatusFilter } from "./store.js";
 import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, publicUserLogs, dashboardListModels, channelListModels, publicOptions, publicQuotaData, manageUserView, publicMj, publicChannel, publicRedemption } from "./dto.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { registerMore } from "./more-routes.js";
@@ -85,6 +86,12 @@ type C = Context<Env>;
 
 function store(c: C): Store {
   return new Store(c.env.DB);
+}
+
+/** Original `strconv.ParseBool(c.Query(name))` with `_` error ignore. */
+function queryParseBool(url: URL, name: string): boolean {
+  const parsed = strconvParseBool(url.searchParams.get(name) || "");
+  return parsed.ok ? parsed.v : false;
 }
 
 async function canTaskPluginBind(s: Store, u: { id: number }): Promise<boolean> {
@@ -860,22 +867,20 @@ export function adminRouter(): Router<Env> {
     const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const statusParam = c.url.searchParams.get("status");
-    let status: number | undefined;
-    if (statusParam === "1" || statusParam === "enabled") status = 1;
-    else if (statusParam === "0" || statusParam === "disabled") status = 0;
-    const typeStr = c.url.searchParams.get("type");
+    const statusFilter = parseChannelStatusFilter(c.url.searchParams.get("status") || "");
+    const typeParsed = strconvAtoi(c.url.searchParams.get("type") || "");
+    const typeFilter = c.url.searchParams.get("type") && typeParsed.ok ? typeParsed.n : undefined;
     const { items, total, type_counts } = await s.listChannels({
       offset: q.offset,
       limit: q.page_size,
       keyword: c.url.searchParams.get("keyword") || undefined,
       group: c.url.searchParams.get("group") || undefined,
-      status,
-      type: typeStr ? Number(typeStr) : undefined,
-      tag_mode: c.url.searchParams.get("tag_mode") === "true",
+      status: statusFilter < 0 ? undefined : statusFilter,
+      type: typeFilter,
+      tag_mode: queryParseBool(c.url, "tag_mode"),
       sort_by: c.url.searchParams.get("sort_by") || undefined,
       sort_order: c.url.searchParams.get("sort_order") || undefined,
-      id_sort: c.url.searchParams.get("id_sort") === "true",
+      id_sort: queryParseBool(c.url, "id_sort"),
     });
     return apiOk(pageData(items.map(stripChannelKey), total, q, { type_counts }));
   });
@@ -884,13 +889,36 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
-    const q = pageQuery(c.url);
-    const { items, total, type_counts } = await s.listChannels({
-      offset: q.offset,
-      limit: q.page_size,
-      keyword: c.url.searchParams.get("keyword") || undefined,
+    const q = searchChannelPageQuery(c.url);
+    const statusFilter = parseChannelStatusFilter(c.url.searchParams.get("status") || "");
+    const typeParsed = strconvAtoi(c.url.searchParams.get("type") || "");
+    const typeFilter = c.url.searchParams.get("type") && typeParsed.ok ? typeParsed.n : -1;
+    let channelData = await s.searchChannels({
+      keyword: c.url.searchParams.get("keyword") || "",
+      group: c.url.searchParams.get("group") || "",
+      model: c.url.searchParams.get("model") || "",
+      id_sort: queryParseBool(c.url, "id_sort"),
+      sort_by: c.url.searchParams.get("sort_by") || undefined,
+      sort_order: c.url.searchParams.get("sort_order") || undefined,
+      tag_mode: queryParseBool(c.url, "tag_mode"),
     });
-    return apiOk(pageData(items.map(stripChannelKey), total, q, { type_counts }));
+    if (statusFilter === CHANNEL_ENABLED) {
+      channelData = channelData.filter((ch) => Number(ch.status) === CHANNEL_ENABLED);
+    } else if (statusFilter === 0) {
+      channelData = channelData.filter((ch) => Number(ch.status) !== CHANNEL_ENABLED);
+    }
+    const type_counts: Record<string, number> = {};
+    for (const ch of channelData) {
+      const key = String(ch.type);
+      type_counts[key] = (type_counts[key] || 0) + 1;
+    }
+    if (typeFilter >= 0) {
+      channelData = channelData.filter((ch) => Number(ch.type) === typeFilter);
+    }
+    const total = channelData.length;
+    const start = Math.min(q.offset, total);
+    const paged = channelData.slice(start, start + q.page_size);
+    return apiOk(pageData(paged.map((ch) => stripChannelKey(ch)), total, q, { type_counts }));
   });
 
   r.get("/api/channel/models", async (c) => {

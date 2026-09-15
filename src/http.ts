@@ -414,6 +414,15 @@ export function pageQuery(url: URL): PageQuery {
   return { page, page_size, offset: (page - 1) * page_size };
 }
 
+/** Original SearchChannels `DefaultQuery("p","1")` / `page_size` (default 20, no max 100). */
+export function searchChannelPageQuery(url: URL): PageQuery {
+  const pageRaw = Number.parseInt(url.searchParams.get("p") || "1", 10);
+  const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
+  const sizeRaw = Number.parseInt(url.searchParams.get("page_size") || "20", 10);
+  const page_size = Number.isFinite(sizeRaw) && sizeRaw > 0 ? sizeRaw : 20;
+  return { page, page_size, offset: (page - 1) * page_size };
+}
+
 export function pageData(items: unknown, total: number, q: PageQuery, extra: Record<string, unknown> = {}) {
   return { items, total, page: q.page, page_size: q.page_size, ...extra };
 }

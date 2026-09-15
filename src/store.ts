@@ -92,6 +92,41 @@ function channelOrderSql(sortBy?: string, sortOrder?: string, idSort?: boolean):
   return "priority DESC";
 }
 
+/** Original `model.NormalizeChannelGroupFilter`. */
+export function normalizeChannelGroupFilter(group: string): string {
+  const g = String(group || "").trim();
+  if (!g || g.toLowerCase() === "all" || g.toLowerCase() === "null") return "";
+  return g;
+}
+
+/** Original `model.channelGroupFilterPattern` (`ESCAPE '!'`). */
+function channelGroupLikePattern(group: string): string {
+  return "%," + group.replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_") + ",%";
+}
+
+function channelGroupLikeSql(): string {
+  return `(',' || "group" || ',') LIKE ? ESCAPE '!'`;
+}
+
+/** Original `common.String2Int` (`strconv.Atoi`, invalid → 0). */
+function string2Int(str: string): number {
+  return /^-?\d+$/.test(str) ? Number(str) : 0;
+}
+
+/** Original `controller.parseStatusFilter`. */
+export function parseChannelStatusFilter(statusParam: string): number {
+  switch (String(statusParam || "").toLowerCase()) {
+    case "enabled":
+    case "1":
+      return CHANNEL_ENABLED;
+    case "disabled":
+    case "0":
+      return 0;
+    default:
+      return -1;
+  }
+}
+
 export class Store {
   constructor(private db: D1Database) {}
 
@@ -692,9 +727,10 @@ export class Store {
       const q = `%${opts.keyword}%`;
       binds.push(q, q, q);
     }
-    if (opts.group) {
-      where.push(`(',' || "group" || ',') LIKE ?`);
-      binds.push(`%,${opts.group},%`);
+    const group = normalizeChannelGroupFilter(opts.group || "");
+    if (group) {
+      where.push(channelGroupLikeSql());
+      binds.push(channelGroupLikePattern(group));
     }
     if (opts.status === CHANNEL_ENABLED) where.push("status = 1");
     else if (opts.status === 0) where.push("status != 1");
@@ -743,6 +779,67 @@ export class Store {
       .bind(...binds, opts.limit, opts.offset)
       .all<ChannelRow>();
     return { items: results, total: num(totalRow?.c), type_counts };
+  }
+
+  /**
+   * Original `model.SearchChannels` / `SearchTags` (all matches, unsorted type/status
+   * filters happen in the HTTP handler).
+   */
+  async searchChannels(opts: {
+    keyword?: string;
+    group?: string;
+    model?: string;
+    id_sort?: boolean;
+    sort_by?: string;
+    sort_order?: string;
+    tag_mode?: boolean;
+  }): Promise<ChannelRow[]> {
+    const keyword = opts.keyword || "";
+    const model = opts.model || "";
+    const group = normalizeChannelGroupFilter(opts.group || "");
+    const where = "(id = ? OR name LIKE ? OR key = ? OR base_url LIKE ?) AND models LIKE ?";
+    const binds: unknown[] = [string2Int(keyword), `%${keyword}%`, keyword, `%${keyword}%`, `%${model}%`];
+    let extra = "";
+    if (group) {
+      extra = ` AND ${channelGroupLikeSql()}`;
+      binds.push(channelGroupLikePattern(group));
+    }
+    const order = channelOrderSql(opts.sort_by, opts.sort_order, opts.id_sort);
+    if (opts.tag_mode) {
+      const tagOrder = opts.id_sort ? "id DESC" : "priority DESC";
+      const { results: matched } = await this.db
+        .prepare(`SELECT * FROM channels WHERE ${where}${extra} ORDER BY ${tagOrder}`)
+        .bind(...binds)
+        .all<ChannelRow>();
+      const tags: string[] = [];
+      const seen = new Set<string>();
+      for (const row of matched) {
+        const tag = String(row.tag || "");
+        if (!tag || seen.has(tag)) continue;
+        seen.add(tag);
+        tags.push(tag);
+      }
+      const items: ChannelRow[] = [];
+      for (const tag of tags) {
+        const tagWhere = ["tag = ?"];
+        const tagBinds: unknown[] = [tag];
+        if (group) {
+          tagWhere.unshift(channelGroupLikeSql());
+          tagBinds.unshift(channelGroupLikePattern(group));
+        }
+        const { results } = await this.db
+          .prepare(`SELECT * FROM channels WHERE ${tagWhere.join(" AND ")} ORDER BY ${order}`)
+          .bind(...tagBinds)
+          .all<ChannelRow>();
+        items.push(...results);
+      }
+      return items;
+    }
+    const { results } = await this.db
+      .prepare(`SELECT * FROM channels WHERE ${where}${extra} ORDER BY ${order}`)
+      .bind(...binds)
+      .all<ChannelRow>();
+    return results;
   }
 
   async enabledChannels(): Promise<ChannelRow[]> {
