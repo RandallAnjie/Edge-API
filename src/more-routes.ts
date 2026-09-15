@@ -101,7 +101,6 @@ import {
   isLoginVerificationFlow,
   verifyLoginFromRequest,
 } from "./auth.js";
-} from "./auth.js";
 import { httpStats } from "./metrics.js";
 import { Store, publicUser } from "./store.js";
 import { updateOneChannelBalance } from "./channel-balance.js";
