@@ -74,7 +74,7 @@ import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
 import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
 import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
 import { SYSTEM_INSTANCE_STALE_AFTER_SECONDS, listSystemInstanceResponses } from "./system-instance.js";
-import { runPendingLogCleanupSystemTask, startLogCleanupTask } from "./system-task.js";
+import { lazySystemTaskRun, runPendingLogCleanupSystemTask, startLogCleanupTask } from "./system-task.js";
 import { fetchUpstreamRatios, validateFetchRequest } from "./ratio-sync.js";
 import { dryRunPlugin } from "./jsplugin.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
@@ -1299,7 +1299,7 @@ export function registerParity(r: Router<Env>): void {
     if (!targetTimestamp) return apiFail("target timestamp is required");
     try {
       const task = await startLogCleanupTask(s, targetTimestamp);
-      c.waitUntil(runPendingLogCleanupSystemTask(s).catch(() => undefined));
+      c.waitUntil(lazySystemTaskRun(() => runPendingLogCleanupSystemTask(s).catch(() => undefined)));
       return apiOk(publicSystemTask(task, Number(task.rowid || 0)));
     } catch (err) {
       return apiFail(err instanceof Error ? err.message : String(err));

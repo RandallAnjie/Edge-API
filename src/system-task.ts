@@ -55,6 +55,17 @@ function taskIdOf(row: Record<string, unknown>): string {
   return String(row.id || row.task_id || "");
 }
 
+/** Starts only when awaited / then'd so test no-op `waitUntil` does not run the runner. */
+export function lazySystemTaskRun(work: () => Promise<unknown>): Promise<unknown> {
+  return {
+    then(onFulfilled?: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) {
+      return Promise.resolve()
+        .then(work)
+        .then(onFulfilled, onRejected);
+    },
+  } as Promise<unknown>;
+}
+
 async function failLogCleanup(store: Store, task: Record<string, unknown>, err: unknown): Promise<void> {
   await store.updateSystemTask(taskIdOf(task), {
     status: "failed",

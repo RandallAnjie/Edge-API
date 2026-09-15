@@ -217,3 +217,30 @@ test("original log_cleanup runner deletes in logCleanupBatchSize batches", async
   assert.equal(result.deleted_count, 150);
   assert.equal(await store.countOldLogs(10), 0);
 });
+
+test("workerd waitUntil observation runs pending log_cleanup after StartLogCleanupTask", async () => {
+  const { e, auth, store } = await boot();
+  await store.insertLog({ created_at: 1, content: "waituntil", username: "root" });
+  const pending: Promise<unknown>[] = [];
+  const res = await handleFetch(
+    new Request("http://local/api/system-task/log-cleanup?target_timestamp=10", {
+      method: "POST",
+      headers: auth,
+    }),
+    e,
+    {
+      waitUntil(p) {
+        pending.push(p);
+      },
+    },
+  );
+  const body = JSON.parse(await res.text()) as { success: boolean; data: { status: string; task_id: string } };
+  assert.equal(body.success, true);
+  assert.equal(body.data.status, "pending");
+  assert.equal(pending.length, 1);
+  await Promise.all(pending);
+  assert.equal(await store.countOldLogs(10), 0);
+  const finished = await json(new Request("http://local/api/system-task/" + body.data.task_id, { headers: auth }), e);
+  assert.equal((finished.body.data as { status: string }).status, "succeeded");
+  assert.equal("active_key" in (finished.body.data as object), false);
+});
