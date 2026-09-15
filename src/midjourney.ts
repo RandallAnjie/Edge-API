@@ -1,10 +1,18 @@
 /**
  * Original `relay.RelayMidjourney*` + `controller.RelayMidjourney` on workerd.
  */
+import { tokenAllowsModel } from "./auth.js";
 import { resolveBaseUrl } from "./catalog.js";
 import { selectDistributedChannel } from "./channel-select.js";
 import { CHANNEL_ENABLED, nowMs } from "./constants.js";
-import { abortWithOpenAiMessage, json, noAvailableChannelMessage } from "./http.js";
+import {
+  abortWithOpenAiMessage,
+  distributorInvalidRequestMessage,
+  invalidMidjourneyRequestMessage,
+  json,
+  noAvailableChannelMessage,
+  tokenModelForbiddenMessage,
+} from "./http.js";
 import {
   covertMjpActionToModelName,
   generateMjOtherInfo,
@@ -121,6 +129,85 @@ export function path2RelayModeMidjourney(path: string): MjRelayMode {
 export function mjUpstreamPath(path: string): string {
   const relative = path.startsWith("/") ? path : `/${path}`;
   return "/mj" + relative;
+}
+
+/** Original `service.GetMjRequestModel`. */
+export function getMjRequestModel(
+  mode: MjRelayMode,
+  body: Record<string, unknown>,
+): { model: string } | { error: string } | { skip: true } {
+  if (mode === "fetch" || mode === "list-by-condition" || mode === "notify" || mode === "image-seed" || mode === "image") {
+    return { skip: true };
+  }
+  let action = "";
+  if (mode === "action") {
+    const plusErr = coverPlusActionToNormalAction(body);
+    if (plusErr) return { error: plusErr.description };
+    action = String(body.action || "");
+  } else if (mode === "imagine") action = MJ_ACTION_IMAGINE;
+  else if (mode === "video") action = MJ_ACTION_VIDEO;
+  else if (mode === "edits") action = MJ_ACTION_EDITS;
+  else if (mode === "describe") action = MJ_ACTION_DESCRIBE;
+  else if (mode === "blend") action = MJ_ACTION_BLEND;
+  else if (mode === "shorten") action = MJ_ACTION_SHORTEN;
+  else if (mode === "change") action = String(body.action || "");
+  else if (mode === "modal") action = MJ_ACTION_MODAL;
+  else if (mode === "swap-face") action = MJ_ACTION_SWAP_FACE;
+  else if (mode === "upload") action = MJ_ACTION_UPLOAD;
+  else if (mode === "unknown") return { error: "unknown_relay_action" };
+  else return { skip: true };
+  return { model: covertMjpActionToModelName(action) };
+}
+
+function mjRequestId(req: Request): string {
+  return req.headers.get("x-oneapi-request-id") || "";
+}
+
+function mjDistributorAbort(req: Request, status: number, message: string, code = ""): Response {
+  return abortWithOpenAiMessage(status, message, code, mjRequestId(req));
+}
+
+function mjInvalidBodyAbort(req: Request, cause: unknown): Response {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return mjDistributorAbort(req, 400, distributorInvalidRequestMessage(req, invalidMidjourneyRequestMessage(req, detail)));
+}
+
+async function parseMjJsonBody(req: Request): Promise<Record<string, unknown> | Response> {
+  try {
+    if (req.method === "GET" || req.method === "HEAD") return {};
+    return asObj(await req.clone().json());
+  } catch (err) {
+    return mjInvalidBodyAbort(req, err);
+  }
+}
+
+async function distributeMjChannel(opts: {
+  req: Request;
+  env: Env;
+  store: Store;
+  auth: AuthToken;
+  mode: MjRelayMode;
+  body: Record<string, unknown>;
+}): Promise<{ channel: ChannelRow; model: string } | Response> {
+  const modelHit = getMjRequestModel(opts.mode, opts.body);
+  if ("skip" in modelHit) {
+    return mjDistributorAbort(opts.req, 400, distributorInvalidRequestMessage(opts.req, "unknown_relay_action"));
+  }
+  if ("error" in modelHit) {
+    return mjDistributorAbort(opts.req, 400, distributorInvalidRequestMessage(opts.req, modelHit.error));
+  }
+  if (!tokenAllowsModel(opts.auth.token, modelHit.model)) {
+    return mjDistributorAbort(opts.req, 403, tokenModelForbiddenMessage(opts.req, modelHit.model));
+  }
+  const channel = await pickMjChannel({
+    req: opts.req,
+    env: opts.env,
+    store: opts.store,
+    auth: opts.auth,
+    model: modelHit.model,
+  });
+  if (channel instanceof Response) return channel;
+  return { channel, model: modelHit.model };
 }
 
 export function coverPlusActionToNormalAction(body: Record<string, unknown>): MidjourneyResponse | null {
@@ -526,14 +613,20 @@ async function relaySwapFace(opts: {
   store: Store;
   auth: AuthToken;
 }): Promise<Response> {
-  let body: Record<string, unknown> = {};
-  try {
-    body = asObj(await opts.req.clone().json());
-  } catch {
-    return mjUpstreamError("bind_request_body_failed");
-  }
+  const parsed = await parseMjJsonBody(opts.req);
+  if (parsed instanceof Response) return parsed;
+  const body = parsed;
+  const distributed = await distributeMjChannel({
+    req: opts.req,
+    env: opts.env,
+    store: opts.store,
+    auth: opts.auth,
+    mode: "swap-face",
+    body,
+  });
+  if (distributed instanceof Response) return distributed;
   if (!body.sourceBase64 || !body.targetBase64) return mjUpstreamError("sour_base64_and_target_base64_is_required");
-  const modelName = covertMjpActionToModelName(MJ_ACTION_SWAP_FACE);
+  const modelName = distributed.model;
   const priced = await modelPriceHelperPerCall(
     opts.store,
     modelName,
@@ -545,8 +638,7 @@ async function relaySwapFace(opts: {
   if (isPriceError(priced)) return mjUpstreamError(priced.message);
   const remain = Number(opts.auth.user.quota || 0);
   if (remain - priced.quota < 0) return mjUpstreamError("quota_not_enough");
-  const channel = await pickMjChannel({ req: opts.req, env: opts.env, store: opts.store, auth: opts.auth, model: modelName });
-  if (channel instanceof Response) return channel;
+  const channel = distributed.channel;
   const base = resolveBaseUrl(channel.type, channel.base_url);
   const fullUrl = base.replace(/\/+$/, "") + mjUpstreamPath("/insight-face/swap");
   const hit = await doMidjourneyHttpRequest(opts.req, opts.store, channel, fullUrl);
@@ -582,18 +674,21 @@ async function relaySubmit(opts: {
   mode: MjRelayMode;
 }): Promise<Response> {
   let consumeQuota = true;
-  let body: Record<string, unknown> = {};
-  try {
-    if (opts.req.method !== "GET" && opts.req.method !== "HEAD") body = asObj(await opts.req.clone().json());
-  } catch {
-    return mjUpstreamError("bind_request_body_failed");
-  }
+  const parsed = await parseMjJsonBody(opts.req);
+  if (parsed instanceof Response) return parsed;
+  const body = parsed;
   let mode = opts.mode;
-  if (mode === "action") {
-    const plusErr = coverPlusActionToNormalAction(body);
-    if (plusErr) return mjUpstreamError(plusErr.description, plusErr.result, plusErr.code);
-    mode = "change";
-  }
+  const distributed = await distributeMjChannel({
+    req: opts.req,
+    env: opts.env,
+    store: opts.store,
+    auth: opts.auth,
+    mode,
+    body,
+  });
+  if (distributed instanceof Response) return distributed;
+  let channel = distributed.channel;
+  if (mode === "action") mode = "change";
   if (mode === "video") body.action = MJ_ACTION_VIDEO;
   if (mode === "imagine") {
     if (!body.prompt) return mjUpstreamError("prompt_is_required");
@@ -627,6 +722,7 @@ async function relaySubmit(opts: {
     if (!originChannel) return mjUpstreamError("get_channel_info_failed");
     if (Number(originChannel.status) !== CHANNEL_ENABLED) return mjUpstreamError("该任务所属渠道已被禁用");
     body.prompt = origin.prompt;
+    channel = originChannel;
     const action = String(body.action || "");
     if (action === MJ_ACTION_INPAINT || action === MJ_ACTION_CUSTOM_ZOOM) consumeQuota = false;
     const modelName = covertMjpActionToModelName(action);
@@ -683,8 +779,6 @@ async function relaySubmit(opts: {
   if (isPriceError(priced)) return mjUpstreamError(priced.message);
   const remain = Number((await opts.store.getUserById(opts.auth.user.id))?.quota ?? (opts.auth.user.quota || 0));
   if (consumeQuota && remain - priced.quota < 0) return mjUpstreamError("quota_not_enough");
-  const channel = await pickMjChannel({ req: opts.req, env: opts.env, store: opts.store, auth: opts.auth, model: modelName });
-  if (channel instanceof Response) return channel;
   const base = resolveBaseUrl(channel.type, channel.base_url);
   const fullUrl = base.replace(/\/+$/, "") + mjUpstreamPath(opts.path);
   const hit = await doMidjourneyHttpRequest(opts.req, opts.store, channel, fullUrl);

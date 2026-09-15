@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CHANNEL_TYPE_MIDJOURNEY, ROOT_QUOTA, nowMs } from "../src/constants.js";
 import { covertMjpActionToModelName, mjSubmitConsumeContent, mjSwapFaceConsumeContent } from "../src/midjourney-billing.js";
-import { coverMidjourneyTaskDto, mjUpstreamError, path2RelayModeMidjourney } from "../src/midjourney.js";
+import { coverMidjourneyTaskDto, getMjRequestModel, mjUpstreamError, path2RelayModeMidjourney } from "../src/midjourney.js";
 import {
   checkMjTaskNeedUpdate,
   MJ_UPSTREAM_TIMEOUT_MS,
@@ -149,6 +149,175 @@ test("original MJ empty-channel is distributor model_not_found JSON", async () =
   assert.equal(err.code, "model_not_found");
   assert.match(String(err.message), /No available channel for model mj_imagine under group default \(distributor\)/);
   assert.match(String(err.message), /request id: mj-empty-req/);
+});
+
+test("original GetMjRequestModel maps relay mode to CovertMjpActionToModelName", () => {
+  assert.deepEqual(getMjRequestModel("imagine", {}), { model: "mj_imagine" });
+  assert.deepEqual(getMjRequestModel("describe", {}), { model: "mj_describe" });
+  assert.deepEqual(getMjRequestModel("swap-face", {}), { model: "swap_face" });
+  assert.deepEqual(getMjRequestModel("change", { action: "UPSCALE" }), { model: "mj_upscale" });
+  assert.deepEqual(getMjRequestModel("change", {}), { model: "mj_" });
+  assert.deepEqual(getMjRequestModel("fetch", {}), { skip: true });
+  assert.deepEqual(getMjRequestModel("action", {}), { error: "custom_id_is_required" });
+  assert.deepEqual(getMjRequestModel("unknown", {}), { error: "unknown_relay_action" });
+});
+
+test("original MJ distributor selects before prompt_is_required and uses abortWithOpenAiMessage JSON", async () => {
+  resetSchemaFlag();
+  const e: Env = { DB: createMemoryD1(), SYSTEM_NAME: "Edge API Test" };
+  await json(
+    new Request("http://local/api/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12", confirmPassword: "password12" }),
+    }),
+    e,
+  );
+  const login = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12" }),
+    }),
+    e,
+  );
+  const token = (login.body.data as { access_token: string }).access_token;
+  const auth = { authorization: "Bearer " + token, "content-type": "application/json" };
+  const tk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "mj-dist-token", unlimited_quota: true, group: "default" }),
+    }),
+    e,
+  );
+  const sk = (tk.body.data as { key: string }).key;
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "mj-describe-only-dist",
+        type: CHANNEL_TYPE_MIDJOURNEY,
+        key: "mj-secret",
+        models: "mj_describe",
+        group: "default",
+        base_url: "https://mj.example.test",
+      }),
+    }),
+    e,
+  );
+
+  const emptyPrompt = await json(
+    new Request("http://local/mj/submit/imagine", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + sk,
+        "content-type": "application/json",
+        "x-oneapi-request-id": "mj-dist-empty-req",
+      },
+      body: JSON.stringify({}),
+    }),
+    e,
+  );
+  assert.equal(emptyPrompt.res.status, 503, emptyPrompt.text);
+  const emptyErr = emptyPrompt.body.error as { message?: string; type?: string; code?: string; param?: unknown };
+  assert.ok(emptyErr, emptyPrompt.text);
+  assert.equal("description" in emptyPrompt.body, false, emptyPrompt.text);
+  assert.deepEqual(Object.keys(emptyErr).sort(), ["code", "message", "type"]);
+  assert.equal(emptyErr.type, "new_api_error");
+  assert.equal(emptyErr.code, "model_not_found");
+  assert.match(String(emptyErr.message), /No available channel for model mj_imagine under group default \(distributor\)/);
+  assert.match(String(emptyErr.message), /request id: mj-dist-empty-req/);
+
+  const badJson = await json(
+    new Request("http://local/mj/submit/imagine", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + sk,
+        "content-type": "application/json",
+        "x-oneapi-request-id": "mj-bad-json-req",
+      },
+      body: "{",
+    }),
+    e,
+  );
+  assert.equal(badJson.res.status, 400, badJson.text);
+  const badErr = badJson.body.error as { message?: string; type?: string; code?: string; param?: unknown };
+  assert.ok(badErr, badJson.text);
+  assert.deepEqual(Object.keys(badErr).sort(), ["code", "message", "type"]);
+  assert.equal(badErr.type, "new_api_error");
+  assert.equal(badErr.code, "");
+  assert.match(String(badErr.message), /^Invalid request: Invalid Midjourney request: /);
+  assert.match(String(badErr.message), /request id: mj-bad-json-req/);
+
+  const action = await json(
+    new Request("http://local/mj/submit/action", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + sk,
+        "content-type": "application/json",
+        "x-oneapi-request-id": "mj-action-req",
+      },
+      body: JSON.stringify({}),
+    }),
+    e,
+  );
+  assert.equal(action.res.status, 400, action.text);
+  const actionErr = action.body.error as { message?: string; type?: string; code?: string };
+  assert.deepEqual(Object.keys(actionErr).sort(), ["code", "message", "type"]);
+  assert.equal(actionErr.code, "");
+  assert.equal(actionErr.message, "Invalid request: custom_id_is_required (request id: mj-action-req)");
+
+  const swap = await json(
+    new Request("http://local/mj/insight-face/swap", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + sk,
+        "content-type": "application/json",
+        "x-oneapi-request-id": "mj-swap-req",
+      },
+      body: JSON.stringify({}),
+    }),
+    e,
+  );
+  assert.equal(swap.res.status, 503, swap.text);
+  const swapErr = swap.body.error as { message?: string; type?: string; code?: string };
+  assert.equal("description" in swap.body, false, swap.text);
+  assert.equal(swapErr.code, "model_not_found");
+  assert.match(String(swapErr.message), /No available channel for model swap_face under group default \(distributor\)/);
+
+  const limited = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "mj-limited",
+        unlimited_quota: true,
+        model_limits_enabled: true,
+        model_limits: "gpt-4o-mini",
+      }),
+    }),
+    e,
+  );
+  const limitedSk = (limited.body.data as { key: string }).key;
+  const forbidden = await json(
+    new Request("http://local/mj/submit/imagine", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + limitedSk,
+        "content-type": "application/json",
+        "x-oneapi-request-id": "mj-limit-req",
+      },
+      body: JSON.stringify({ prompt: "a cat" }),
+    }),
+    e,
+  );
+  assert.equal(forbidden.res.status, 403, forbidden.text);
+  const forbiddenErr = forbidden.body.error as { message?: string; type?: string; code?: string; param?: unknown };
+  assert.deepEqual(Object.keys(forbiddenErr).sort(), ["code", "message", "type"]);
+  assert.equal(forbiddenErr.code, "");
+  assert.equal(forbiddenErr.message, "This token has no access to model mj_imagine (request id: mj-limit-req)");
 });
 
 test("original CovertMjpActionToModelName and consume content JSON", () => {

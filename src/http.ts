@@ -198,6 +198,30 @@ export function modelNameRequiredMessage(req: Request): string {
   }
 }
 
+/** Original `i18n.MsgDistributorInvalidRequest`. */
+export function distributorInvalidRequestMessage(req: Request, error: string): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return `無效的請求，${error}`;
+    case "zh-CN":
+      return `无效的请求，${error}`;
+    default:
+      return `Invalid request: ${error}`;
+  }
+}
+
+/** Original `i18n.MsgDistributorInvalidMidjourney`. */
+export function invalidMidjourneyRequestMessage(req: Request, error: string): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return `無效的midjourney請求，${error}`;
+    case "zh-CN":
+      return `无效的midjourney请求，${error}`;
+    default:
+      return `Invalid Midjourney request: ${error}`;
+  }
+}
+
 /** Original `i18n.MsgDistributorChannelDisabled`. */
 export function channelDisabledMessage(req: Request): string {
   return i18nPair(req, "该渠道已被禁用", "This channel has been disabled");
