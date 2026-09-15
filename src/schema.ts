@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS users (
   admin_permissions TEXT NOT NULL DEFAULT '',
   access_token_created_at INTEGER NOT NULL DEFAULT 0,
   remark TEXT NOT NULL DEFAULT '',
-  deleted_at INTEGER NOT NULL DEFAULT 0
+  deleted_at INTEGER NOT NULL DEFAULT 0,
+  stripe_customer TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS api_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -606,6 +607,7 @@ const USER_ALTERS = [
   "ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1",
   "ALTER TABLE users ADD COLUMN admin_permissions TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE users ADD COLUMN access_token_created_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN stripe_customer TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE audit_logs ADD COLUMN event_id TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE audit_logs ADD COLUMN actor_role INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE audit_logs ADD COLUMN category TEXT NOT NULL DEFAULT ''",

@@ -1,6 +1,6 @@
 import { MAX_WALLET_QUOTA, nowSec, parseJson, randomHex } from "./constants.js";
 import { hmacSha256Hex, sha1Hex, timingSafeEqualStr } from "./crypto.js";
-import { apiFail, json, payErr, payOk, readJson } from "./http.js";
+import { apiFail, clientIp, json, payErr, payOk, readJson } from "./http.js";
 import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
 import {
   ERR_SUBSCRIPTION_ORDER_NOT_FOUND,
@@ -261,12 +261,14 @@ export async function requestStripePay(
   if (await store.optionBool("StripePromotionCodesEnabled", false)) {
     params.set("allow_promotion_codes", "true");
   }
-  let stripeCustomer = "";
-  try {
-    const parsed = JSON.parse(user.settings || "{}") as Record<string, unknown>;
-    stripeCustomer = String(parsed.stripe_customer || parsed.stripeCustomer || "");
-  } catch {
-    /* ignore */
+  let stripeCustomer = String(user.stripe_customer || "");
+  if (!stripeCustomer) {
+    try {
+      const parsed = JSON.parse(user.settings || "{}") as Record<string, unknown>;
+      stripeCustomer = String(parsed.stripe_customer || parsed.stripeCustomer || "");
+    } catch {
+      /* ignore */
+    }
   }
   if (stripeCustomer) {
     params.set("customer", stripeCustomer);
@@ -327,7 +329,14 @@ export async function handleStripeWebhook(store: Store, req: Request): Promise<R
         "",
       );
       if (result === "completed" || result === "rejected") return new Response(null, { status: 200 });
-      await completePendingTopup(store, trade);
+      const customer = obj.customer;
+      const customerId =
+        typeof customer === "string" ? customer : String((customer as { id?: string } | undefined)?.id || "");
+      try {
+        await store.rechargeStripe(trade, customerId, clientIp(req));
+      } catch {
+        /* original StripeWebhook logs Recharge errors and still returns 200 */
+      }
     }
   } else if (event.type === "checkout.session.expired") {
     const obj = event.data?.object || {};
@@ -407,16 +416,22 @@ export async function handleEpayNotify(store: Store, req: Request, url: URL): Pr
   const params = url.searchParams;
   let trade = params.get("out_trade_no") || "";
   let status = params.get("trade_status") || params.get("status") || "";
+  let payType = params.get("type") || "";
   if (req.method === "POST") {
     const body = (await readJson(req).catch(() => ({}))) as Record<string, string>;
     trade = trade || String(body.out_trade_no || "");
     status = status || String(body.trade_status || body.status || "");
+    payType = payType || String(body.type || "");
   }
   if (!trade) return new Response("fail", { status: 400 });
   if (status && status !== "TRADE_SUCCESS" && status !== "success" && status !== "1") {
     return new Response("fail", { status: 400 });
   }
-  await completePendingTopup(store, trade);
+  try {
+    await store.rechargeEpay(trade, payType, clientIp(req));
+  } catch {
+    return new Response("fail", { headers: { "content-type": "text/plain" } });
+  }
   return new Response("success", { headers: { "content-type": "text/plain" } });
 }
 
@@ -608,7 +623,14 @@ export async function handleCreemWebhook(store: Store, req: Request): Promise<Re
     const expected = await hmacSha256Hex(secret, raw);
     if (!timingSafeEqualStr(expected, signature)) return new Response(null, { status: 401 });
   }
-  const event = parseJson<{ eventType?: string; object?: { request_id?: string; order?: { id?: string; status?: string } } }>(raw, {});
+  const event = parseJson<{
+    eventType?: string;
+    object?: {
+      request_id?: string;
+      order?: { id?: string; status?: string; type?: string };
+      customer?: { email?: string; name?: string };
+    };
+  }>(raw, {});
   if (event.eventType === "checkout.completed") {
     if (event.object?.order?.status && event.object.order.status !== "paid") return new Response(null, { status: 200 });
     const trade = String(event.object?.request_id || "");
@@ -616,9 +638,18 @@ export async function handleCreemWebhook(store: Store, req: Request): Promise<Re
     const result = await tryCompleteSubscriptionOrder(store, trade, raw, "creem", "");
     if (result === "completed") return new Response(null, { status: 200 });
     if (result === "rejected") return new Response(null, { status: 500 });
-    const orderType = String((event.object?.order as { type?: string } | undefined)?.type || "onetime");
+    const orderType = String(event.object?.order?.type || "onetime");
     if (orderType && orderType !== "onetime") return new Response(null, { status: 200 });
-    await completePendingTopup(store, trade);
+    try {
+      await store.rechargeCreem(
+        trade,
+        String(event.object?.customer?.email || ""),
+        String(event.object?.customer?.name || ""),
+        clientIp(req),
+      );
+    } catch {
+      return new Response(null, { status: 500 });
+    }
   }
   return new Response(null, { status: 200 });
 }
@@ -634,7 +665,17 @@ export async function handleWaffoWebhook(store: Store, req: Request): Promise<Re
     merchantOrderId?: string;
   }>(raw, {});
   const trade = String(event.result?.merchantOrderID || event.result?.merchantOrderId || event.merchantOrderId || "");
-  if (trade) await completePendingTopup(store, trade);
+  const orderStatus = String(event.result?.orderStatus || "");
+  if (trade && (!orderStatus || orderStatus === "PAY_SUCCESS")) {
+    try {
+      await store.rechargeWaffo(trade, clientIp(req));
+    } catch {
+      return new Response(JSON.stringify({ code: "FAIL" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
   return new Response(JSON.stringify({ code: "SUCCESS" }), {
     status: 200,
     headers: { "content-type": "application/json" },
@@ -700,7 +741,11 @@ export async function handleWaffoPancakeWebhook(store: Store, req: Request, envP
         }
         return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
       }
-      await completePendingTopup(store, trade);
+      try {
+        await store.rechargeWaffoPancake(trade);
+      } catch {
+        return new Response("retry", { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });
+      }
     }
   }
   return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
@@ -723,21 +768,30 @@ export async function tryCompleteSubscriptionOrder(
   }
 }
 
-export async function completePendingTopup(store: Store, tradeNo: string): Promise<boolean> {
+/** Dispatch original `Recharge*` by `payment_provider`. Returns false when the order is missing or settlement fails. */
+export async function completePendingTopup(
+  store: Store,
+  tradeNo: string,
+  extras: {
+    callerIp?: string;
+    customerId?: string;
+    customerEmail?: string;
+    customerName?: string;
+    actualPaymentMethod?: string;
+  } = {},
+): Promise<boolean> {
   const row = await store.getTopupByTrade(tradeNo);
-  if (!row || String(row.status) !== "pending") return false;
-  await store.updateTopup(Number(row.id), { status: "success", complete_time: nowSec() });
-  const quotaPerUnit = await store.optionNum("QuotaPerUnit", 500000);
-  const method = String(row.payment_method || "");
+  if (!row) return false;
   const provider = String(row.payment_provider || "");
-  const amount = Number(row.amount || 0);
-  const money = Number(row.money || 0);
-  let credit = amount;
-  if (provider === "stripe" || method === "stripe") credit = Math.round(money * quotaPerUnit);
-  else if (provider === "creem" || method === "creem") credit = amount;
-  else if (provider === "epay" || provider === "waffo" || provider === "waffo_pancake") {
-    credit = Math.round(amount * quotaPerUnit);
+  try {
+    if (provider === "stripe") await store.rechargeStripe(tradeNo, extras.customerId || "", extras.callerIp || "");
+    else if (provider === "creem") {
+      await store.rechargeCreem(tradeNo, extras.customerEmail || "", extras.customerName || "", extras.callerIp || "");
+    } else if (provider === "waffo") await store.rechargeWaffo(tradeNo, extras.callerIp || "");
+    else if (provider === "waffo_pancake") await store.rechargeWaffoPancake(tradeNo);
+    else await store.rechargeEpay(tradeNo, extras.actualPaymentMethod || "", extras.callerIp || "");
+    return true;
+  } catch {
+    return false;
   }
-  if (credit > 0) await store.addQuota(Number(row.user_id), credit);
-  return true;
 }

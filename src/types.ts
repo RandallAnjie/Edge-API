@@ -96,6 +96,8 @@ export interface UserRow {
   remark?: string;
   /** Original GORM `DeletedAt`; 0 means not deleted. */
   deleted_at?: number;
+  /** Original `User.StripeCustomer` column. */
+  stripe_customer?: string;
 }
 
 export interface LoginSessionRow {

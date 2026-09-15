@@ -224,12 +224,14 @@ export async function requestSubscriptionStripePay(c: C): Promise<Response> {
     "line_items[0][quantity]": "1",
     client_reference_id: referenceId,
   });
-  let stripeCustomer = "";
-  try {
-    const parsed = JSON.parse(user.settings || "{}") as Record<string, unknown>;
-    stripeCustomer = String(parsed.stripe_customer || parsed.stripeCustomer || "");
-  } catch {
-    /* ignore */
+  let stripeCustomer = String(user.stripe_customer || "");
+  if (!stripeCustomer) {
+    try {
+      const parsed = JSON.parse(user.settings || "{}") as Record<string, unknown>;
+      stripeCustomer = String(parsed.stripe_customer || parsed.stripeCustomer || "");
+    } catch {
+      /* ignore */
+    }
   }
   if (stripeCustomer) params.set("customer", stripeCustomer);
   else {

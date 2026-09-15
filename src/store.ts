@@ -34,7 +34,7 @@ import {
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
 import { calcNextResetTime, calcPlanEndTime, normalizeBillingPreference, normalizeResetPeriod } from "./subscription.js";
 import { MODEL_PRICING_OPTION_KEYS } from "./model-pricing.js";
-import { storeFormatQuota } from "./quota.js";
+import { storeFormatQuota, storeLogQuota } from "./quota.js";
 import type {
   ChannelRow,
   D1Database,
@@ -53,6 +53,10 @@ export const ERR_SUBSCRIPTION_ORDER_NOT_FOUND = "subscription order not found";
 export const ERR_SUBSCRIPTION_ORDER_STATUS_INVALID = "subscription order status invalid";
 /** Original `model.ErrPaymentMethodMismatch`. */
 export const ERR_PAYMENT_METHOD_MISMATCH = "payment method mismatch";
+/** Original `model.ErrTopUpNotFound`. */
+export const ERR_TOP_UP_NOT_FOUND = "topup not found";
+/** Original `model.ErrTopUpStatusInvalid`. */
+export const ERR_TOP_UP_STATUS_INVALID = "topup status invalid";
 /** Original `model.ErrInvalidTopUpQuota`. */
 export const ERR_INVALID_TOP_UP_QUOTA = "invalid top-up quota";
 /** Original `model.ErrTopUpQuotaLimitExceeded`. */
@@ -2225,19 +2229,211 @@ export class Store {
 
   /**
    * Original `model.creditTopUpQuota`: atomic `quota + credited` only when current quota
-   * is within `MaxWalletQuota - creditedQuota`.
+   * is within `MaxWalletQuota - creditedQuota`. Optional `updates` match GORM `Updates`
+   * extras (`stripe_customer`, `email`).
    */
-  async creditTopUpQuota(userId: number, creditedQuota: number): Promise<void> {
+  async creditTopUpQuota(userId: number, creditedQuota: number, updates: Record<string, unknown> = {}): Promise<void> {
     if (creditedQuota <= 0 || creditedQuota > MAX_WALLET_QUOTA) throw new Error(ERR_INVALID_TOP_UP_QUOTA);
     const maxCurrent = MAX_WALLET_QUOTA - creditedQuota;
+    const sets = ["quota = quota + ?"];
+    const binds: unknown[] = [creditedQuota];
+    if (updates.stripe_customer != null) {
+      sets.push("stripe_customer = ?");
+      binds.push(String(updates.stripe_customer));
+    }
+    if (updates.email != null) {
+      sets.push("email = ?");
+      binds.push(String(updates.email));
+    }
+    binds.push(userId, maxCurrent);
     const r = await this.db
-      .prepare("UPDATE users SET quota = quota + ? WHERE id = ? AND quota <= ?")
-      .bind(creditedQuota, userId, maxCurrent)
+      .prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ? AND quota <= ?`)
+      .bind(...binds)
       .run();
     if (Number(r.meta.changes || 0) === 1) return;
     const user = await this.getUserById(userId);
     if (!user) throw new Error("record not found");
     throw new Error(ERR_TOP_UP_QUOTA_LIMIT_EXCEEDED);
+  }
+
+  /** Original `model.RecordTopupLog` (`other.admin_info` payment callback fields). */
+  private async recordTopupLog(
+    userId: number,
+    content: string,
+    callerIp: string,
+    paymentMethod: string,
+    callbackPaymentMethod: string,
+  ): Promise<void> {
+    const user = await this.getUserById(userId);
+    await this.insertLog({
+      user_id: userId,
+      username: user?.username || "",
+      type: LOG_TOPUP,
+      content,
+      ip: callerIp,
+      other: JSON.stringify({
+        admin_info: {
+          server_ip: "",
+          node_name: "edge-api",
+          caller_ip: callerIp,
+          payment_method: paymentMethod,
+          callback_payment_method: callbackPaymentMethod,
+          version: VERSION,
+        },
+      }),
+    });
+  }
+
+  /** Mark pending top-up success then credit; roll back the order if credit fails. */
+  private async settlePendingTopUp(
+    row: Record<string, unknown>,
+    quotaToAdd: number,
+    updates: Record<string, unknown> = {},
+    extraPatch: Record<string, unknown> = {},
+  ): Promise<void> {
+    const id = Number(row.id);
+    const userId = Number(row.user_id);
+    const completeTime = nowSec();
+    const previousMethod = String(row.payment_method || "");
+    await this.updateTopup(id, { complete_time: completeTime, status: "success", ...extraPatch });
+    try {
+      await this.creditTopUpQuota(userId, quotaToAdd, updates);
+    } catch (err) {
+      const rollback: Record<string, unknown> = { complete_time: 0, status: "pending" };
+      if (extraPatch.payment_method != null) rollback.payment_method = previousMethod;
+      await this.updateTopup(id, rollback);
+      throw err;
+    }
+  }
+
+  private async topUpQuotaPerUnit(): Promise<number> {
+    return (await this.optionNum("QuotaPerUnit", 500000)) || 500000;
+  }
+
+  /**
+   * Original `model.RechargeEpay`.
+   * Credits `Amount * QuotaPerUnit`. Success is idempotent. Records `RecordTopupLog`.
+   */
+  async rechargeEpay(tradeNo: string, actualPaymentMethod = "", callerIp = ""): Promise<{ alreadyDone: boolean }> {
+    if (!tradeNo) throw new Error("未提供支付单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error(ERR_TOP_UP_NOT_FOUND);
+    if (String(row.payment_provider || "") !== "epay") throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    if (String(row.status) === "success") return { alreadyDone: true };
+    if (String(row.status) !== "pending") throw new Error(ERR_TOP_UP_STATUS_INVALID);
+    const quotaToAdd = walletQuotaFromDecimalStrict(Number(row.amount || 0) * (await this.topUpQuotaPerUnit()));
+    const extra: Record<string, unknown> = {};
+    if (actualPaymentMethod && actualPaymentMethod !== String(row.payment_method || "")) {
+      extra.payment_method = actualPaymentMethod;
+    }
+    await this.settlePendingTopUp(row, quotaToAdd, {}, extra);
+    const formatted = await storeLogQuota(this, quotaToAdd);
+    await this.recordTopupLog(
+      Number(row.user_id),
+      `使用在线充值成功，充值金额: ${formatted}，支付金额：${Number(row.money || 0).toFixed(6)}`,
+      callerIp,
+      String(extra.payment_method || row.payment_method || ""),
+      "epay",
+    );
+    return { alreadyDone: false };
+  }
+
+  /**
+   * Original `model.Recharge` (Stripe).
+   * Credits `Money * QuotaPerUnit`. Not idempotent on success. Sets `stripe_customer`.
+   */
+  async rechargeStripe(tradeNo: string, customerId = "", callerIp = ""): Promise<void> {
+    if (!tradeNo) throw new Error("未提供支付单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("充值订单不存在");
+    if (String(row.payment_provider || "") !== "stripe") throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    if (String(row.status) !== "pending") throw new Error("充值订单状态错误");
+    const quotaToAdd = walletQuotaFromDecimalStrict(Number(row.money || 0) * (await this.topUpQuotaPerUnit()));
+    await this.settlePendingTopUp(row, quotaToAdd, { stripe_customer: customerId });
+    const formatted = await storeFormatQuota(this, quotaToAdd);
+    await this.recordTopupLog(
+      Number(row.user_id),
+      `使用在线充值成功，充值金额: ${formatted}，支付金额：${Math.trunc(Number(row.amount || 0))}`,
+      callerIp,
+      String(row.payment_method || ""),
+      "stripe",
+    );
+  }
+
+  /**
+   * Original `model.RechargeCreem`.
+   * Credits `Amount` as quota (not multiplied by QuotaPerUnit). Fills empty email.
+   */
+  async rechargeCreem(tradeNo: string, customerEmail = "", _customerName = "", callerIp = ""): Promise<void> {
+    if (!tradeNo) throw new Error("未提供支付单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("充值订单不存在");
+    if (String(row.payment_provider || "") !== "creem") throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    if (String(row.status) !== "pending") throw new Error("充值订单状态错误");
+    const quotaToAdd = walletQuotaFromDecimalStrict(Number(row.amount || 0));
+    const updates: Record<string, unknown> = {};
+    if (customerEmail) {
+      const user = await this.getUserById(Number(row.user_id));
+      if (user && !user.email) updates.email = customerEmail;
+    }
+    await this.settlePendingTopUp(row, quotaToAdd, updates);
+    await this.recordTopupLog(
+      Number(row.user_id),
+      `使用Creem充值成功，充值额度: ${quotaToAdd}，支付金额：${Number(row.money || 0).toFixed(2)}`,
+      callerIp,
+      String(row.payment_method || ""),
+      "creem",
+    );
+  }
+
+  /**
+   * Original `model.RechargeWaffo`.
+   * Credits `Amount * QuotaPerUnit`. Success is idempotent.
+   */
+  async rechargeWaffo(tradeNo: string, callerIp = ""): Promise<void> {
+    if (!tradeNo) throw new Error("未提供支付单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("充值订单不存在");
+    if (String(row.payment_provider || "") !== "waffo") throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    if (String(row.status) === "success") return;
+    if (String(row.status) !== "pending") throw new Error("充值订单状态错误");
+    const quotaToAdd = walletQuotaFromDecimalStrict(Number(row.amount || 0) * (await this.topUpQuotaPerUnit()));
+    await this.settlePendingTopUp(row, quotaToAdd);
+    if (quotaToAdd > 0) {
+      const formatted = await storeFormatQuota(this, quotaToAdd);
+      await this.recordTopupLog(
+        Number(row.user_id),
+        `Waffo充值成功，充值额度: ${formatted}，支付金额: ${Number(row.money || 0).toFixed(2)}`,
+        callerIp,
+        String(row.payment_method || ""),
+        "waffo",
+      );
+    }
+  }
+
+  /**
+   * Original `model.RechargeWaffoPancake`.
+   * Credits `Amount * QuotaPerUnit`. Success is idempotent. Uses `RecordLog` (no admin_info).
+   */
+  async rechargeWaffoPancake(tradeNo: string): Promise<void> {
+    if (!tradeNo) throw new Error("未提供支付单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("充值订单不存在");
+    if (String(row.payment_provider || "") !== "waffo_pancake") throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    if (String(row.status) === "success") return;
+    if (String(row.status) !== "pending") throw new Error("充值订单状态错误");
+    const quotaToAdd = walletQuotaFromDecimalStrict(Number(row.amount || 0) * (await this.topUpQuotaPerUnit()));
+    await this.settlePendingTopUp(row, quotaToAdd);
+    if (quotaToAdd > 0) {
+      const user = await this.getUserById(Number(row.user_id));
+      const formatted = await storeFormatQuota(this, quotaToAdd);
+      await this.insertLog({
+        user_id: Number(row.user_id),
+        username: user?.username || "",
+        type: LOG_TOPUP,
+        content: `Waffo Pancake充值成功，充值额度: ${formatted}，支付金额: ${Number(row.money || 0).toFixed(2)}`,
+      });
+    }
   }
 
   /**
@@ -4376,11 +4572,11 @@ export function publicAudit(
 export function publicUser(u: UserRow): Record<string, unknown> {
   const settingRaw = u.settings || "";
   let sidebar_modules = "";
-  let stripe_customer = "";
+  let stripe_customer = String(u.stripe_customer || "");
   try {
     const parsed = JSON.parse(settingRaw || "{}") as Record<string, unknown>;
     sidebar_modules = String(parsed.sidebar_modules || parsed.SidebarModules || "");
-    stripe_customer = String(parsed.stripe_customer || parsed.stripeCustomer || "");
+    if (!stripe_customer) stripe_customer = String(parsed.stripe_customer || parsed.stripeCustomer || "");
   } catch {
     /* setting is not JSON */
   }

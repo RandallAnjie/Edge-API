@@ -221,7 +221,7 @@ test("original SubscriptionRequestEpay pay/notify/return JSON", async () => {
     new Request("http://local/api/user/epay/notify?" + new URLSearchParams({ out_trade_no: params.out_trade_no, trade_status: "TRADE_SUCCESS" })),
     e,
   );
-  assert.equal(walletNotify.text, "success");
+  assert.equal(walletNotify.text, "fail");
   assert.equal((await store.getSubscriptionOrderByTrade(params.out_trade_no))?.status, "pending");
   assert.equal(await selfGroup(e, auth), "default");
 
