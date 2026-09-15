@@ -592,7 +592,7 @@ export async function requireProof(
   c: Context<Env>,
   store: Store,
   operation: VerificationOperation,
-): Promise<AuthIdentity | Response> {
+): Promise<(AuthIdentity & { method: string }) | Response> {
   const identity = await dashboardIdentity(c, store);
   const user = identity ? await store.getUserById(identity.userId) : null;
   const secret = await sessionSecret(c.env, store);

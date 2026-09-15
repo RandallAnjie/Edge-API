@@ -236,7 +236,8 @@ test("authz catalog + channel GET update_balance + email bind without mail", asy
     e,
   );
   assert.equal(bind.body.success, false);
-  assert.match(String(bind.body.message), /邮件/);
+  assert.equal(bind.body.code, "EMAIL_BINDING_DELIVERY_FAILED");
+  assert.equal(bind.body.message, "Verification email could not be sent. Start email verification again.");
 });
 
 test("system-info, task plugin upsert, original token usage, sessions view", async () => {

@@ -2337,6 +2337,10 @@ export class Store {
     return "invalid";
   }
 
+  async updateAuthFlowPayload(token: string, payload: string): Promise<void> {
+    await this.db.prepare("UPDATE auth_flows SET payload = ? WHERE token = ?").bind(payload, token).run();
+  }
+
   async deleteAuthFlow(token: string): Promise<void> {
     await this.db.prepare("DELETE FROM auth_flows WHERE token = ?").bind(token).run();
   }

@@ -27,13 +27,35 @@ import {
   requestSubscriptionStripePay,
   requestSubscriptionWaffoPancakePay,
 } from "./subscription-payment.js";
-import { mailConfigured, notifyAccountSecurityChange, sendMail, sixDigitCode } from "./mail.js";
+import { notifyAccountSecurityChange, validateAccountEmail } from "./mail.js";
 import { verifyTelegramLogin, wechatIdFromCode } from "./oauth.js";
 import { bytesToHex, generateAffCode, sha256Bytes } from "./crypto.js";
 import { finishInsertUser } from "./user-insert.js";
+import {
+  EMAIL_BIND_FLOW_TYPE,
+  EMAIL_BINDING_MAX_ATTEMPTS,
+  EMAIL_BINDING_RESEND_DELAY_SEC,
+  EMAIL_BINDING_TTL_SEC,
+  authFlowInvalid,
+  emailAlreadyTaken,
+  emailBindingAuthorization,
+  emailBindingCodeInvalid,
+  emailBindingCodesValid,
+  emailBindingLocked,
+  emailBindingResendWait,
+  emailBindingView,
+  emailDeliveryFailed,
+  emailTakenByOther,
+  generateEmailBindingCodes,
+  loadEmailBinding,
+  notifyEmailBound,
+  sendEmailBindingCodes,
+  validateStoredEmailBinding,
+  type EmailBindingState,
+} from "./email-binding.js";
 import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-oauth.js";
 import { manageMultiKeys } from "./channel-info.js";
-import { bindVerificationOperation, issueSecurityProof } from "./security.js";
+import { bindVerificationOperation, issueSecurityProof, securityProofError } from "./security.js";
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
 import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
@@ -312,63 +334,138 @@ export function registerParity(r: Router<Env>): void {
 
   r.post("/api/oauth/email/bind/start", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as { email?: string };
-    const email = (body.email || "").trim().toLowerCase();
-    if (!email.includes("@")) return apiFail("无效邮箱");
+    const identity = await dashboardIdentity(c, s);
+    if (!identity) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    let body: { email?: unknown };
+    try {
+      body = (await readJson(c.req)) as { email?: unknown };
+    } catch {
+      return securityProofError("SECURITY_CONTEXT_INVALID", "The action details are invalid.", 400);
+    }
+    if (!body || typeof body !== "object") {
+      return securityProofError("SECURITY_CONTEXT_INVALID", "The action details are invalid.", 400);
+    }
+    const validated = await validateAccountEmail(s, String(body.email || ""));
+    if (!validated.ok) return apiFailCode(validated.message, validated.code);
+    const email = validated.email;
     const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider: "email", email } });
     if (isResponse(proof)) return proof;
-    if (!(await mailConfigured(s))) return apiFail("邮件未配置");
-    const code = sixDigitCode();
+    const secret = await sessionSecret(c.env, s);
+    const bound = await bindVerificationOperation(secret, { scope: "account.binding.bind", context: { provider: "email", email } });
+    if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
+    if (await emailTakenByOther(s, email, proof.userId)) return emailAlreadyTaken();
+    const user = await s.getUserById(proof.userId);
+    if (!user) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    const currentEmail = (user.email || "").trim().toLowerCase();
+    const requireOld = Boolean(currentEmail) && proof.method !== "2fa" && proof.method !== "passkey";
+    const codes = await generateEmailBindingCodes(requireOld);
+    const now = nowSec();
+    const state: EmailBindingState = {
+      authorization: emailBindingAuthorization(proof, proof.method, bound.binding.contextHash),
+      current_email: currentEmail,
+      email,
+      new_code_hash: codes.NewHash,
+      ...(codes.OldHash ? { old_code_hash: codes.OldHash } : {}),
+      failed_attempts: 0,
+      resend_at: now + EMAIL_BINDING_RESEND_DELAY_SEC,
+    };
     const flow = randomHex(16);
-    await s.insertEmailCode(email, code, "bind");
+    const expiresAt = now + EMAIL_BINDING_TTL_SEC;
     await s.insertAuthFlow({
       token: flow,
-      type: "email_bind",
+      type: EMAIL_BIND_FLOW_TYPE,
       user_id: proof.userId,
-      expires_at: nowSec() + 600,
-      payload: email,
+      expires_at: expiresAt,
+      payload: JSON.stringify(state),
+      session_id: proof.sessionId,
     });
-    await sendMail(s, email, "绑定邮箱验证码", `<p>验证码 <b>${code}</b>，10 分钟内有效。</p>`);
-    const user = await s.getUserById(proof.userId);
-    const expires = nowSec() + 600;
-    return apiOk({
-      flow_token: flow,
-      email,
-      current_email: user?.email || "",
-      old_email_required: Boolean(user?.email),
-      expires_at: expires,
-      resend_at: nowSec() + 30,
-      notification_warning: false,
-    });
+    try {
+      await sendEmailBindingCodes(s, state, codes);
+    } catch {
+      await s.consumeAuthFlow(flow, { type: EMAIL_BIND_FLOW_TYPE, user_id: proof.userId, session_id: proof.sessionId });
+      return emailDeliveryFailed();
+    }
+    let notification_warning = false;
+    if (currentEmail && !requireOld) {
+      notification_warning = await notifyAccountSecurityChange(s, currentEmail, "A change of your email address was requested");
+    }
+    return apiOk(emailBindingView(flow, expiresAt, state, notification_warning));
   });
 
   r.post("/api/oauth/email/bind/resend", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { flow_token?: string };
-    const flow = await s.getAuthFlow(body.flow_token || "");
-    if (!flow || flow.type !== "email_bind" || flow.user_id !== u.id) return apiFail("流程无效");
-    if (!(await mailConfigured(s))) return apiFail("邮件未配置");
-    const code = sixDigitCode();
-    await s.insertEmailCode(flow.payload, code, "bind");
-    await sendMail(s, flow.payload, "绑定邮箱验证码", `<p>验证码 <b>${code}</b>，10 分钟内有效。</p>`);
-    return apiOk({ flow_token: flow.token, expires_at: flow.expires_at, resend_at: nowSec() + 30 });
+    const identity = await dashboardIdentity(c, s);
+    if (!identity) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    let body: { flow_token?: unknown };
+    try {
+      body = (await readJson(c.req)) as { flow_token?: unknown };
+    } catch {
+      return authFlowInvalid();
+    }
+    const token = String(body?.flow_token || "");
+    if (!token) return authFlowInvalid();
+    const loaded = await loadEmailBinding(s, identity, token);
+    if ("error" in loaded) return loaded.error;
+    const secret = await sessionSecret(c.env, s);
+    const bound = await bindVerificationOperation(secret, {
+      scope: "account.binding.bind",
+      context: { provider: "email", email: loaded.state.email },
+    });
+    if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
+    const invalid = await validateStoredEmailBinding(s, identity, loaded.state, bound.binding.contextHash);
+    if (invalid) return invalid;
+    if (loaded.state.resend_at > nowSec()) return emailBindingResendWait();
+    const codes = await generateEmailBindingCodes(Boolean(loaded.state.old_code_hash));
+    const next: EmailBindingState = {
+      ...loaded.state,
+      new_code_hash: codes.NewHash,
+      old_code_hash: loaded.state.old_code_hash ? codes.OldHash : undefined,
+      resend_at: nowSec() + EMAIL_BINDING_RESEND_DELAY_SEC,
+    };
+    if (!next.old_code_hash) delete next.old_code_hash;
+    await s.updateAuthFlowPayload(token, JSON.stringify(next));
+    try {
+      await sendEmailBindingCodes(s, next, codes);
+    } catch {
+      await s.consumeAuthFlow(token, { type: EMAIL_BIND_FLOW_TYPE, user_id: identity.userId, session_id: identity.sessionId });
+      return emailDeliveryFailed();
+    }
+    return apiOk(emailBindingView(token, loaded.flow.expires_at, next));
   });
 
   r.post("/api/oauth/email/bind", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { flow_token?: string; new_code?: string; email?: string };
-    const flow = await s.getAuthFlow(body.flow_token || "");
-    if (!flow || flow.type !== "email_bind" || flow.user_id !== u.id) return apiFail("流程无效");
-    if (!(await s.consumeEmailCode(flow.payload, body.new_code || "", "bind"))) return apiFail("验证码无效或已过期");
-    const previous = (await s.getUserById(u.id))?.email || "";
-    await s.updateUser(u.id, { email: flow.payload, email_verified: 1 });
-    await s.deleteAuthFlow(flow.token);
-    let notification_warning = await notifyAccountSecurityChange(s, previous, "Email address changed");
-    if (await notifyAccountSecurityChange(s, flow.payload, "Email address confirmed")) notification_warning = true;
+    const identity = await dashboardIdentity(c, s);
+    if (!identity) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    let body: { flow_token?: unknown; new_code?: unknown; old_code?: unknown };
+    try {
+      body = (await readJson(c.req)) as { flow_token?: unknown; new_code?: unknown; old_code?: unknown };
+    } catch {
+      return authFlowInvalid();
+    }
+    const token = String(body?.flow_token || "");
+    if (!token) return authFlowInvalid();
+    const loaded = await loadEmailBinding(s, identity, token);
+    if ("error" in loaded) return loaded.error;
+    const secret = await sessionSecret(c.env, s);
+    const bound = await bindVerificationOperation(secret, {
+      scope: "account.binding.bind",
+      context: { provider: "email", email: loaded.state.email },
+    });
+    if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
+    const invalid = await validateStoredEmailBinding(s, identity, loaded.state, bound.binding.contextHash);
+    if (invalid) return invalid;
+    if (await emailTakenByOther(s, loaded.state.email, identity.userId)) return emailAlreadyTaken();
+    if (!(await emailBindingCodesValid(loaded.state, String(body.new_code || ""), String(body.old_code || "")))) {
+      const failed = Number(loaded.state.failed_attempts || 0) + 1;
+      const next = { ...loaded.state, failed_attempts: failed };
+      await s.updateAuthFlowPayload(token, JSON.stringify(next));
+      if (failed >= EMAIL_BINDING_MAX_ATTEMPTS) return emailBindingLocked();
+      return emailBindingCodeInvalid();
+    }
+    await s.updateUser(identity.userId, { email: loaded.state.email });
+    await s.consumeAuthFlow(token, { type: EMAIL_BIND_FLOW_TYPE, user_id: identity.userId, session_id: identity.sessionId });
+    const notification_warning = await notifyEmailBound(s, loaded.state.current_email, loaded.state.email);
     return apiOk({ notification_warning });
   });
 

@@ -232,7 +232,7 @@ export async function requireSecurityProof(
   identity: AuthIdentity | null,
   user: UserRow | null,
   operation: VerificationOperation,
-): Promise<AuthIdentity | Response> {
+): Promise<(AuthIdentity & { method: string }) | Response> {
   if (!identity || !user) {
     return json(401, { success: false, message: "当前认证方式不支持安全验证" });
   }
@@ -240,5 +240,5 @@ export async function requireSecurityProof(
   if (!raw) return securityProofError("SECURITY_PROOF_REQUIRED", "需要安全验证");
   const consumed = await consumeOperationProof(store, secret, identity, user, operation, raw);
   if (!consumed.ok) return consumed.response;
-  return identity;
+  return { ...identity, method: consumed.method };
 }
