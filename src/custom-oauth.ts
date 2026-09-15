@@ -1,5 +1,5 @@
 import { nowSec } from "./constants.js";
-import { apiFail, apiOk, readJson } from "./http.js";
+import { apiFail, apiOk, OAuthAccessDeniedError, OAuthI18nError, readJson } from "./http.js";
 import type { OAuthProfile } from "./oauth.js";
 import type { Context } from "./router.js";
 import type { Store } from "./store.js";
@@ -352,13 +352,37 @@ export function renderAccessDeniedMessage(
   return message.trim();
 }
 
+export function customOAuthRedirectUri(serverAddress: string, slug: string): string {
+  return `${serverAddress}/oauth/${slug}`;
+}
+
+function customConnectFailed(name: string): OAuthI18nError {
+  return new OAuthI18nError(
+    `无法连接至 ${name} 服务器，请稍后重试`,
+    `Unable to connect to ${name} server, please try again later`,
+  );
+}
+
+function customTokenFailed(name: string): OAuthI18nError {
+  return new OAuthI18nError(`${name} 获取 Token 失败，请检查设置`, `Failed to get token from ${name}, please check settings`);
+}
+
+function customUserInfoEmpty(name: string): OAuthI18nError {
+  return new OAuthI18nError(`${name} 获取用户信息为空，请检查设置`, `${name} returned empty user info, please check settings`);
+}
+
+function customGetUserError(): OAuthI18nError {
+  return new OAuthI18nError("获取用户信息失败", "Failed to get user information");
+}
+
+/** Original `oauth.GenericOAuthProvider.ExchangeToken` / `GetUserInfo`. */
 export async function exchangeCustom(
   provider: Record<string, unknown>,
   code: string,
   redirect: string,
 ): Promise<OAuthProfile> {
   const cfg = publicCustomOAuthProvider(provider);
-  if (!code) throw new Error("无效的授权码");
+  const name = cfg.name || cfg.slug;
   const values = new URLSearchParams({
     grant_type: "authorization_code",
     code,
@@ -376,7 +400,12 @@ export async function exchangeCustom(
     values.set("client_id", cfg.client_id);
     values.set("client_secret", String(provider.client_secret || ""));
   }
-  const tokenRes = await fetch(cfg.token_endpoint, { method: "POST", headers, body: values });
+  let tokenRes: Response;
+  try {
+    tokenRes = await fetch(cfg.token_endpoint, { method: "POST", headers, body: values });
+  } catch {
+    throw customConnectFailed(name);
+  }
   const raw = await tokenRes.text();
   let tokenJson: { access_token?: string; token_type?: string; error?: string; error_description?: string } = {};
   try {
@@ -388,39 +417,43 @@ export async function exchangeCustom(
       token_type: parsed.get("token_type") || "",
     };
   }
-  if (tokenJson.error) throw new Error(tokenJson.error_description || tokenJson.error);
-  if (!tokenJson.access_token) throw new Error("OAuth 授权失败");
-  const tokenType = !tokenJson.token_type || tokenJson.token_type.toLowerCase() === "bearer" ? "Bearer" : tokenJson.token_type;
-  const userRes = await fetch(cfg.user_info_endpoint, {
-    headers: { authorization: `${tokenType} ${tokenJson.access_token}`, accept: "application/json" },
-  });
-  if (!userRes.ok) throw new Error("无法读取 OAuth 用户");
+  if (tokenJson.error || !tokenJson.access_token) throw customTokenFailed(name);
+  const tokenType =
+    !tokenJson.token_type || tokenJson.token_type.toLowerCase() === "bearer" ? "Bearer" : tokenJson.token_type;
+  let userRes: Response;
+  try {
+    userRes = await fetch(cfg.user_info_endpoint, {
+      headers: { authorization: `${tokenType} ${tokenJson.access_token}`, accept: "application/json" },
+    });
+  } catch {
+    throw customConnectFailed(name);
+  }
+  if (userRes.status !== 200) throw customGetUserError();
   const bodyText = await userRes.text();
   let userId = gjsonString(bodyText, cfg.user_id_field);
   if (!userId) {
     const asRaw = gjsonGet(bodyText, cfg.user_id_field);
     if (asRaw.exists && asRaw.value != null) userId = String(asRaw.value).replace(/^"|"$/g, "");
   }
-  if (!userId) throw new Error("无法读取 OAuth 用户");
+  if (!userId) throw customUserInfoEmpty(name);
   const policyRaw = cfg.access_policy.trim();
   if (policyRaw) {
     let policy: AccessPolicy;
     try {
       policy = parseAccessPolicy(policyRaw);
     } catch {
-      throw new Error("invalid access policy configuration");
+      throw customGetUserError();
     }
     const { allowed, failure } = evaluateAccessPolicy(bodyText, policy);
-    if (!allowed) throw new Error(renderAccessDeniedMessage(cfg.access_denied_message, cfg.name, bodyText, failure));
+    if (!allowed) {
+      throw new OAuthAccessDeniedError(renderAccessDeniedMessage(cfg.access_denied_message, cfg.name, bodyText, failure));
+    }
   }
-  const username = gjsonString(bodyText, cfg.username_field);
-  const displayName = gjsonString(bodyText, cfg.display_name_field);
-  const email = gjsonString(bodyText, cfg.email_field);
   return {
     id: userId,
-    username: (username || `oauth_${userId}`).slice(0, 20),
-    display_name: displayName || username || userId,
-    email: email || undefined,
+    username: gjsonString(bodyText, cfg.username_field),
+    display_name: gjsonString(bodyText, cfg.display_name_field),
+    email: gjsonString(bodyText, cfg.email_field) || undefined,
     field: "oidc_id",
     slug: cfg.slug,
     provider_id: cfg.id,

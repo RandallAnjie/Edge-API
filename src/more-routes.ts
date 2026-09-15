@@ -19,6 +19,7 @@ import { notifyAccountSecurityChange, sendMail, sixDigitCode, validateAccountEma
 import { newChallenge, rpFromRequest, verifyAssertion } from "./passkey.js";
 import {
   exchangeCustom,
+  customOAuthRedirectUri,
   exchangeDiscord,
   discordRedirectUri,
   exchangeGithub,
@@ -34,6 +35,7 @@ import {
   oauthProviderDisplayName,
   oauthProviderKnown,
   OAuthI18nError,
+  OAuthAccessDeniedError,
   type OAuthProfile,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
@@ -972,7 +974,6 @@ export function registerMore(r: Router<Env>): void {
     if (!(await oauthProviderKnown(s, provider))) {
       return json(400, { success: false, message: i18nPair(c.req, "未知的 OAuth 提供商", "Unknown OAuth provider") });
     }
-    const origin = new URL(c.req.url).origin;
     const code = c.url.searchParams.get("code") || "";
     const state = c.url.searchParams.get("state") || "";
     const errorCode = c.url.searchParams.get("error");
@@ -1191,11 +1192,13 @@ export function registerMore(r: Router<Env>): void {
       }
       const custom = await s.getOAuthProvider(provider);
       if (!custom) return json(400, { success: false, message: i18nPair(c.req, "未知的 OAuth 提供商", "Unknown OAuth provider") });
+      if (!Number(custom.enabled)) {
+        return apiFail(oauthNotEnabledMessage(c.req, await oauthProviderDisplayName(s, provider)));
+      }
       if (!code) return apiFail(oauthInvalidCodeMessage(c.req));
-      const server = ((await s.option("ServerAddress")) || origin).replace(/\/+$/, "");
-      const customRedirect = `${server}/oauth/${provider}`;
-      return finish(await exchangeCustom(custom, code, customRedirect));
+      return finish(await exchangeCustom(custom, code, customOAuthRedirectUri(await s.option("ServerAddress"), provider)));
     } catch (e) {
+      if (e instanceof OAuthAccessDeniedError) return apiFail(e.message);
       if (e instanceof OAuthI18nError) return apiFail(i18nPair(c.req, e.zh, e.en));
       return apiFail(e instanceof Error ? e.message : String(e));
     }

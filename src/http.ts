@@ -20,6 +20,25 @@ export function apiFail(message: string, data: unknown = null, status = 200): Re
   return json(status, { success: false, message, data });
 }
 
+/** Original `oauth.OAuthError` / `handleOAuthError` i18n pair. */
+export class OAuthI18nError extends Error {
+  constructor(
+    readonly zh: string,
+    readonly en: string,
+  ) {
+    super(en);
+    this.name = "OAuthI18nError";
+  }
+}
+
+/** Original `oauth.AccessDeniedError`. */
+export class OAuthAccessDeniedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OAuthAccessDeniedError";
+  }
+}
+
 /** Original `strconv.Atoi` error string from `common.ApiError`. */
 export function strconvAtoi(raw: string): { ok: true; n: number } | { ok: false; message: string } {
   if (/^-?\d+$/.test(raw)) return { ok: true, n: Number(raw) };

@@ -1,7 +1,7 @@
 import { generateAffCode, generateTokenKey } from "./crypto.js";
 import { hmacSha256Hex, sha256Bytes, timingSafeEqualStr } from "./crypto.js";
 import { nowSec, randomHex, ROLE_USER, USER_ENABLED } from "./constants.js";
-import { apiFail, apiFailCode, apiOk, i18nPair, json } from "./http.js";
+import { apiFail, apiFailCode, apiOk, i18nPair, json, OAuthI18nError } from "./http.js";
 import { ERR_TELEGRAM_ACCOUNT_NOT_BOUND } from "./telegram-oauth.js";
 import { notifyAccountSecurityChange, normalizeEmail } from "./mail.js";
 import { authUnauthorized, setupLogin } from "./auth.js";
@@ -10,19 +10,10 @@ import type { Store } from "./store.js";
 import type { Env, UserRow } from "./types.js";
 import type { Context } from "./router.js";
 
+export { OAuthI18nError, OAuthAccessDeniedError } from "./http.js";
+
 /** Original `model.UserNameMaxLength`. */
 const USER_NAME_MAX_LENGTH = 20;
-
-/** Original `oauth.OAuthError` / `handleOAuthError` i18n pair. */
-export class OAuthI18nError extends Error {
-  constructor(
-    readonly zh: string,
-    readonly en: string,
-  ) {
-    super(en);
-    this.name = "OAuthI18nError";
-  }
-}
 
 /** Original `i18n.MsgOAuthNotEnabled`. */
 export function oauthNotEnabledMessage(req: Request, name: string): string {
@@ -328,7 +319,7 @@ export async function exchangeOidc(opts: {
   };
 }
 
-export { exchangeCustom } from "./custom-oauth.js";
+export { exchangeCustom, customOAuthRedirectUri } from "./custom-oauth.js";
 
 function oauthLoginMethod(profile: OAuthProfile): string {
   return "oauth:" + (profile.slug || profile.field.replace(/_id$/, ""));
