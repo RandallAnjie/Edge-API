@@ -263,8 +263,8 @@ test("original OllamaPullModelStream SSE JSON fields", async () => {
     );
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("content-type"), "text/event-stream");
-    assert.equal(pullBody, JSON.stringify({ name: "llama3", stream: true }));
     const text = await res.text();
+    assert.equal(pullBody, JSON.stringify({ name: "llama3", stream: true }));
     assert.match(text, /data: \{"status":"pulling","digest":"sha256:abc","total":10,"completed":3\}/);
     assert.match(text, /data: \{"status":"success"\}/);
     assert.match(text, /data: \{"message":"Model llama3 pulled successfully"\}/);
