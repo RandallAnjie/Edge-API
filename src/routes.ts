@@ -52,7 +52,8 @@ import {
   verifyPassword,
   decryptPassword,
 } from "./crypto.js";
-import { apiFail, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
+import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
+import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -1428,6 +1429,9 @@ export function adminRouter(): Router<Env> {
         }
         return passkeyDomainHttpError(e, c.req);
       }
+    }
+    if (body.key === "TelegramOAuthEnabled" && value === "true" && !(await telegramSettingsConfigured(s))) {
+      return apiFailCode(ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, "TELEGRAM_OAUTH_NOT_CONFIGURED");
     }
     await s.setOption(body.key, value);
     return apiOk(null, "更新成功");

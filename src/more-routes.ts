@@ -30,6 +30,7 @@ import {
   verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
+import { newTelegramOAuthFlow, telegramAuthorizationURL, type TelegramOAuthFlow } from "./telegram-oauth.js";
 import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues, vendorRecordVersion } from "./dto.js";
 import { billingCopies } from "./billing-setting.js";
 import { DEFAULT_MODEL_RATIO_JSON } from "./ratio-defaults.js";
@@ -909,11 +910,18 @@ export function registerMore(r: Router<Env>): void {
     if (intent !== "login" && intent !== "bind" && intent !== "verify") return apiFail("无效的参数");
     if (aff.length > 32 || (intent !== "login" && aff)) return apiFail("无效的参数");
     if (intent !== "verify" && (body.scope || body.context != null)) return apiFail("无效的参数");
+    let telegramFlow: TelegramOAuthFlow | undefined;
+    if (provider === "telegram") {
+      const started = await newTelegramOAuthFlow(s);
+      if (!started.ok) return apiFailCode(started.message, started.code);
+      telegramFlow = started.flow;
+    }
     const identity = await dashboardIdentity(c, s);
     if ((intent === "bind" || intent === "verify") && !identity) {
       return json(401, { success: false, message: "绑定操作需要登录" });
     }
     const payload: Record<string, unknown> = { provider, intent, aff, affiliate_code: aff };
+    if (telegramFlow) payload.telegram = telegramFlow;
     if (intent === "bind" && identity) {
       const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider } });
       if (isResponse(proof)) return proof;
@@ -945,14 +953,8 @@ export function registerMore(r: Router<Env>): void {
       payload: JSON.stringify(payload),
       session_id: identity?.sessionId || "",
     });
-    const origin = new URL(c.req.url).origin;
-    const spaRedirect = `${origin}/oauth/${provider}`;
     const data: Record<string, unknown> = { flow_token: flow, expires_at: expires };
-    if (provider === "telegram") {
-      const token = await s.option("TelegramBotToken");
-      const botId = token.split(":")[0] || "";
-      data.authorization_url = `https://oauth.telegram.org/auth?bot_id=${encodeURIComponent(botId)}&origin=${encodeURIComponent(origin)}&request_access=write&return_to=${encodeURIComponent(spaRedirect)}`;
-    }
+    if (telegramFlow) data.authorization_url = await telegramAuthorizationURL(telegramFlow, flow);
     return apiOk(data);
   });
 

@@ -1,6 +1,7 @@
 import { START_TIME, VERSION, DEFAULT_HEADER_NAV_MODULES, DEFAULT_SIDEBAR_MODULES_ADMIN, parseJson } from "./constants.js";
 import { publicCustomOAuthStatus } from "./custom-oauth.js";
 import { effectivePasskeyRPID, passkeySettingsSnapshot, relyingPartyIDs } from "./passkey-domains.js";
+import { telegramConfigurationError } from "./telegram-oauth.js";
 import type { Store } from "./store.js";
 import type { Env } from "./types.js";
 
@@ -12,9 +13,6 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
   const agreement = await store.option("legal.user_agreement");
   const privacy = await store.option("legal.privacy_policy");
   const telegramBot = await store.option("TelegramBotName");
-  const telegramToken = await store.option("TelegramBotToken");
-  const telegramClient = await store.option("telegram.client_id");
-  const telegramSecret = await store.option("telegram.client_secret");
   const wechatQr = await store.option("WeChatAccountQRCodeImageURL");
   const customProviders = ((await store.listOAuthProviders()) as Record<string, unknown>[]).filter(
     (p) => Number(p.enabled) === 1,
@@ -36,7 +34,7 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
     linuxdo_client_id: await store.option("LinuxDOClientId"),
     linuxdo_minimum_trust_level: await store.optionNum("LinuxDOMinimumTrustLevel", 0),
     telegram_oauth: await store.optionBool("TelegramOAuthEnabled", false),
-    telegram_oauth_configured: Boolean(telegramToken) || (Boolean(telegramClient) && Boolean(telegramSecret)),
+    telegram_oauth_configured: (await telegramConfigurationError(store)) === null,
     telegram_bot_name: telegramBot,
     theme: (await store.option("Theme")) || "default",
     system_name: env.SYSTEM_NAME || (await store.option("SystemName")) || "New API",

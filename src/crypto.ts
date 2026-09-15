@@ -197,6 +197,11 @@ export async function sha256Bytes(input: string | Uint8Array): Promise<Uint8Arra
   return new Uint8Array(await crypto.subtle.digest("SHA-256", data as BufferSource));
 }
 
+/** Original `oauth2.S256ChallengeFromVerifier`. */
+export async function s256ChallengeFromVerifier(verifier: string): Promise<string> {
+  return b64url(await sha256Bytes(verifier));
+}
+
 export async function hmacSha256Raw(secret: string | Uint8Array, message: string | Uint8Array): Promise<Uint8Array> {
   const keyData = typeof secret === "string" ? new TextEncoder().encode(secret) : secret;
   const key = await crypto.subtle.importKey("raw", keyData as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
