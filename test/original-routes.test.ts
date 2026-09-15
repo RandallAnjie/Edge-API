@@ -17,6 +17,12 @@ import { relayErrorHandler } from "../src/http.js";
 import { taskPluginSyncRevision } from "../src/dto.js";
 import type { ChannelRow, Env, ExecutionContextLike } from "../src/types.js";
 import { generateWaffoTestKeyPair } from "./waffo-keys.js";
+import {
+  ORIGINAL_COMMENTED_ROUTES,
+  ORIGINAL_GIN_ROUTE_COUNT,
+  ORIGINAL_GIN_ROUTES,
+  ORIGINAL_NOT_IMPLEMENTED,
+} from "./original-gin-catalog.js";
 
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
@@ -82,105 +88,48 @@ export function parseTaskResult(){return {status:"SUCCESS"}}
 `;
 }
 
-const ORIGINAL_API: { method: string; path: string }[] = [
-  { method: "GET", path: "/api/setup" },
-  { method: "GET", path: "/api/status" },
-  { method: "GET", path: "/api/uptime/status" },
-  { method: "GET", path: "/api/models" },
-  { method: "GET", path: "/api/status/test" },
-  { method: "GET", path: "/api/notice" },
-  { method: "GET", path: "/api/user-agreement" },
-  { method: "GET", path: "/api/privacy-policy" },
-  { method: "GET", path: "/api/about" },
-  { method: "GET", path: "/api/home_page_content" },
-  { method: "GET", path: "/api/pricing" },
-  { method: "GET", path: "/api/perf-metrics/summary" },
-  { method: "GET", path: "/api/rankings" },
-  { method: "GET", path: "/api/ratio_config" },
-  { method: "POST", path: "/api/oauth/state" },
-  { method: "POST", path: "/api/oauth/email/bind/start" },
-  { method: "GET", path: "/api/oauth/wechat" },
-  { method: "GET", path: "/api/oauth/telegram/login" },
-  { method: "GET", path: "/api/verify/methods?scope=account.password.change" },
-  { method: "POST", path: "/api/user/auth/refresh" },
-  { method: "POST", path: "/api/user/auth/logout" },
-  { method: "GET", path: "/api/user/login/encryption-key" },
-  { method: "GET", path: "/api/user/sessions" },
-  { method: "GET", path: "/api/user/self" },
-  { method: "GET", path: "/api/user/models" },
-  { method: "GET", path: "/api/user/token/status" },
-  { method: "GET", path: "/api/user/passkey" },
-  { method: "POST", path: "/api/user/passkey/login/begin" },
-  { method: "GET", path: "/api/user/aff" },
-  { method: "GET", path: "/api/user/topup/info" },
-  { method: "GET", path: "/api/user/2fa/status" },
-  { method: "GET", path: "/api/user/checkin" },
-  { method: "GET", path: "/api/user/oauth/bindings" },
-  { method: "GET", path: "/api/subscription/plans" },
-  { method: "GET", path: "/api/subscription/self" },
-  { method: "GET", path: "/api/subscription/admin/plans" },
-  { method: "GET", path: "/api/option/" },
-  { method: "GET", path: "/api/custom-oauth-provider/" },
-  { method: "GET", path: "/api/performance/stats" },
-  { method: "GET", path: "/api/ratio_sync/channels" },
-  { method: "GET", path: "/api/plugin/task" },
-  { method: "GET", path: "/api/plugin/task/runtime/status" },
-  { method: "GET", path: "/api/task_plugin_options" },
-  { method: "GET", path: "/api/authz/catalog" },
-  { method: "GET", path: "/api/channel/" },
-  { method: "GET", path: "/api/channel/models" },
-  { method: "GET", path: "/api/channel/models_enabled" },
-  { method: "GET", path: "/api/channel/default_base_urls" },
-  { method: "GET", path: "/api/channel/ops" },
-  { method: "GET", path: "/api/channel/update_balance" },
-  { method: "GET", path: "/api/channel/tag/models" },
-  { method: "GET", path: "/api/token/" },
-  { method: "GET", path: "/api/token/auto-groups" },
-  { method: "GET", path: "/api/redemption/" },
-  { method: "GET", path: "/api/audit" },
-  { method: "GET", path: "/api/log/" },
-  { method: "GET", path: "/api/log/self" },
-  { method: "GET", path: "/api/log/token" },
-  { method: "GET", path: "/api/system-task/list" },
-  { method: "GET", path: "/api/system-info/instances" },
-  { method: "GET", path: "/api/data/" },
-  { method: "GET", path: "/api/data/users" },
-  { method: "GET", path: "/api/data/flow?start_timestamp=1&end_timestamp=2" },
-  { method: "GET", path: "/api/group/" },
-  { method: "GET", path: "/api/prefill_group/" },
-  { method: "GET", path: "/api/mj/" },
-  { method: "GET", path: "/api/task" },
-  { method: "GET", path: "/api/vendors/" },
-  { method: "GET", path: "/api/models/" },
-  { method: "GET", path: "/api/models/missing" },
-  { method: "GET", path: "/api/deployments/" },
-  { method: "GET", path: "/api/deployments/settings" },
-  { method: "GET", path: "/api/user/self/groups" },
-  { method: "GET", path: "/api/data/self" },
-  { method: "GET", path: "/api/data/flow/self?start_timestamp=1&end_timestamp=2" },
-  { method: "GET", path: "/api/log/search" },
-  { method: "GET", path: "/api/log/stat" },
-  { method: "GET", path: "/api/log/self/stat" },
-  { method: "POST", path: "/api/channel/copy/1" },
-  { method: "GET", path: "/api/channel/fetch_models/1" },
-  { method: "POST", path: "/api/channel/fix" },
-  { method: "GET", path: "/dashboard/billing/subscription" },
-  { method: "GET", path: "/api/channel/test" },
-  { method: "GET", path: "/v1/videos/task_missing" },
-  { method: "GET", path: "/api/subscription/epay/return" },
-  { method: "GET", path: "/api/oauth/github" },
-  { method: "GET", path: "/v1/responses/resp_missing" },
-  { method: "POST", path: "/api/waffo-pancake/webhook/test" },
-  { method: "POST", path: "/api/waffo/webhook" },
-  { method: "GET", path: "/api/channel/ollama/version/1" },
-  { method: "POST", path: "/api/channel/upstream_updates/detect" },
-  { method: "POST", path: "/api/channel/upstream_updates/detect_all" },
-  { method: "POST", path: "/api/channel/upstream_updates/apply" },
-  { method: "POST", path: "/api/channel/upstream_updates/apply_all" },
-  { method: "POST", path: "/api/models/delete" },
-];
+/** Concrete probe path for a gin pattern. Longer params first so `:id` does not eat `:provider_id`. */
+function ginProbePath(pattern: string): string {
+  return pattern
+    .replaceAll("/:mode/", "/suno/")
+    .replaceAll("*path", "gemini-pro:generateContent")
+    .replaceAll(":response_id", "resp_missing")
+    .replaceAll(":provider_id", "999999")
+    .replaceAll(":binding_type", "github")
+    .replaceAll(":container_id", "ctr_missing")
+    .replaceAll(":artifact_key", "out")
+    .replaceAll(":flow_token", "flow_missing")
+    .replaceAll(":node_name", "node_missing")
+    .replaceAll(":video_id", "vid_missing")
+    .replaceAll(":task_id", "task_missing")
+    .replaceAll(":version", "1.0.0")
+    .replaceAll(":provider", "github")
+    .replaceAll(":model", "gpt-4")
+    .replaceAll(":env", "test")
+    .replaceAll(":sid", "sid_missing")
+    .replaceAll(":key", "demo")
+    .replaceAll(":id", "999999");
+}
 
-test("original Gin API surfaces are registered (not 404)", async () => {
+function probeUrl(pattern: string): string {
+  let path = ginProbePath(pattern);
+  if (path === "/api/data/flow" || path === "/api/data/flow/self") path += "?start_timestamp=1&end_timestamp=2";
+  if (path === "/api/verify/methods") path += "?scope=account.password.change";
+  return "http://local" + path;
+}
+
+function isUnregisteredRoute(status: number, text: string, body: Record<string, unknown>, method: string, path: string): boolean {
+  if (text === "Not Found") return true;
+  const err = body.error as { message?: string } | undefined;
+  const expected = `Invalid URL (${method} ${path})`;
+  return status === 404 && typeof err?.message === "string" && err.message.startsWith("Invalid URL (") && (err.message === expected || err.message.includes(path.split("?")[0] || path));
+}
+
+test("original Gin router method/path catalog is registered (not RelayNotFound)", async () => {
+  assert.equal(ORIGINAL_GIN_ROUTES.length, ORIGINAL_GIN_ROUTE_COUNT);
+  const keys = ORIGINAL_GIN_ROUTES.map((r) => `${r.method} ${r.path}`);
+  assert.equal(new Set(keys).size, keys.length);
+
   resetSchemaFlag();
   const e = env();
   await json(
@@ -202,13 +151,79 @@ test("original Gin API surfaces are registered (not 404)", async () => {
   const token = (login.body.data as { access_token: string }).access_token;
   const auth = { authorization: "Bearer " + token, "content-type": "application/json" };
 
-  for (const route of ORIGINAL_API) {
-    const { res, text } = await json(
-      new Request("http://local" + route.path, { method: route.method, headers: auth }),
+  for (const route of ORIGINAL_GIN_ROUTES) {
+    const url = probeUrl(route.path);
+    const probePath = new URL(url).pathname;
+    const { res, text, body } = await json(
+      new Request(url, {
+        method: route.method,
+        headers: auth,
+        body: route.method === "GET" || route.method === "HEAD" || route.method === "DELETE" ? undefined : "{}",
+      }),
       e,
     );
-    assert.notEqual(res.status, 404, `${route.method} ${route.path} was 404: ${text.slice(0, 80)}`);
-    assert.notEqual(text, "Not Found", `${route.method} ${route.path} returned Not Found`);
+    assert.equal(
+      isUnregisteredRoute(res.status, text, body, route.method, probePath),
+      false,
+      `${route.method} ${route.path} -> ${probePath} was unregistered: ${res.status} ${text.slice(0, 120)}`,
+    );
+  }
+
+  for (const route of ORIGINAL_COMMENTED_ROUTES) {
+    const url = probeUrl(route.path);
+    const probePath = new URL(url).pathname;
+    const { res, text, body } = await json(
+      new Request(url, { method: route.method, headers: auth, body: route.method === "GET" ? undefined : "{}" }),
+      e,
+    );
+    if (probePath.startsWith("/mj/") || probePath === "/mj") {
+      assert.notEqual(res.status, 200, `${route.method} ${route.path} must not hit a registered MJ handler`);
+      const err = body.error as { code?: string; type?: string } | undefined;
+      assert.notEqual(err?.code, "api_not_implemented");
+      assert.notEqual(err?.type, "upstream_error");
+      continue;
+    }
+    assert.equal(res.status, 404, `${route.method} ${route.path} should stay unregistered`);
+    assert.equal(
+      isUnregisteredRoute(res.status, text, body, route.method, probePath),
+      true,
+      `${route.method} ${route.path} should be original RelayNotFound, got ${text.slice(0, 120)}`,
+    );
+  }
+});
+
+test("original RelayNotImplemented JSON fields for every gin not-implemented path", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const tok = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "notimpl", remain_quota: 1000, unlimited_quota: true }),
+    }),
+    e,
+  );
+  const sk = String((tok.body.data as { key?: string })?.key || "");
+  assert.ok(sk.startsWith("sk-"));
+  const headers = { authorization: "Bearer " + sk, "content-type": "application/json" };
+
+  for (const route of ORIGINAL_NOT_IMPLEMENTED) {
+    const url = probeUrl(route.path);
+    const { res, body } = await json(
+      new Request(url, {
+        method: route.method,
+        headers,
+        body: route.method === "GET" || route.method === "HEAD" || route.method === "DELETE" ? undefined : "{}",
+      }),
+      e,
+    );
+    assert.equal(res.status, 501, `${route.method} ${route.path} status`);
+    const err = body.error as Record<string, unknown>;
+    assert.equal(err.message, "API not implemented", `${route.method} ${route.path} message`);
+    assert.equal(err.type, "new_api_error");
+    assert.equal(err.param, "");
+    assert.equal(err.code, "api_not_implemented");
   }
 });
 

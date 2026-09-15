@@ -62,8 +62,37 @@ function isMjImagePath(path: string): boolean {
   return isMjModeRelayPath(path) && /^\/[^/]+\/mj\/image\/[^/]+$/.test(path);
 }
 
-function isMjRelayRequest(path: string): boolean {
-  return path.startsWith("/mj/") || path === "/mj" || isMjModeRelayPath(path);
+/** Original `registerMjRouterGroup` relative paths (notify is commented out upstream). */
+const MJ_POST_RELATIVE = new Set([
+  "/submit/action",
+  "/submit/shorten",
+  "/submit/modal",
+  "/submit/imagine",
+  "/submit/change",
+  "/submit/simple-change",
+  "/submit/describe",
+  "/submit/blend",
+  "/submit/edits",
+  "/submit/video",
+  "/task/list-by-condition",
+  "/insight-face/swap",
+  "/submit/upload-discord-images",
+]);
+
+function mjRelativePath(path: string): string | null {
+  if (path.startsWith("/mj/") || path === "/mj") return path === "/mj" ? "/" : path.slice(3) || "/";
+  if (!isMjModeRelayPath(path)) return null;
+  const nested = path.match(/^\/[^/]+\/mj(\/.*)$/);
+  return nested ? nested[1] || "/" : null;
+}
+
+function isRegisteredMjRelay(method: string, path: string): boolean {
+  const rel = mjRelativePath(path);
+  if (rel == null) return false;
+  if (method === "GET" && /^\/image\/[^/]+$/.test(rel)) return true;
+  if (method === "GET" && /^\/task\/[^/]+\/fetch$/.test(rel)) return true;
+  if (method === "GET" && /^\/task\/[^/]+\/image-seed$/.test(rel)) return true;
+  return method === "POST" && MJ_POST_RELATIVE.has(rel);
 }
 
 const api = adminRouter();
@@ -111,14 +140,17 @@ function relayModeFrom(path: string, method: string): RelayMode | null {
 
 /** Original registered relay/dashboard-plugin paths; unmatched /v1 /api /assets use RelayNotFound. */
 function isRegisteredRelay(method: string, path: string): boolean {
-  if (isMjImagePath(path) || isMjRelayRequest(path)) return true;
+  if (isRegisteredMjRelay(method, path)) return true;
   if (method === "GET" && (path === "/v1/models" || path === "/v1beta/models" || path === "/v1beta/openai/models")) return true;
-  if (method === "GET" && path.startsWith("/v1/models/")) return true;
-  if (path === "/v1/realtime") return true;
-  if (method === "GET" && path.startsWith("/v1/video/generations/")) return true;
-  if ((method === "GET" || method === "HEAD") && path.startsWith("/v1/videos/")) return true;
-  if (method === "GET" && path.startsWith("/v1/responses/")) return true;
-  if ((method === "GET" || method === "HEAD") && path.startsWith("/v1/tasks/")) return true;
+  if (method === "GET" && path.startsWith("/v1/models/") && !path.slice("/v1/models/".length).includes("/")) return true;
+  if (method === "GET" && path === "/v1/realtime") return true;
+  if (method === "GET" && /^\/v1\/video\/generations\/[^/]+$/.test(path)) return true;
+  if (method === "GET" && /^\/v1\/videos\/[^/]+$/.test(path)) return true;
+  if ((method === "GET" || method === "HEAD") && /^\/v1\/videos\/[^/]+\/content$/.test(path)) return true;
+  if (method === "GET" && /^\/v1\/responses\/[^/]+$/.test(path)) return true;
+  if (method === "GET" && /^\/v1\/tasks\/[^/]+$/.test(path)) return true;
+  if (method === "GET" && /^\/v1\/tasks\/[^/]+\/artifacts$/.test(path)) return true;
+  if ((method === "GET" || method === "HEAD") && /^\/v1\/tasks\/[^/]+\/artifacts\/[^/]+\/content$/.test(path)) return true;
   if (notImplemented(method, path)) return true;
   return relayModeFrom(path, method) != null;
 }
@@ -230,7 +262,7 @@ async function handleRelayAfterAuth(
     return retrieveModel(model, fmt);
   }
 
-  if (isMjRelayRequest(path)) {
+  if (isRegisteredMjRelay(req.method, path)) {
     return proxyMj(req, env, store, auth, mjRelayPath(path));
   }
 
@@ -689,7 +721,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
     const isRelay =
       (path.startsWith("/v1/") && !path.startsWith("/v1/dashboard")) ||
       path.startsWith("/v1beta") ||
-      isMjRelayRequest(path);
+      isRegisteredMjRelay(req.method, path);
 
     try {
       if (isRelay && !path.startsWith("/v1/dashboard")) {
