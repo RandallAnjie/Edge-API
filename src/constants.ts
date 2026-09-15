@@ -141,7 +141,6 @@ export const USER_SESSION_ACTIVE_LIMIT = 50;
 export const USER_SESSION_LIST_LIMIT = 100;
 export const USER_SESSION_ISSUANCE_LIMIT = 100;
 export const USER_SESSION_ISSUANCE_WINDOW_SEC = 24 * 60 * 60;
-export const RATE_LIMIT_PER_MIN = 120;
 
 /** Original `common.MaxFailAttempts`. */
 export const TOTP_MAX_FAIL_ATTEMPTS = 5;
@@ -262,7 +261,7 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   ModelRequestRateLimitEnabled: "false",
   ModelRequestRateLimitCount: "0",
   ModelRequestRateLimitDurationMinutes: "1",
-  ModelRequestRateLimitSuccessCount: "0",
+  ModelRequestRateLimitSuccessCount: "1000",
   ModelRequestRateLimitGroup: "{}",
   CreemProducts: "[]",
   CreemTestMode: "false",

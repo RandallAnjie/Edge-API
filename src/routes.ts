@@ -82,6 +82,7 @@ import { storeLogQuota } from "./quota.js";
 import { finishInsertUser } from "./user-insert.js";
 import { notifyAccountSecurityChange } from "./mail.js";
 import { isPasskeyDomainOption, PasskeyDomainError, passkeyDomainHttpError, updatePasskeyDomainOptions } from "./passkey-domains.js";
+import { checkModelRequestRateLimitGroup } from "./model-rate-limit.js";
 import type { Env, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -1404,6 +1405,10 @@ export function adminRouter(): Router<Env> {
     }
     if (body.key === "TelegramOAuthEnabled" && value === "true" && !(await telegramSettingsConfigured(s))) {
       return apiFailCode(ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, "TELEGRAM_OAUTH_NOT_CONFIGURED");
+    }
+    if (body.key === "ModelRequestRateLimitGroup") {
+      const err = checkModelRequestRateLimitGroup(value);
+      if (err) return apiFail(err);
     }
     await s.setOption(body.key, value);
     return apiOk(null, "更新成功");

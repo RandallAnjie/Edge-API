@@ -2,7 +2,7 @@
  * Original `middleware.PrepareTaskPluginRoute` + `buildTaskPluginRouteRequest`
  * + `renderTaskPluginQuery` + `RespondTaskPluginError` on workerd.
  */
-import { authenticateApiToken, rateLimit } from "./auth.js";
+import { authenticateApiToken } from "./auth.js";
 import { goUnmarshalJSON } from "./channel-validate.js";
 import { MAX_FILE_DOWNLOAD_MB, MAX_REQUEST_BODY_MB, parseJson } from "./constants.js";
 import {
@@ -13,6 +13,7 @@ import {
 } from "./http.js";
 import { compilePlugin, HookError, type LoadedPlugin, type PluginEngine } from "./jsplugin.js";
 import { hit } from "./metrics.js";
+import { withModelRequestRateLimit } from "./model-rate-limit.js";
 import { applyOriginTaskIntent, type ApplyOriginTaskIntentResult, taskPluginLegacyPlatforms } from "./origin-task.js";
 import type { MatchedPlugin } from "./plugin-dispatch.js";
 import { Store } from "./store.js";
@@ -830,9 +831,8 @@ export async function handleNativePluginRoute(
     store,
   );
   if (auth instanceof Response) return auth;
-  if (!(await rateLimit(env, auth.token.id))) {
-    return abortTaskPluginRouteErrorDetail(null, null, 429, "", pluginRequestId(req));
-  }
-  hit("relay");
-  return executeNativePluginRoute({ req, env, store, auth, plugin, ctx });
+  return withModelRequestRateLimit(store, env, req, auth, async () => {
+    hit("relay");
+    return executeNativePluginRoute({ req, env, store, auth, plugin, ctx });
+  });
 }

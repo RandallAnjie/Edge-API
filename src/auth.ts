@@ -1,6 +1,5 @@
 import {
   ACCESS_TOKEN_TTL_SEC,
-  RATE_LIMIT_PER_MIN,
   ROLE_ADMIN,
   ROLE_ROOT,
   SESSION_TTL_SEC,
@@ -624,16 +623,6 @@ export async function authenticateApiToken(c: Context<Env>, store: Store): Promi
 export function tokenAllowsModel(token: TokenRow, model: string): boolean {
   if (!token.model_limits_enabled) return true;
   return tokenModelLimitAllows(tokenModelLimitsMap(String(token.model_limits || "")), model);
-}
-
-export async function rateLimit(env: Env, tokenId: number): Promise<boolean> {
-  if (!env.KV) return true;
-  const minute = Math.floor(Date.now() / 60000);
-  const key = `rl:${tokenId}:${minute}`;
-  const cur = Number((await env.KV.get(key)) || "0");
-  if (cur >= RATE_LIMIT_PER_MIN) return false;
-  await env.KV.put(key, String(cur + 1), { expirationTtl: 120 });
-  return true;
 }
 
 export async function currentSid(c: Context<Env>, store: Store): Promise<string> {

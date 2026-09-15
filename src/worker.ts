@@ -3,9 +3,10 @@ import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
 import { runPendingMidjourneyPoll } from "./midjourney-poll.js";
 import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
 import { nowSec } from "./constants.js";
-import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
+import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, sessionSecret } from "./auth.js";
 import { abortWithOpenAiMessage, apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
+import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -182,7 +183,25 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
 
   const auth = await authenticateApiToken(ctxStore(req, env, ctx), store);
   if (auth instanceof Response) return auth;
-  if (!(await rateLimit(env, auth.token.id))) return openaiError(429, "请求过于频繁", "rate_limit");
+  return withModelRequestRateLimit(
+    store,
+    env,
+    req,
+    auth,
+    () => handleRelayAfterAuth(req, env, ctx, store, auth, url, path),
+    modelRequestRateLimitApplies(req.method, path),
+  );
+}
+
+async function handleRelayAfterAuth(
+  req: Request,
+  env: Env,
+  ctx: ExecutionContextLike,
+  store: Store,
+  auth: AuthToken,
+  url: URL,
+  path: string,
+): Promise<Response> {
   hit("relay");
 
   if (notImplemented(req.method, path)) {
