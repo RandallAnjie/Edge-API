@@ -57,6 +57,10 @@ export interface Env {
   CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_ENABLED?: string;
   /** Original `CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_INTERVAL_MINUTES` (default 30). */
   CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_INTERVAL_MINUTES?: string;
+  /** Original `LINUX_DO_TOKEN_ENDPOINT` (default https://connect.linux.do/oauth2/token). */
+  LINUX_DO_TOKEN_ENDPOINT?: string;
+  /** Original `LINUX_DO_USER_ENDPOINT` (default https://connect.linux.do/api/user). */
+  LINUX_DO_USER_ENDPOINT?: string;
 }
 
 export interface ExecutionContextLike {

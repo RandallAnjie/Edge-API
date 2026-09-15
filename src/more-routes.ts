@@ -23,6 +23,7 @@ import {
   exchangeGithub,
   exchangeLinuxDO,
   exchangeOidc,
+  linuxdoRedirectUri,
   oidcRedirectUri,
   getBoundOAuthUserId,
   loginOrBindOAuth,
@@ -1138,7 +1139,17 @@ export function registerMore(r: Router<Env>): void {
       if (provider === "linuxdo") {
         const denied = await denyIfDisabled("LinuxDOOAuthEnabled");
         if (denied) return denied;
-        return finish(await exchangeLinuxDO(await s.option("LinuxDOClientId"), await s.option("LinuxDOClientSecret"), code, redirect));
+        return finish(
+          await exchangeLinuxDO({
+            clientId: await s.option("LinuxDOClientId"),
+            secret: await s.option("LinuxDOClientSecret"),
+            code,
+            redirect: linuxdoRedirectUri(c.req),
+            minimumTrustLevel: await s.optionNum("LinuxDOMinimumTrustLevel", 0),
+            tokenUrl: c.env.LINUX_DO_TOKEN_ENDPOINT,
+            userUrl: c.env.LINUX_DO_USER_ENDPOINT,
+          }),
+        );
       }
       if (provider === "oidc") {
         const denied = await denyIfDisabled("OIDCAuthEnabled");

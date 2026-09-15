@@ -141,30 +141,81 @@ export async function exchangeDiscord(clientId: string, secret: string, code: st
   };
 }
 
-export async function exchangeLinuxDO(clientId: string, secret: string, code: string, redirect: string): Promise<OAuthProfile> {
+/** Original `LinuxDOProvider.ExchangeToken` redirect: `scheme://host/api/oauth/linuxdo`. */
+export function linuxdoRedirectUri(req: Request): string {
+  return `${new URL(req.url).origin}/api/oauth/linuxdo`;
+}
+
+function linuxDoConnectFailed(): OAuthI18nError {
+  return new OAuthI18nError(
+    "无法连接至 Linux DO 服务器，请稍后重试",
+    "Unable to connect to Linux DO server, please try again later",
+  );
+}
+
+/** Original `oauth.LinuxDOProvider.ExchangeToken` / `GetUserInfo`. */
+export async function exchangeLinuxDO(opts: {
+  clientId: string;
+  secret: string;
+  code: string;
+  redirect: string;
+  minimumTrustLevel: number;
+  tokenUrl?: string;
+  userUrl?: string;
+}): Promise<OAuthProfile> {
+  const tokenUrl = opts.tokenUrl || "https://connect.linux.do/oauth2/token";
+  const userUrl = opts.userUrl || "https://connect.linux.do/api/user";
   const body = new URLSearchParams({
-    client_id: clientId,
-    client_secret: secret,
     grant_type: "authorization_code",
-    code,
-    redirect_uri: redirect,
+    code: opts.code,
+    redirect_uri: opts.redirect,
   });
-  const tokenRes = await fetch("https://connect.linux.do/oauth2/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
-  });
+  let tokenRes: Response;
+  try {
+    tokenRes = await fetch(tokenUrl, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${btoa(`${opts.clientId}:${opts.secret}`)}`,
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json",
+      },
+      body,
+    });
+  } catch {
+    throw linuxDoConnectFailed();
+  }
   const tokenJson = (await tokenRes.json()) as { access_token?: string };
-  if (!tokenJson.access_token) throw new Error("LinuxDO 授权失败");
-  const userRes = await fetch("https://connect.linux.do/api/user", {
-    headers: { authorization: `Bearer ${tokenJson.access_token}` },
-  });
-  const u = (await userRes.json()) as { id?: number; username?: string; name?: string };
-  if (!u.id) throw new Error("无法读取 LinuxDO 用户");
+  if (!tokenJson.access_token) {
+    throw new OAuthI18nError(
+      "Linux DO 获取 Token 失败，请检查设置",
+      "Failed to get token from Linux DO, please check settings",
+    );
+  }
+  let userRes: Response;
+  try {
+    userRes = await fetch(userUrl, {
+      headers: { authorization: `Bearer ${tokenJson.access_token}`, accept: "application/json" },
+    });
+  } catch {
+    throw linuxDoConnectFailed();
+  }
+  const u = (await userRes.json()) as { id?: number; username?: string; name?: string; trust_level?: number };
+  if (!u.id) {
+    throw new OAuthI18nError(
+      "Linux DO 获取用户信息为空，请检查设置",
+      "Linux DO returned empty user info, please check settings",
+    );
+  }
+  if ((u.trust_level || 0) < opts.minimumTrustLevel) {
+    throw new OAuthI18nError(
+      "Linux DO 信任等级未达到管理员设置的最低信任等级",
+      "Linux DO trust level does not meet the minimum required by administrator",
+    );
+  }
   return {
     id: String(u.id),
-    username: (u.username || `ld_${u.id}`).slice(0, 20),
-    display_name: u.name || u.username || String(u.id),
+    username: u.username || "",
+    display_name: u.name || "",
     field: "linuxdo_id",
   };
 }
