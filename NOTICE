@@ -166,6 +166,16 @@ Material changes from upstream:
   fields match original (`reasoning_effort`, `is_model_mapped`,
   `upstream_model_name`, `request_path`, `request_conversion`, `claude`,
   `cache_creation_*`, `usage_semantic`).
+  Original `InjectTieredBillingInfo` public log JSON also includes
+  `image_count` / `fixed_price` / `request_rules` from
+  `billingexpr.ComputeTieredQuotaWithRequest` (and estimated_* fallback when
+  settlement result is nil). `tier("image", fixed(0.04)) * image_count` with
+  3 images is quota `60000` (`QuotaPerUnit` 500000). OpenAI image `n` is
+  original `ImageRequest.ImageCount` (Ali uses `parameters.n`); settlement
+  may replace it with `data.#` via `UpdateImageCount` without mutating the
+  frozen request. Extra-OK: `param()`/`header()` request-rule `_trace` uses a
+  Function-sandbox rewrite rather than expr-lang AST Patch; `hour`/`minute`
+  /`weekday`/`month`/`day` stay 0 instead of `time.Now()`.
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented

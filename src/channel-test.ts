@@ -46,6 +46,7 @@ import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
 import { computeQuota, textConsumePriceData } from "./quota.js";
+import { openaiImageDataCount } from "./image-billing.js";
 import { billingUsageFromOpenAICounts, cacheCreationTokensTotal, injectTieredBillingInfo, resolveRelayTieredQuota } from "./tiered-settle.js";
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
 import { relayFormatForClient, requestConversionChain } from "./log-info-generate.js";
@@ -736,7 +737,18 @@ export async function testChannel(
     const group = opts.group || user.group || "default";
     const billingUsage = billingUsageFromOpenAICounts(usage);
     const isClaude = built.kind === "anthropic" || billingUsage.usage_semantic === "anthropic";
-    const tiered = await resolveRelayTieredQuota(store, originModel, group, billingUsage, isClaude);
+    let actualImageCount = 0;
+    try {
+      actualImageCount = openaiImageDataCount(JSON.parse(text) as Record<string, unknown>);
+    } catch {
+      actualImageCount = 0;
+    }
+    const tiered = await resolveRelayTieredQuota(store, originModel, group, billingUsage, isClaude, {
+      relayMode: mode,
+      imageBody: built.body,
+      channelType: channel.type,
+      actualImageCount,
+    });
     const quota = tiered ? tiered.quota : await computeQuota(store, originModel, group, usage.prompt, usage.completion);
     const price = await textConsumePriceData(store, originModel, group, user.group);
     const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;

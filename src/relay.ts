@@ -194,6 +194,7 @@ import { tokenAllowsModel } from "./auth.js";
 import { OPENAI_MODELS_MAP } from "./channel-models.js";
 import { factoryPluginMeta, listRoutingPlugins } from "./task-plugin-factory.js";
 import { hasModelBillingConfig } from "./billing-setting.js";
+import { openaiImageDataCount } from "./image-billing.js";
 import {
   billingUsageFromOpenAICounts,
   cacheCreationTokensTotal,
@@ -1388,6 +1389,11 @@ type SettleLogExtra = {
   isSystemPromptOverwritten?: boolean;
   requestConversion?: string[];
   billingSource?: string;
+  relayMode?: string;
+  imageBody?: Record<string, unknown>;
+  imageChannelType?: number;
+  requestHeaders?: Record<string, string>;
+  actualImageCount?: number;
 };
 
 async function settle(
@@ -1414,7 +1420,13 @@ async function settle(
       promptCacheHitTokens: extra.promptCacheHitTokens || 0,
     });
   const isClaude = extra.clientFormat === "anthropic" || billingUsage.usage_semantic === "anthropic";
-  const tiered = await resolveRelayTieredQuota(store, model, auth.usingGroup, billingUsage, isClaude);
+  const tiered = await resolveRelayTieredQuota(store, model, auth.usingGroup, billingUsage, isClaude, {
+    relayMode: extra.relayMode,
+    imageBody: extra.imageBody,
+    channelType: extra.imageChannelType,
+    headers: extra.requestHeaders,
+    actualImageCount: extra.actualImageCount,
+  });
   let quota = tiered ? tiered.quota : await computeQuota(store, model, auth.usingGroup, prompt, completion);
   const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
   if (ok && quota > 0) {
@@ -1986,6 +1998,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         destinationFormat: destinationRelayFormat(channel.type, mode, viaResponses),
       }),
       billingSource: "wallet",
+      relayMode: mode,
+      imageBody: asObj(opts.body),
+      imageChannelType: channel.type,
+      requestHeaders: requestHeadersFrom(opts.req),
     };
 
     if (!res.ok) {
@@ -2438,6 +2454,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       };
     }
     attachSettleUsage(extra, usage);
+    if (mode === "images") extra.actualImageCount = openaiImageDataCount(converted);
     await settle(
       store,
       auth,

@@ -2,7 +2,7 @@
  * Original `pkg/billingexpr` compile + `billing_setting.SmokeTestExpr` (workerd sandbox).
  */
 import { bytesToHex, sha256BytesSync, utf8Bytes } from "./jsplugin-sha256.js";
-import { quotaRoundChecked, type QuotaClamp } from "./task-plugin-usage.js";
+import { MAX_IMAGE_N, quotaRoundChecked, type QuotaClamp } from "./task-plugin-usage.js";
 
 const TOKEN_VECTORS = [
   { p: 0, c: 0, len: 0 },
@@ -28,6 +28,8 @@ const EXPR_ENV_KEYS = [
   "ao",
   "tier",
   "fixed",
+  "_trace",
+  "_trace_int",
   "header",
   "param",
   "u",
@@ -69,6 +71,14 @@ export function normalizeTokenParams(tokens?: Partial<TokenParams> | { p?: numbe
   return { ...emptyTokenParams(), ...(tokens || {}) };
 }
 
+/** Original `billingexpr.RequestInput`. */
+export type BillingRequestInput = {
+  headers?: Record<string, string>;
+  body?: unknown;
+  usage?: Record<string, unknown>;
+  imageCount?: number;
+};
+
 export type BillingSnapshot = {
   billingMode: string;
   modelName: string;
@@ -80,16 +90,28 @@ export type BillingSnapshot = {
   estimatedQuotaBeforeGroup: number;
   estimatedQuotaAfterGroup: number;
   estimatedTier: string;
+  estimatedBillingUnit?: BillingUnit;
+  estimatedImageCount?: number;
+  estimatedFixedPrice?: number;
   quotaPerUnit: number;
   exprVersion: number;
   taskUsageBilling: boolean;
   usageFacts: Record<string, unknown>;
 };
 
+export type RequestRuleTrace = {
+  cond: string;
+  multiplier: number;
+  matched: boolean;
+};
+
 export type ExprTraceResult = {
   cost: number;
   matchedTier: string;
   billingUnit: BillingUnit;
+  imageCount?: number;
+  fixedPrice?: number;
+  requestRules: RequestRuleTrace[];
 };
 
 export type TieredResult = {
@@ -100,6 +122,9 @@ export type TieredResult = {
   clamp: QuotaClamp | null;
   billingUnit: BillingUnit;
   billingTokens?: TokenParams;
+  imageCount?: number;
+  fixedPrice?: number;
+  requestRules?: RequestRuleTrace[];
 };
 
 export function parseExprVersion(exprStr: string): { version: number; body: string } {
@@ -152,14 +177,179 @@ function rewriteExpr(body: string): string {
   return body.replace(/\bnil\b/g, "null").replace(/\band\b/g, "&&").replace(/\bor\b/g, "||");
 }
 
+const REQUEST_PROBE = /\b(?:param|header|hour|minute|weekday|month|day)\s*\(/;
+
+type ExprTraceState = {
+  matchedTier: string;
+  billingUnit: BillingUnit;
+  cost: number;
+  imageCount?: number;
+  fixedPrice?: number;
+  requestRules: RequestRuleTrace[];
+};
+
+function skipString(body: string, start: number): number {
+  const quote = body[start];
+  for (let i = start + 1; i < body.length; i++) {
+    if (body[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (body[i] === quote) return i;
+  }
+  return body.length - 1;
+}
+
+function matchingParen(body: string, openIndex: number): number {
+  let depth = 0;
+  for (let i = openIndex; i < body.length; i++) {
+    const c = body[i];
+    if (c === '"' || c === "'") {
+      i = skipString(body, i);
+      continue;
+    }
+    if (c === "(") depth++;
+    else if (c === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function parseNumberLiteral(raw: string): { value: number; integer: boolean } | null {
+  const text = raw.trim();
+  if (/^-?\d+$/.test(text)) return { value: Number(text), integer: true };
+  if (/^-?\d+\.\d+$/.test(text)) return { value: Number(text), integer: false };
+  return null;
+}
+
+function parseTernaryRequestRule(inner: string): { cond: string; multiplier: number; integer: boolean } | null {
+  let question = -1;
+  let colon = -1;
+  let depth = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === '"' || c === "'") {
+      i = skipString(inner, i);
+      continue;
+    }
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (depth === 0 && c === "?" && question < 0) question = i;
+    else if (depth === 0 && c === ":" && question >= 0) {
+      colon = i;
+      break;
+    }
+  }
+  if (question < 0 || colon < 0) return null;
+  const cond = inner.slice(0, question).trim();
+  const thenNum = parseNumberLiteral(inner.slice(question + 1, colon));
+  const elseNum = parseNumberLiteral(inner.slice(colon + 1));
+  if (!thenNum || !elseNum || elseNum.value !== 1) return null;
+  if (!REQUEST_PROBE.test(cond)) return null;
+  return { cond, multiplier: thenNum.value, integer: thenNum.integer && elseNum.integer };
+}
+
+/** Original `requestRulePatcher` compile-time `_trace` rewrite. */
+function patchRequestRuleTraces(body: string): { body: string; rules: RequestRuleTrace[] } {
+  const matches: { start: number; end: number; cond: string; multiplier: number; integer: boolean }[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '"' || c === "'") {
+      i = skipString(body, i);
+      continue;
+    }
+    if (c !== "(") continue;
+    const end = matchingParen(body, i);
+    if (end < 0) continue;
+    const parsed = parseTernaryRequestRule(body.slice(i + 1, end));
+    if (!parsed) continue;
+    matches.push({ start: i, end, ...parsed });
+  }
+  if (!matches.length) return { body, rules: [] };
+  const rules: RequestRuleTrace[] = matches.map((match) => ({
+    cond: match.cond,
+    multiplier: match.multiplier,
+    matched: false,
+  }));
+  let out = body;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const match = matches[i];
+    const fn = match.integer ? "_trace_int" : "_trace";
+    const multiplier = match.integer ? String(match.multiplier) : String(match.multiplier);
+    out = `${out.slice(0, match.start)}(${fn}(${i}, ${match.cond}, ${multiplier}))${out.slice(match.end + 1)}`;
+  }
+  return { body: out, rules };
+}
+
+function reservedTraceIdentifier(body: string): string | null {
+  if (/\b_trace_int\b/.test(body)) return "_trace_int";
+  if (/\b_trace\b/.test(body)) return "_trace";
+  return null;
+}
+
+function normalizeHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers || {})) {
+    const k = key.toLowerCase().trim();
+    const v = String(value || "").trim();
+    if (!k || !v) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+function paramBody(raw: unknown): unknown {
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === "object") return raw;
+  return null;
+}
+
+/** Original gjson.GetBytes path used by `param()`. */
+function gjsonGet(value: unknown, path: string): { exists: boolean; value: unknown } {
+  const trimmed = path.trim();
+  if (!trimmed) return { exists: false, value: undefined };
+  let current: unknown = value;
+  for (const part of trimmed.split(".")) {
+    if (current == null || typeof current !== "object") return { exists: false, value: undefined };
+    if (Array.isArray(current)) {
+      if (!/^\d+$/.test(part)) return { exists: false, value: undefined };
+      const idx = Number(part);
+      if (idx < 0 || idx >= current.length) return { exists: false, value: undefined };
+      current = current[idx];
+      continue;
+    }
+    if (!Object.prototype.hasOwnProperty.call(current, part)) return { exists: false, value: undefined };
+    current = (current as Record<string, unknown>)[part];
+  }
+  return { exists: true, value: current };
+}
+
 function envFor(
   tokens: Partial<TokenParams> & { p: number; c: number; len: number },
   usage: Record<string, unknown> = {},
-  trace?: { matchedTier: string; billingUnit: BillingUnit; cost: number },
+  trace?: ExprTraceState,
+  imageCount = 1,
+  request: BillingRequestInput = {},
 ) {
   const params = normalizeTokenParams(tokens);
+  const headers = normalizeHeaders(request.headers);
+  const body = paramBody(request.body);
+  const noteRule = (ruleIndex: number, matched: boolean) => {
+    if (trace && matched && ruleIndex >= 0 && ruleIndex < trace.requestRules.length) {
+      trace.requestRules[ruleIndex].matched = true;
+    }
+  };
   return {
-    image_count: 1,
+    image_count: imageCount,
     p: params.p,
     c: params.c,
     len: params.len,
@@ -180,11 +370,27 @@ function envFor(
       return cost;
     },
     fixed: (amount: number) => {
-      if (trace) trace.billingUnit = "request";
+      if (trace) {
+        trace.billingUnit = "request";
+        trace.fixedPrice = Number(amount);
+      }
       return Number(amount) * 1_000_000;
     },
-    header: (_key: string) => "",
-    param: () => null,
+    _trace: (ruleIndex: number, matched: boolean, multiplier: number) => {
+      noteRule(ruleIndex, matched);
+      return matched ? multiplier : 1;
+    },
+    _trace_int: (ruleIndex: number, matched: boolean, multiplier: number) => {
+      noteRule(ruleIndex, matched);
+      return matched ? multiplier : 1;
+    },
+    header: (key: string) => headers[String(key || "").toLowerCase().trim()] || "",
+    param: (path: string) => {
+      const name = String(path || "").trim();
+      if (!name || body == null) return null;
+      const got = gjsonGet(body, name);
+      return got.exists ? got.value : null;
+    },
     u: (key: string) => {
       const name = String(key || "").trim();
       if (!name || !usage || !Object.prototype.hasOwnProperty.call(usage, name)) return null;
@@ -226,12 +432,14 @@ function run(fn: (...args: unknown[]) => number, tokens: { p: number; c: number;
   return result;
 }
 
-/** Original `billingexpr.CompileFromCache` (workerd Function sandbox). */
+/** Original `billingexpr.CompileFromCache`. */
 export function compileBillingExpr(exprStr: string): Error | null {
   const { body } = parseExprVersion(exprStr);
   if (!body.trim()) return new Error("billing expression is required");
+  const reserved = reservedTraceIdentifier(body);
+  if (reserved) return new Error(`expr compile error: identifier ${JSON.stringify(reserved)} is reserved for internal use`);
   try {
-    compile(body);
+    compile(patchRequestRuleTraces(body).body);
     return null;
   } catch (err) {
     return new Error(`expr compile error: ${err instanceof Error ? err.message : String(err)}`);
@@ -243,18 +451,43 @@ export function runExprWithRequest(
   exprStr: string,
   usage: Record<string, unknown> = {},
   tokens: Partial<TokenParams> & { p?: number; c?: number; len?: number } = {},
+  request: BillingRequestInput = {},
 ): ExprTraceResult {
   const { body } = parseExprVersion(exprStr);
-  const fn = compile(body);
-  const trace: { matchedTier: string; billingUnit: BillingUnit; cost: number } = {
+  const reserved = reservedTraceIdentifier(body);
+  if (reserved) throw new Error(`expr compile error: identifier ${JSON.stringify(reserved)} is reserved for internal use`);
+  const patched = patchRequestRuleTraces(body);
+  const fn = compile(patched.body);
+  const vars = usedVars(exprStr) || {};
+  let imageCount = 1;
+  if (vars.image_count) {
+    if (request.imageCount != null) {
+      imageCount = Math.trunc(Number(request.imageCount));
+    } else if (usage.image_count != null && usage.image_count !== "") {
+      imageCount = Math.trunc(Number(usage.image_count));
+    }
+    if (!Number.isFinite(imageCount) || imageCount < 1 || imageCount > MAX_IMAGE_N) {
+      throw new Error(`image_count must be between 1 and ${MAX_IMAGE_N}`);
+    }
+  }
+  const trace: ExprTraceState = {
     matchedTier: "",
     billingUnit: "token",
     cost: 0,
+    requestRules: patched.rules.map((rule) => ({ ...rule })),
   };
-  const env = envFor(normalizeTokenParams(tokens), usage, trace);
+  if (vars.image_count) trace.imageCount = imageCount;
+  const env = envFor(normalizeTokenParams(tokens), usage, trace, imageCount, request);
   const cost = Number(fn(...envValues(env)));
   if (!Number.isFinite(cost)) throw new Error(`expr run error: result is ${cost}`);
-  return { cost, matchedTier: trace.matchedTier, billingUnit: trace.billingUnit };
+  return {
+    cost,
+    matchedTier: trace.matchedTier,
+    billingUnit: trace.billingUnit,
+    imageCount: trace.imageCount,
+    fixedPrice: trace.fixedPrice,
+    requestRules: trace.requestRules,
+  };
 }
 
 function quotaConversion(exprOutput: number, snap: BillingSnapshot): number {
@@ -272,12 +505,18 @@ export function computeTieredQuotaWithRequest(
   snap: BillingSnapshot,
   usage: Record<string, unknown> = {},
   params?: Partial<TokenParams>,
+  request: BillingRequestInput = {},
 ): TieredResult {
   if (snap.taskUsageBilling && usesFixedPricing(snap.exprString)) {
     throw new Error("fixed pricing is not supported for task usage expressions");
   }
   const tokens = normalizeTokenParams(params);
-  const { cost, matchedTier, billingUnit } = runExprWithRequest(snap.exprString, usage, tokens);
+  const { cost, matchedTier, billingUnit, imageCount, fixedPrice, requestRules } = runExprWithRequest(
+    snap.exprString,
+    usage,
+    tokens,
+    request,
+  );
   const quotaBeforeGroup = quotaConversion(cost, snap);
   const afterGroup = quotaRoundChecked(quotaBeforeGroup * snap.groupRatio);
   const result: TieredResult = {
@@ -288,6 +527,9 @@ export function computeTieredQuotaWithRequest(
     clamp: afterGroup.clamp,
     billingUnit,
   };
+  if (imageCount != null) result.imageCount = imageCount;
+  if (fixedPrice != null) result.fixedPrice = fixedPrice;
+  if (requestRules.length) result.requestRules = requestRules;
   if (billingUnit === "token" && usedVars(snap.exprString)?.img_cr) result.billingTokens = tokens;
   return result;
 }
@@ -323,6 +565,9 @@ export function billingSnapshotJSON(snap: BillingSnapshot): Record<string, unkno
   };
   if (snap.taskUsageBilling) out.task_usage_billing = true;
   if (snap.usageFacts && Object.keys(snap.usageFacts).length) out.usage_facts = snap.usageFacts;
+  if (snap.estimatedBillingUnit) out.estimated_billing_unit = snap.estimatedBillingUnit;
+  if (snap.estimatedImageCount != null) out.estimated_image_count = snap.estimatedImageCount;
+  if (snap.estimatedFixedPrice != null) out.estimated_fixed_price = snap.estimatedFixedPrice;
   return out;
 }
 
@@ -358,6 +603,15 @@ export function parseBillingSnapshot(raw: unknown): BillingSnapshot | null {
     estimatedQuotaBeforeGroup: numberField(obj.estimated_quota_before_group ?? obj.estimatedQuotaBeforeGroup),
     estimatedQuotaAfterGroup: numberField(obj.estimated_quota_after_group ?? obj.estimatedQuotaAfterGroup),
     estimatedTier: stringField(obj.estimated_tier ?? obj.estimatedTier),
+    estimatedBillingUnit: (stringField(obj.estimated_billing_unit ?? obj.estimatedBillingUnit) || undefined) as BillingSnapshot["estimatedBillingUnit"],
+    estimatedImageCount:
+      obj.estimated_image_count != null || obj.estimatedImageCount != null
+        ? numberField(obj.estimated_image_count ?? obj.estimatedImageCount)
+        : undefined,
+    estimatedFixedPrice:
+      obj.estimated_fixed_price != null || obj.estimatedFixedPrice != null
+        ? numberField(obj.estimated_fixed_price ?? obj.estimatedFixedPrice)
+        : undefined,
     quotaPerUnit: numberField(obj.quota_per_unit ?? obj.quotaPerUnit, 500000) || 500000,
     exprVersion: numberField(obj.expr_version ?? obj.exprVersion, 1) || 1,
     taskUsageBilling: Boolean(obj.task_usage_billing ?? obj.taskUsageBilling),

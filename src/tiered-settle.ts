@@ -11,13 +11,17 @@ import {
   computeTieredQuotaWithRequest,
   exprHashString,
   exprVersion,
+  runExprWithRequest,
   usedVars,
+  type BillingRequestInput,
   type BillingSnapshot,
   type TokenParams,
   type TieredResult,
 } from "./billing-expr.js";
 import { parseJson } from "./constants.js";
+import { resolveImageBillingRequestInput, updateBillingImageCount } from "./image-billing.js";
 import { quotaRatios } from "./quota.js";
+import { quotaRoundChecked } from "./task-plugin-usage.js";
 import type { Store } from "./store.js";
 
 export type BillingUsageDetails = {
@@ -180,8 +184,16 @@ export function injectTieredBillingInfo(
       other.image_cache_tokens = result.billingTokens.img_cr;
       other.billing_tokens = billingTokensJSON(result.billingTokens);
     }
+    if (result.imageCount != null) other.image_count = result.imageCount;
     other.matched_tier = result.matchedTier;
     if (result.billingUnit) other.billing_unit = result.billingUnit;
+    if (result.fixedPrice != null) other.fixed_price = result.fixedPrice;
+    if (result.requestRules && result.requestRules.length) other.request_rules = result.requestRules;
+  } else if (snap.estimatedBillingUnit) {
+    if (snap.estimatedImageCount != null) other.image_count = snap.estimatedImageCount;
+    other.matched_tier = snap.estimatedTier;
+    other.billing_unit = snap.estimatedBillingUnit;
+    if (snap.estimatedFixedPrice != null) other.fixed_price = snap.estimatedFixedPrice;
   }
   return other;
 }
@@ -190,15 +202,39 @@ export type TryTieredSettle =
   | { ok: false }
   | { ok: true; quota: number; result: TieredResult | null };
 
+export type RelayTieredSettleOpts = {
+  usage?: Record<string, unknown>;
+  preConsumedQuota?: number;
+  request?: BillingRequestInput;
+  billingImageCount?: number;
+  imageBody?: Record<string, unknown>;
+  channelType?: number;
+  headers?: Record<string, string>;
+  relayMode?: string;
+  actualImageCount?: number;
+};
+
+function settleRequestInput(snap: BillingSnapshot, opts?: RelayTieredSettleOpts): BillingRequestInput {
+  const request: BillingRequestInput = { ...(opts?.request || {}) };
+  if (opts?.billingImageCount != null) request.imageCount = opts.billingImageCount;
+  else if (snap.estimatedImageCount != null) request.imageCount = snap.estimatedImageCount;
+  return request;
+}
+
 /** Original `service.TryTieredSettle`. */
 export function tryTieredSettle(
   snap: BillingSnapshot | null | undefined,
   params: TokenParams,
-  opts?: { usage?: Record<string, unknown>; preConsumedQuota?: number },
+  opts?: RelayTieredSettleOpts,
 ): TryTieredSettle {
   if (!snap || snap.billingMode !== BILLING_MODE_TIERED_EXPR) return { ok: false };
   try {
-    const result = computeTieredQuotaWithRequest(snap, opts?.usage || snap.usageFacts || {}, params);
+    const result = computeTieredQuotaWithRequest(
+      snap,
+      opts?.usage || snap.usageFacts || {},
+      params,
+      settleRequestInput(snap, opts),
+    );
     return { ok: true, quota: result.actualQuotaAfterGroup, result };
   } catch {
     const pre = Number(opts?.preConsumedQuota || 0);
@@ -207,12 +243,29 @@ export function tryTieredSettle(
   }
 }
 
+function applyEstimatedTrace(snap: BillingSnapshot, request: BillingRequestInput, params: TokenParams): void {
+  try {
+    const trace = runExprWithRequest(snap.exprString, snap.usageFacts || {}, params, request);
+    snap.estimatedTier = trace.matchedTier;
+    snap.estimatedBillingUnit = trace.billingUnit;
+    if (trace.imageCount != null) snap.estimatedImageCount = trace.imageCount;
+    if (trace.fixedPrice != null) snap.estimatedFixedPrice = trace.fixedPrice;
+    const before = snap.taskUsageBilling ? trace.cost * snap.quotaPerUnit : (trace.cost / 1_000_000) * snap.quotaPerUnit;
+    snap.estimatedQuotaBeforeGroup = before;
+    snap.estimatedQuotaAfterGroup = quotaRoundChecked(before * snap.groupRatio).quota;
+  } catch {
+    /* Original TryTieredSettle keeps the reservation when evaluation fails. */
+  }
+}
+
+/** Original `service.TryTieredSettle` + frozen `BillingRequestInput.ImageCount`. */
 export async function resolveRelayTieredQuota(
   store: Store,
   model: string,
   group: string,
   usage: BillingUsage,
   isClaudeUsageSemantic: boolean,
+  opts?: RelayTieredSettleOpts,
 ): Promise<{ quota: number; snap: BillingSnapshot; result: TieredResult | null } | null> {
   const modelRatio = parseJson<Record<string, unknown>>(await store.option("ModelRatio"), {});
   const modelPrice = parseJson<Record<string, unknown>>(await store.option("ModelPrice"), {});
@@ -223,6 +276,11 @@ export async function resolveRelayTieredQuota(
   if (!expr) return null;
   const ratios = await quotaRatios(store, model, group);
   const quotaPerUnit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
+  const vars = usedVars(expr);
+  let request: BillingRequestInput = { ...(opts?.request || {}), headers: opts?.headers || opts?.request?.headers };
+  if (vars?.image_count && opts?.relayMode === "images" && opts.imageBody) {
+    request = resolveImageBillingRequestInput(opts.imageBody, opts.channelType || 0, request);
+  }
   const snap: BillingSnapshot = {
     billingMode: BILLING_MODE_TIERED_EXPR,
     modelName: model,
@@ -239,8 +297,13 @@ export async function resolveRelayTieredQuota(
     taskUsageBilling: false,
     usageFacts: {},
   };
-  const params = buildTieredTokenParams(usage, isClaudeUsageSemantic, usedVars(expr));
-  const settled = tryTieredSettle(snap, params);
+  const params = buildTieredTokenParams(usage, isClaudeUsageSemantic, vars);
+  applyEstimatedTrace(snap, request, params);
+  const billingImageCount =
+    opts?.billingImageCount != null
+      ? opts.billingImageCount
+      : updateBillingImageCount(Number(opts?.actualImageCount || 0), snap.estimatedImageCount);
+  const settled = tryTieredSettle(snap, params, { ...opts, request, billingImageCount });
   if (!settled.ok) return null;
   return { quota: settled.quota, snap, result: settled.result };
 }

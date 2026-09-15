@@ -81,3 +81,14 @@ test("original ResolveTaskBillingExpr prefers plugin override JSON", () => {
   assert.equal(mapped.exists, true);
   assert.equal(mapped.expr, 'tier("720P", u("seconds") * 5)');
 });
+
+test("original request probe integer ternary keeps % JSON", () => {
+  const { cost, requestRules } = runExprWithRequest(
+    `5 % (param("service_tier") == "fast" ? 2 : 1)`,
+    {},
+    {},
+    { body: { service_tier: "fast" } },
+  );
+  assert.equal(cost, 1);
+  assert.deepEqual(requestRules, [{ cond: `param("service_tier") == "fast"`, multiplier: 2, matched: true }]);
+});
