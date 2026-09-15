@@ -1,5 +1,5 @@
 import { billingCopies } from "./billing-setting.js";
-import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, ROLE_ROOT, ROLE_USER, USER_ENABLED, csv, nowSec, parseJson, randomHex } from "./constants.js";
+import { CHANNEL_MANUAL_DISABLED, ROLE_ROOT, ROLE_USER, USER_ENABLED, nowSec, parseJson, randomHex } from "./constants.js";
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { loadPerformanceSetting, performanceStats, resetMetrics } from "./metrics.js";
 import {
@@ -107,7 +107,13 @@ import { getTaskPluginListRuntime, getTaskPluginRuntimeStatus, syncTaskPluginsOn
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { rpFromRequest } from "./passkey.js";
 import { passkeyDomainHttpError, passkeySettingsSnapshot, selectPasskeyBeginRpIDs } from "./passkey-domains.js";
-import { calcNextResetTime, parseCodexOAuthKey, publicPlan } from "./subscription.js";
+import { calcNextResetTime, publicPlan } from "./subscription.js";
+import {
+  parseCodexOAuthKeyStrict,
+  persistCodexOAuthKey,
+  refreshCodexChannelCredential,
+  refreshCodexOAuthToken,
+} from "./codex-models.js";
 import {
   computeStatusCounts,
   ionetApiKey,
@@ -695,7 +701,7 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { tag?: string };
     if (!body.tag) return apiFail("参数错误");
-    await s.setChannelsByTag(body.tag, 2);
+    await s.setChannelsByTag(body.tag, CHANNEL_MANUAL_DISABLED);
     return apiOk(null);
   });
 
@@ -706,6 +712,7 @@ export function registerParity(r: Router<Env>): void {
     let body: {
       tag?: string;
       new_tag?: string;
+      model_mapping?: string;
       models?: string;
       group?: string;
       groups?: string;
@@ -745,10 +752,11 @@ export function registerParity(r: Router<Env>): void {
     const channels = await s.channelsByTag(body.tag);
     for (const ch of channels) {
       const patch: Record<string, unknown> = {};
-      if (body.new_tag != null) patch.tag = body.new_tag;
-      if (body.models != null) patch.models = body.models;
-      if (body.group != null) patch.group = body.group;
-      if (body.groups != null) patch.group = body.groups;
+      if (body.new_tag != null && body.new_tag !== body.tag) patch.tag = body.new_tag;
+      if (body.model_mapping != null) patch.model_mapping = body.model_mapping;
+      if (body.models != null && body.models !== "") patch.models = body.models;
+      if (body.group != null && body.group !== "") patch.group = body.group;
+      if (body.groups != null && body.groups !== "") patch.group = body.groups;
       if (body.priority != null) patch.priority = body.priority;
       if (body.weight != null) patch.weight = body.weight;
       if (body.param_override != null) patch.param_override = body.param_override;
@@ -771,53 +779,19 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const id = strconvAtoi(c.params.id);
     if (!id.ok) return apiFail(`invalid channel id: ${id.message}`);
-    const ch = await s.getChannel(id.n);
-    if (!ch || ch.type !== 57) return apiFail("刷新凭证失败，请稍后重试");
-    const oauth = parseCodexOAuthKey(ch.key);
-    if (!oauth?.refresh_token) return apiFail("刷新凭证失败，请稍后重试");
     try {
-      const settings = parseJson<Record<string, string>>(ch.settings || ch.setting || "", {});
-      const res = await fetch("https://auth.openai.com/oauth/token", {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: oauth.refresh_token,
-          client_id: settings.client_id || "app_EMoamEEZ73f0CkXaXp7hrann",
-        }),
-      });
-      const data = (await res.json()) as {
-        access_token?: string;
-        refresh_token?: string;
-        expires_in?: number;
-        expires_at?: string;
-      };
-      if (!data.access_token) return apiFail("刷新凭证失败，请稍后重试");
-      const lastRefresh = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-      const expired = data.expires_in
-        ? new Date(Date.now() + Number(data.expires_in) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z")
-        : String(data.expires_at || "");
-      const next = {
-        access_token: data.access_token,
-        refresh_token: data.refresh_token || oauth.refresh_token,
-        account_id: oauth.account_id,
-        email: oauth.email,
-        last_refresh: lastRefresh,
-        expired,
-        type: oauth.type || "codex",
-      };
-      await s.updateChannel(ch.id, { key: JSON.stringify(next) });
+      const { oauth, channel } = await refreshCodexChannelCredential(s, id.n);
       return json(200, {
         success: true,
         message: "refreshed",
         data: {
-          expires_at: next.expired,
-          last_refresh: next.last_refresh,
-          account_id: next.account_id,
-          email: next.email,
-          channel_id: ch.id,
-          channel_type: ch.type,
-          channel_name: ch.name,
+          expires_at: oauth.expired,
+          last_refresh: oauth.last_refresh,
+          account_id: oauth.account_id,
+          email: oauth.email,
+          channel_id: channel.id,
+          channel_type: channel.type,
+          channel_name: channel.name,
         },
       });
     } catch {
@@ -877,7 +851,8 @@ export function registerParity(r: Router<Env>): void {
     let longest = "";
     let maxLen = 0;
     for (const ch of channels) {
-      const parts = csv(ch.models);
+      if (!ch.models) continue;
+      const parts = String(ch.models).split(",");
       if (parts.length > maxLen) {
         maxLen = parts.length;
         longest = ch.models;
@@ -2045,7 +2020,6 @@ export function registerParity(r: Router<Env>): void {
     }
   });
 
-  void CHANNEL_ENABLED;
   void authenticateApiToken;
   void currentSid;
   void sessionViews;
@@ -2428,48 +2402,84 @@ async function fetchCodexWham(c: C, kind: "usage" | "reset-credits" | "reset"): 
   if (ch.type !== 57) return apiFail("channel type is not Codex");
   const info = parseJson<Record<string, unknown>>(String(ch.channel_info || ""), {});
   if (info.is_multi_key || info.IsMultiKey) return apiFail("multi-key channel is not supported");
-  const oauth = parseCodexOAuthKey(ch.key);
-  if (!oauth) return apiFail("解析凭证失败，请检查渠道配置");
-  if (!oauth.access_token) return apiFail("codex channel: access_token is required");
-  if (!oauth.account_id) return apiFail("codex channel: account_id is required");
-  const base = (ch.base_url || "").replace(/\/$/, "");
-  if (!base) return apiFail(kind === "usage" ? "获取用量信息失败，请稍后重试" : kind === "reset-credits" ? "获取重置次数详情失败，请稍后重试" : "重置用量失败，请稍后重试");
+  let oauth: ReturnType<typeof parseCodexOAuthKeyStrict>;
+  try {
+    oauth = parseCodexOAuthKeyStrict(ch.key);
+  } catch {
+    return apiFail("解析凭证失败，请检查渠道配置");
+  }
+  let accessToken = String(oauth.access_token || "").trim();
+  const accountID = String(oauth.account_id || "").trim();
+  if (!accessToken) return apiFail("codex channel: access_token is required");
+  if (!accountID) return apiFail("codex channel: account_id is required");
+  const failMsg =
+    kind === "usage" ? "获取用量信息失败，请稍后重试" : kind === "reset-credits" ? "获取重置次数详情失败，请稍后重试" : "重置用量失败，请稍后重试";
+  const base = String(ch.base_url || "").trim().replace(/\/+$/, "");
+  if (!base) return apiFail(failMsg);
   const path =
     kind === "usage"
       ? "/backend-api/wham/usage"
       : kind === "reset-credits"
         ? "/backend-api/wham/rate-limit-reset-credits"
         : "/backend-api/wham/rate-limit-reset-credits/consume";
-  const failMsg = kind === "usage" ? "获取用量信息失败，请稍后重试" : kind === "reset-credits" ? "获取重置次数详情失败，请稍后重试" : "重置用量失败，请稍后重试";
-  try {
+
+  const callWham = async (token: string) => {
     const res = await fetch(base + path, {
       method: kind === "reset" ? "POST" : "GET",
       headers: {
-        authorization: "Bearer " + oauth.access_token,
-        "chatgpt-account-id": oauth.account_id,
+        authorization: "Bearer " + token,
+        "chatgpt-account-id": accountID,
         accept: "application/json",
         originator: "codex_cli_rs",
         ...(kind === "reset" ? { "content-type": "application/json" } : {}),
       },
-      body: kind === "reset" ? JSON.stringify({ redeem_request_id: randomHex(16) }) : undefined,
+      body: kind === "reset" ? JSON.stringify({ redeem_request_id: crypto.randomUUID() }) : undefined,
     });
-    const text = await res.text();
-    let payload: unknown = text;
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = text;
-    }
-    const ok = res.status >= 200 && res.status < 300;
-    return json(200, {
-      success: ok,
-      message: ok ? "" : `upstream status: ${res.status}`,
-      upstream_status: res.status,
-      data: payload,
-    });
+    return { status: res.status, text: await res.text() };
+  };
+
+  let fetched: { status: number; text: string };
+  try {
+    fetched = await callWham(accessToken);
   } catch {
     return apiFail(failMsg);
   }
+
+  if ((fetched.status === 401 || fetched.status === 403) && String(oauth.refresh_token || "").trim()) {
+    let refreshedToken = "";
+    try {
+      const refreshed = await refreshCodexOAuthToken(oauth.refresh_token);
+      refreshedToken = refreshed.access_token;
+      try {
+        await s.updateChannel(ch.id, { key: persistCodexOAuthKey(oauth, refreshed) });
+      } catch {
+        /* original ignores persist errors and still retries with the new token */
+      }
+    } catch {
+      refreshedToken = "";
+    }
+    if (refreshedToken) {
+      try {
+        fetched = await callWham(refreshedToken);
+      } catch {
+        return apiFail(failMsg);
+      }
+    }
+  }
+
+  let payload: unknown = fetched.text;
+  try {
+    payload = JSON.parse(fetched.text) as unknown;
+  } catch {
+    payload = fetched.text;
+  }
+  const ok = fetched.status >= 200 && fetched.status < 300;
+  return json(200, {
+    success: ok,
+    message: ok ? "" : `upstream status: ${fetched.status}`,
+    upstream_status: fetched.status,
+    data: payload,
+  });
 }
 
 async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waffo_pancake"): Promise<Response> {

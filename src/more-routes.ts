@@ -1,4 +1,5 @@
 import {
+  CHANNEL_ENABLED,
   ROLE_ROOT,
   MAX_RECENT_ITEMS,
   nowSec,
@@ -1297,9 +1298,9 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { tag?: string; status?: number };
+    const body = (await readJson(c.req)) as { tag?: string };
     if (!body.tag) return apiFail("参数错误");
-    await s.setChannelsByTag(body.tag, Number(body.status ?? 1));
+    await s.setChannelsByTag(body.tag, CHANNEL_ENABLED);
     return apiOk(null);
   });
 
