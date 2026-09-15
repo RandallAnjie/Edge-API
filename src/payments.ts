@@ -141,14 +141,6 @@ export async function topupInfo(store: Store): Promise<Record<string, unknown>> 
     amount_options: parseJson<number[]>(await store.option("AmountOptions"), [10, 20, 50, 100, 200, 500]),
     discount: parseJson<Record<string, number>>(await store.option("AmountDiscount"), {}),
     topup_link: await store.option("TopUpLink"),
-    stripe,
-    epay,
-    creem,
-    waffo,
-    quota_per_unit: await store.optionNum("QuotaPerUnit", 500000),
-    stripe_unit_price: await store.optionNum("StripeUnitPrice", 8),
-    price: await store.optionNum("Price", 7.3),
-    usd_exchange_rate: await store.optionNum("USDExchangeRate", 1),
   };
 }
 

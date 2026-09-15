@@ -355,7 +355,8 @@ test("payments topup info reflects config; oauth state returns flow_token", asyn
   const info = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
   assert.equal(info.body.success, true);
   assert.equal(info.body.data.enable_online_topup, false);
-  assert.equal(typeof info.body.data.stripe, "boolean");
+  assert.equal("stripe" in info.body.data, false);
+  assert.equal("quota_per_unit" in info.body.data, false);
 
   const st = await json(
     new Request("http://local/api/oauth/state", {
@@ -413,7 +414,7 @@ test("GetPricing / topup info / verify methods / token booleans / channel DTO ma
 
   const info = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
   const d = info.body.data;
-  for (const k of [
+  const originalTopUpInfoKeys = [
     "enable_online_topup",
     "enable_stripe_topup",
     "enable_creem_topup",
@@ -421,18 +422,25 @@ test("GetPricing / topup info / verify methods / token booleans / channel DTO ma
     "enable_waffo_pancake_topup",
     "enable_redemption",
     "payment_compliance_confirmed",
+    "payment_compliance_terms_version",
+    "waffo_pay_methods",
+    "creem_products",
     "pay_methods",
     "min_topup",
+    "stripe_min_topup",
+    "waffo_min_topup",
+    "waffo_pancake_min_topup",
     "amount_options",
     "discount",
     "topup_link",
-  ]) {
-    assert.ok(k in d, "missing topup/info field " + k);
-  }
+  ];
+  assert.deepEqual(Object.keys(d).sort(), [...originalTopUpInfoKeys].sort());
   assert.equal(d.enable_online_topup, false);
   assert.equal(d.enable_stripe_topup, false);
   assert.ok(Array.isArray(d.pay_methods));
   assert.ok(Array.isArray(d.amount_options));
+  assert.ok(Array.isArray(d.creem_products));
+  assert.equal(d.waffo_pay_methods, null);
 
   const methods = await json(new Request("http://local/api/verify/methods?scope=account.password.change", { headers: auth }), e);
   assert.equal(methods.body.success, true);

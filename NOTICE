@@ -83,7 +83,9 @@ Material changes from upstream:
   OpenAI-model realtime text tokens use original `EstimateToken` (tiktoken-go is not
   bundled). Dial-first 101 then async usage is extra-OK vs original upgrade-first
   then blocking handler. Stripe/Epay/Creem/Waffo checkout use HTTP APIs
-  (no vendor SDK). io.net model deployments use the original HTTP API (no
+  (no vendor SDK). GetTopUpInfo data keys match original `controller.GetTopUpInfo`
+  gin.H (no extra `stripe`/`epay`/`creem`/`waffo`/`quota_per_unit`/`price` fields).
+  io.net model deployments use the original HTTP API (no
   vendor SDK). Original QuantumNous factory task plugins (`plugins/tasks/*/plugin.js`)
   are embedded and listed/routed with original JSON (`source: "factory"`).
   Task-plugin `plugin.js` hooks run through the original jsplugin contract

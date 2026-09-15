@@ -323,7 +323,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
 
   const topup = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
   const ti = topup.body.data as Record<string, unknown>;
-  for (const k of [
+  const originalTopUpInfoKeys = [
     "enable_online_topup",
     "enable_stripe_topup",
     "enable_creem_topup",
@@ -331,12 +331,19 @@ test("original JSON fields for status, models, deployments, performance, data, u
     "enable_waffo_pancake_topup",
     "enable_redemption",
     "payment_compliance_confirmed",
+    "payment_compliance_terms_version",
+    "waffo_pay_methods",
+    "creem_products",
     "pay_methods",
     "min_topup",
+    "stripe_min_topup",
+    "waffo_min_topup",
+    "waffo_pancake_min_topup",
     "amount_options",
-  ]) {
-    assert.ok(k in ti, "missing topup info " + k);
-  }
+    "discount",
+    "topup_link",
+  ];
+  assert.deepEqual(Object.keys(ti).sort(), [...originalTopUpInfoKeys].sort());
 
   const flow = await json(
     new Request("http://local/api/data/flow?start_timestamp=1&end_timestamp=2", { headers: auth }),
