@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   used_quota INTEGER NOT NULL DEFAULT 0,
   "group" TEXT NOT NULL DEFAULT '',
   auto_groups TEXT NOT NULL DEFAULT '',
-  cross_group_retry INTEGER NOT NULL DEFAULT 0
+  cross_group_retry INTEGER NOT NULL DEFAULT 0,
+  deleted_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS channels (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,7 +136,8 @@ CREATE TABLE IF NOT EXISTS redemptions (
   created_time INTEGER NOT NULL DEFAULT 0,
   redeemed_time INTEGER NOT NULL DEFAULT 0,
   used_user_id INTEGER NOT NULL DEFAULT 0,
-  expired_time INTEGER NOT NULL DEFAULT 0
+  expired_time INTEGER NOT NULL DEFAULT 0,
+  deleted_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -552,6 +554,8 @@ CREATE TABLE IF NOT EXISTS system_instances (
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_key ON api_tokens(key);
+CREATE INDEX IF NOT EXISTS idx_tokens_deleted_at ON api_tokens(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_redemptions_deleted_at ON redemptions(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
 CREATE INDEX IF NOT EXISTS idx_abilities_channel ON abilities(channel_id);
 CREATE INDEX IF NOT EXISTS idx_abilities_enabled ON abilities(enabled, "group");
@@ -683,6 +687,8 @@ const USER_ALTERS = [
   "ALTER TABLE task_plugins ADD COLUMN remark TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE users ADD COLUMN remark TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE users ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE api_tokens ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE redemptions ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE redemptions ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE redemptions ADD COLUMN expired_time INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE topups ADD COLUMN payment_provider TEXT NOT NULL DEFAULT ''",

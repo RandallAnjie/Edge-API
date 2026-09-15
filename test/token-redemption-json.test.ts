@@ -4,6 +4,7 @@ import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import worker from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
+import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 void worker;
@@ -167,4 +168,70 @@ test("original GetAllRedemptions JSON includes count zero and DeletedAt", async 
   assert.equal(item.count, 0, "count is gorm:-:all and must be the zero value on GET");
   assert.equal(item.DeletedAt, null);
   assert.equal(item.name, "gift");
+});
+
+test("original Token.Delete is a GORM soft delete that keeps the unique key", async () => {
+  const { e, auth } = await boot();
+  const created = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "soft-del", unlimited_quota: true }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const createdData = created.body.data as { id: number; key: string };
+  const key = String(createdData.key || "").replace(/^sk-/, "");
+  assert.ok(key);
+  const deleted = await json(new Request("http://local/api/token/" + createdData.id + "/", { method: "DELETE", headers: auth }), e);
+  assert.equal(deleted.body.success, true, String(deleted.body.message));
+  const after = await json(new Request("http://local/api/token/", { headers: auth }), e);
+  const items = (after.body.data as { items: { id: number }[] }).items || [];
+  assert.equal(items.some((t) => t.id === createdData.id), false);
+  const got = await json(new Request("http://local/api/token/" + createdData.id, { headers: auth }), e);
+  assert.equal(got.body.success, false);
+  const usage = await json(
+    new Request("http://local/api/usage/token", { headers: { authorization: "Bearer sk-" + key } }),
+    e,
+  );
+  assert.equal(usage.body.success, false);
+  const s = new Store(e.DB);
+  await assert.rejects(() => s.insertToken({ user_id: 1, key, name: "reuse" }));
+});
+
+test("original Redemption.Delete is a GORM soft delete that keeps the unique key", async () => {
+  const { e, auth } = await boot();
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  const created = await json(
+    new Request("http://local/api/redemption/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "softdel", quota: 50, count: 1 }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const listed = await json(new Request("http://local/api/redemption/", { headers: auth }), e);
+  const item = ((listed.body.data as { items: Record<string, unknown>[] }).items || []).find((r) => r.name === "softdel");
+  assert.ok(item);
+  const key = String(item.key);
+  const deleted = await json(new Request("http://local/api/redemption/" + item.id + "/", { method: "DELETE", headers: auth }), e);
+  assert.equal(deleted.body.success, true, String(deleted.body.message));
+  const after = await json(new Request("http://local/api/redemption/", { headers: auth }), e);
+  const items = (after.body.data as { items: { id: number }[] }).items || [];
+  assert.equal(items.some((r) => r.id === item.id), false);
+  const got = await json(new Request("http://local/api/redemption/" + item.id, { headers: auth }), e);
+  assert.equal(got.body.success, false);
+  const topup = await json(
+    new Request("http://local/api/user/topup", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ key }),
+    }),
+    e,
+  );
+  assert.equal(topup.body.success, false);
+  const s = new Store(e.DB);
+  await assert.rejects(() => s.insertRedemption({ user_id: 1, key, name: "reuse", quota: 10 }));
 });

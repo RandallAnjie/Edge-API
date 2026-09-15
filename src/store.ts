@@ -372,14 +372,14 @@ export class Store {
     if (quota <= 0) return true;
     if (unlimited) {
       await this.db
-        .prepare("UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ?")
+        .prepare("UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ? AND deleted_at = 0")
         .bind(quota, quota, nowSec(), tokenId)
         .run();
       return true;
     }
     const r = await this.db
       .prepare(
-        "UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ? AND remain_quota >= ?",
+        "UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ? AND remain_quota >= ? AND deleted_at = 0",
       )
       .bind(quota, quota, nowSec(), tokenId, quota)
       .run();
@@ -390,7 +390,7 @@ export class Store {
   async releaseTokenQuota(tokenId: number, quota: number): Promise<void> {
     if (quota <= 0) return;
     await this.db
-      .prepare("UPDATE api_tokens SET remain_quota = remain_quota + ?, used_quota = used_quota - ?, accessed_time = ? WHERE id = ?")
+      .prepare("UPDATE api_tokens SET remain_quota = remain_quota + ?, used_quota = used_quota - ?, accessed_time = ? WHERE id = ? AND deleted_at = 0")
       .bind(quota, quota, nowSec(), tokenId)
       .run();
   }
@@ -399,7 +399,7 @@ export class Store {
   async decreaseTokenQuota(tokenId: number, quota: number): Promise<void> {
     if (quota <= 0) return;
     await this.db
-      .prepare("UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ?")
+      .prepare("UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ? AND deleted_at = 0")
       .bind(quota, quota, nowSec(), tokenId)
       .run();
   }
@@ -428,7 +428,7 @@ export class Store {
     if (tokenId) {
       await this.db
         .prepare(
-          "UPDATE api_tokens SET used_quota = used_quota + ?, remain_quota = CASE WHEN unlimited_quota = 1 THEN remain_quota ELSE remain_quota - ? END, accessed_time = ? WHERE id = ?",
+          "UPDATE api_tokens SET used_quota = used_quota + ?, remain_quota = CASE WHEN unlimited_quota = 1 THEN remain_quota ELSE remain_quota - ? END, accessed_time = ? WHERE id = ? AND deleted_at = 0",
         )
         .bind(quota, quota, nowSec(), tokenId)
         .run();
@@ -439,14 +439,14 @@ export class Store {
   }
 
   async getTokenByKey(key: string): Promise<TokenRow | null> {
-    return this.db.prepare("SELECT * FROM api_tokens WHERE key = ?").bind(key).first<TokenRow>();
+    return this.db.prepare("SELECT * FROM api_tokens WHERE key = ? AND deleted_at = 0").bind(key).first<TokenRow>();
   }
 
   async getTokenById(id: number, userId?: number): Promise<TokenRow | null> {
     if (userId != null) {
-      return this.db.prepare("SELECT * FROM api_tokens WHERE id = ? AND user_id = ?").bind(id, userId).first<TokenRow>();
+      return this.db.prepare("SELECT * FROM api_tokens WHERE id = ? AND user_id = ? AND deleted_at = 0").bind(id, userId).first<TokenRow>();
     }
-    return this.db.prepare("SELECT * FROM api_tokens WHERE id = ?").bind(id).first<TokenRow>();
+    return this.db.prepare("SELECT * FROM api_tokens WHERE id = ? AND deleted_at = 0").bind(id).first<TokenRow>();
   }
 
   async insertToken(t: Partial<TokenRow>): Promise<number> {
@@ -485,11 +485,15 @@ export class Store {
     }
     if (!cols.length) return;
     vals.push(id, userId);
-    await this.db.prepare(`UPDATE api_tokens SET ${cols.join(", ")} WHERE id = ? AND user_id = ?`).bind(...vals).run();
+    await this.db.prepare(`UPDATE api_tokens SET ${cols.join(", ")} WHERE id = ? AND user_id = ? AND deleted_at = 0`).bind(...vals).run();
   }
 
+  /** Original `model.Token.Delete` (GORM soft delete; unique key retained). */
   async deleteToken(id: number, userId: number): Promise<void> {
-    await this.db.prepare("DELETE FROM api_tokens WHERE id = ? AND user_id = ?").bind(id, userId).run();
+    await this.db
+      .prepare("UPDATE api_tokens SET deleted_at = ? WHERE id = ? AND user_id = ? AND deleted_at = 0")
+      .bind(nowSec(), id, userId)
+      .run();
   }
 
   async listTokens(
@@ -498,7 +502,7 @@ export class Store {
     limit: number,
     keyword = "",
   ): Promise<{ items: TokenRow[]; total: number }> {
-    let where = "user_id = ?";
+    let where = "user_id = ? AND deleted_at = 0";
     const binds: unknown[] = [userId];
     if (keyword) {
       where += " AND (name LIKE ? OR key LIKE ?)";
@@ -518,8 +522,12 @@ export class Store {
 
   async deleteTokensBatch(userId: number, ids: number[]): Promise<number> {
     let n = 0;
+    const deletedAt = nowSec();
     for (const id of ids) {
-      const r = await this.db.prepare("DELETE FROM api_tokens WHERE id = ? AND user_id = ?").bind(id, userId).run();
+      const r = await this.db
+        .prepare("UPDATE api_tokens SET deleted_at = ? WHERE id = ? AND user_id = ? AND deleted_at = 0")
+        .bind(deletedAt, id, userId)
+        .run();
       n += Number(r.meta.changes || 0);
     }
     return n;
@@ -1161,7 +1169,7 @@ export class Store {
     if (!tokenIds.length) return;
     const ph = tokenIds.map(() => "?").join(",");
     const { results: tokens } = await this.db
-      .prepare(`SELECT id, name FROM api_tokens WHERE id IN (${ph})`)
+      .prepare(`SELECT id, name FROM api_tokens WHERE id IN (${ph}) AND deleted_at = 0`)
       .bind(...tokenIds)
       .all<{ id: number; name: string }>();
     const tokenNames = new Map<number, string>();
@@ -1206,11 +1214,11 @@ export class Store {
   }
 
   async getRedemptionByKey(key: string): Promise<RedemptionRow | null> {
-    return this.db.prepare("SELECT * FROM redemptions WHERE key = ?").bind(key).first<RedemptionRow>();
+    return this.db.prepare("SELECT * FROM redemptions WHERE key = ? AND deleted_at = 0").bind(key).first<RedemptionRow>();
   }
 
   async getRedemption(id: number): Promise<RedemptionRow | null> {
-    return this.db.prepare("SELECT * FROM redemptions WHERE id = ?").bind(id).first<RedemptionRow>();
+    return this.db.prepare("SELECT * FROM redemptions WHERE id = ? AND deleted_at = 0").bind(id).first<RedemptionRow>();
   }
 
   async listRedemptions(
@@ -1219,7 +1227,7 @@ export class Store {
     keyword = "",
     status = "",
   ): Promise<{ items: RedemptionRow[]; total: number }> {
-    let where = "1=1";
+    let where = "deleted_at = 0";
     const binds: unknown[] = [];
     if (keyword) {
       if (/^-?\d+$/.test(keyword)) {
@@ -1256,19 +1264,24 @@ export class Store {
 
   async deleteRedemptionsBatch(ids: number[]): Promise<number> {
     let n = 0;
+    const deletedAt = nowSec();
     for (const id of ids) {
-      const r = await this.db.prepare("DELETE FROM redemptions WHERE id = ?").bind(id).run();
+      const r = await this.db
+        .prepare("UPDATE redemptions SET deleted_at = ? WHERE id = ? AND deleted_at = 0")
+        .bind(deletedAt, id)
+        .run();
       n += Number(r.meta.changes || 0);
     }
     return n;
   }
 
+  /** Original `model.DeleteInvalidRedemptions` (GORM soft delete). */
   async deleteInvalidRedemptions(): Promise<number> {
     const r = await this.db
       .prepare(
-        "DELETE FROM redemptions WHERE status IN (?, ?) OR (status = ? AND expired_time != 0 AND expired_time < ?)",
+        "UPDATE redemptions SET deleted_at = ? WHERE deleted_at = 0 AND (status IN (?, ?) OR (status = ? AND expired_time != 0 AND expired_time < ?))",
       )
-      .bind(REDEMPTION_USED, REDEMPTION_DISABLED, REDEMPTION_ENABLED, nowSec())
+      .bind(nowSec(), REDEMPTION_USED, REDEMPTION_DISABLED, REDEMPTION_ENABLED, nowSec())
       .run();
     return Number(r.meta.changes || 0);
   }
@@ -1281,11 +1294,12 @@ export class Store {
       vals.push(v);
     }
     vals.push(id);
-    await this.db.prepare(`UPDATE redemptions SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+    await this.db.prepare(`UPDATE redemptions SET ${cols.join(", ")} WHERE id = ? AND deleted_at = 0`).bind(...vals).run();
   }
 
+  /** Original `model.Redemption.Delete` (GORM soft delete; unique key retained). */
   async deleteRedemption(id: number): Promise<void> {
-    await this.db.prepare("DELETE FROM redemptions WHERE id = ?").bind(id).run();
+    await this.db.prepare("UPDATE redemptions SET deleted_at = ? WHERE id = ? AND deleted_at = 0").bind(nowSec(), id).run();
   }
 
   async uniqueGroups(): Promise<string[]> {
@@ -1700,7 +1714,7 @@ export class Store {
   async counts(): Promise<{ users: number; channels: number; tokens: number; logs: number }> {
     const u = await this.db.prepare("SELECT COUNT(*) as c FROM users").first<{ c: number }>();
     const c = await this.db.prepare("SELECT COUNT(*) as c FROM channels").first<{ c: number }>();
-    const t = await this.db.prepare("SELECT COUNT(*) as c FROM api_tokens").first<{ c: number }>();
+    const t = await this.db.prepare("SELECT COUNT(*) as c FROM api_tokens WHERE deleted_at = 0").first<{ c: number }>();
     const l = await this.db.prepare("SELECT COUNT(*) as c FROM request_logs").first<{ c: number }>();
     return { users: num(u?.c), channels: num(c?.c), tokens: num(t?.c), logs: num(l?.c) };
   }
