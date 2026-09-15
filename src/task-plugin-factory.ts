@@ -1,5 +1,12 @@
 import { parseJson } from "./constants.js";
-import { extractPluginMeta, pluginModelNames, pluginUsageForModel, taskPluginMetaView } from "./plugin-meta.js";
+import { compilePlugin } from "./jsplugin.js";
+import {
+  extractPluginMeta,
+  pluginModelNames,
+  pluginUsageForModel,
+  taskPluginMetaView,
+  taskPluginStubMeta,
+} from "./plugin-meta.js";
 import {
   FACTORY_TASK_PLUGIN_HASHES,
   FACTORY_TASK_PLUGIN_ICONS,
@@ -107,6 +114,29 @@ export function overrideMetaFromRow(row: Record<string, unknown>): Record<string
   );
 }
 
+/** Original ListTaskPlugins `NewRegistry().Register(row.Source)` Meta, else stub `{Key, Version, APIVersion}`. */
+export function compiledOverrideListMeta(row: Record<string, unknown>): Record<string, unknown> {
+  try {
+    const loaded = compilePlugin(String(row.source || ""), {
+      key: String(row.key || ""),
+      version: String(row.version || ""),
+    });
+    return taskPluginMetaView(loaded.meta, {
+      key: String(row.key || loaded.meta.key || ""),
+      version: String(row.version || loaded.meta.version || ""),
+      name: String(loaded.meta.name || ""),
+    });
+  } catch {
+    return taskPluginStubMeta(row);
+  }
+}
+
+/** Original ListTaskPlugins RoutingErrors + Snapshot().Override keys. */
+export type TaskPluginListRuntime = {
+  errors: Record<string, string>;
+  overrideKeys: Set<string>;
+};
+
 function sortPriorityOf(meta: Record<string, unknown>): number {
   return Number(meta.sortPriority || 0) || 0;
 }
@@ -118,44 +148,68 @@ function comparePluginItems(a: { meta: Record<string, unknown> }, b: { meta: Rec
   return String(a.meta.key || "").localeCompare(String(b.meta.key || ""));
 }
 
-/** Original ListTaskPlugins union of factory keys + active DB override rows. */
-export async function listTaskPluginListItems(store: Store): Promise<Record<string, unknown>[]> {
-  const rows = (await store.listTaskPlugins()) as Record<string, unknown>[];
+/** Original ListTaskPlugins union of factory keys + every database plugin key; Active rows supply override fields. */
+export async function listTaskPluginListItems(
+  store: Store,
+  runtime: TaskPluginListRuntime = { errors: {}, overrideKeys: new Set() },
+): Promise<Record<string, unknown>[]> {
+  const rows = await store.listTaskPluginCatalogRows();
   const activeRows = new Map<string, Record<string, unknown>>();
+  const keys = new Set<string>(FACTORY_TASK_PLUGIN_KEYS);
   for (const row of rows) {
-    if (rowActive(row)) activeRows.set(String(row.key || ""), row);
+    const key = String(row.key || "");
+    if (!key) continue;
+    keys.add(key);
+    if (rowActive(row)) activeRows.set(key, row);
   }
   const disabled = new Set(await getTaskPluginDisabledFactoryKeys(store));
-  const keys = new Set<string>([...FACTORY_TASK_PLUGIN_KEYS, ...activeRows.keys()]);
   const items: { meta: Record<string, unknown>; [key: string]: unknown }[] = [];
   for (const key of keys) {
     const factory = hasFactoryPlugin(key);
     const row = activeRows.get(key);
     if (row) {
       const enabled = rowEnabled(row);
-      let runtimeStatus = enabled ? "registered" : "disabled_fallback";
-      if (!enabled && factory && disabled.has(key)) runtimeStatus = "disabled";
-      else if (!enabled && !factory) runtimeStatus = "disabled";
-      else if (enabled) runtimeStatus = "registered";
-      const usage = factory ? { channel_count: 0, in_flight_count: 0 } : await store.taskPluginUsage(key);
       const item: { meta: Record<string, unknown>; [key: string]: unknown } = {
-        meta: overrideMetaFromRow(row),
+        meta: compiledOverrideListMeta(row),
         source: factory ? "override_over_factory" : "override",
         enabled,
         active: rowActive(row),
         source_hash: String(row.source_hash || ""),
-        has_icon: Boolean(row.icon) || factoryPluginHasIcon(key),
+        has_icon: String(row.icon || "") !== "",
         remark: String(row.remark || ""),
-        runtime_status: runtimeStatus,
-        channel_count: usage.channel_count,
-        in_flight_count: usage.in_flight_count,
+        runtime_status: "registered",
+        channel_count: 0,
+        in_flight_count: 0,
       };
       if (factory) item.factory_meta = factoryMetaView(key);
+      const errMsg = runtime.errors[key] || "";
+      if (errMsg) {
+        item.runtime_status = "compile_failed";
+        item.runtime_error = errMsg;
+      } else if (runtime.overrideKeys.has(key)) {
+        /* live Snapshot().Override Meta ≈ compiled Register Meta already set */
+      } else if (!enabled) {
+        item.runtime_status = "disabled_fallback";
+      } else {
+        item.runtime_status = "not_registered";
+      }
+      if (item.runtime_status === "disabled_fallback" && factory && disabled.has(key)) {
+        item.runtime_status = "disabled";
+      }
+      if (!factory) {
+        const usage = await store.taskPluginUsage(key);
+        item.channel_count = usage.channel_count;
+        item.in_flight_count = usage.in_flight_count;
+      }
       items.push(item);
       continue;
     }
     const enabled = !disabled.has(key);
-    items.push({
+    const factoryErr = runtime.errors[key] || "";
+    let runtimeStatus = "registered";
+    if (!enabled) runtimeStatus = "disabled";
+    else if (factoryErr) runtimeStatus = "compile_failed";
+    const factoryItem: { meta: Record<string, unknown>; [key: string]: unknown } = {
       meta: factoryMetaView(key),
       source: "factory",
       enabled,
@@ -163,10 +217,12 @@ export async function listTaskPluginListItems(store: Store): Promise<Record<stri
       source_hash: factoryPluginHash(key),
       has_icon: factoryPluginHasIcon(key),
       remark: "",
-      runtime_status: enabled ? "registered" : "disabled",
+      runtime_status: runtimeStatus,
       channel_count: 0,
       in_flight_count: 0,
-    });
+    };
+    if (runtimeStatus === "compile_failed") factoryItem.runtime_error = factoryErr;
+    items.push(factoryItem);
   }
   items.sort(comparePluginItems);
   return items;

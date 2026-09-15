@@ -168,6 +168,21 @@ function runtimeView(state: TaskPluginSyncState, snapshotRevision: string, datab
   });
 }
 
+/**
+ * Original ListTaskPlugins `DefaultRegistry.RoutingErrors()` + sync `plugin_errors`,
+ * and Snapshot().Override keys. Reads existing D1 payload only — does not sync.
+ * Empty payload matches an unsynced process (no override snapshot, no sync errors).
+ */
+export async function getTaskPluginListRuntime(store: Store): Promise<{
+  errors: Record<string, string>;
+  overrideKeys: Set<string>;
+}> {
+  const raw = await store.getTaskPluginSyncPayload();
+  if (!raw) return { errors: {}, overrideKeys: new Set() };
+  const state = parseState(raw);
+  return { errors: { ...state.errors }, overrideKeys: new Set(Object.keys(state.hashes)) };
+}
+
 /** Original `controller.GetTaskPluginRuntime`. First call seeds NewRegistry + one SyncTaskPluginsOnce. */
 export async function getTaskPluginRuntimeStatus(store: Store): Promise<Record<string, unknown>> {
   if (!(await store.getTaskPluginSyncPayload())) {

@@ -60,8 +60,9 @@ import { Store } from "./store.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
 import { enrichModelMeta, extractPluginMeta, listAdminModels, metadataRecordVersion, publicFlowQuotaData, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView, vendorOperationPreviewVersion } from "./dto.js";
 import {
+  factoryPluginHasIcon,
   factoryPluginIcon,
-  factoryTaskPluginDetail,
+  factoryPluginSource,
   hasFactoryPlugin,
   listTaskPluginListItems,
   listTaskPluginOptions,
@@ -80,16 +81,11 @@ import { compilePlugin, dryRunPlugin, UnknownMetaFieldError } from "./jsplugin.j
 import { decodeIconDataURI } from "./jsplugin-icon.js";
 import { currentRoutingGeneration, preflightRoutingConflict, routingMetaFromRecord } from "./jsplugin-preflight.js";
 import { validateV1Meta } from "./jsplugin-validate.js";
-import { getTaskPluginRuntimeStatus, syncTaskPluginsOnce } from "./task-plugin-sync.js";
+import { getTaskPluginListRuntime, getTaskPluginRuntimeStatus, syncTaskPluginsOnce } from "./task-plugin-sync.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { rpFromRequest } from "./passkey.js";
 import { passkeyDomainHttpError, passkeySettingsSnapshot, selectPasskeyBeginRpIDs } from "./passkey-domains.js";
-import {
-  calcNextResetTime,
-  decodePluginIcon,
-  parseCodexOAuthKey,
-  publicPlan,
-} from "./subscription.js";
+import { calcNextResetTime, parseCodexOAuthKey, publicPlan } from "./subscription.js";
 import { computeStatusCounts, ionetApiKey, ionetRequest, ionetSettings, IONET_NOT_CONFIGURED, mapIoNetDeployment } from "./ionet.js";
 import type { Env } from "./types.js";
 
@@ -1084,7 +1080,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await listTaskPluginListItems(s));
+    return apiOk(await listTaskPluginListItems(s, await getTaskPluginListRuntime(s)));
   });
   r.post("/api/plugin/task", (c) => upsertPlugin(c));
   r.put("/api/plugin/task", (c) => upsertPlugin(c));
@@ -1116,21 +1112,41 @@ export function registerParity(r: Router<Env>): void {
     const version = c.url.searchParams.get("version") || "";
     const p = await s.getTaskPluginVersion(c.params.key, version);
     if (p) {
-      const extracted = extractPluginMeta(String(p.source || ""));
-      const manifest = parseJson<Record<string, unknown>>(String(p.manifest || "{}"), {});
-      const meta = taskPluginMetaView({ ...manifest, ...extracted }, { key: String(p.key), version: String(p.version || ""), name: String(p.name || "") });
+      let loaded!: ReturnType<typeof compilePlugin>;
+      const compileErr = taskPluginCompileError(c, () => {
+        loaded = compilePlugin(String(p.source || ""), { key: String(p.key || c.params.key), version: String(p.version || "") });
+      });
+      if (compileErr) return compileErr;
       return apiOk({
         plugin: publicTaskPluginRecord(p),
-        meta,
+        meta: taskPluginMetaView(loaded.meta, {
+          key: String(p.key || loaded.meta.key || ""),
+          version: String(p.version || loaded.meta.version || ""),
+          name: String(loaded.meta.name || ""),
+        }),
         source: String(p.source || ""),
         layer: "override",
-        has_icon: Boolean(p.icon),
+        has_icon: String(p.icon || "") !== "",
       });
     }
-    if (version) return apiFail("task plugin not found");
-    const factory = factoryTaskPluginDetail(c.params.key);
-    if (!factory) return apiFail("task plugin not found");
-    return apiOk(factory);
+    if (version) return apiFail("record not found");
+    const factorySource = factoryPluginSource(c.params.key);
+    if (factorySource == null) return apiFail("task plugin not found");
+    let factoryLoaded!: ReturnType<typeof compilePlugin>;
+    const factoryCompileErr = taskPluginCompileError(c, () => {
+      factoryLoaded = compilePlugin(factorySource, { key: c.params.key });
+    });
+    if (factoryCompileErr) return factoryCompileErr;
+    return apiOk({
+      meta: taskPluginMetaView(factoryLoaded.meta, {
+        key: c.params.key,
+        version: String(factoryLoaded.meta.version || ""),
+        name: String(factoryLoaded.meta.name || ""),
+      }),
+      source: factorySource,
+      layer: "factory",
+      has_icon: factoryPluginHasIcon(c.params.key),
+    });
   });
   r.get("/api/plugin/task/:key/icon", async (c) => {
     const s = store(c);
@@ -1141,9 +1157,14 @@ export function registerParity(r: Router<Env>): void {
     if (!icon && !c.url.searchParams.get("version")) {
       icon = factoryPluginIcon(c.params.key)?.dataUri || "";
     }
-    const decoded = decodePluginIcon(icon);
-    if (!decoded) return new Response(null, { status: 404 });
-    return new Response(decoded.body as unknown as BodyInit, {
+    if (!icon) return new Response(null, { status: 404 });
+    let decoded: ReturnType<typeof decodeIconDataURI>;
+    try {
+      decoded = decodeIconDataURI(icon);
+    } catch {
+      return new Response(null, { status: 404 });
+    }
+    return new Response(decoded.data as unknown as BodyInit, {
       status: 200,
       headers: {
         "content-type": decoded.mediaType,

@@ -4225,6 +4225,25 @@ export class Store {
   }
 
   /**
+   * Original `model.ListTaskPlugins`: every version row ordered by key, created_at DESC, id DESC.
+   * Legacy `task_plugins` rows are included only when the key has no version history.
+   */
+  async listTaskPluginCatalogRows(): Promise<Record<string, unknown>[]> {
+    const { results: versions } = await this.db
+      .prepare(`SELECT * FROM task_plugin_versions ORDER BY "key" ASC, created_at DESC, id DESC`)
+      .all();
+    const { results: legacy } = await this.db
+      .prepare(`SELECT * FROM task_plugins ORDER BY "key" ASC, created_at DESC, id DESC`)
+      .all();
+    const keys = new Set((versions as Record<string, unknown>[]).map((row) => String(row.key || "")));
+    const out = [...(versions as Record<string, unknown>[])];
+    for (const row of legacy as Record<string, unknown>[]) {
+      if (!keys.has(String(row.key || ""))) out.push(row);
+    }
+    return out;
+  }
+
+  /**
    * Original `model.GetTaskPluginSyncSnapshot`: every Active database override
    * (enabled and disabled) hashed as `{key,api_version,version,source_hash,enabled}`
    * sorted by key then version. `plugins` is the enabled subset used for routing sync.

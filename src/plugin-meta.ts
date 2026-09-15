@@ -42,6 +42,28 @@ function protocolViews(raw: unknown): unknown[] {
   });
 }
 
+/** Original ListTaskPlugins stub `jsplugin.Meta{Key, Version, APIVersion}` when Register fails. */
+export function taskPluginStubMeta(row: {
+  key?: unknown;
+  version?: unknown;
+  api_version?: unknown;
+  apiVersion?: unknown;
+}): Record<string, unknown> {
+  return {
+    apiVersion: Number(row.api_version ?? row.apiVersion ?? 0) || 0,
+    key: String(row.key || ""),
+    name: "",
+    version: String(row.version || ""),
+    author: { name: "" },
+    models: null,
+    fetchMode: "",
+    allowedHosts: null,
+    routes: null,
+    protocols: null,
+    auth: { type: "" },
+  };
+}
+
 /** Original `jsplugin.Meta` JSON as returned by ListTaskPlugins / GetTaskPlugin. */
 export function taskPluginMetaView(
   meta: Record<string, unknown>,
