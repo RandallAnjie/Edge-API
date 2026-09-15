@@ -125,8 +125,8 @@ export const DEFAULT_GROUP = "default";
 export const ROOT_QUOTA = 100_000_000;
 export const DEFAULT_TOKEN_QUOTA = 500_000;
 export const AZURE_API_VERSION = "2025-04-01-preview";
-/** Original `constant.AzureNoRemoveDotTime` (Unix seconds). */
-export const AZURE_NO_REMOVE_DOT_TIME = Date.UTC(2025, 4, 10) / 1000;
+/** Original `constant.AzureNoRemoveDotTime` Unix seconds (`2025-05-10 00:00:00 UTC`). */
+export const AZURE_NO_REMOVE_DOT_TIME = 1746835200;
 export const CLAUDE_VERSION = "2023-06-01";
 /** Original `constant.MaxFileDownloadMB` default from `MAX_FILE_DOWNLOAD_MB`. */
 export const MAX_FILE_DOWNLOAD_MB = 64;

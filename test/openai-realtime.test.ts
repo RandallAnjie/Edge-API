@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  AZURE_NO_REMOVE_DOT_TIME,
   CHANNEL_TYPE_AZURE,
   CHANNEL_TYPE_CUSTOM,
   CHANNEL_TYPE_OPENAI,
   CHANNEL_TYPE_OPENROUTER,
 } from "../src/constants.js";
 import {
+  OPENAI_AZURE_DEFAULT_API_VERSION,
+  OPENAI_AZURE_NO_REMOVE_DOT_TIME,
   OPENAI_REALTIME_BAD_HANDSHAKE,
   OPENAI_REALTIME_HANDSHAKE_TIMEOUT_MS,
+  openaiAzureRealtimeApiVersion,
   openaiRealtimeRequestURL,
   openaiRealtimeSetupHeaders,
   openaiRealtimeUpstream,
@@ -75,7 +77,7 @@ function channel(partial: Partial<ChannelRow> & Pick<ChannelRow, "type" | "key">
     status: 1,
     name: "rt",
     weight: 1,
-    created_time: AZURE_NO_REMOVE_DOT_TIME,
+    created_time: OPENAI_AZURE_NO_REMOVE_DOT_TIME,
     test_time: 0,
     response_time: 0,
     base_url: "",
@@ -99,6 +101,9 @@ function channel(partial: Partial<ChannelRow> & Pick<ChannelRow, "type" | "key">
 }
 
 test("original OpenAI Realtime GetRequestURL JSON fields", () => {
+  assert.equal(OPENAI_AZURE_NO_REMOVE_DOT_TIME, 1746835200);
+  assert.equal(OPENAI_AZURE_NO_REMOVE_DOT_TIME, Date.UTC(2025, 4, 10) / 1000);
+  assert.equal(OPENAI_AZURE_DEFAULT_API_VERSION, "2025-04-01-preview");
   assert.equal(
     openaiRealtimeRequestURL(channel({ type: CHANNEL_TYPE_OPENAI, key: "sk", base_url: "https://api.openai.com" }), {
       requestUrlPath: "/v1/realtime?model=gpt-4o-realtime-preview",
@@ -120,11 +125,22 @@ test("original OpenAI Realtime GetRequestURL JSON fields", () => {
         key: "az",
         base_url: "https://east.openai.azure.com",
         other: "2025-04-01-preview",
-        created_time: AZURE_NO_REMOVE_DOT_TIME,
+        created_time: OPENAI_AZURE_NO_REMOVE_DOT_TIME,
       }),
       { requestUrlPath: "/v1/realtime?model=gpt-4o-realtime-preview", upstreamModel: "gpt-4o-realtime-preview" },
     ),
     "wss://east.openai.azure.com/openai/realtime?deployment=gpt-4o-realtime-preview&api-version=2025-04-01-preview",
+  );
+  const oldAzure = channel({
+    type: CHANNEL_TYPE_AZURE,
+    key: "az",
+    base_url: "https://east.openai.azure.com",
+    created_time: 1,
+  });
+  assert.equal(oldAzure.created_time, 1);
+  assert.equal(
+    openaiRealtimeRequestURL(oldAzure, { requestUrlPath: "/v1/realtime", upstreamModel: "gpt-4o-realtime-preview" }),
+    "wss://east.openai.azure.com/openai/realtime?deployment=gpt-4orealtimpreview&api-version=2025-04-01-preview",
   );
   assert.equal(
     openaiRealtimeRequestURL(
@@ -132,11 +148,26 @@ test("original OpenAI Realtime GetRequestURL JSON fields", () => {
         type: CHANNEL_TYPE_AZURE,
         key: "az",
         base_url: "https://east.openai.azure.com",
-        created_time: 1,
+        other: "2024-10-01-preview",
+        created_time: OPENAI_AZURE_NO_REMOVE_DOT_TIME - 1,
       }),
-      { requestUrlPath: "/v1/realtime", upstreamModel: "gpt-4o-realtime-preview" },
+      {
+        requestUrlPath: "/v1/realtime?model=gpt-4o-realtime-preview&api-version=2024-08-01-preview",
+        upstreamModel: "gpt-4o-realtime-preview",
+      },
     ),
-    "wss://east.openai.azure.com/openai/realtime?deployment=gpt-4orealtimpreview&api-version=2025-04-01-preview",
+    "wss://east.openai.azure.com/openai/realtime?deployment=gpt-4orealtimpreview&api-version=2024-08-01-preview",
+  );
+  assert.equal(
+    openaiAzureRealtimeApiVersion(
+      channel({ type: CHANNEL_TYPE_AZURE, key: "az", other: "from-other" }),
+      "/v1/realtime?api-version=from-query",
+    ),
+    "from-query",
+  );
+  assert.equal(
+    openaiAzureRealtimeApiVersion(channel({ type: CHANNEL_TYPE_AZURE, key: "az", other: "from-other" }), "/v1/realtime"),
+    "from-other",
   );
   assert.equal(
     openaiRealtimeRequestURL(
@@ -341,7 +372,7 @@ test("original OpenAI Realtime Azure api-key Dial URL", () => {
       key: "azure-secret",
       base_url: "https://west.openai.azure.com",
       other: "2024-10-01-preview",
-      created_time: AZURE_NO_REMOVE_DOT_TIME,
+      created_time: OPENAI_AZURE_NO_REMOVE_DOT_TIME,
     }),
     req,
     "gpt-4o-realtime-preview",

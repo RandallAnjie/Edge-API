@@ -1,8 +1,6 @@
 /** Original `openai.Adaptor` realtime GetRequestURL / SetupRequestHeader / DoWssRequest. */
 
 import {
-  AZURE_API_VERSION,
-  AZURE_NO_REMOVE_DOT_TIME,
   CHANNEL_TYPE_AZURE,
   CHANNEL_TYPE_CUSTOM,
   CHANNEL_TYPE_OPENAI,
@@ -19,6 +17,16 @@ export const OPENAI_REALTIME_HANDSHAKE_TIMEOUT_MS = 45_000;
 
 /** Original gorilla `websocket.ErrBadHandshake`. */
 export const OPENAI_REALTIME_BAD_HANDSHAKE = "websocket: bad handshake";
+
+/**
+ * Original `constant.AzureNoRemoveDotTime` Unix seconds
+ * (`time.Date(2025, time.May, 10, 0, 0, 0, 0, time.UTC).Unix()`).
+ * Local literal so ESM/CJS init order cannot leave the cutoff undefined.
+ */
+export const OPENAI_AZURE_NO_REMOVE_DOT_TIME = 1746835200;
+
+/** Original `constant.AzureDefaultAPIVersion` / `AZURE_DEFAULT_API_VERSION`. */
+export const OPENAI_AZURE_DEFAULT_API_VERSION = "2025-04-01-preview";
 
 type WsLike = {
   readyState?: number;
@@ -52,8 +60,17 @@ export function openaiRealtimeRequestURLPath(req: Request): string {
 }
 
 function azureRealtimeModel(channel: ChannelRow, upstreamModel: string): string {
-  if (Number(channel.created_time || 0) < AZURE_NO_REMOVE_DOT_TIME) return upstreamModel.replace(/\./g, "");
+  if (Number(channel.created_time || 0) < OPENAI_AZURE_NO_REMOVE_DOT_TIME) {
+    return upstreamModel.split(".").join("");
+  }
   return upstreamModel;
+}
+
+/** Original `relaycommon.GetAPIVersion`: query `api-version`, else channel Other, else default. */
+export function openaiAzureRealtimeApiVersion(channel: ChannelRow, requestUrlPath: string): string {
+  const q = requestUrlPath.indexOf("?");
+  const fromQuery = q >= 0 ? new URLSearchParams(requestUrlPath.slice(q + 1)).get("api-version") || "" : "";
+  return fromQuery || String(channel.other || "") || OPENAI_AZURE_DEFAULT_API_VERSION;
 }
 
 /** Original `openai.Adaptor.GetRequestURL` for `RelayModeRealtime`. */
@@ -64,7 +81,7 @@ export function openaiRealtimeRequestURL(
   const httpBase = resolveBaseUrl(channel.type, channel.base_url);
   const base = openaiRealtimeWsBase(httpBase);
   if (channel.type === CHANNEL_TYPE_AZURE) {
-    const apiVersion = String(channel.other || "") || AZURE_API_VERSION;
+    const apiVersion = openaiAzureRealtimeApiVersion(channel, opts.requestUrlPath);
     const model = azureRealtimeModel(channel, opts.upstreamModel);
     const requestURL = `/openai/realtime?deployment=${model}&api-version=${apiVersion}`;
     return openaiRealtimeFullRequestURL(base, requestURL, channel.type);
