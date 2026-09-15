@@ -1858,7 +1858,9 @@ function parseTaskPrivate(row: Record<string, unknown>): Record<string, unknown>
 }
 
 function taskFailReasonIsLegacyResultURL(reason: string): boolean {
-  return /^https?:\/\//i.test(reason.trim());
+  const value = reason.trim();
+  const lower = value.toLowerCase();
+  return lower.startsWith("https://") || lower.startsWith("http://") || lower.startsWith("data:");
 }
 
 export function taskResultURL(row: Record<string, unknown>): string {
@@ -1900,6 +1902,7 @@ export function publicTask(row: Record<string, unknown>, fillUser: boolean, view
   const dataRaw = row.data;
   const data =
     typeof dataRaw === "string" ? parseJson(dataRaw, dataRaw ? dataRaw : null) : dataRaw ?? null;
+  // GetUserTask `Omit("channel_id")` zeros ChannelId; GetAllTask keeps the real id.
   const item: Record<string, unknown> = {
     id: Number(row.id || 0),
     created_at: createdAt,
@@ -1908,7 +1911,7 @@ export function publicTask(row: Record<string, unknown>, fillUser: boolean, view
     platform: String(row.platform || ""),
     user_id: Number(row.user_id || 0),
     group: String(row.group || ""),
-    channel_id: Number(row.channel_id || 0),
+    channel_id: fillUser ? Number(row.channel_id || 0) : 0,
     quota: Number(row.quota || 0),
     action: normalizeTaskAction(String(row.action || "")),
     status,
