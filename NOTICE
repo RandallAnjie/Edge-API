@@ -195,12 +195,22 @@ Material changes from upstream:
   changes mid-request. Missing tiered expressions are HTTP 400
   `model_price_error`. Extra-OK: channel-test still builds a snapshot at settle
   when it has no pre-consume RelayInfo.
+  Original `service.calculateTextQuotaSummary` / `PostTextConsumeQuota` bills
+  the ratio path with shopspring `QuotaFromDecimal` (half-away-from-zero,
+  documented as JS `Math.round` for non-negative quotas), OpenRouter Claude
+  prompt mutation (`prompt_tokens` logged after cache subtraction), split
+  Claude 5m/1h cache-creation ratios, OpenAI `cache_write_tokens`,
+  `tool_surcharges` (`name`/`count`/`price`, not legacy `web_search` keys),
+  and Gemini `audio_input_seperate_price`. Extra-OK: PostAudio HTTP still
+  uses `computeQuota`; `CountBillableToolCall` is not fully wired from
+  Responses/Claude/Gemini converters (search-preview still bills from the
+  model-name suffix). Extra-OK: ratio-path `computeQuota` remains for the
+  audio fallback only.
   Original `service.attachQuotaSaturation` nests
   `admin_info.quota_saturation` (`op`, `kind`, `original`, `clamped`) on
   text/audio/WSS consume logs so `formatUserLogs` strips it. `TryTieredSettle`
   `QuotaRound` overflow is `QuotaRound`/`overflow`; WSS `calculateAudioQuota`
-  uses `QuotaFromDecimal`. Extra-OK: ratio-path `computeQuota` still has no
-  clamp (original `calculateTextQuota` decimal clamp is a later hop).
+  uses `QuotaFromDecimal`.
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented

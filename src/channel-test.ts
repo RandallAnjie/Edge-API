@@ -46,6 +46,7 @@ import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
 import { computeQuota, textConsumePriceData, audioConsumeLogRatios } from "./quota.js";
+import { calculateTextQuotaFromStore, composeTieredTextQuota, noteQuotaClamp } from "./text-quota.js";
 import { openaiImageDataCount } from "./image-billing.js";
 import { billingUsageFromOpenAICounts, cacheCreationTokensTotal, injectTieredBillingInfo, resolveRelayTieredQuota } from "./tiered-settle.js";
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
@@ -749,10 +750,8 @@ export async function testChannel(
       channelType: channel.type,
       actualImageCount,
     });
-    const quota = tiered ? tiered.quota : await computeQuota(store, originModel, group, usage.prompt, usage.completion);
     const price = await textConsumePriceData(store, originModel, group, user.group);
     const audioLog = await audioConsumeLogRatios(store, originModel);
-    const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
     const details = billingUsage.prompt_tokens_details || {};
     const outDetails = billingUsage.completion_tokens_details || {};
     const clientFormat = built.kind === "anthropic" ? "anthropic" : built.kind === "gemini" ? "gemini" : "openai";
@@ -771,6 +770,40 @@ export async function testChannel(
       containsAudioRatios: audioLog.containsAudioRatios,
       originModelName: originModel,
     });
+    const textSummary = useAudioOther
+      ? null
+      : await calculateTextQuotaFromStore(store, {
+          model: originModel,
+          group,
+          userGroup: user.group,
+          usage: billingUsage,
+          channelType: channel.type,
+          finalRequestFormat: destinationFormat,
+          relayMode: mode,
+          imageCount: actualImageCount,
+        });
+    let quota: number;
+    let quotaClamp = textSummary?.clamp || null;
+    if (tiered) {
+      if (textSummary) {
+        const composed = composeTieredTextQuota({
+          toolCallSurchargeQuota: textSummary.toolCallSurchargeQuota,
+          tieredQuota: tiered.quota,
+          result: tiered.result,
+          snap: tiered.snap,
+        });
+        quota = composed.quota;
+        quotaClamp = noteQuotaClamp(quotaClamp, composed.clamp);
+      } else {
+        quota = tiered.quota;
+      }
+      quotaClamp = noteQuotaClamp(quotaClamp, tiered.result?.clamp);
+    } else if (textSummary) {
+      quota = textSummary.quota;
+    } else {
+      quota = await computeQuota(store, originModel, group, usage.prompt, usage.completion);
+    }
+    const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
     await store.insertLog({
       user_id: user.id,
       type: LOG_CONSUME,
@@ -779,7 +812,7 @@ export async function testChannel(
       token_name: "模型测试",
       model_name: originModel,
       quota,
-      prompt_tokens: usage.prompt,
+      prompt_tokens: textSummary ? textSummary.promptTokens : usage.prompt,
       completion_tokens: usage.completion,
       use_time: Math.floor(milliseconds / 1000),
       is_stream: isStream ? 1 : 0,
@@ -809,10 +842,14 @@ export async function testChannel(
           mode,
           destinationFormat,
         }),
-        isClaudeUsageSemantic: isClaude,
+        isClaudeUsageSemantic: textSummary ? textSummary.isClaudeUsageSemantic : isClaude,
         finalRequestFormat: destinationFormat,
-        cacheCreationTokens: cacheCreationTokensTotal(details),
+        cacheCreationTokens: textSummary ? textSummary.cacheCreationTokens : cacheCreationTokensTotal(details),
         cacheCreationRatio: price.cacheCreationRatio,
+        cacheCreationTokens5m: textSummary ? textSummary.cacheCreationTokens5m : billingUsage.claude_cache_creation_5_m_tokens,
+        cacheCreationRatio5m: price.cacheCreationRatio5m,
+        cacheCreationTokens1h: textSummary ? textSummary.cacheCreationTokens1h : billingUsage.claude_cache_creation_1_h_tokens,
+        cacheCreationRatio1h: price.cacheCreationRatio1h,
         imageTokens: details.image_tokens,
         imageRatio: price.imageRatio,
         audioInput: details.audio_tokens,
@@ -824,7 +861,10 @@ export async function testChannel(
         containsAudioRatios: audioLog.containsAudioRatios,
         billingSource: "wallet",
         publicExtra,
-        quotaClamp: tiered?.result?.clamp,
+        quotaClamp,
+        toolSurcharges: textSummary?.toolSurchargeItems,
+        audioInputPrice: textSummary?.audioInputPrice,
+        audioInputTokens: textSummary?.audioTokens,
       }),
     });
   }

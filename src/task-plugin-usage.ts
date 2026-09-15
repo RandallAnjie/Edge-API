@@ -198,6 +198,15 @@ export function applyOtherRatiosToFloat(value: number, ratios: Record<string, nu
   return value * otherRatioMultiplier(ratios);
 }
 
+/** Original `PriceData.ApplyOtherRatiosToDecimal`. */
+export function applyOtherRatiosToDecimal(value: number, ratios: Record<string, number> | null | undefined): number {
+  if (!ratios) return value;
+  for (const ratio of Object.values(ratios)) {
+    if (isValidOtherRatio(ratio) && ratio !== 1) value *= ratio;
+  }
+  return value;
+}
+
 /** Original `PriceData.RemoveOtherRatiosFromFloat`. */
 export function removeOtherRatiosFromFloat(value: number, ratios: Record<string, number> | null | undefined): number {
   if (!ratios) return value;

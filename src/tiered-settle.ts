@@ -44,6 +44,8 @@ export type BillingUsage = {
   prompt_tokens: number;
   completion_tokens: number;
   usage_semantic?: string;
+  usage_source?: string;
+  cost?: number;
   claude_cache_creation_5_m_tokens?: number;
   claude_cache_creation_1_h_tokens?: number;
   prompt_tokens_details?: BillingUsageDetails;
@@ -425,15 +427,19 @@ export function billingUsageFromOpenAICounts(usage: {
   usageSemantic?: string;
   claudeCacheCreation5mTokens?: number;
   claudeCacheCreation1hTokens?: number;
+  usageSource?: string;
+  cost?: number;
 }): BillingUsage {
   return {
     prompt_tokens: usage.prompt,
     completion_tokens: usage.completion,
     usage_semantic: usage.usageSemantic || "",
+    usage_source: usage.usageSource || "",
+    cost: usage.cost || 0,
     claude_cache_creation_5_m_tokens: usage.claudeCacheCreation5mTokens || 0,
     claude_cache_creation_1_h_tokens: usage.claudeCacheCreation1hTokens || 0,
     prompt_tokens_details: {
-      cached_tokens: usage.cachedTokens || 0,
+      cached_tokens: usage.cachedTokens || usage.promptCacheHitTokens || 0,
       cached_creation_tokens: usage.cachedCreationTokens || 0,
       cache_write_tokens: usage.cacheWriteTokens || 0,
       image_tokens: usage.imageTokens || 0,

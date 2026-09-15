@@ -263,6 +263,8 @@ export function imagenUsage(imageCount: number): {
   textTokens: number;
   completionTextTokens: number;
   usageSemantic: string;
+  usageSource: string;
+  cost: number;
   claudeCacheCreation5mTokens: number;
   claudeCacheCreation1hTokens: number;
 } {
@@ -283,6 +285,8 @@ export function imagenUsage(imageCount: number): {
     textTokens: 0,
     completionTextTokens: 0,
     usageSemantic: "",
+    usageSource: "",
+    cost: 0,
     claudeCacheCreation5mTokens: 0,
     claudeCacheCreation1hTokens: 0,
   };

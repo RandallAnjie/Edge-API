@@ -208,6 +208,8 @@ export type OpenAIUsageCounts = {
   textTokens: number;
   completionTextTokens: number;
   usageSemantic: string;
+  usageSource: string;
+  cost: number;
   claudeCacheCreation5mTokens: number;
   claudeCacheCreation1hTokens: number;
 };
@@ -229,6 +231,8 @@ export function emptyOpenAIUsageCounts(): OpenAIUsageCounts {
     textTokens: 0,
     completionTextTokens: 0,
     usageSemantic: "",
+    usageSource: "",
+    cost: 0,
     claudeCacheCreation5mTokens: 0,
     claudeCacheCreation1hTokens: 0,
   };
@@ -263,6 +267,8 @@ export function usageFromOpenAI(body: Record<string, unknown> | null): OpenAIUsa
     textTokens: Number(promptDetails.text_tokens || 0),
     completionTextTokens: Number(completionDetails.text_tokens || 0),
     usageSemantic: String(usage.usage_semantic || ""),
+    usageSource: String(usage.usage_source || ""),
+    cost: Number(usage.cost || 0),
     claudeCacheCreation5mTokens: Number(usage.claude_cache_creation_5_m_tokens || 0),
     claudeCacheCreation1hTokens: Number(usage.claude_cache_creation_1_h_tokens || 0),
   };

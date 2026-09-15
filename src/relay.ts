@@ -143,7 +143,12 @@ import {
   type ChannelAttemptError,
 } from "./channel-error.js";
 import type { OriginTaskRef } from "./origin-task.js";
-import { computeQuota, remainingOk, textConsumePriceData, audioConsumeLogRatios } from "./quota.js";
+import { remainingOk, textConsumePriceData, audioConsumeLogRatios, computeQuota } from "./quota.js";
+import {
+  calculateTextQuotaFromStore,
+  composeTieredTextQuota,
+  noteQuotaClamp,
+} from "./text-quota.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
 import {
@@ -1398,6 +1403,10 @@ type SettleLogExtra = {
   actualImageCount?: number;
   tieredSnapshot?: import("./billing-expr.js").BillingSnapshot;
   billingRequestInput?: import("./billing-expr.js").BillingRequestInput;
+  builtInTools?: Record<string, number>;
+  claudeWebSearchRequests?: number;
+  geminiGoogleSearchCall?: boolean;
+  otherRatios?: Record<string, number>;
 };
 
 async function settle(
@@ -1434,16 +1443,6 @@ async function settle(
     request: extra.billingRequestInput,
     preConsumedQuota: extra.tieredSnapshot?.estimatedQuotaAfterGroup,
   });
-  let quota = tiered ? tiered.quota : await computeQuota(store, model, auth.usingGroup, prompt, completion);
-  const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
-  if (ok && quota > 0) {
-    await store.consumeQuota(auth.user.id, auth.token.id, channel.id, quota);
-    await store.bumpQuotaData(auth.user, model, quota, prompt + completion, {
-      useGroup: auth.usingGroup,
-      tokenId: auth.token.id,
-      channelId: channel.id,
-    });
-  }
   const price = await textConsumePriceData(store, model, auth.usingGroup, auth.user.group);
   const audioLog = await audioConsumeLogRatios(store, model);
   const details = billingUsage.prompt_tokens_details || {};
@@ -1461,6 +1460,52 @@ async function settle(
     containsAudioRatios: audioLog.containsAudioRatios,
     originModelName: model,
   });
+  const textSummary = useAudioOther
+    ? null
+    : await calculateTextQuotaFromStore(store, {
+        model,
+        group: auth.usingGroup,
+        userGroup: auth.user.group,
+        usage: billingUsage,
+        channelType: channel.type,
+        finalRequestFormat,
+        relayMode: extra.relayMode,
+        builtInTools: extra.builtInTools,
+        claudeWebSearchRequests: extra.claudeWebSearchRequests,
+        geminiGoogleSearchCall: extra.geminiGoogleSearchCall,
+        otherRatios: extra.otherRatios,
+        imageCount: extra.actualImageCount,
+      });
+  let quota: number;
+  let quotaClamp = textSummary?.clamp || null;
+  if (tiered) {
+    if (textSummary) {
+      const composed = composeTieredTextQuota({
+        toolCallSurchargeQuota: textSummary.toolCallSurchargeQuota,
+        tieredQuota: tiered.quota,
+        result: tiered.result,
+        snap: tiered.snap,
+      });
+      quota = composed.quota;
+      quotaClamp = noteQuotaClamp(quotaClamp, composed.clamp);
+    } else {
+      quota = tiered.quota;
+    }
+    quotaClamp = noteQuotaClamp(quotaClamp, tiered.result?.clamp);
+  } else if (textSummary) {
+    quota = textSummary.quota;
+  } else {
+    quota = await computeQuota(store, model, auth.usingGroup, prompt, completion);
+  }
+  const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
+  if (ok && quota > 0) {
+    await store.consumeQuota(auth.user.id, auth.token.id, channel.id, quota);
+    await store.bumpQuotaData(auth.user, model, quota, prompt + completion, {
+      useGroup: auth.usingGroup,
+      tokenId: auth.token.id,
+      channelId: channel.id,
+    });
+  }
   await store.insertLog({
     user_id: auth.user.id,
     type: ok ? LOG_CONSUME : LOG_ERROR,
@@ -1469,7 +1514,7 @@ async function settle(
     token_name: auth.token.name,
     model_name: model,
     quota,
-    prompt_tokens: prompt,
+    prompt_tokens: textSummary ? textSummary.promptTokens : prompt,
     completion_tokens: completion,
     use_time: useTime,
     is_stream: stream ? 1 : 0,
@@ -1500,13 +1545,13 @@ async function settle(
       ok,
       requestPath: extra.requestPath,
       requestConversion: extra.requestConversion,
-      isClaudeUsageSemantic: isClaude,
+      isClaudeUsageSemantic: textSummary ? textSummary.isClaudeUsageSemantic : isClaude,
       finalRequestFormat,
-      cacheCreationTokens,
+      cacheCreationTokens: textSummary ? textSummary.cacheCreationTokens : cacheCreationTokens,
       cacheCreationRatio: price.cacheCreationRatio,
-      cacheCreationTokens5m: billingUsage.claude_cache_creation_5_m_tokens,
+      cacheCreationTokens5m: textSummary ? textSummary.cacheCreationTokens5m : billingUsage.claude_cache_creation_5_m_tokens,
       cacheCreationRatio5m: price.cacheCreationRatio5m,
-      cacheCreationTokens1h: billingUsage.claude_cache_creation_1_h_tokens,
+      cacheCreationTokens1h: textSummary ? textSummary.cacheCreationTokens1h : billingUsage.claude_cache_creation_1_h_tokens,
       cacheCreationRatio1h: price.cacheCreationRatio1h,
       imageTokens: details.image_tokens,
       imageRatio: price.imageRatio,
@@ -1522,7 +1567,10 @@ async function settle(
       channelAffinity: extra.channelAffinity,
       billingSource: extra.billingSource || "wallet",
       publicExtra,
-      quotaClamp: tiered?.result?.clamp,
+      quotaClamp,
+      toolSurcharges: textSummary?.toolSurchargeItems,
+      audioInputPrice: textSummary?.audioInputPrice,
+      audioInputTokens: textSummary?.audioTokens,
     }),
   });
   if (ok && extra.affinity && extra.env) {

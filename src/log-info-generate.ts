@@ -106,6 +106,9 @@ export type ConsumeLogOtherOpts = ClaudeOtherInfoOpts & {
    * Nested under `admin_info.quota_saturation` so `formatUserLogs` strips it.
    */
   quotaClamp?: QuotaClamp | null;
+  toolSurcharges?: { name: string; count: number; price: number }[];
+  audioInputPrice?: number;
+  audioInputTokens?: number;
 };
 
 /** Original `appendRequestConversionChain` display labels. */
@@ -314,6 +317,9 @@ export function appendPostTextQuotaOther(
     cacheCreationRatio1h?: number;
     inputTokensTotal?: number;
     usageSource?: string;
+    toolSurcharges?: { name: string; count: number; price: number }[];
+    audioInputPrice?: number;
+    audioInputTokens?: number;
   },
 ): void {
   if (opts.isClaudeUsageSemantic) other.usage_semantic = "anthropic";
@@ -344,6 +350,12 @@ export function appendPostTextQuotaOther(
     (opts.inputTokensTotal || 0) > 0
   ) {
     other.input_tokens_total = opts.inputTokensTotal;
+  }
+  if (opts.toolSurcharges && opts.toolSurcharges.length) other.tool_surcharges = opts.toolSurcharges;
+  if ((opts.audioInputPrice || 0) > 0 && (opts.audioInputTokens || 0) > 0) {
+    other.audio_input_seperate_price = true;
+    other.audio_input_token_count = opts.audioInputTokens;
+    other.audio_input_price = opts.audioInputPrice;
   }
 }
 
@@ -401,6 +413,9 @@ export function consumeLogOther(opts: ConsumeLogOtherOpts): string {
       cacheCreationRatio1h: opts.cacheCreationRatio1h,
       inputTokensTotal: opts.inputTokensTotal,
       usageSource: opts.usageSource,
+      toolSurcharges: opts.toolSurcharges,
+      audioInputPrice: opts.audioInputPrice,
+      audioInputTokens: opts.audioInputTokens,
     });
   }
   if (opts.publicExtra) Object.assign(other, opts.publicExtra);
