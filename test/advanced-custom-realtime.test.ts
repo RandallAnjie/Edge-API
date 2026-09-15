@@ -320,16 +320,22 @@ test("original Advanced Custom realtime unmatched route is distributor no availa
   );
   const missing = await json(
     new Request("http://local/v1/realtime?model=gpt-realtime", {
-      headers: { authorization: "Bearer " + sk, upgrade: "websocket" },
+      headers: {
+        authorization: "Bearer " + sk,
+        upgrade: "websocket",
+        "x-oneapi-request-id": "rt-empty-req",
+      },
     }),
     e,
   );
   assert.equal(missing.res.status, 503, missing.text);
-  assert.equal((missing.body.error as { code?: string }).code, "model_not_found");
-  assert.equal((missing.body.error as { type?: string }).type, "new_api_error");
-  assert.equal((missing.body.error as { param?: string }).param, "");
+  const missingErr = missing.body.error as { code?: string; type?: string; message?: string; param?: unknown };
+  assert.deepEqual(Object.keys(missingErr).sort(), ["code", "message", "type"]);
+  assert.equal(missingErr.code, "model_not_found");
+  assert.equal(missingErr.type, "new_api_error");
   assert.match(
-    String((missing.body.error as { message?: string }).message),
+    String(missingErr.message),
     /No available channel for model gpt-realtime under group default \(distributor\)/,
   );
+  assert.match(String(missingErr.message), /request id: rt-empty-req/);
 });

@@ -5156,16 +5156,23 @@ test("original auto-group selection, playground group, affinity TTL/usage cache,
     const missing = await json(
       new Request("http://local/v1/chat/completions", {
         method: "POST",
-        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer " + sk,
+          "content-type": "application/json",
+          "x-oneapi-request-id": "chat-empty-req",
+        },
         body: JSON.stringify({ model: "no-such-model-xyz", messages: [{ role: "user", content: "hi" }] }),
       }),
       e,
     );
     assert.equal(missing.res.status, 503);
-    assert.equal((missing.body.error as { code: string }).code, "model_not_found");
-    assert.equal((missing.body.error as { type: string }).type, "new_api_error");
-    assert.match(String((missing.body.error as { message: string }).message), /No available channel for model no-such-model-xyz under group/);
-    assert.match(String((missing.body.error as { message: string }).message), /\(distributor\)/);
+    const missingErr = missing.body.error as { message: string; type: string; code: string; param?: unknown };
+    assert.deepEqual(Object.keys(missingErr).sort(), ["code", "message", "type"]);
+    assert.equal(missingErr.code, "model_not_found");
+    assert.equal(missingErr.type, "new_api_error");
+    assert.match(missingErr.message, /No available channel for model no-such-model-xyz under group/);
+    assert.match(missingErr.message, /\(distributor\)/);
+    assert.match(missingErr.message, /request id: chat-empty-req/);
 
     const realtime = await json(
       new Request("http://local/v1/realtime?model=auto-select-model", {

@@ -112,7 +112,7 @@ import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-c
 import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
-import { clientIp, groupAccessDeniedMessage, json, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
+import { abortWithOpenAiMessage, clientIp, groupAccessDeniedMessage, json, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, channelParamOverrideMap, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import { removeDisabledFields, usesRemoveDisabledFields, type ChannelDisabledFieldSettings } from "./relay-disabled-fields.js";
 import {
@@ -1442,6 +1442,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   }
 
   const requestPath = opts.requestPath || path;
+  const rid = opts.req.headers.get("x-oneapi-request-id") || crypto.randomUUID();
   const selected = await selectDistributedChannel({
     store,
     env: opts.env,
@@ -1456,7 +1457,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     originPin: opts.originPin,
   });
   if (selected.error) {
-    return openaiError(selected.error.status, selected.error.message, selected.error.code);
+    return abortWithOpenAiMessage(selected.error.status, selected.error.message, selected.error.code, rid);
   }
   auth.usingGroup = selected.usingGroup;
   const first = selected.channel;
@@ -1468,13 +1469,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   const selectState = selected.selectState;
   if (!first) {
     const showGroup = auth.usingGroup === "auto" ? "auto" : auth.usingGroup;
-    return openaiError(503, noAvailableChannelMessage(opts.req, showGroup, model), "model_not_found");
+    return abortWithOpenAiMessage(503, noAvailableChannelMessage(opts.req, showGroup, model), "model_not_found", rid);
   }
 
   const autoDisable = await store.optionBool("AutomaticDisableChannelEnabled", false);
   const retryRanges = retryStatusCodeRangesFromOption(await store.option("AutomaticRetryStatusCodes"));
   const ip = clientIp(opts.req);
-  const rid = opts.req.headers.get("x-oneapi-request-id") || crypto.randomUUID();
 
   const promptEst = estimatePromptTokens(
     asObj(opts.body).messages as ChatMessage[] | undefined,

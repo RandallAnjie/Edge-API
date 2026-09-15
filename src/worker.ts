@@ -4,7 +4,7 @@ import { runPendingMidjourneyPoll } from "./midjourney-poll.js";
 import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
 import { nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
-import { apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
+import { abortWithOpenAiMessage, apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -214,6 +214,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
 
   if (path === "/v1/realtime") {
     const model = url.searchParams.get("model") || "gpt-4o-realtime-preview";
+    const requestId = req.headers.get("x-oneapi-request-id") || crypto.randomUUID();
     const selected = await selectDistributedChannel({
       store,
       env,
@@ -224,9 +225,11 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
       body: null,
       headers: requestHeadersFrom(req),
     });
-    if (selected.error) return openaiError(selected.error.status, selected.error.message, selected.error.code);
+    if (selected.error) {
+      return abortWithOpenAiMessage(selected.error.status, selected.error.message, selected.error.code, requestId);
+    }
     if (!selected.channel) {
-      return openaiError(503, noAvailableChannelMessage(req, selected.usingGroup, model), "model_not_found");
+      return abortWithOpenAiMessage(503, noAvailableChannelMessage(req, selected.usingGroup, model), "model_not_found", requestId);
     }
     if ((req.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
       return openaiError(426, "Realtime 需要 WebSocket Upgrade", "upgrade_required");

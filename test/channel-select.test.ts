@@ -255,8 +255,11 @@ test("original ChannelSatisfiesFilters drops type-58 on unmatched path and type-
     e,
   );
   assert.equal(unmatched.res.status, 503);
-  assert.equal((unmatched.body.error as { code?: string }).code, "model_not_found");
-  assert.match(String((unmatched.body.error as { message?: string }).message || ""), /No available channel for model filter-model under group default/);
+  const unmatchedErr = unmatched.body.error as { code?: string; type?: string; message?: string; param?: unknown };
+  assert.deepEqual(Object.keys(unmatchedErr).sort(), ["code", "message", "type"]);
+  assert.equal(unmatchedErr.code, "model_not_found");
+  assert.equal(unmatchedErr.type, "new_api_error");
+  assert.match(String(unmatchedErr.message || ""), /No available channel for model filter-model under group default/);
 
   const openai = await json(
     new Request("http://local/api/channel/", {
