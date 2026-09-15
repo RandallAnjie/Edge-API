@@ -1166,9 +1166,12 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
   assert.equal(page.page, 1);
   assert.equal(typeof page.total, "number");
   assert.equal(typeof page.page_size, "number");
-  for (const k of ["id", "username", "created_at", "last_login_at", "remark", "setting", "aff_code", "quota", "github_id", "linux_do_id", "wechat_id", "stripe_customer", "DeletedAt"]) {
+  for (const k of ["id", "username", "password", "original_password", "verification_code", "created_at", "last_login_at", "remark", "setting", "aff_code", "quota", "github_id", "linux_do_id", "wechat_id", "stripe_customer", "DeletedAt"]) {
     assert.ok(k in page.items[0], "missing GetAllUsers field " + k);
   }
+  assert.equal(page.items[0].password, "");
+  assert.equal(page.items[0].original_password, "");
+  assert.equal(page.items[0].verification_code, "");
   assert.equal(page.items[0].DeletedAt, null);
 
   const createUser = await json(
@@ -3988,9 +3991,12 @@ test("original FetchCodexChannelModels, advanced-custom fetch, GetPricing endpoi
 
     const users = await json(new Request("http://local/api/user/", { headers: auth }), e);
     const userPage = users.body.data as { items: Record<string, unknown>[] };
-    for (const k of ["id", "username", "display_name", "role", "status", "email", "quota", "used_quota", "request_count", "group", "remark", "created_at", "last_login_at", "DeletedAt"]) {
+    for (const k of ["id", "username", "password", "original_password", "verification_code", "display_name", "role", "status", "email", "quota", "used_quota", "request_count", "group", "remark", "created_at", "last_login_at", "DeletedAt"]) {
       assert.ok(k in userPage.items[0], "missing GetAllUsers field " + k);
     }
+    assert.equal(userPage.items[0].password, "");
+    assert.equal(userPage.items[0].original_password, "");
+    assert.equal(userPage.items[0].verification_code, "");
 
     const advancedSettings = JSON.stringify({
       advanced_custom: {

@@ -4074,6 +4074,10 @@ export function publicUser(u: UserRow): Record<string, unknown> {
   return {
     id: u.id,
     username: u.username,
+    // Original GetAllUsers/SearchUsers/GetUser `Omit("password","access_token")` plus
+    // `gorm:"-:all"` zeros — always empty strings, never the stored hash.
+    password: "",
+    original_password: "",
     display_name: u.display_name,
     has_password: !!u.password,
     role: u.role,
@@ -4084,6 +4088,7 @@ export function publicUser(u: UserRow): Record<string, unknown> {
     oidc_id: u.oidc_id || "",
     wechat_id: u.wechat_id || "",
     telegram_id: u.telegram_id || "",
+    verification_code: "",
     group: u.group,
     quota: u.quota,
     used_quota: u.used_quota,
