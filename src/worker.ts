@@ -231,7 +231,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     if ((req.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
       return openaiError(426, "Realtime 需要 WebSocket Upgrade", "upgrade_required");
     }
-    return proxyRealtime(req, selected.channel, model);
+    return proxyRealtime(req, selected.channel, model, { store, auth, env, ctx });
   }
 
   if (req.method === "GET" && path.startsWith("/v1/video/generations/")) {

@@ -136,6 +136,30 @@ export function quotaFromFloat(value: number): number {
   return quotaFromFloatChecked(value).quota;
 }
 
+/**
+ * Original `common.QuotaFromDecimalChecked`.
+ * shopspring `decimal.Round(0)` is half-away-from-zero; JS `Math.round` matches
+ * for non-negative quotas used on the WSS path.
+ */
+export function quotaFromDecimalChecked(value: number): { quota: number; clamp: QuotaClamp | null } {
+  if (Number.isNaN(value)) {
+    return { quota: 0, clamp: { op: "QuotaFromDecimal", kind: "nan", original: value, clamped: 0 } };
+  }
+  const rounded = Math.round(value);
+  if (rounded > MAX_QUOTA) {
+    return { quota: MAX_QUOTA, clamp: { op: "QuotaFromDecimal", kind: "overflow", original: value, clamped: MAX_QUOTA } };
+  }
+  if (rounded < MIN_QUOTA) {
+    return { quota: MIN_QUOTA, clamp: { op: "QuotaFromDecimal", kind: "underflow", original: value, clamped: MIN_QUOTA } };
+  }
+  return { quota: rounded, clamp: null };
+}
+
+/** Original `common.QuotaFromDecimal`. */
+export function quotaFromDecimal(value: number): number {
+  return quotaFromDecimalChecked(value).quota;
+}
+
 /** Original `common.QuotaClamp.Error`. */
 export function quotaClampMessage(clamp: QuotaClamp): string {
   return `quota conversion (${clamp.op}) ${clamp.kind}: original=${clamp.original}, clamped=${clamp.clamped}`;

@@ -69,6 +69,16 @@ import { openaiFromJinaRerank } from "./jina-convert.js";
 import { openaiFromSiliconFlowRerank } from "./siliconflow-convert.js";
 import { openaiFromPalmResponse, palmUpstreamToOpenAIChat } from "./palm-convert.js";
 import { dialOpenAIRealtimeWebSocket, openaiRealtimeUpstream } from "./openai-realtime.js";
+import {
+  accumulateRealtimeUsage,
+  applyClientRealtimeEvent,
+  applyUpstreamRealtimeEvent,
+  emptyOpenaiRealtimeHandlerState,
+  parseRealtimeEvent,
+  remainingRealtimePreConsume,
+  websocketMessageText,
+} from "./openai-realtime-usage.js";
+import { loadWssPriceData, postWssConsumeQuota, preWssConsumeQuota } from "./openai-realtime-billing.js";
 import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
 import {
   parseVolcengineAuth,
@@ -118,7 +128,7 @@ import { PIN_RETRY_SAME_CHANNEL, PIN_RETRY_SINGLE_ATTEMPT, type ChannelPin } fro
 import { retryStatusCodeRangesFromOption, shouldRetryByStatusCode } from "./status-code-ranges.js";
 import type { OriginTaskRef } from "./origin-task.js";
 import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
-import { pickChannelKey } from "./select.js";
+import { mapModel, pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
 import {
   buildAdvancedCustomModelListRequest,
@@ -2490,11 +2500,18 @@ void parseBool;
 
 declare const WebSocketPair: { new (): { 0: WebSocket; 1: WebSocket } };
 
-export async function proxyRealtime(req: Request, channel: ChannelRow, model: string): Promise<Response> {
+export async function proxyRealtime(
+  req: Request,
+  channel: ChannelRow,
+  model: string,
+  billing?: { store: Store; auth: AuthToken; env: Env; ctx?: ExecutionContextLike },
+): Promise<Response> {
   if (typeof WebSocketPair === "undefined") {
     return openaiError(501, "当前运行时不支持 WebSocket", "not_implemented");
   }
-  const target = openaiRealtimeUpstream(channel, req, model);
+  const originModel = model || "gpt-4o-realtime-preview";
+  const upstreamModel = mapModel(channel.model_mapping, originModel);
+  const target = openaiRealtimeUpstream(channel, req, originModel);
   let ws: WebSocket;
   try {
     ws = (await dialOpenAIRealtimeWebSocket(target.url, target.headers)) as unknown as WebSocket;
@@ -2508,21 +2525,111 @@ export async function proxyRealtime(req: Request, channel: ChannelRow, model: st
   const client = pair[0];
   const server = pair[1];
   (server as unknown as { accept(): void }).accept();
-  server.addEventListener("message", (ev: MessageEvent) => {
-    try {
-      ws.send(ev.data as string);
-    } catch {
-      /* ignore */
+  const state = emptyOpenaiRealtimeHandlerState();
+  const startMs = Date.now();
+  let firstResponseMs = 0;
+  let finalPreConsumedQuota = 0;
+  let finished = false;
+  let closing = false;
+  const requestId = req.headers.get("x-oneapi-request-id") || crypto.randomUUID();
+  let gate = Promise.resolve();
+  const enqueue = (fn: () => Promise<void>): void => {
+    const next = gate.then(fn, fn);
+    gate = next.catch(() => {});
+    billing?.ctx?.waitUntil(next);
+  };
+  const preConsume = async (usage: RealtimeUsage): Promise<void> => {
+    if (!billing) return;
+    const price = await loadWssPriceData(
+      billing.store,
+      originModel,
+      upstreamModel,
+      billing.auth.usingGroup,
+      billing.auth.user.group || "default",
+    );
+    accumulateRealtimeUsage(state.sumUsage, usage);
+    finalPreConsumedQuota += await preWssConsumeQuota({ store: billing.store, auth: billing.auth, price, usage });
+  };
+  const finish = async (): Promise<void> => {
+    if (finished) return;
+    finished = true;
+    if (billing) {
+      for (const leftover of remainingRealtimePreConsume(state)) {
+        try {
+          await preConsume(leftover);
+        } catch {
+          /* original close-path ignores leftover PreWss errors */
+        }
+      }
+      const price = await loadWssPriceData(
+        billing.store,
+        originModel,
+        upstreamModel,
+        billing.auth.usingGroup,
+        billing.auth.user.group || "default",
+      );
+      await postWssConsumeQuota({
+        store: billing.store,
+        auth: billing.auth,
+        channel,
+        req,
+        price,
+        usage: state.sumUsage,
+        finalPreConsumedQuota,
+        startMs,
+        firstResponseMs,
+        requestId,
+      });
     }
+  };
+  server.addEventListener("message", (ev: MessageEvent) => {
+    const raw = websocketMessageText(ev.data);
+    enqueue(async () => {
+      const event = parseRealtimeEvent(raw);
+      if (event) {
+        try {
+          applyClientRealtimeEvent(state, event, upstreamModel);
+        } catch {
+          /* original errChan; extra-OK: keep proxying after 101 */
+        }
+      }
+      try {
+        ws.send(raw);
+      } catch {
+        /* ignore */
+      }
+    });
   });
   ws.addEventListener("message", (ev: MessageEvent) => {
-    try {
-      server.send(ev.data as string);
-    } catch {
-      /* ignore */
-    }
+    const raw = websocketMessageText(ev.data);
+    enqueue(async () => {
+      if (!firstResponseMs) firstResponseMs = Date.now();
+      const event = parseRealtimeEvent(raw);
+      if (event) {
+        try {
+          const applied = applyUpstreamRealtimeEvent(state, event, upstreamModel);
+          if (applied.preConsume) {
+            try {
+              await preConsume(applied.preConsume);
+            } catch {
+              /* original errChan logs; extra-OK: keep proxying after 101 */
+            }
+          }
+        } catch {
+          /* original error unmarshalling / counting */
+        }
+      }
+      try {
+        server.send(raw);
+      } catch {
+        /* ignore */
+      }
+    });
   });
   const close = () => {
+    if (closing) return;
+    closing = true;
+    enqueue(finish);
     try {
       server.close();
     } catch {

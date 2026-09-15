@@ -117,3 +117,8 @@ export function insufficientWalletQuotaMessage(remain: number, need: number, for
 export function insufficientTokenQuotaMessage(formattedRemain: string, formattedNeed: string): string {
   return `token quota is not enough, token remain quota: ${formattedRemain}, need quota: ${formattedNeed}`;
 }
+
+/** Original `service.PreWssConsumeQuota` user insufficient message. */
+export function insufficientWssUserQuotaMessage(formattedRemain: string, formattedNeed: string): string {
+  return `user quota is not enough, user quota: ${formattedRemain}, need quota: ${formattedNeed}`;
+}
