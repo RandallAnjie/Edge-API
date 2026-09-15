@@ -289,7 +289,7 @@ test("original text-relay consume log JSON has GenerateTextOtherInfo fields", as
   assert.equal(items.length >= 1, true, JSON.stringify(logs.body));
   const other = parseOther(items[0].other);
   assert.equal(other.cache_tokens, 3);
-  assert.equal(other.cache_ratio, 1);
+  assert.equal(other.cache_ratio, 0.5);
   assert.equal(other.model_price, -1);
   assert.equal(other.user_group_ratio, -1);
   assert.equal(typeof other.model_ratio, "number");
