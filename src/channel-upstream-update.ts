@@ -1,13 +1,21 @@
-import { CHANNEL_ENABLED, nowSec, parseJson } from "./constants.js";
+import { CHANNEL_ENABLED, envOrDefaultBool, envOrDefaultInt, nowSec, parseJson } from "./constants.js";
 import { fetchUpstreamModels } from "./relay.js";
+import {
+  claimAndRunSystemTask,
+  decodeSystemTaskJSON,
+  scheduleSystemTaskIfDue,
+  SYSTEM_TASK_TYPE_MODEL_UPDATE,
+} from "./system-task.js";
 import { normalizeModelNames } from "./upstream.js";
 import type { Store } from "./store.js";
-import type { ChannelRow } from "./types.js";
+import type { ChannelRow, Env } from "./types.js";
 
 export { normalizeModelNames };
 
 /** Original `controller.channelUpstreamModelUpdateMinCheckIntervalSeconds`. */
 export const CHANNEL_UPSTREAM_MODEL_UPDATE_MIN_CHECK_INTERVAL_SECONDS = 300;
+/** Original `controller.channelUpstreamModelUpdateTaskDefaultIntervalMinutes`. */
+export const CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_INTERVAL_MINUTES = 30;
 
 export type ChannelOtherSettings = {
   upstream_model_update_check_enabled?: boolean;
@@ -435,24 +443,18 @@ export async function runChannelUpstreamModelUpdateTaskOnce(
   };
 }
 
-/** Original system-task runner for `model_update`. */
-export async function runPendingModelUpdateSystemTask(store: Store): Promise<void> {
-  const task = await store.currentSystemTask("model_update");
-  if (!task || String(task.status) !== "pending") return;
-  const id = String(task.id || task.task_id || "");
-  await store.updateSystemTask(id, { status: "running" });
-  try {
-    const payload =
-      typeof task.payload === "string"
-        ? parseJson<{ manual?: boolean }>(String(task.payload || "{}"), {})
-        : ((task.payload as { manual?: boolean } | null) ?? {});
+/** Original `modelUpdateHandler` + scheduled `Enabled`/`Interval`/`NewPayload`. */
+export async function runPendingModelUpdateSystemTask(store: Store, env?: Env): Promise<UpstreamModelUpdateSummary | null> {
+  const enabled = envOrDefaultBool(env?.CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_ENABLED, true);
+  let minutes = envOrDefaultInt(
+    env?.CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_INTERVAL_MINUTES,
+    CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_INTERVAL_MINUTES,
+  );
+  if (minutes < 1) minutes = CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_INTERVAL_MINUTES;
+  await scheduleSystemTaskIfDue(store, SYSTEM_TASK_TYPE_MODEL_UPDATE, minutes * 60, enabled);
+  return claimAndRunSystemTask(store, SYSTEM_TASK_TYPE_MODEL_UPDATE, async (task) => {
+    const payload = (decodeSystemTaskJSON(task.payload) || {}) as { manual?: boolean };
     const manual = Boolean(payload.manual);
-    const summary = await runChannelUpstreamModelUpdateTaskOnce(store, manual, !manual);
-    await store.updateSystemTask(id, { status: "succeeded", result: JSON.stringify(summary) });
-  } catch (err) {
-    await store.updateSystemTask(id, {
-      status: "failed",
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+    return runChannelUpstreamModelUpdateTaskOnce(store, manual, !manual);
+  });
 }

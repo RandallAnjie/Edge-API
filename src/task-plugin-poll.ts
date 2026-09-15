@@ -3,10 +3,10 @@
  * `UpdateBatchTasks` / `UpdateVideoTasks` / `sweepTimedOutTasks` on workerd.
  */
 import { resolveBaseUrl } from "./catalog.js";
-import { nowSec, parseJson } from "./constants.js";
-import { generateSystemTaskId } from "./crypto.js";
+import { envOrDefaultBool, nowSec, parseJson, SYSTEM_TASK_POLL_INTERVAL_SEC } from "./constants.js";
 import { compilePlugin, type PluginEngine } from "./jsplugin.js";
 import { pickChannelKey } from "./select.js";
+import { claimAndRunSystemTask, scheduleSystemTaskIfDue } from "./system-task.js";
 import { listRoutingPlugins } from "./task-plugin-factory.js";
 import { refundTaskQuota } from "./task-plugin-billing.js";
 import {
@@ -29,6 +29,7 @@ import {
   TASK_STATUS_UNKNOWN,
 } from "./task-plugin-query.js";
 import type { Store } from "./store.js";
+import type { Env } from "./types.js";
 
 /** Original `constant.TaskQueryLimit` default. */
 export const TASK_QUERY_LIMIT = 1000;
@@ -299,36 +300,14 @@ export async function runTaskPollingOnce(store: Store): Promise<TaskPollSummary>
   return summary;
 }
 
-/** Original `async_task_poll` system-task runner. */
-export async function runPendingAsyncTaskPoll(store: Store): Promise<TaskPollSummary | null> {
-  const pending = await store.currentSystemTask(SYSTEM_TASK_TYPE_ASYNC_TASK_POLL);
-  if (pending && String(pending.status) === "pending") {
-    const id = String(pending.id || pending.task_id || "");
-    await store.updateSystemTask(id, { status: "running" });
-    try {
-      const summary = await runTaskPollingOnce(store);
-      await store.updateSystemTask(id, { status: "succeeded", result: JSON.stringify(summary) });
-      return summary;
-    } catch (err) {
-      await store.updateSystemTask(id, {
-        status: "failed",
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw err;
-    }
-  }
-  if (!(await store.hasUnfinishedSyncTasks())) return null;
-  const id = generateSystemTaskId();
-  await store.insertSystemTask({ id, type: SYSTEM_TASK_TYPE_ASYNC_TASK_POLL, status: "running" });
-  try {
-    const summary = await runTaskPollingOnce(store);
-    await store.updateSystemTask(id, { status: "succeeded", result: JSON.stringify(summary) });
-    return summary;
-  } catch (err) {
-    await store.updateSystemTask(id, {
-      status: "failed",
-      error: err instanceof Error ? err.message : String(err),
-    });
-    throw err;
-  }
+/** Original `asyncTaskPollHandler` system-task runner. */
+export async function runPendingAsyncTaskPoll(store: Store, env?: Env): Promise<TaskPollSummary | null> {
+  const updateTask = envOrDefaultBool(env?.UPDATE_TASK, true);
+  await scheduleSystemTaskIfDue(
+    store,
+    SYSTEM_TASK_TYPE_ASYNC_TASK_POLL,
+    SYSTEM_TASK_POLL_INTERVAL_SEC,
+    updateTask && (await store.hasUnfinishedSyncTasks()),
+  );
+  return claimAndRunSystemTask(store, SYSTEM_TASK_TYPE_ASYNC_TASK_POLL, () => runTaskPollingOnce(store));
 }

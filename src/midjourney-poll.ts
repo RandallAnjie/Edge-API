@@ -2,11 +2,12 @@
  * Original `controller.runMidjourneyTaskUpdateOnce` + `midjourney_poll` system task.
  */
 import { resolveBaseUrl } from "./catalog.js";
-import { nowMs } from "./constants.js";
-import { generateSystemTaskId } from "./crypto.js";
+import { envOrDefaultBool, nowMs, SYSTEM_TASK_POLL_INTERVAL_SEC } from "./constants.js";
+import { claimAndRunSystemTask, scheduleSystemTaskIfDue } from "./system-task.js";
 import { refundMidjourneyQuota } from "./midjourney-billing.js";
 import { pickChannelKey } from "./select.js";
 import type { Store } from "./store.js";
+import type { Env } from "./types.js";
 
 export const SYSTEM_TASK_TYPE_MIDJOURNEY_POLL = "midjourney_poll";
 /** Original poll: `(nowMs - submitTime) > 3600000`. */
@@ -193,35 +194,13 @@ export async function runMidjourneyTaskUpdateOnce(store: Store): Promise<Midjour
 }
 
 /** Original `midjourneyPollHandler` system-task runner. */
-export async function runPendingMidjourneyPoll(store: Store): Promise<MidjourneyPollSummary | null> {
-  const pending = await store.currentSystemTask(SYSTEM_TASK_TYPE_MIDJOURNEY_POLL);
-  if (pending && String(pending.status) === "pending") {
-    const id = String(pending.id || pending.task_id || "");
-    await store.updateSystemTask(id, { status: "running" });
-    try {
-      const summary = await runMidjourneyTaskUpdateOnce(store);
-      await store.updateSystemTask(id, { status: "succeeded", result: JSON.stringify(summary) });
-      return summary;
-    } catch (err) {
-      await store.updateSystemTask(id, {
-        status: "failed",
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw err;
-    }
-  }
-  if (!(await store.hasUnfinishedMjTasks())) return null;
-  const id = generateSystemTaskId();
-  await store.insertSystemTask({ id, type: SYSTEM_TASK_TYPE_MIDJOURNEY_POLL, status: "running" });
-  try {
-    const summary = await runMidjourneyTaskUpdateOnce(store);
-    await store.updateSystemTask(id, { status: "succeeded", result: JSON.stringify(summary) });
-    return summary;
-  } catch (err) {
-    await store.updateSystemTask(id, {
-      status: "failed",
-      error: err instanceof Error ? err.message : String(err),
-    });
-    throw err;
-  }
+export async function runPendingMidjourneyPoll(store: Store, env?: Env): Promise<MidjourneyPollSummary | null> {
+  const updateTask = envOrDefaultBool(env?.UPDATE_TASK, true);
+  await scheduleSystemTaskIfDue(
+    store,
+    SYSTEM_TASK_TYPE_MIDJOURNEY_POLL,
+    SYSTEM_TASK_POLL_INTERVAL_SEC,
+    updateTask && (await store.hasUnfinishedMjTasks()),
+  );
+  return claimAndRunSystemTask(store, SYSTEM_TASK_TYPE_MIDJOURNEY_POLL, () => runMidjourneyTaskUpdateOnce(store));
 }

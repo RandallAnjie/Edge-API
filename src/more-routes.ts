@@ -28,7 +28,7 @@ import {
   oauthProviderKnown,
   verifyTelegramLogin,
 } from "./oauth.js";
-import { generateSystemTaskId, generateTokenKey, accessTokenFingerprint } from "./crypto.js";
+import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
 import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues, vendorRecordVersion } from "./dto.js";
 import { billingCopies } from "./billing-setting.js";
 import { DEFAULT_MODEL_RATIO_JSON } from "./ratio-defaults.js";
@@ -51,6 +51,11 @@ import {
   wrapUserSubscription,
 } from "./subscription.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
+import {
+  enqueueSystemTask,
+  SYSTEM_TASK_TYPE_CHANNEL_TEST,
+  systemTaskIdOf,
+} from "./system-task.js";
 import {
   createCustomOAuthProvider,
   deleteCustomOAuthProvider,
@@ -1114,26 +1119,22 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const existing = await s.currentSystemTask("channel_test");
-    if (existing) {
+    const { task, created } = await enqueueSystemTask(s, SYSTEM_TASK_TYPE_CHANNEL_TEST, {
+      mode: "scheduled_all",
+      notify: true,
+    });
+    if (!created) {
       return json(409, {
         success: false,
         message: "已有通道测试任务正在运行或等待中，不能启动本次手动任务",
         data: {
-          task_id: String(existing.task_id || existing.id || ""),
-          status: String(existing.status || "pending"),
-          type: String(existing.type || "channel_test"),
+          task_id: systemTaskIdOf(task),
+          status: String(task.status || "pending"),
+          type: String(task.type || SYSTEM_TASK_TYPE_CHANNEL_TEST),
         },
       });
     }
-    const id = generateSystemTaskId();
-    await s.insertSystemTask({
-      id,
-      type: "channel_test",
-      status: "pending",
-      payload: { mode: "scheduled_all", notify: true },
-    });
-    return apiOk({ task_id: id, status: "pending" });
+    return apiOk({ task_id: systemTaskIdOf(task), status: String(task.status || "pending") });
   });
 
   r.post("/api/channel/batch", async (c) => {

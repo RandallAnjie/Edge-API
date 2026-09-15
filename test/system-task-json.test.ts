@@ -9,10 +9,14 @@ import { TOKEN_KEY_CHARS, generateSystemTaskId } from "../src/crypto.js";
 import { Store, SystemTaskLockLostError } from "../src/store.js";
 import {
   LOG_CLEANUP_BATCH_SIZE,
+  SYSTEM_TASK_TYPE_CHANNEL_TEST,
   SYSTEM_TASK_TYPE_LOG_CLEANUP,
+  SYSTEM_TASK_TYPE_MODEL_UPDATE,
   runPendingLogCleanupSystemTask,
   systemTaskLockUntil,
 } from "../src/system-task.js";
+import { runPendingChannelTestSystemTask } from "../src/channel-test.js";
+import { runPendingModelUpdateSystemTask } from "../src/channel-upstream-update.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 void worker;
@@ -403,4 +407,103 @@ test("original FinishSystemTask and UpdateSystemTaskState require the held lock"
     () => store.renewSystemTaskLock(taskId, "runner-a", systemTaskLockUntil()),
     SystemTaskLockLostError,
   );
+});
+
+test("original channel_test and model_update runners claim via lock table and FinishSystemTask JSON", async () => {
+  const { e, auth, store } = await boot();
+  const queued = await json(new Request("http://local/api/channel/test", { headers: auth }), e);
+  assert.equal(queued.body.success, true, String(queued.body.message));
+  const queuedData = queued.body.data as { task_id: string; status: string };
+  assert.match(queuedData.task_id, /^systask_/);
+  assert.equal(queuedData.status, "pending");
+  const pending = await json(new Request("http://local/api/system-task/" + queuedData.task_id, { headers: auth }), e);
+  const pendingTask = pending.body.data as Record<string, unknown>;
+  assertOriginalSystemTaskFields(pendingTask, ["active_key"]);
+  assert.equal(pendingTask.type, SYSTEM_TASK_TYPE_CHANNEL_TEST);
+  assert.equal(pendingTask.status, "pending");
+  assert.equal(pendingTask.active_key, SYSTEM_TASK_TYPE_CHANNEL_TEST);
+  assert.equal((pendingTask.payload as { mode: string; notify: boolean }).mode, "scheduled_all");
+  assert.equal((pendingTask.payload as { notify: boolean }).notify, true);
+
+  const summary = await runPendingChannelTestSystemTask(store);
+  assert.ok(summary);
+  assert.equal(typeof summary.tested, "number");
+  assert.equal(typeof summary.succeeded, "number");
+  assert.equal(typeof summary.failed, "number");
+  assert.equal(typeof summary.disabled, "number");
+  assert.equal(typeof summary.enabled, "number");
+
+  const finished = await json(new Request("http://local/api/system-task/" + queuedData.task_id, { headers: auth }), e);
+  const done = finished.body.data as Record<string, unknown>;
+  assertOriginalSystemTaskFields(done);
+  assert.equal(done.status, "succeeded");
+  assert.equal("active_key" in done, false);
+  assert.ok(String(done.locked_by).startsWith("workerd-"));
+  const result = done.result as { tested: number; succeeded: number; failed: number; disabled: number; enabled: number };
+  assert.equal(result.tested, summary.tested);
+  assert.equal(result.succeeded, summary.succeeded);
+  assert.equal(result.failed, summary.failed);
+  assert.equal(result.disabled, summary.disabled);
+  assert.equal(result.enabled, summary.enabled);
+  const leftoverLock = await e.DB.prepare("SELECT * FROM system_task_locks WHERE type = ?")
+    .bind(SYSTEM_TASK_TYPE_CHANNEL_TEST)
+    .first();
+  assert.equal(leftoverLock, null);
+
+  const detect = await json(
+    new Request("http://local/api/channel/upstream_updates/detect_all", { method: "POST", headers: auth, body: "{}" }),
+    e,
+  );
+  assert.equal(detect.body.success, true, String(detect.body.message));
+  const modelQueued = detect.body.data as { task_id: string; status: string };
+  assert.equal(modelQueued.status, "pending");
+  await runPendingModelUpdateSystemTask(store);
+  const modelDoneRes = await json(new Request("http://local/api/system-task/" + modelQueued.task_id, { headers: auth }), e);
+  const modelDone = modelDoneRes.body.data as Record<string, unknown>;
+  assertOriginalSystemTaskFields(modelDone);
+  assert.equal(modelDone.type, SYSTEM_TASK_TYPE_MODEL_UPDATE);
+  assert.equal(modelDone.status, "succeeded");
+  assert.equal("active_key" in modelDone, false);
+  assert.ok(String(modelDone.locked_by).startsWith("workerd-"));
+  const modelResult = modelDone.result as {
+    checked_channels: number;
+    changed_channels: number;
+    detected_add_models: number;
+    detected_remove_models: number;
+    failed_channels: number;
+    auto_added_models: number;
+  };
+  assert.equal(typeof modelResult.checked_channels, "number");
+  assert.equal(typeof modelResult.changed_channels, "number");
+  assert.equal(typeof modelResult.detected_add_models, "number");
+  assert.equal(typeof modelResult.detected_remove_models, "number");
+  assert.equal(typeof modelResult.failed_channels, "number");
+  assert.equal(typeof modelResult.auto_added_models, "number");
+  const leftoverModelLock = await e.DB.prepare("SELECT * FROM system_task_locks WHERE type = ?")
+    .bind(SYSTEM_TASK_TYPE_MODEL_UPDATE)
+    .first();
+  assert.equal(leftoverModelLock, null);
+});
+
+test("original SystemTask per-type lock allows channel_test and log_cleanup to run together", async () => {
+  const { e, auth, store } = await boot();
+  const cleanup = await json(
+    new Request("http://local/api/system-task/log-cleanup?target_timestamp=10", { method: "POST", headers: auth }),
+    e,
+  );
+  const channel = await json(new Request("http://local/api/channel/test", { headers: auth }), e);
+  const cleanupId = String((cleanup.body.data as { task_id: string }).task_id);
+  const channelId = String((channel.body.data as { task_id: string }).task_id);
+  const a = await store.claimSystemTask(cleanupId, "runner-a", SYSTEM_TASK_TYPE_LOG_CLEANUP, systemTaskLockUntil());
+  const b = await store.claimSystemTask(channelId, "runner-b", SYSTEM_TASK_TYPE_CHANNEL_TEST, systemTaskLockUntil());
+  assert.ok(a);
+  assert.ok(b);
+  assert.equal(a.status, "running");
+  assert.equal(b.status, "running");
+  const heldA = await json(new Request("http://local/api/system-task/" + cleanupId, { headers: auth }), e);
+  const heldB = await json(new Request("http://local/api/system-task/" + channelId, { headers: auth }), e);
+  assert.equal((heldA.body.data as { locked_by: string }).locked_by, "runner-a");
+  assert.equal((heldB.body.data as { locked_by: string }).locked_by, "runner-b");
+  assert.equal((heldA.body.data as { active_key: string }).active_key, SYSTEM_TASK_TYPE_LOG_CLEANUP);
+  assert.equal((heldB.body.data as { active_key: string }).active_key, SYSTEM_TASK_TYPE_CHANNEL_TEST);
 });

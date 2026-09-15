@@ -43,8 +43,14 @@ import { buildAdvancedCustomRelayTarget, shouldApplyAdvancedCustomClaudeHeaders 
 import { buildCodexRelayTarget } from "./codex-models.js";
 import { pickChannelKey } from "./select.js";
 import { DEFAULT_GEMINI_VERSION_SETTINGS } from "./reasoning.js";
+import {
+  claimAndRunSystemTask,
+  decodeSystemTaskJSON,
+  scheduleSystemTaskIfDue,
+  SYSTEM_TASK_TYPE_CHANNEL_TEST,
+} from "./system-task.js";
 import type { Store } from "./store.js";
-import type { ChannelRow, UserRow } from "./types.js";
+import type { ChannelRow, Env, UserRow } from "./types.js";
 
 /** Original `controller.channelTestSummary`. */
 export type ChannelTestSummary = {
@@ -698,4 +704,19 @@ export async function runChannelTestTask(store: Store, mode: string): Promise<Ch
     }
   }
   return summary;
+}
+
+/** Original `channelTestHandler` + scheduled `Enabled`/`Interval`/`NewPayload`. */
+export async function runPendingChannelTestSystemTask(store: Store, env?: Env): Promise<ChannelTestSummary | null> {
+  void env;
+  const enabled = await store.optionBool("monitor_setting.auto_test_channel_enabled", false);
+  let minutes = await store.optionNum("monitor_setting.auto_test_channel_minutes", 10);
+  if (minutes <= 0) minutes = 10;
+  await scheduleSystemTaskIfDue(store, SYSTEM_TASK_TYPE_CHANNEL_TEST, minutes * 60, enabled);
+  return claimAndRunSystemTask(store, SYSTEM_TASK_TYPE_CHANNEL_TEST, async (task) => {
+    const payload = (decodeSystemTaskJSON(task.payload) || {}) as { mode?: string; notify?: boolean };
+    let mode = String(payload.mode || "").trim();
+    if (!mode) mode = (await store.option("monitor_setting.channel_test_mode")) || "scheduled_all";
+    return runChannelTestTask(store, mode);
+  });
 }

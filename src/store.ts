@@ -4559,6 +4559,14 @@ export class Store {
       .first<Record<string, unknown>>();
   }
 
+  /** Original `model.GetLatestSystemTask` (`ORDER BY id DESC`). */
+  async getLatestSystemTask(type: string): Promise<Record<string, unknown> | null> {
+    return this.db
+      .prepare("SELECT rowid, * FROM system_tasks WHERE type = ? ORDER BY rowid DESC LIMIT 1")
+      .bind(type)
+      .first<Record<string, unknown>>();
+  }
+
   /**
    * Original `model.acquireSystemTaskLock`. One row per task type (type PK).
    * Returns the previous lock's task_id when an expired lease is stolen.

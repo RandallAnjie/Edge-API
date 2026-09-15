@@ -51,6 +51,12 @@ export interface Env {
   GENERATE_DEFAULT_TOKEN?: string;
   NODE_NAME?: string;
   NODE_TYPE?: string;
+  /** Original `UPDATE_TASK` (`constant.UpdateTask`, default true). */
+  UPDATE_TASK?: string;
+  /** Original `CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_ENABLED` (default true). */
+  CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_ENABLED?: string;
+  /** Original `CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_INTERVAL_MINUTES` (default 30). */
+  CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_INTERVAL_MINUTES?: string;
 }
 
 export interface ExecutionContextLike {

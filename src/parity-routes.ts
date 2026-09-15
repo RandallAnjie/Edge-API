@@ -33,11 +33,12 @@ import {
   verifyTelegramLogin,
   wechatIdFromCode,
 } from "./oauth.js";
-import { bytesToHex, generateSystemTaskId, sha256Bytes } from "./crypto.js";
+import { bytesToHex, sha256Bytes } from "./crypto.js";
 import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-oauth.js";
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
+import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
 import { apiFail, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -820,26 +821,19 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const existing = await s.currentSystemTask("model_update");
-    if (existing) {
+    const { task, created } = await enqueueSystemTask(s, SYSTEM_TASK_TYPE_MODEL_UPDATE, { manual: true });
+    if (!created) {
       return json(409, {
         success: false,
         message: "已有模型更新任务正在运行或等待中，不能启动本次手动任务",
         data: {
-          task_id: String(existing.task_id || existing.id || ""),
-          status: String(existing.status || "pending"),
-          type: String(existing.type || "model_update"),
+          task_id: systemTaskIdOf(task),
+          status: String(task.status || "pending"),
+          type: String(task.type || SYSTEM_TASK_TYPE_MODEL_UPDATE),
         },
       });
     }
-    const id = generateSystemTaskId();
-    await s.insertSystemTask({
-      id,
-      type: "model_update",
-      status: "pending",
-      payload: { manual: true },
-    });
-    return apiOk({ task_id: id, status: "pending" });
+    return apiOk({ task_id: systemTaskIdOf(task), status: String(task.status || "pending") });
   });
   r.post("/api/channel/upstream_updates/apply", async (c) => {
     const s = store(c);

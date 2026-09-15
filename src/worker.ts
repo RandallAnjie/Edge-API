@@ -1,4 +1,4 @@
-import { runChannelTestTask } from "./channel-test.js";
+import { runPendingChannelTestSystemTask } from "./channel-test.js";
 import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
 import { runPendingMidjourneyPoll } from "./midjourney-poll.js";
 import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
@@ -714,24 +714,10 @@ export default {
         } catch {
           /* original reporter logs and continues */
         }
-        const task = await store.currentSystemTask("channel_test");
-        if (task && String(task.status) === "pending") {
-          const id = String(task.id || task.task_id || "");
-          await store.updateSystemTask(id, { status: "running" });
-          try {
-            const payload = typeof task.payload === "string" ? JSON.parse(String(task.payload || "{}")) : (task.payload as { mode?: string } | null);
-            const summary = await runChannelTestTask(store, String(payload?.mode || "scheduled_all"));
-            await store.updateSystemTask(id, { status: "succeeded", result: JSON.stringify(summary) });
-          } catch (err) {
-            await store.updateSystemTask(id, {
-              status: "failed",
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        }
-        await runPendingModelUpdateSystemTask(store);
-        await runPendingAsyncTaskPoll(store);
-        await runPendingMidjourneyPoll(store);
+        await runPendingChannelTestSystemTask(store, env);
+        await runPendingModelUpdateSystemTask(store, env);
+        await runPendingAsyncTaskPoll(store, env);
+        await runPendingMidjourneyPoll(store, env);
         await runPendingLogCleanupSystemTask(store);
         try {
           await syncTaskPluginsOnce(store);

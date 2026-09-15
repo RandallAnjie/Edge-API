@@ -1114,9 +1114,16 @@ test("original sweepTimedOutTasks refunds with timeout reason JSON", async () =>
     assert.equal(other.reason, `任务超时（${TASK_TIMEOUT_MINUTES}分钟）`);
     assert.equal(other.task_id, taskId);
     const tasks = await json(new Request("http://local/api/system-task/list", { headers: auth }), e);
-    const sys = (tasks.body.data as { type?: string; result?: string }[]).find((item) => item.type === SYSTEM_TASK_TYPE_ASYNC_TASK_POLL);
+    const sys = (tasks.body.data as Record<string, unknown>[]).find((item) => item.type === SYSTEM_TASK_TYPE_ASYNC_TASK_POLL);
     assert.ok(sys, tasks.text);
-    const result = typeof sys?.result === "string" ? JSON.parse(sys.result) : sys?.result;
+    assert.equal(sys.status, "succeeded");
+    assert.equal("active_key" in sys, false);
+    assert.ok(String(sys.locked_by).startsWith("workerd-"));
+    const leftover = await e.DB.prepare("SELECT * FROM system_task_locks WHERE type = ?")
+      .bind(SYSTEM_TASK_TYPE_ASYNC_TASK_POLL)
+      .first();
+    assert.equal(leftover, null);
+    const result = typeof sys.result === "string" ? JSON.parse(String(sys.result)) : sys.result;
     assert.equal(typeof (result as { unfinished_tasks?: number }).unfinished_tasks, "number");
     assert.equal(typeof (result as { platforms_scanned?: number }).platforms_scanned, "number");
     assert.equal(typeof (result as { null_tasks_failed?: number }).null_tasks_failed, "number");

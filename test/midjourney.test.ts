@@ -374,9 +374,16 @@ test("original midjourney_poll 1-hour timeout fail_reason and scheduled system-t
     assert.equal(Number(user?.quota), ROOT_QUOTA);
     assert.equal(Number(user?.used_quota), 0);
     const tasks = await json(new Request("http://local/api/system-task/list", { headers: auth }), e);
-    const sys = (tasks.body.data as { type?: string; result?: string }[]).find((item) => item.type === SYSTEM_TASK_TYPE_MIDJOURNEY_POLL);
+    const sys = (tasks.body.data as Record<string, unknown>[]).find((item) => item.type === SYSTEM_TASK_TYPE_MIDJOURNEY_POLL);
     assert.ok(sys, JSON.stringify(tasks.body));
-    const result = (typeof sys?.result === "string" ? JSON.parse(String(sys.result)) : sys?.result) as {
+    assert.equal(sys.status, "succeeded");
+    assert.equal("active_key" in sys, false);
+    assert.ok(String(sys.locked_by).startsWith("workerd-"));
+    const leftover = await e.DB.prepare("SELECT * FROM system_task_locks WHERE type = ?")
+      .bind(SYSTEM_TASK_TYPE_MIDJOURNEY_POLL)
+      .first();
+    assert.equal(leftover, null);
+    const result = (typeof sys.result === "string" ? JSON.parse(String(sys.result)) : sys.result) as {
       unfinished_tasks?: number;
       channels_scanned?: number;
       null_tasks_failed?: number;

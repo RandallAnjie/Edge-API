@@ -2,10 +2,12 @@
  * Original `service.StartLogCleanupTask` / `runLogCleanupTask` on workerd.
  */
 import { ERR_SYSTEM_TASK_LOCK_LOST, SYSTEM_TASK_LOCK_TTL_SEC, nowSec, parseJson } from "./constants.js";
-import { getRandomString } from "./crypto.js";
+import { generateSystemTaskId, getRandomString } from "./crypto.js";
 import { SystemTaskLockLostError, type Store } from "./store.js";
 
 export const SYSTEM_TASK_TYPE_LOG_CLEANUP = "log_cleanup";
+export const SYSTEM_TASK_TYPE_CHANNEL_TEST = "channel_test";
+export const SYSTEM_TASK_TYPE_MODEL_UPDATE = "model_update";
 /** Original `service.logCleanupBatchSize`. */
 export const LOG_CLEANUP_BATCH_SIZE = 100;
 /** Original `service.systemTaskLockTTL`. */
@@ -27,7 +29,7 @@ export type LogCleanupResult = {
   deleted_count: number;
 };
 
-function decodeSystemTaskJSON(raw: unknown): unknown {
+export function decodeSystemTaskJSON(raw: unknown): unknown {
   if (raw == null || raw === "") return null;
   if (typeof raw !== "string") return raw;
   return parseJson(raw, raw);
@@ -53,8 +55,12 @@ function syncLogCleanupStateFromRemaining(state: LogCleanupState, remaining: num
   state.progress = logCleanupProgress(state.processed, state.total);
 }
 
-function taskIdOf(row: Record<string, unknown>): string {
+export function systemTaskIdOf(row: Record<string, unknown>): string {
   return String(row.id || row.task_id || "");
+}
+
+function taskIdOf(row: Record<string, unknown>): string {
+  return systemTaskIdOf(row);
 }
 
 function isSystemTaskLockLost(err: unknown): boolean {
@@ -100,6 +106,96 @@ async function failLogCleanup(store: Store, task: Record<string, unknown>, runne
   } catch (finishErr) {
     if (isSystemTaskLockLost(finishErr)) return;
     throw finishErr;
+  }
+}
+
+/** Original `service.EnqueueSystemTask`. */
+export async function enqueueSystemTask(
+  store: Store,
+  taskType: string,
+  payload: unknown = null,
+): Promise<{ task: Record<string, unknown>; created: boolean }> {
+  const active = await store.currentSystemTask(taskType);
+  if (active) return { task: active, created: false };
+  const id = generateSystemTaskId();
+  try {
+    await store.insertSystemTask({ id, type: taskType, status: "pending", payload });
+  } catch {
+    const existing = await store.currentSystemTask(taskType);
+    if (existing) return { task: existing, created: false };
+    throw new Error("create system task failed");
+  }
+  const row = await store.getSystemTask(id);
+  if (row) return { task: row, created: true };
+  const existing = await store.currentSystemTask(taskType);
+  if (existing) return { task: existing, created: false };
+  throw new Error("create system task failed");
+}
+
+/** Original `service.runSystemTaskScheduler` for one registered type. */
+export async function scheduleSystemTaskIfDue(
+  store: Store,
+  taskType: string,
+  intervalSec: number,
+  enabled: boolean,
+  payload: unknown = null,
+): Promise<void> {
+  if (!enabled) return;
+  const latest = await store.getLatestSystemTask(taskType);
+  if (latest) {
+    const status = String(latest.status || "");
+    if (status === "pending" || status === "running") return;
+    if (nowSec() - Number(latest.updated_at || 0) < intervalSec) return;
+  }
+  await store.createSystemTask(taskType, payload, null);
+}
+
+async function finishClaimedSystemTask(
+  store: Store,
+  taskId: string,
+  runnerId: string,
+  status: string,
+  result: unknown,
+  errorMessage: string,
+): Promise<boolean> {
+  try {
+    await store.finishSystemTask(taskId, runnerId, status, result, errorMessage);
+    return true;
+  } catch (err) {
+    if (isSystemTaskLockLost(err)) return false;
+    throw err;
+  }
+}
+
+/**
+ * Original `service.runSystemTaskClaimPass` + `finishSystemTaskHandler` for one type.
+ * Run owns the lifecycle: claim with the per-type lock, then FinishSystemTask.
+ */
+export async function claimAndRunSystemTask<T>(
+  store: Store,
+  taskType: string,
+  run: (task: Record<string, unknown>, runnerId: string) => Promise<T>,
+): Promise<T | null> {
+  const pending = await store.findPendingSystemTask(taskType);
+  if (!pending) return null;
+  const runnerId = `workerd-${getRandomString(8)}`;
+  const claimed = await store.claimSystemTask(taskIdOf(pending), runnerId, taskType, systemTaskLockUntil());
+  if (!claimed) return null;
+  const id = taskIdOf(claimed);
+  try {
+    const result = await run(claimed, runnerId);
+    await finishClaimedSystemTask(store, id, runnerId, "succeeded", result ?? null, "");
+    return result;
+  } catch (err) {
+    await finishClaimedSystemTask(
+      store,
+      id,
+      runnerId,
+      "failed",
+      null,
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
   }
 }
 

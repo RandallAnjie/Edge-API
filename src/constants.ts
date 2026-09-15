@@ -372,6 +372,33 @@ export const SYSTEM_TASK_LOCK_TTL_SEC = 60;
 /** Original `model.ErrSystemTaskLockLost`. */
 export const ERR_SYSTEM_TASK_LOCK_LOST = "system task lock lost";
 
+/** Original `midjourneyPollHandler` / `asyncTaskPollHandler` Interval. */
+export const SYSTEM_TASK_POLL_INTERVAL_SEC = 15;
+
+/** Original `common.GetEnvOrDefaultBool` (`strconv.ParseBool`). */
+export function envOrDefaultBool(raw: string | undefined, fallback: boolean): boolean {
+  if (raw == null || raw === "") return fallback;
+  switch (raw.toLowerCase()) {
+    case "1":
+    case "t":
+    case "true":
+      return true;
+    case "0":
+    case "f":
+    case "false":
+      return false;
+    default:
+      return fallback;
+  }
+}
+
+/** Original `common.GetEnvOrDefault` (`strconv.Atoi`). */
+export function envOrDefaultInt(raw: string | undefined, fallback: number): number {
+  if (raw == null || raw === "") return fallback;
+  if (!/^-?\d+$/.test(raw)) return fallback;
+  return Number(raw);
+}
+
 /** Original Midjourney `time.Now().UnixNano() / int64(time.Millisecond)`. */
 export function nowMs(): number {
   return Date.now();
