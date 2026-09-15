@@ -7,6 +7,7 @@
  */
 import { quotaClampAuditMap, type QuotaClamp } from "./task-plugin-usage.js";
 import { StreamStatus } from "./stream-status.js";
+import { expandRequestConversionTos } from "./request-convert-registry.js";
 
 export const RELAY_FORMAT_OPENAI = "openai";
 export const RELAY_FORMAT_CLAUDE = "claude";
@@ -154,7 +155,7 @@ export function appendRequestConversion(chain: string[], format: string): string
   return [...chain, format];
 }
 
-/** Original `InitRequestConversionChain` plus later `AppendRequestConversion`. */
+/** Original `InitRequestConversionChain` plus `ConvertRequest` `AppendRequestConversion(step.To)`. */
 export function requestConversionChain(opts: {
   clientFormat: string;
   mode: string;
@@ -162,8 +163,16 @@ export function requestConversionChain(opts: {
   destinationFormat?: string;
 }): string[] {
   let chain = appendRequestConversion([], relayFormatForClient(opts.clientFormat, opts.mode));
-  if (opts.viaResponses) chain = appendRequestConversion(chain, RELAY_FORMAT_OPENAI_RESPONSES);
-  if (opts.destinationFormat) chain = appendRequestConversion(chain, opts.destinationFormat);
+  const from = chain[0] || "";
+  const mid = opts.viaResponses ? RELAY_FORMAT_OPENAI_RESPONSES : opts.destinationFormat || from;
+  for (const hop of expandRequestConversionTos(from, mid)) {
+    chain = appendRequestConversion(chain, hop);
+  }
+  if (opts.viaResponses && opts.destinationFormat && opts.destinationFormat !== RELAY_FORMAT_OPENAI_RESPONSES) {
+    for (const hop of expandRequestConversionTos(RELAY_FORMAT_OPENAI_RESPONSES, opts.destinationFormat)) {
+      chain = appendRequestConversion(chain, hop);
+    }
+  }
   return chain;
 }
 

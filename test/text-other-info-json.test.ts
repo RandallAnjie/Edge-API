@@ -244,6 +244,21 @@ test("original request_conversion labels match GenerateTextOtherInfo switch", ()
   assert.equal(requestConversionLabel("openai_realtime"), "openai_realtime");
 });
 
+test("original Claude→Gemini request_conversion public labels are Init plus StepConverters", () => {
+  const other = generateTextOtherInfo({
+    modelRatio: 1,
+    groupRatio: 1,
+    completionRatio: 1,
+    requestConversion: requestConversionChain({
+      clientFormat: "anthropic",
+      mode: "messages",
+      destinationFormat: "gemini",
+    }),
+    billingSource: "wallet",
+  });
+  assert.deepEqual(other.request_conversion, ["Claude Messages", "OpenAI Compatible", "Google Gemini"]);
+});
+
 test("original text-relay consume log JSON has GenerateTextOtherInfo fields", async () => {
   resetSchemaFlag();
   const e = env();

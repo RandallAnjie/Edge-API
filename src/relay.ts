@@ -1381,17 +1381,20 @@ function attachSettleUsage(
   extra.billingUsage = billingUsageFromOpenAICounts(usage);
 }
 
+/** Original adaptor request format after ConvertRequest; client format is InitRequestConversionChain. */
 function destinationRelayFormat(channelType: number, mode: string, viaResponses: boolean): string {
   if (viaResponses) return "openai_responses";
-  if (mode === "messages" || channelType === CHANNEL_TYPE_ANTHROPIC) return "claude";
-  if (mode === "gemini" || channelType === CHANNEL_TYPE_GEMINI) return "gemini";
-  if (mode === "responses") return "openai_responses";
   if (mode === "embeddings" || mode === "engines_embeddings") return "embedding";
   if (mode === "rerank") return "rerank";
   if (mode === "images") return "openai_image";
   if (mode === "audio_speech" || mode === "audio_transcription" || mode === "audio_translation") return "openai_audio";
   if (mode === "realtime") return "openai_realtime";
   if (mode === "alpha_search") return "openai_alpha_search";
+  if (channelType === CHANNEL_TYPE_ANTHROPIC || channelType === CHANNEL_TYPE_AWS) return "claude";
+  if (channelType === CHANNEL_TYPE_GEMINI || channelType === CHANNEL_TYPE_VERTEX) return "gemini";
+  if (mode === "messages") return "claude";
+  if (mode === "gemini") return "gemini";
+  if (mode === "responses") return "openai_responses";
   return "openai";
 }
 
