@@ -48,6 +48,8 @@ import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
 import { calculateAudioQuota } from "./openai-realtime-usage.js";
 import { computeQuota, textConsumePriceData, audioConsumeLogRatios } from "./quota.js";
 import { calculateTextQuotaFromStore, composeTieredTextQuota, noteQuotaClamp } from "./text-quota.js";
+import { decodeToolPricesJSON, TOOL_PRICE_OPTION_KEY } from "./tool-price.js";
+import { builtInToolCallCounts, createToolUsageState, ingestUpstreamToolUsage } from "./tool-usage.js";
 import { openaiImageDataCount } from "./image-billing.js";
 import { billingUsageFromOpenAICounts, cacheCreationTokensTotal, injectTieredBillingInfo, isFixedPriceSettlement, resolveRelayTieredQuota } from "./tiered-settle.js";
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
@@ -771,6 +773,21 @@ export async function testChannel(
       containsAudioRatios: audioLog.containsAudioRatios,
       originModelName: originModel,
     });
+    const toolUsage = createToolUsageState({
+      model: originModel,
+      toolPrices: decodeToolPricesJSON(await store.option(TOOL_PRICE_OPTION_KEY)),
+      relayMode: mode,
+      requestTools: built.body.tools,
+    });
+    let toolJson: Record<string, unknown> | null = null;
+    if (!isStream) {
+      try {
+        toolJson = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        toolJson = null;
+      }
+    }
+    ingestUpstreamToolUsage(toolUsage, isStream ? { sseText: text } : { json: toolJson });
     const textSummary = useAudioOther
       ? null
       : await calculateTextQuotaFromStore(store, {
@@ -780,7 +797,10 @@ export async function testChannel(
           usage: billingUsage,
           channelType: channel.type,
           finalRequestFormat: destinationFormat,
-          relayMode: mode,
+          relayMode: toolUsage.relayMode || mode,
+          builtInTools: builtInToolCallCounts(toolUsage),
+          claudeWebSearchRequests: toolUsage.claudeWebSearchRequests || undefined,
+          geminiGoogleSearchCall: toolUsage.geminiGoogleSearchCall || undefined,
           imageCount: actualImageCount,
         });
     const quotaPerUnit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;

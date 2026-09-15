@@ -150,6 +150,15 @@ import {
   composeTieredTextQuota,
   noteQuotaClamp,
 } from "./text-quota.js";
+import { decodeToolPricesJSON, TOOL_PRICE_OPTION_KEY } from "./tool-price.js";
+import {
+  applyToolUsageFromJson,
+  builtInToolCallCounts,
+  createToolUsageState,
+  finishOpenAIChatStreamToolUsage,
+  ingestUpstreamToolUsage,
+  type ToolUsageState,
+} from "./tool-usage.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
 import {
@@ -1409,6 +1418,7 @@ type SettleLogExtra = {
   claudeWebSearchRequests?: number;
   geminiGoogleSearchCall?: boolean;
   otherRatios?: Record<string, number>;
+  toolUsage?: ToolUsageState;
 };
 
 async function settle(
@@ -1426,6 +1436,11 @@ async function settle(
   content: string,
   extra: SettleLogExtra = {},
 ): Promise<void> {
+  if (extra.toolUsage) {
+    extra.builtInTools = builtInToolCallCounts(extra.toolUsage);
+    extra.claudeWebSearchRequests = extra.toolUsage.claudeWebSearchRequests || undefined;
+    extra.geminiGoogleSearchCall = extra.toolUsage.geminiGoogleSearchCall || undefined;
+  }
   const billingUsage =
     extra.billingUsage ||
     billingUsageFromOpenAICounts({
@@ -1471,7 +1486,7 @@ async function settle(
         usage: billingUsage,
         channelType: channel.type,
         finalRequestFormat,
-        relayMode: extra.relayMode,
+        relayMode: extra.toolUsage?.relayMode || extra.relayMode,
         builtInTools: extra.builtInTools,
         claudeWebSearchRequests: extra.claudeWebSearchRequests,
         geminiGoogleSearchCall: extra.geminiGoogleSearchCall,
@@ -1728,6 +1743,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     { enabled: false, all_channels: true },
   );
   const passThroughGlobal = (await store.option("global.pass_through_request_enabled")) === "true";
+  const toolPrices = decodeToolPricesJSON(await store.option(TOOL_PRICE_OPTION_KEY));
 
   for (let retry = 0; retry <= retryTimes; retry++) {
     let channel: ChannelRow | null;
@@ -2126,6 +2142,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       requestHeaders: requestHeadersFrom(opts.req),
       tieredSnapshot: tieredSnapshot || undefined,
       billingRequestInput,
+      toolUsage: createToolUsageState({
+        model,
+        toolPrices,
+        relayMode: viaResponses ? "responses" : mode,
+        requestTools: asObj(opts.body).tools,
+      }),
     };
 
     if (!res.ok) {
@@ -2202,6 +2224,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         (clientFormat === "anthropic" || (usesOpenAIAdaptor(channel.type) && clientFormat === "gemini"))
       ) {
         const text = await res.text();
+        ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted =
@@ -2234,6 +2257,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         (channel.type === CHANNEL_TYPE_GEMINI || (channel.type === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini"))
       ) {
         const text = await res.text();
+        ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = geminiSseToClaudeSse(text, {
@@ -2263,6 +2287,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       if (channel.type === CHANNEL_TYPE_VERTEX && clientFormat === "anthropic" && vertexRequestMode(mapped) === "opensource") {
         const text = await res.text();
+        ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = oaiChatSseToClaudeSse(text, { estimatePromptTokens: promptEst });
@@ -2290,6 +2315,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         (channel.type === CHANNEL_TYPE_ANTHROPIC || (channel.type === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "claude"))
       ) {
         const text = await res.text();
+        ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = claudeSseToGeminiSse(text, {
@@ -2318,6 +2344,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       if (channel.type === CHANNEL_TYPE_VERTEX && clientFormat === "gemini" && vertexRequestMode(mapped) === "opensource") {
         const text = await res.text();
+        ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = oaiChatSseToGeminiSse(text, { estimatePromptTokens: promptEst });
@@ -2345,6 +2372,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         clientFormat === "openai"
       ) {
         const text = await res.text();
+        ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = oaiResponsesSseToChatSse(text, {
@@ -2380,6 +2408,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         mode !== "responses"
       ) {
         const text = await res.text();
+        ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = xaiSseToOpenAIChat(text);
@@ -2404,6 +2433,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       if (!openaiShapedInbound && clientFormat === "openai" && !ollamaResponsesPassthrough) {
         const text = await res.text();
+        ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
         const includeUsage = shouldIncludeUsage(asObj(opts.body));
         let converted: { body: string; usageBody: Record<string, unknown> };
         try {
@@ -2474,6 +2504,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let parsed: Record<string, unknown> = {};
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
+      ingestUpstreamToolUsage(extra.toolUsage, { json: parsed });
     } catch {
       if (channel.type === CHANNEL_TYPE_OLLAMA && clientFormat === "openai" && mode !== "responses" && mode !== "embeddings") {
         parsed = {};
@@ -2635,6 +2666,7 @@ async function parseStreamAndSettle(
         if (!data || data === "[DONE]") continue;
         try {
           const obj = JSON.parse(data) as Record<string, unknown>;
+          if (extra.toolUsage) applyToolUsageFromJson(extra.toolUsage, obj, { stream: true });
           const u = usageFromOpenAI(obj);
           if (u.prompt || u.completion || u.cachedTokens || u.imageTokens) lastUsage = u;
           if (u.prompt) prompt = u.prompt;
@@ -2649,6 +2681,7 @@ async function parseStreamAndSettle(
   } catch {
     /* ignore parse errors */
   }
+  if (extra.toolUsage) finishOpenAIChatStreamToolUsage(extra.toolUsage);
   if (lastUsage) attachSettleUsage(extra, lastUsage);
   await settle(store, auth, channel, model, prompt, completion, useTime, true, ip, rid, true, "stream", extra);
 }

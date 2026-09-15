@@ -201,9 +201,16 @@ Material changes from upstream:
   prompt mutation (`prompt_tokens` logged after cache subtraction), split
   Claude 5m/1h cache-creation ratios, OpenAI `cache_write_tokens`,
   `tool_surcharges` (`name`/`count`/`price`, not legacy `web_search` keys),
-  and Gemini `audio_input_seperate_price`. Extra-OK: `CountBillableToolCall`
-  is not fully wired from Responses/Claude/Gemini converters (search-preview
-  still bills from the model-name suffix). HTTP PostAudio uses original
+  and Gemini `audio_input_seperate_price`. Original
+  `RelayInfo.CountBillableToolCall` runs during Responses / OpenAI chat /
+  Claude / Gemini DoResponse (output calls, not request declarations;
+  `web_search_call` prefers declared `web_search`; custom `function_call` /
+  `tool_use` only when priced; reserved names skipped;
+  `ImageGenerationCallCounter` completed-output cap `MaxImageN`;
+  Claude `claude_web_search_requests`; Gemini grounding
+  `gemini_google_search_call`). Extra-OK: search-preview still also bills
+  from the model-name suffix when `RelayMode` is not Responses (original
+  `calculateTextToolCallSurcharge`). HTTP PostAudio uses original
   `calculateAudioQuota` (`QuotaFromDecimal`, details text/audio tokens,
   map `GetCompletionRatio` / `GetAudioRatio` / `GetAudioCompletionRatio`,
   zero `TotalTokens` unless fixed-price).
