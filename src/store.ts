@@ -4230,10 +4230,10 @@ export class Store {
    */
   async listTaskPluginCatalogRows(): Promise<Record<string, unknown>[]> {
     const { results: versions } = await this.db
-      .prepare(`SELECT * FROM task_plugin_versions ORDER BY "key" ASC, created_at DESC, id DESC`)
+      .prepare(`SELECT * FROM task_plugin_versions ORDER BY "key" ASC, created_at DESC, rowid DESC`)
       .all();
     const { results: legacy } = await this.db
-      .prepare(`SELECT * FROM task_plugins ORDER BY "key" ASC, created_at DESC, id DESC`)
+      .prepare(`SELECT * FROM task_plugins ORDER BY "key" ASC, created_at DESC, rowid DESC`)
       .all();
     const keys = new Set((versions as Record<string, unknown>[]).map((row) => String(row.key || "")));
     const out = [...(versions as Record<string, unknown>[])];
