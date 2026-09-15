@@ -58,7 +58,7 @@ import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof, securityProofError } from "./security.js";
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
-import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
+import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, payErr, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -2478,9 +2478,29 @@ async function payUser(c: C, kind: "stripe" | "epay" | "creem" | "waffo" | "waff
   const u = await requireUser(c, s);
   if (isResponse(u)) return u;
   const user = await s.getUserById(u.id);
-  if (!user) return apiFail("用户不存在");
-  const body = (await readJson(c.req)) as Record<string, unknown>;
-  if (kind === "stripe") return requestStripePay(s, user, c.req, body as { amount?: number; payment_method?: string; success_url?: string; cancel_url?: string });
+  let body: Record<string, unknown>;
+  try {
+    const text = await c.req.text();
+    if (!text.trim()) {
+      if (kind === "stripe") return payErr("参数错误");
+      body = {};
+    } else {
+      body = JSON.parse(text) as Record<string, unknown>;
+    }
+  } catch {
+    if (kind === "stripe") return payErr("参数错误");
+    body = {};
+  }
+  if (!user) return kind === "stripe" ? payErr("用户不存在") : apiFail("用户不存在");
+  if (kind === "stripe") {
+    return requestStripePay(
+      s,
+      user,
+      c.req,
+      body as { amount?: number; payment_method?: string; success_url?: string; cancel_url?: string },
+      c.env.TRUSTED_REDIRECT_DOMAINS,
+    );
+  }
   if (kind === "epay") return requestEpay(s, user, c.req, body as { amount?: number; payment_method?: string });
   if (kind === "creem") return requestCreemPay(s, user, c.req, body as { product_id?: string; payment_method?: string });
   if (kind === "waffo_pancake") return requestWaffoPancakePay(s, user, c.req, body as { amount?: number });

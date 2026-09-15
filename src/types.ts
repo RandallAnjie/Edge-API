@@ -61,6 +61,8 @@ export interface Env {
   LINUX_DO_TOKEN_ENDPOINT?: string;
   /** Original `LINUX_DO_USER_ENDPOINT` (default https://connect.linux.do/api/user). */
   LINUX_DO_USER_ENDPOINT?: string;
+  /** Original `TRUSTED_REDIRECT_DOMAINS` (comma-separated; empty rejects custom pay redirects). */
+  TRUSTED_REDIRECT_DOMAINS?: string;
 }
 
 export interface ExecutionContextLike {

@@ -1,12 +1,13 @@
 import { MAX_WALLET_QUOTA, nowSec, parseJson, randomHex } from "./constants.js";
 import { hmacSha256Hex, sha1Hex, timingSafeEqualStr } from "./crypto.js";
-import { apiFail, clientIp, json, payErr, payOk, readJson } from "./http.js";
+import { apiFail, clientIp, json, payErr, payOk, paymentReturnPath as serverPaymentReturnPath, readJson } from "./http.js";
 import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
 import {
   ERR_SUBSCRIPTION_ORDER_NOT_FOUND,
   type Store,
 } from "./store.js";
 import type { UserRow } from "./types.js";
+import { parseTrustedRedirectDomains, validateRedirectURL } from "./url-validator.js";
 
 export { PAYMENT_COMPLIANCE_REQUIRED };
 
@@ -224,43 +225,47 @@ export async function requestAmount(
   return json(200, { message: "success", data: money.toFixed(2), success: true });
 }
 
+/** Original `StripeAdaptor.RequestPay` HTTP 400 when a custom redirect is untrusted. */
+function stripeRedirectRejected(kind: "success" | "cancel"): Response {
+  const message =
+    kind === "success" ? "支付成功重定向URL不在可信任域名列表中" : "支付取消重定向URL不在可信任域名列表中";
+  return json(400, { message, data: "" });
+}
+
 export async function requestStripePay(
   store: Store,
   user: UserRow,
   req: Request,
   body: { amount?: number; payment_method?: string; success_url?: string; cancel_url?: string },
+  trustedRedirectDomainsRaw?: string,
 ): Promise<Response> {
   if ((body.payment_method || "") !== "stripe") return payErr("不支持的支付渠道");
   const amount = Number(body.amount || 0);
-  const min = await store.optionNum("StripeMinTopUp", await store.optionNum("MinTopup", 1));
+  const min = await minTopup(store, "StripeMinTopUp", 1);
   if (amount < min) return json(200, { message: `充值数量不能小于 ${min}`, data: 10, success: false });
   if (amount > 10000) return json(200, { message: "充值数量不能大于 10000", data: 10, success: false });
-  const secret = await stripeSecret(store);
-  if (!secret.startsWith("sk_") && !secret.startsWith("rk_")) return payErr("拉起支付失败");
+  const successUrl = String(body.success_url ?? "");
+  const cancelUrl = String(body.cancel_url ?? "");
+  const trusted = parseTrustedRedirectDomains(trustedRedirectDomainsRaw);
+  if (successUrl !== "" && validateRedirectURL(successUrl, trusted)) return stripeRedirectRejected("success");
+  if (cancelUrl !== "" && validateRedirectURL(cancelUrl, trusted)) return stripeRedirectRejected("cancel");
+  void req;
   const money = amount * (await topupGroupRatio(store, user.group));
+  const invalid = await rejectInvalidTopUpQuota(store, user.id, money);
+  if (invalid) return invalid;
+  const secret = await stripeSecret(store);
   const reference = `new-api-ref-${user.id}-${Date.now()}-${randomHex(2)}`;
   const trade = "ref_" + (await sha1Hex(reference));
-  await store.insertTopup({
-    user_id: user.id,
-    amount,
-    money,
-    trade_no: trade,
-    payment_method: "stripe",
-    payment_provider: "stripe",
-    status: "pending",
-  });
-  const priceId = await store.option("StripePriceId");
+  const server = await store.option("ServerAddress");
   const params = new URLSearchParams({
     mode: "payment",
-    success_url: body.success_url || paymentReturnPath(req, "/usage-logs"),
-    cancel_url: body.cancel_url || paymentReturnPath(req, "/wallet"),
-    "line_items[0][price]": priceId,
+    success_url: successUrl || serverPaymentReturnPath(server, "/usage-logs"),
+    cancel_url: cancelUrl || serverPaymentReturnPath(server, "/wallet"),
+    "line_items[0][price]": await store.option("StripePriceId"),
     "line_items[0][quantity]": String(amount),
     client_reference_id: trade,
+    allow_promotion_codes: String(await store.optionBool("StripePromotionCodesEnabled", false)),
   });
-  if (await store.optionBool("StripePromotionCodesEnabled", false)) {
-    params.set("allow_promotion_codes", "true");
-  }
   let stripeCustomer = String(user.stripe_customer || "");
   if (!stripeCustomer) {
     try {
@@ -276,6 +281,7 @@ export async function requestStripePay(
     if (user.email) params.set("customer_email", user.email);
     params.set("customer_creation", "always");
   }
+  if (!secret.startsWith("sk_") && !secret.startsWith("rk_")) return payErr("拉起支付失败");
   const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
     method: "POST",
     headers: {
@@ -286,6 +292,19 @@ export async function requestStripePay(
   });
   const data = (await res.json()) as { id?: string; url?: string; error?: { message?: string } };
   if (!res.ok || !data.url) return payErr("拉起支付失败");
+  try {
+    await store.insertTopup({
+      user_id: user.id,
+      amount,
+      money,
+      trade_no: trade,
+      payment_method: "stripe",
+      payment_provider: "stripe",
+      status: "pending",
+    });
+  } catch {
+    return payErr("创建订单失败");
+  }
   return payOk({ pay_link: data.url });
 }
 
