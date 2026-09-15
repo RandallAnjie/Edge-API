@@ -25,7 +25,7 @@ import {
   requestConversionChain,
 } from "../src/log-info-generate.js";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 test("request-convert-registry.ts must not import store / relay / convert / query / submit / log-info-generate", () => {
   const src = readFileSync(join(root, "src/request-convert-registry.ts"), "utf8");
