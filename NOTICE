@@ -214,8 +214,11 @@ Material changes from upstream:
   `GetAndValidOpenAIImageRequest` multipart `/v1/images/edits` parses `n` /
   `stream` / `quality` / `parameters` into the ImageRequest body (gpt-image-1
   quality default `standard`, default `n` 1, `strconv.ParseBool` stream).
-  Extra-OK: audio multipart still uses `body: {}` plus the `model` form field;
-  Ali `ImageCount(true)` still runs after channel select.
+  Original `GetAndValidAudioRequest` requires `model` for speech and
+  transcription/translation (no whisper-1 default), defaults empty
+  `response_format` to `json` on non-speech, and `IsStream` is
+  `stream_format == "sse"`. Extra-OK: Ali `ImageCount(true)` still runs
+  after channel select.
   HTTP PostAudio uses original
   `calculateAudioQuota` (`QuotaFromDecimal`, details text/audio tokens,
   map `GetCompletionRatio` / `GetAudioRatio` / `GetAudioCompletionRatio`,
