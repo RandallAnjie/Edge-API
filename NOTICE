@@ -52,7 +52,11 @@ Material changes from upstream:
   return a structured error. Vertex ADC uses the original HTTP path (RS256 JWT
   + `https://www.googleapis.com/oauth2/v4/token`, no Google SDK). AWS AKSK uses
   the original HTTP path (Bedrock `InvokeModel` / `InvokeModelWithResponseStream`
-  + SigV4 service `bedrock`, no AWS SDK). Volcengine TTS uses the original HTTP path
+  + SigV4 service `bedrock`, no AWS SDK). AWS ConvertClaudeRequest rewrites
+  `source.type=url` to base64 via original GetBase64Data JSON (`type`, `media_type`,
+  `data`, omit empty `url`). Extra-OK: skip gin file-source context cache, Worker
+  download proxy, ValidateSSRFProtectedFetchURL, and HEIF `decodeImageConfig`.
+  Volcengine TTS uses the original HTTP path
   (`wss://openspeech.bytedance.com/api/v1/tts/ws_binary` binary frames, or
   `{base}/v1/audio/speech` JSON `code` 3000, no Volc SDK). Xunfei SparkDesk uses the original HTTP path
   (gorilla `Dial` handshake timeout 5s, HTTP 101 `Upgrade: websocket` to

@@ -51,7 +51,7 @@ import {
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
 import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
 import { compactUuid, looksLikeSse } from "./openai-usage.js";
-import { isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
+import { convertAwsClaudeRequest, isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
 import { applyAwsAkskAuth } from "./aws-auth.js";
 import { decodeAwsEventStreamResponse } from "./aws-eventstream.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding, ollamaUpstreamToOpenAIChat } from "./ollama-convert.js";
@@ -433,7 +433,7 @@ async function convertOutbound(
     return convertGeminiRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
   if (channelType === CHANNEL_TYPE_AWS && client === "anthropic" && !isNovaModel(upstream)) {
-    return convertClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
+    return convertAwsClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });
   }
   if (channelType === CHANNEL_TYPE_VERTEX && client === "anthropic") {
     return convertVertexClaudeRequest(o, { originModelName: origin, upstreamModelName: upstream, settings });

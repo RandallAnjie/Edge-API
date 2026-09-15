@@ -1,6 +1,7 @@
-/** Original `relay/channel/aws` ConvertOpenAIRequest, API-key Converse URL, and AKSK InvokeModel helpers. */
+/** Original `relay/channel/aws` ConvertOpenAIRequest, ConvertClaudeRequest URL→base64, API-key Converse URL, and AKSK InvokeModel helpers. */
 
-import { convertOpenAIChatToClaude, type ConvertClaudeOpts } from "./claude-convert.js";
+import { convertClaudeRequest, convertOpenAIChatToClaude, type ConvertClaudeOpts } from "./claude-convert.js";
+import { getBase64DataFromUrl } from "./file-source.js";
 import { emptyOpenAIUsage, openAIUsageToJson } from "./openai-usage.js";
 
 /** Original `aws.awsModelIDMap`. */
@@ -102,6 +103,93 @@ export function convertAwsOpenAIRequest(body: Record<string, unknown>, opts: Con
     return convertToNovaRequest(body);
   }
   return convertOpenAIChatToClaude(body, opts);
+}
+
+function jsonGoKind(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "array";
+  switch (typeof v) {
+    case "boolean":
+      return "bool";
+    case "string":
+      return "string";
+    case "number":
+      return "number";
+    case "object":
+      return "object";
+    default:
+      return typeof v;
+  }
+}
+
+/**
+ * Original `dto.ClaudeMessage.ParseContent` via `kitutil.Any2Type[[]ClaudeMediaMessage]`.
+ */
+function parseClaudeMessageContent(content: unknown): Record<string, unknown>[] {
+  if (content == null) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(JSON.stringify(content)) as unknown;
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : String(err));
+  }
+  if (parsed == null) return [];
+  if (!Array.isArray(parsed)) {
+    throw new Error(`json: cannot unmarshal ${jsonGoKind(parsed)} into Go value of type []dto.ClaudeMediaMessage`);
+  }
+  const out: Record<string, unknown>[] = [];
+  for (const item of parsed) {
+    if (item == null || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`json: cannot unmarshal ${jsonGoKind(item)} into Go value of type dto.ClaudeMediaMessage`);
+    }
+    out.push(item as Record<string, unknown>);
+  }
+  return out;
+}
+
+/**
+ * Original `aws.Adaptor.ConvertClaudeRequest`: `claude.Adaptor.ConvertClaudeRequest`
+ * then rewrite `source.type == "url"` via `service.GetBase64Data`.
+ */
+export async function convertAwsClaudeRequest(body: Record<string, unknown>, opts: ConvertClaudeOpts = {}): Promise<Record<string, unknown>> {
+  const req = convertClaudeRequest(body, opts);
+  const messages = Array.isArray(req.messages) ? [...(req.messages as unknown[])] : [];
+  for (let i = 0; i < messages.length; i++) {
+    const raw = messages[i];
+    const message = raw && typeof raw === "object" && !Array.isArray(raw) ? { ...(raw as Record<string, unknown>) } : {};
+    let updated = false;
+    if (typeof message.content !== "string" && message.content != null) {
+      let content: Record<string, unknown>[];
+      try {
+        content = parseClaudeMessageContent(message.content);
+      } catch (err) {
+        throw new Error(`failed to parse message content: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      for (let i2 = 0; i2 < content.length; i2++) {
+        const media = { ...content[i2] };
+        const src = media.source;
+        if (!src || typeof src !== "object" || Array.isArray(src)) continue;
+        const source = { ...(src as Record<string, unknown>) };
+        if (source.type !== "url") continue;
+        try {
+          const got = await getBase64DataFromUrl(String(source.url || ""));
+          source.media_type = got.mimeType;
+          source.data = got.data;
+          delete source.url;
+          source.type = "base64";
+        } catch (err) {
+          throw new Error(`get file base64 from url failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        media.source = source;
+        content[i2] = media;
+        updated = true;
+      }
+      if (updated) message.content = content;
+    }
+    if (updated) messages[i] = message;
+  }
+  req.messages = messages;
+  return req;
 }
 
 /** Original `handleNovaRequest` OpenAI chat JSON. */
