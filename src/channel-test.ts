@@ -55,8 +55,20 @@ import {
   scheduleSystemTaskIfDue,
   SYSTEM_TASK_TYPE_CHANNEL_TEST,
 } from "./system-task.js";
+import {
+  channelAttemptFromNewApi,
+  channelAttemptFromOpenAIWrap,
+  channelAttemptFromResponseTimeExceeded,
+  channelAttemptFromUpstream,
+  channelDisableThresholdMs,
+  errorWithStatusCode,
+  processChannelError,
+  shouldDisableChannel,
+  shouldEnableChannel,
+  type ChannelAttemptError,
+} from "./channel-error.js";
 import type { Store } from "./store.js";
-import type { ChannelRow, Env, UserRow } from "./types.js";
+import type { AuthToken, ChannelRow, Env, TokenRow, UserRow } from "./types.js";
 
 /** Original `controller.channelTestSummary`. */
 export type ChannelTestSummary = {
@@ -67,12 +79,18 @@ export type ChannelTestSummary = {
   enabled: number;
 };
 
-/** Original `controller.TestChannel` JSON. */
+/** Original `controller.TestChannel` JSON plus health-check `testResult` fields. */
 export type ChannelTestResult = {
   success: boolean;
   message: string;
   time: number;
   error_code?: string;
+  /** Original `testResult.localErr != nil`. */
+  localErr?: boolean;
+  /** Original `testResult.newAPIError`. */
+  newAPIError?: ChannelAttemptError | null;
+  requestPath?: string;
+  originModel?: string;
 };
 
 export type ChannelTestOpts = {
@@ -393,10 +411,43 @@ function extractUsageFromBody(text: string, isStream: boolean, estimate: number)
   return new Error("usage is nil");
 }
 
-function fail(message: string, errorCode?: string): ChannelTestResult {
-  const out: ChannelTestResult = { success: false, message, time: 0 };
-  if (errorCode) out.error_code = errorCode;
+function fail(
+  message: string,
+  opts?: {
+    errorCode?: string;
+    newAPIError?: ChannelAttemptError | null;
+    requestPath?: string;
+    originModel?: string;
+  },
+): ChannelTestResult {
+  const out: ChannelTestResult = { success: false, message, time: 0, localErr: true };
+  const code = opts?.errorCode ?? opts?.newAPIError?.errorCode;
+  if (code) out.error_code = code;
+  if (opts?.newAPIError) out.newAPIError = opts.newAPIError;
+  if (opts?.requestPath) out.requestPath = opts.requestPath;
+  if (opts?.originModel) out.originModel = opts.originModel;
   return out;
+}
+
+function healthCheckAuth(user: UserRow): AuthToken {
+  const token: TokenRow = {
+    id: 0,
+    user_id: user.id,
+    key: "",
+    status: 1,
+    name: "",
+    created_time: 0,
+    accessed_time: 0,
+    expired_time: -1,
+    remain_quota: 0,
+    unlimited_quota: 1,
+    model_limits_enabled: 0,
+    model_limits: "",
+    allow_ips: "",
+    used_quota: 0,
+    group: user.group || "default",
+  };
+  return { token, user, usingGroup: user.group || "default" };
 }
 
 function buildTestTarget(
@@ -550,10 +601,16 @@ export async function testChannel(
   const isStream = Boolean(opts.stream);
   const requestPath = channelTestRequestPath(channel, originModel, endpointType, isStream);
   const mode = relayModeForTest(endpointType, requestPath);
+  const testMeta = { requestPath, originModel };
 
   if (mode === "responses" && requestPath.includes("/compact") && !supportsResponsesCompact(channel.type)) {
     const { apiType } = channelType2APIType(channel.type);
-    return fail(`responses compaction test is not supported for api type ${apiType}`, "invalid_api_type");
+    const message = `responses compaction test is not supported for api type ${apiType}`;
+    return fail(message, {
+      ...testMeta,
+      errorCode: "invalid_api_type",
+      newAPIError: channelAttemptFromNewApi(`unsupported api type: ${apiType}`, 500, "invalid_api_type"),
+    });
   }
 
   const mappedModel = applyModelMapping(channel, originModel);
@@ -573,7 +630,11 @@ export async function testChannel(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const code = message.includes("invalid api type") || message.includes("compaction") ? "invalid_api_type" : "convert_request_failed";
-    return fail(message, code);
+    return fail(message, {
+      ...testMeta,
+      errorCode: code,
+      newAPIError: channelAttemptFromNewApi(message, 500, code),
+    });
   }
 
   const started = Date.now();
@@ -621,38 +682,47 @@ export async function testChannel(
       res = completed.response;
     }
   } catch (err) {
-    return fail(err instanceof Error ? err.message : String(err), "do_request_failed");
+    const message = err instanceof Error ? err.message : String(err);
+    return fail(message, {
+      ...testMeta,
+      newAPIError: channelAttemptFromOpenAIWrap(message, "do_request_failed", 500),
+    });
   }
 
   const milliseconds = Date.now() - started;
   const text = await res.text();
   if (res.status !== 200) {
-    let message = text.slice(0, 500) || res.statusText;
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      const extracted = detectErrorMessageFromJSON(parsed);
-      if (extracted) message = extracted;
-    } catch {
-      /* keep raw */
-    }
-    return fail(message, "bad_response");
+    const attempt = channelAttemptFromUpstream(res.status, text);
+    return fail(attempt.message, { ...testMeta, newAPIError: attempt });
   }
 
   const bodyErr = detectErrorFromTestResponseBody(isStream ? text.slice(0, 8 * 1024) : text);
-  if (bodyErr) return fail(bodyErr.message, "bad_response_body");
+  if (bodyErr) {
+    return fail(bodyErr.message, {
+      ...testMeta,
+      newAPIError: channelAttemptFromOpenAIWrap(bodyErr.message, "bad_response_body", 500),
+    });
+  }
   if (isStream) {
     const streamErr = validateStreamTestResponseBody(text.slice(0, 8 * 1024));
-    if (streamErr) return fail(streamErr.message, "bad_response_body");
+    if (streamErr) {
+      return fail(streamErr.message, {
+        ...testMeta,
+        newAPIError: channelAttemptFromOpenAIWrap(streamErr.message, "bad_response_body", 500),
+      });
+    }
   }
 
   const estimate = 1;
   const usage = extractUsageFromBody(text, isStream, estimate);
-  if (usage instanceof Error) return fail(usage.message, "bad_response_body");
+  if (usage instanceof Error) {
+    return fail(usage.message, {
+      ...testMeta,
+      newAPIError: channelAttemptFromOpenAIWrap(usage.message, "bad_response_body", 500),
+    });
+  }
 
-  await store.updateChannel(channel.id, {
-    test_time: Math.floor(Date.now() / 1000),
-    response_time: milliseconds,
-  });
+  await store.updateChannelResponseTime(channel.id, milliseconds);
 
   let user: UserRow | null = null;
   if (opts.userId) user = await store.getUserById(opts.userId);
@@ -692,7 +762,7 @@ export async function testChannel(
     });
   }
 
-  return { success: true, message: "", time: milliseconds / 1000 };
+  return { success: true, message: "", time: milliseconds / 1000, requestPath, originModel };
 }
 
 /** Original `controller.selectChannelsForAutomaticTest`. */
@@ -710,41 +780,96 @@ export function shouldUseStreamForAutomaticChannelTest(channel: ChannelRow): boo
   return channel.type === CHANNEL_TYPE_CODEX;
 }
 
+/** Original `controller.testChannelForHealthCheck`. */
+export async function testChannelForHealthCheck(
+  store: Store,
+  channel: ChannelRow,
+  opts: {
+    allowDisable: boolean;
+    disableThreshold: number;
+    autoDisableEnabled: boolean;
+    testUser?: UserRow | null;
+    env?: Env;
+  },
+): Promise<ChannelTestSummary> {
+  const summary: ChannelTestSummary = { tested: 0, succeeded: 0, failed: 0, disabled: 0, enabled: 0 };
+  const wasEnabled = channel.status === CHANNEL_ENABLED;
+  const tik = Date.now();
+  const result = await testChannel(store, channel, {
+    stream: shouldUseStreamForAutomaticChannelTest(channel),
+    userId: opts.testUser?.id,
+    username: opts.testUser?.username,
+    group: opts.testUser?.group || "default",
+  });
+  const milliseconds = Date.now() - tik;
+  summary.tested++;
+
+  let newAPIError = result.newAPIError ?? null;
+  let shouldBan = false;
+  if (newAPIError) shouldBan = await shouldDisableChannel(store, newAPIError);
+  if (opts.autoDisableEnabled && !shouldBan && milliseconds > opts.disableThreshold) {
+    newAPIError = channelAttemptFromResponseTimeExceeded(milliseconds, opts.disableThreshold);
+    shouldBan = true;
+  }
+
+  if (!newAPIError) summary.succeeded++;
+  else summary.failed++;
+
+  if (opts.allowDisable && wasEnabled && shouldBan && Number(channel.auto_ban ?? 1) === 1 && newAPIError) {
+    if (opts.testUser) {
+      await processChannelError({
+        store,
+        env: opts.env,
+        req: new Request("http://local" + (result.requestPath || "/v1/chat/completions"), { method: "POST" }),
+        auth: healthCheckAuth(opts.testUser),
+        channel,
+        model: result.originModel || "",
+        err: newAPIError,
+        useChannel: [],
+        useTimeSeconds: Math.floor(milliseconds / 1000),
+      });
+    } else {
+      await store.autoDisableChannel(channel.id, errorWithStatusCode(newAPIError));
+    }
+    summary.disabled++;
+  }
+
+  if (!result.localErr && !wasEnabled && (await shouldEnableChannel(store, newAPIError, channel.status))) {
+    await store.updateChannelStatus(channel.id, CHANNEL_ENABLED, "");
+    summary.enabled++;
+  }
+
+  await store.updateChannelResponseTime(channel.id, milliseconds);
+  return summary;
+}
+
 /** Original `controller.runChannelTestTask` (manual TestAllChannels uses scheduled_all). */
-export async function runChannelTestTask(store: Store, mode: string): Promise<ChannelTestSummary> {
+export async function runChannelTestTask(store: Store, mode: string, env?: Env): Promise<ChannelTestSummary> {
   const selected = selectChannelsForAutomaticTest(await store.allChannels(), mode || "scheduled_all");
   const allowDisable = mode !== "passive_recovery";
   const root = await store.getRootUser();
+  const disableThreshold = channelDisableThresholdMs(await store.optionNum("ChannelDisableThreshold", 5));
+  const autoDisableEnabled = await store.optionBool("AutomaticDisableChannelEnabled", false);
   const summary: ChannelTestSummary = { tested: 0, succeeded: 0, failed: 0, disabled: 0, enabled: 0 };
   for (const ch of selected) {
-    const wasEnabled = ch.status === CHANNEL_ENABLED;
-    const result = await testChannel(store, ch, {
-      stream: shouldUseStreamForAutomaticChannelTest(ch),
-      userId: root?.id,
-      username: root?.username,
-      group: root?.group || "default",
+    const one = await testChannelForHealthCheck(store, ch, {
+      allowDisable,
+      disableThreshold,
+      autoDisableEnabled,
+      testUser: root,
+      env,
     });
-    summary.tested++;
-    if (result.success) {
-      summary.succeeded++;
-      if (!wasEnabled && ch.status === CHANNEL_AUTO_DISABLED) {
-        await store.updateChannel(ch.id, { status: CHANNEL_ENABLED });
-        summary.enabled++;
-      }
-    } else {
-      summary.failed++;
-      if (allowDisable && wasEnabled && Number(ch.auto_ban ?? 1) === 1) {
-        await store.autoDisableChannel(ch.id);
-        summary.disabled++;
-      }
-    }
+    summary.tested += one.tested;
+    summary.succeeded += one.succeeded;
+    summary.failed += one.failed;
+    summary.disabled += one.disabled;
+    summary.enabled += one.enabled;
   }
   return summary;
 }
 
 /** Original `channelTestHandler` + scheduled `Enabled`/`Interval`/`NewPayload`. */
 export async function runPendingChannelTestSystemTask(store: Store, env?: Env): Promise<ChannelTestSummary | null> {
-  void env;
   const enabled = await store.optionBool("monitor_setting.auto_test_channel_enabled", false);
   let minutes = await store.optionNum("monitor_setting.auto_test_channel_minutes", 10);
   if (minutes <= 0) minutes = 10;
@@ -753,6 +878,6 @@ export async function runPendingChannelTestSystemTask(store: Store, env?: Env): 
     const payload = (decodeSystemTaskJSON(task.payload) || {}) as { mode?: string; notify?: boolean };
     let mode = String(payload.mode || "").trim();
     if (!mode) mode = (await store.option("monitor_setting.channel_test_mode")) || "scheduled_all";
-    return runChannelTestTask(store, mode);
+    return runChannelTestTask(store, mode, env);
   });
 }

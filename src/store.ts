@@ -1274,20 +1274,38 @@ export class Store {
     return { channel_count: channels.length, in_flight_count: num(inflight?.c), channels };
   }
 
-  async autoDisableChannel(id: number, reason = ""): Promise<boolean> {
+  /** Original `model.Channel.UpdateResponseTime` (`response_time`, `test_time` only). */
+  async updateChannelResponseTime(id: number, responseTime: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE channels SET response_time = ?, test_time = ? WHERE id = ?")
+      .bind(responseTime, nowSec(), id)
+      .run();
+  }
+
+  /** Original `model.UpdateChannelStatus` + `UpdateAbilityStatus`. */
+  async updateChannelStatus(id: number, status: number, reason = ""): Promise<boolean> {
     const ch = await this.getChannel(id);
     if (!ch) return false;
-    if (Number(ch.auto_ban) !== 1) return false;
-    if (Number(ch.status) === CHANNEL_AUTO_DISABLED) return false;
+    if (Number(ch.status) === status) return false;
     const info = parseJson<Record<string, unknown>>(String(ch.other_info || ""), {});
     info.status_reason = reason;
     info.status_time = nowSec();
     await this.db
-      .prepare("UPDATE channels SET status = ?, other_info = ? WHERE id = ? AND auto_ban = 1")
-      .bind(CHANNEL_AUTO_DISABLED, JSON.stringify(info), id)
+      .prepare("UPDATE channels SET status = ?, other_info = ? WHERE id = ?")
+      .bind(status, JSON.stringify(info), id)
       .run();
-    await this.db.prepare("UPDATE abilities SET enabled = 0 WHERE channel_id = ?").bind(id).run();
+    await this.db
+      .prepare("UPDATE abilities SET enabled = ? WHERE channel_id = ?")
+      .bind(status === CHANNEL_ENABLED ? 1 : 0, id)
+      .run();
     return true;
+  }
+
+  async autoDisableChannel(id: number, reason = ""): Promise<boolean> {
+    const ch = await this.getChannel(id);
+    if (!ch) return false;
+    if (Number(ch.auto_ban) !== 1) return false;
+    return this.updateChannelStatus(id, CHANNEL_AUTO_DISABLED, reason);
   }
 
   async insertLog(l: Partial<LogRow>): Promise<void> {

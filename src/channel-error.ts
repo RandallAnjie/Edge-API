@@ -3,6 +3,7 @@
  * + `model.RecordErrorLog` other JSON on RandallFlare.
  */
 import {
+  CHANNEL_AUTO_DISABLED,
   LOG_ERROR,
   automaticDisableKeywordsToString,
   parseBool,
@@ -92,6 +93,48 @@ export async function shouldDisableChannel(store: Store, err: ChannelAttemptErro
   return automaticDisableKeywordHit(err.message, keywords);
 }
 
+/** Original `service.ShouldEnableChannel`. */
+export async function shouldEnableChannel(
+  store: Store,
+  err: ChannelAttemptError | null | undefined,
+  status: number,
+): Promise<boolean> {
+  if (!(await store.optionBool("AutomaticEnableChannelEnabled", false))) return false;
+  if (err) return false;
+  return status === CHANNEL_AUTO_DISABLED;
+}
+
+/** Original `types.NewOpenAIError` (not wrapping an existing NewAPIError). */
+export function channelAttemptFromOpenAIWrap(
+  message: string,
+  errorCode: string,
+  statusCode: number,
+  skipRetry = false,
+): ChannelAttemptError {
+  return { message, statusCode, errorCode, errorType: "openai_error", skipRetry };
+}
+
+/** Original health-check `fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", ...)`. */
+export function channelResponseTimeExceededMessage(milliseconds: number, thresholdMs: number): string {
+  return `响应时间 ${(milliseconds / 1000).toFixed(2)}s 超过阈值 ${(thresholdMs / 1000).toFixed(2)}s`;
+}
+
+/** Original `types.NewOpenAIError(..., ErrorCodeChannelResponseTimeExceeded, 408)`. */
+export function channelAttemptFromResponseTimeExceeded(milliseconds: number, thresholdMs: number): ChannelAttemptError {
+  return channelAttemptFromOpenAIWrap(
+    channelResponseTimeExceededMessage(milliseconds, thresholdMs),
+    "channel:response_time_exceeded",
+    408,
+  );
+}
+
+/** Original `performChannelTests` `disableThreshold := int64(ChannelDisableThreshold * 1000)`. */
+export function channelDisableThresholdMs(seconds: number): number {
+  const ms = Math.trunc(seconds * 1000);
+  if (ms === 0) return 10_000_000;
+  return ms;
+}
+
 export function channelAttemptFromUpstream(status: number, bodyText: string): ChannelAttemptError {
   let message = `bad response status code ${status}`;
   let errorCode = "bad_response_status_code";
@@ -145,7 +188,7 @@ export function channelAttemptFromTaskRelay(err: { message: string; statusCode: 
 /** Original `controller.processChannelError`. */
 export async function processChannelError(opts: {
   store: Store;
-  env: Env;
+  env?: Env;
   req: Request;
   auth: AuthToken;
   channel: ChannelRow;
@@ -160,7 +203,7 @@ export async function processChannelError(opts: {
   if ((await shouldDisableChannel(opts.store, opts.err)) && autoBan) {
     await opts.store.autoDisableChannel(opts.channel.id, errorWithStatusCode(opts.err));
   }
-  if (!errorLogEnabled(opts.env)) return;
+  if (!opts.env || !errorLogEnabled(opts.env)) return;
   if (opts.err.recordErrorLog === false) return;
   const path = new URL(opts.req.url).pathname;
   await opts.store.insertLog({

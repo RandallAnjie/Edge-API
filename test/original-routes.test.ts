@@ -2669,7 +2669,8 @@ test("original TestChannel, UpdateSelf, video, OAuth, and subscription return JS
   assert.equal(typeof summary.disabled, "number");
   assert.equal(typeof summary.enabled, "number");
   assert.ok(summary.tested >= 1);
-  assert.ok(summary.failed >= 1);
+  assert.ok(summary.succeeded >= 1);
+  assert.equal(summary.disabled, 0);
 
   const sidebar = await json(
     new Request("http://local/api/user/self", {
@@ -4605,7 +4606,7 @@ test("original TestChannel POSTs gin httptest chat/embeddings/responses bodies",
     assert.equal(failed.body.success, false);
     assert.equal(failed.body.message, "upstream rejected");
     assert.equal(failed.body.time, 0);
-    assert.equal(failed.body.error_code, "bad_response");
+    assert.equal(failed.body.error_code, "bad_response_status_code");
 
     const mj = await json(
       new Request("http://local/api/channel/", {

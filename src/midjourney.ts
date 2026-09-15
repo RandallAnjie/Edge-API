@@ -4,7 +4,7 @@
 import { tokenAllowsModel } from "./auth.js";
 import { resolveBaseUrl } from "./catalog.js";
 import { selectDistributedChannel } from "./channel-select.js";
-import { CHANNEL_ENABLED, nowMs } from "./constants.js";
+import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, nowMs } from "./constants.js";
 import {
   abortWithOpenAiMessage,
   distributorInvalidRequestMessage,
@@ -559,7 +559,9 @@ async function persistAndBill(opts: {
   };
   if (opts.midj.code === 3) {
     const autoDisable = await opts.store.optionBool("AutomaticDisableChannelEnabled", false);
-    if (autoDisable && Number(opts.channel.auto_ban) === 1) await opts.store.autoDisableChannel(opts.channel.id);
+    if (autoDisable && Number(opts.channel.auto_ban) === 1) {
+      await opts.store.updateChannelStatus(opts.channel.id, CHANNEL_MANUAL_DISABLED, "No available account instance");
+    }
   }
   let consume = opts.consumeQuota;
   if (opts.midj.code !== 1 && opts.midj.code !== 21 && opts.midj.code !== 22) {
