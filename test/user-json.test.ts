@@ -106,6 +106,53 @@ test("original GetAllUsers User JSON includes empty password fields", async () =
   assert.equal(page.items[0].username, "root");
 });
 
+test("original GetAllUsers JSON ignores keyword and keeps User list fields", async () => {
+  const { e, auth } = await boot();
+  const listed = await json(
+    new Request("http://local/api/user/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ username: "list-alpha-user", password: "password12", display_name: "Alpha" }),
+    }),
+    e,
+  );
+  assert.equal(listed.body.success, true, String(listed.body.message));
+  const other = await json(
+    new Request("http://local/api/user/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ username: "list-beta-user", password: "password12", display_name: "Beta" }),
+    }),
+    e,
+  );
+  assert.equal(other.body.success, true, String(other.body.message));
+
+  const all = await json(
+    new Request("http://local/api/user/?keyword=list-alpha-user&page_size=100", { headers: auth }),
+    e,
+  );
+  assert.equal(all.body.success, true, String(all.body.message));
+  assert.equal(all.body.message, "");
+  const data = all.body.data as {
+    items: Record<string, unknown>[];
+    total: number;
+    page: number;
+    page_size: number;
+  };
+  assert.ok(Array.isArray(data.items));
+  assert.equal(typeof data.total, "number");
+  assert.equal(data.page, 1);
+  assert.equal(data.page_size, 100);
+  const names = data.items.map((u) => String(u.username));
+  assert.ok(names.includes("list-alpha-user"));
+  assert.ok(names.includes("list-beta-user"), "GetAllUsers must not apply keyword LIKE");
+  assertOmittedSecrets(data.items.find((u) => u.username === "list-alpha-user") as Record<string, unknown>, "GetAllUsers keyword");
+
+  const searched = await json(new Request("http://local/api/user/search?keyword=list-alpha-user", { headers: auth }), e);
+  const searchNames = ((searched.body.data as { items: { username: string }[] }).items || []).map((u) => u.username);
+  assert.deepEqual(searchNames, ["list-alpha-user"]);
+});
+
 test("original SearchUsers User JSON includes empty password fields", async () => {
   const { e, auth } = await boot();
   const created = await json(

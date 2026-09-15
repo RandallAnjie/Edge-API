@@ -577,9 +577,7 @@ export function adminRouter(): Router<Env> {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const keyword = c.url.searchParams.get("keyword") || "";
     const { items, total } = await s.listUsers(q.offset, q.page_size, {
-      keyword,
       sortBy: c.url.searchParams.get("sort_by") || "",
       sortOrder: c.url.searchParams.get("sort_order") || "",
     });
