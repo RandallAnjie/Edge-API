@@ -3208,6 +3208,39 @@ export class Store {
     return results;
   }
 
+  /** Original `model.SearchVendors` — LIKE on name/description, linked/unlinked EXISTS, `ORDER BY id DESC`. */
+  async searchVendors(opts: {
+    keyword?: string;
+    association?: string;
+    offset: number;
+    limit: number;
+  }): Promise<{ items: Record<string, unknown>[]; total: number }> {
+    const where: string[] = ["1=1"];
+    const binds: unknown[] = [];
+    const keyword = opts.keyword || "";
+    if (keyword) {
+      const like = `%${keyword}%`;
+      where.push("(name LIKE ? OR description LIKE ?)");
+      binds.push(like, like);
+    }
+    const association = opts.association || "";
+    if (association === "linked") {
+      where.push("EXISTS (SELECT 1 FROM model_meta WHERE model_meta.vendor_id = vendors.id)");
+    } else if (association === "unlinked") {
+      where.push("NOT EXISTS (SELECT 1 FROM model_meta WHERE model_meta.vendor_id = vendors.id)");
+    }
+    const whereSql = where.join(" AND ");
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM vendors WHERE ${whereSql}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM vendors WHERE ${whereSql} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, opts.limit, opts.offset)
+      .all();
+    return { items: results as Record<string, unknown>[], total: num(totalRow?.c) };
+  }
+
   async getVendor(id: number): Promise<Record<string, unknown> | null> {
     return this.db.prepare("SELECT * FROM vendors WHERE id = ?").bind(id).first<Record<string, unknown>>();
   }

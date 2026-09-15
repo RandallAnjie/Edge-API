@@ -29,7 +29,7 @@ import {
   verifyTelegramLogin,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
-import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues } from "./dto.js";
+import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues, vendorRecordVersion } from "./dto.js";
 import { billingCopies } from "./billing-setting.js";
 import { DEFAULT_MODEL_RATIO_JSON } from "./ratio-defaults.js";
 import { getModelPricingSnapshot, ModelPricingError, previewModelPricingConversion, previewModelPricingDescription, updateModelPricing, type ModelPricingChange } from "./model-pricing.js";
@@ -1402,31 +1402,24 @@ export function registerMore(r: Router<Env>): void {
     return apiOk(null);
   });
 
-  r.get("/api/vendors/", async (c) => {
+  async function searchVendorsResponse(c: C): Promise<Response> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const keyword = (c.url.searchParams.get("keyword") || "").toLowerCase();
-    const all = ((await s.listVendors()) as Record<string, unknown>[]).filter(
-      (v) => !keyword || String(v.name || "").toLowerCase().includes(keyword),
-    );
+    const found = await s.searchVendors({
+      keyword: c.url.searchParams.get("keyword") || "",
+      association: c.url.searchParams.get("association") || "",
+      offset: q.offset,
+      limit: q.page_size,
+    });
     const counts = await s.vendorModelCounts();
-    const items = all.slice(q.offset, q.offset + q.page_size).map((v) => publicVendor(v, counts[String(v.id || 0)] || 0));
-    return apiOk(pageData(items, all.length, q));
-  });
+    const items = found.items.map((v) => publicVendor(v, counts[String(v.id || 0)] || 0));
+    return apiOk(pageData(items, found.total, q));
+  }
 
-  r.get("/api/vendors/search", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    const q = pageQuery(c.url);
-    const kw = (c.url.searchParams.get("keyword") || "").toLowerCase();
-    const all = ((await s.listVendors()) as Record<string, unknown>[]).filter((v) => !kw || String(v.name || "").toLowerCase().includes(kw));
-    const counts = await s.vendorModelCounts();
-    const items = all.slice(q.offset, q.offset + q.page_size).map((v) => publicVendor(v, counts[String(v.id || 0)] || 0));
-    return apiOk(pageData(items, all.length, q));
-  });
+  r.get("/api/vendors/", searchVendorsResponse);
+  r.get("/api/vendors/search", searchVendorsResponse);
 
   r.get("/api/vendors/:id", async (c) => {
     const s = store(c);
@@ -1458,6 +1451,15 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number };
     if (!body.id) return apiFail("缺少供应商 ID");
+    const existing = await s.getVendor(body.id);
+    if (!existing) return apiFail("不存在");
+    if (body.version && String(body.version) !== vendorRecordVersion(existing)) {
+      return json(409, {
+        success: false,
+        message: "vendor data changed; preview again before applying",
+        code: "VENDOR_CONFLICT",
+      });
+    }
     const patch: Record<string, unknown> = { updated_time: nowSec() };
     for (const k of ["name", "description", "icon", "status"]) if (body[k] != null) patch[k] = body[k];
     await s.updateVendor(body.id, patch);

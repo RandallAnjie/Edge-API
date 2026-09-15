@@ -12,6 +12,7 @@ import {
   parseJson,
 } from "./constants.js";
 import { hmacSha256Raw, maskKey } from "./crypto.js";
+import { bytesToHex, sha256BytesSync, utf8Bytes } from "./jsplugin-sha256.js";
 import { advancedCustomConfigFromSettings, supportedEndpointTypesForModel } from "./channel-validate.js";
 import {
   getAudioCompletionRatioFromMap,
@@ -1559,6 +1560,51 @@ export function manageUserView(role: number, status: number): Record<string, unk
   };
 }
 
+/**
+ * Original `encoding/json.Marshal` HTML-escaped string quoting (`&` `<` `>` → `\u00XX`,
+ * U+2028/U+2029 → `\u2028`/`\u2029`). Used by `model.VendorRecordVersion`.
+ */
+export function goJsonQuote(s: string): string {
+  let out = '"';
+  for (let i = 0; i < s.length; ) {
+    const code = s.charCodeAt(i);
+    if (code < 0x80) {
+      if (code === 0x22 || code === 0x5c) out += "\\" + s[i];
+      else if (code === 0x0a) out += "\\n";
+      else if (code === 0x0d) out += "\\r";
+      else if (code === 0x09) out += "\\t";
+      else if (code === 0x3c || code === 0x3e || code === 0x26 || code < 0x20) {
+        out += "\\u00" + code.toString(16).padStart(2, "0");
+      } else out += s[i];
+      i += 1;
+      continue;
+    }
+    const cp = s.codePointAt(i) ?? code;
+    if (cp === 0x2028) out += "\\u2028";
+    else if (cp === 0x2029) out += "\\u2029";
+    else out += String.fromCodePoint(cp);
+    i += cp > 0xffff ? 2 : 1;
+  }
+  return out + '"';
+}
+
+/** Original `common.Marshal([]any{Id, Name, Description, Icon, Status, CreatedTime, UpdatedTime})`. */
+export function vendorRecordPayload(row: Record<string, unknown>): string {
+  const id = Math.trunc(Number(row.id || 0));
+  const name = String(row.name || "");
+  const description = String(row.description || "");
+  const icon = String(row.icon || "");
+  const status = Math.trunc(Number(row.status ?? 1));
+  const created = Math.trunc(Number(row.created_time || row.created_at || 0));
+  const updated = Math.trunc(Number(row.updated_time || created));
+  return `[${id},${goJsonQuote(name)},${goJsonQuote(description)},${goJsonQuote(icon)},${status},${created},${updated}]`;
+}
+
+/** Original `model.VendorRecordVersion` — SHA-256 of the marshaled vendor tuple, lowercase hex. */
+export function vendorRecordVersion(row: Record<string, unknown>): string {
+  return bytesToHex(sha256BytesSync(utf8Bytes(vendorRecordPayload(row))));
+}
+
 export function publicVendor(row: Record<string, unknown>, modelCount = 0): Record<string, unknown> {
   const created = Number(row.created_time || row.created_at || 0);
   const updated = Number(row.updated_time || created);
@@ -1567,12 +1613,6 @@ export function publicVendor(row: Record<string, unknown>, modelCount = 0): Reco
   const description = String(row.description || "");
   const icon = String(row.icon || "");
   const status = Number(row.status ?? 1);
-  const payload = JSON.stringify([id, name, description, icon, status, created, updated]);
-  let h = 2166136261;
-  for (let i = 0; i < payload.length; i++) {
-    h ^= payload.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
   return {
     id,
     name,
@@ -1582,7 +1622,7 @@ export function publicVendor(row: Record<string, unknown>, modelCount = 0): Reco
     created_time: created,
     updated_time: updated,
     model_count: modelCount,
-    version: (h >>> 0).toString(16).padStart(8, "0"),
+    version: vendorRecordVersion({ id, name, description, icon, status, created_time: created, updated_time: updated }),
   };
 }
 
