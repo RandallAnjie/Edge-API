@@ -1,5 +1,5 @@
 import { MAX_WALLET_QUOTA, nowSec, parseJson, randomHex } from "./constants.js";
-import { hmacSha256Hex, sha1Hex, timingSafeEqualStr } from "./crypto.js";
+import { getRandomString, hmacSha256Hex, md5Hex, sha1Hex, timingSafeEqualStr } from "./crypto.js";
 import { apiFail, clientIp, json, payErr, payOk, paymentReturnPath as serverPaymentReturnPath, readJson } from "./http.js";
 import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
 import {
@@ -27,7 +27,7 @@ export async function paymentConfigured(store: Store, kind: "stripe" | "epay" | 
   if (kind === "epay") {
     const address = (await store.option("PayAddress")) || (await store.option("EpayUrl"));
     const methods = parseJson<unknown[]>(await store.option("PayMethods"), []);
-    return Boolean(address) && Boolean(await store.option("EpayPid")) && Boolean(await store.option("EpayKey")) && methods.length > 0;
+    return Boolean(address) && Boolean(await store.option("EpayId")) && Boolean(await store.option("EpayKey")) && methods.length > 0;
   }
   if (kind === "creem") {
     const products = ((await store.option("CreemProducts")) || "").trim();
@@ -139,6 +139,33 @@ export async function topupInfo(store: Store): Promise<Record<string, unknown>> 
 function paymentReturnPath(req: Request, suffix: string, serverAddress = ""): string {
   const base = (serverAddress || new URL(req.url).origin).replace(/\/+$/, "");
   return base + suffix;
+}
+
+/** Original `service.GetCallbackAddress`. */
+async function callbackAddress(store: Store): Promise<string> {
+  return ((await store.option("CustomCallbackAddress")) || (await store.option("ServerAddress")) || "").replace(/\/+$/, "");
+}
+
+/** Original go-epay `path.Join(base.Path, "/submit.php")`. */
+function epayPurchaseUrl(gateway: string): string {
+  const u = new URL(gateway);
+  const trimmed = u.pathname.replace(/\/+$/, "");
+  u.pathname = (trimmed || "") + "/submit.php";
+  if (!u.pathname.startsWith("/")) u.pathname = "/" + u.pathname;
+  u.search = "";
+  u.hash = "";
+  return u.toString();
+}
+
+/** Original go-epay `GenerateParams` (empty values and sign/sign_type omitted from the digest). */
+async function generateEpayParams(params: Record<string, string>, key: string): Promise<Record<string, string>> {
+  const filtered = Object.keys(params)
+    .filter((k) => k !== "sign" && k !== "sign_type" && params[k] !== "")
+    .sort();
+  const signStr = filtered.map((k) => `${k}=${params[k]}`).join("&") + key;
+  params.sign = await md5Hex(signStr);
+  params.sign_type = "MD5";
+  return params;
 }
 
 export type PayAmountKind = "epay" | "stripe" | "waffo" | "waffo_pancake";
@@ -385,50 +412,62 @@ export async function requestEpay(
   req: Request,
   body: { amount?: number; payment_method?: string },
 ): Promise<Response> {
+  void req;
   const amount = Number(body.amount || 0);
-  const min = await store.optionNum("MinTopup", 1);
+  const min = await minTopup(store, "MinTopup", 1);
   if (amount < min) return payErr(`充值数量不能小于 ${min}`);
+  const invalid = await rejectInvalidTopUpQuota(store, user.id, amount);
+  if (invalid) return invalid;
   const methods = parseJson<{ type?: string }[]>(await store.option("PayMethods"), []);
-  const method = body.payment_method || "alipay";
-  if (methods.length && !methods.some((m) => m.type === method)) return payErr("支付方式不存在");
-  const pid = await store.option("EpayPid");
+  const method = String(body.payment_method || "");
+  if (!methods.some((m) => m.type === method)) return payErr("支付方式不存在");
+  const money = await payMoneyFor(store, amount, user.group, await store.optionNum("Price", 7.3));
+  if (money < 0.01) return payErr("充值金额过低");
+  const pid = await store.option("EpayId");
   const key = await store.option("EpayKey");
   const gateway = (await store.option("PayAddress")) || (await store.option("EpayUrl")) || "";
   if (!gateway || !pid || !key) return payErr("当前管理员未配置支付信息");
-  const origin = new URL(req.url).origin;
-  const invalid = await rejectInvalidTopUpQuota(store, user.id, amount);
-  if (invalid) return invalid;
-  const money = await payMoneyFor(store, amount, user.group, await store.optionNum("Price", 7.3));
-  if (money < 0.01) return payErr("充值金额过低");
-  const trade = "ep_" + randomHex(12);
-  await store.insertTopup({
-    user_id: user.id,
-    amount,
-    money,
-    trade_no: trade,
-    payment_method: body.payment_method || "alipay",
-    payment_provider: "epay",
-    status: "pending",
-  });
-  const params: Record<string, string> = {
-    pid,
-    type: body.payment_method || "alipay",
-    out_trade_no: trade,
-    notify_url: `${origin}/api/user/epay/notify`,
-    return_url: paymentReturnPath(req, "/usage-logs"),
-    name: "quota",
-    money: money.toFixed(2),
-  };
-  const signStr =
-    Object.keys(params)
-      .sort()
-      .map((k) => `${k}=${params[k]}`)
-      .join("&") + key;
-  const { md5Hex } = await import("./crypto.js");
-  params.sign = await md5Hex(signStr);
-  params.sign_type = "MD5";
-  const url = gateway + (gateway.includes("?") ? "&" : "?") + new URLSearchParams(params).toString();
-  return json(200, { message: "success", data: params, url, success: true });
+  let submitUrl = "";
+  try {
+    submitUrl = epayPurchaseUrl(gateway);
+  } catch {
+    return payErr("拉起支付失败");
+  }
+  const trade = `USR${user.id}NO${getRandomString(6)}${nowSec()}`;
+  const params = await generateEpayParams(
+    {
+      pid,
+      type: method,
+      out_trade_no: trade,
+      notify_url: `${await callbackAddress(store)}/api/user/epay/notify`,
+      return_url: serverPaymentReturnPath(await store.option("ServerAddress"), "/usage-logs"),
+      name: `TUC${amount}`,
+      money: money.toFixed(2),
+      device: "pc",
+      sign_type: "MD5",
+      sign: "",
+    },
+    key,
+  );
+  let storedAmount = amount;
+  if ((await quotaDisplayType(store)) === "TOKENS") {
+    const qpu = await store.optionNum("QuotaPerUnit", 500000);
+    storedAmount = qpu > 0 ? Math.trunc(amount / qpu) : amount;
+  }
+  try {
+    await store.insertTopup({
+      user_id: user.id,
+      amount: storedAmount,
+      money,
+      trade_no: trade,
+      payment_method: method,
+      payment_provider: "epay",
+      status: "pending",
+    });
+  } catch {
+    return payErr("创建订单失败");
+  }
+  return json(200, { message: "success", data: params, url: submitUrl, success: true });
 }
 
 export async function handleEpayNotify(store: Store, req: Request, url: URL): Promise<Response> {
