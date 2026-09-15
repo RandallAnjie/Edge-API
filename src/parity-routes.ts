@@ -955,10 +955,11 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const planId = Number(c.params.id);
-    if (planId <= 0) return apiFail("无效的ID");
-    const body = (await readJson(c.req).catch(() => ({}))) as { advance_reset_time?: boolean };
-    return resetPlanSubscriptions(c, s, planId, undefined, Boolean(body.advance_reset_time));
+    const planId = strconvAtoi(c.params.id);
+    if (!planId.ok || planId.n <= 0) return apiFail("无效的ID");
+    const parsed = await readAdminResetSubscriptionBody(c.req);
+    if (parsed instanceof Response) return parsed;
+    return resetPlanSubscriptions(c, s, planId.n, undefined, parsed.advanceResetTime);
   });
 
   r.post("/api/subscription/admin/users/:id/subscriptions", async (c) => {
@@ -982,11 +983,12 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const userId = Number(c.params.id);
-    if (userId <= 0) return apiFail("无效的用户ID");
-    const body = (await readJson(c.req)) as { plan_id?: number; advance_reset_time?: boolean };
-    if (!body.plan_id) return apiFail("参数错误");
-    return resetPlanSubscriptions(c, s, Number(body.plan_id), userId, Boolean(body.advance_reset_time));
+    const userId = strconvAtoi(c.params.id);
+    if (!userId.ok || userId.n <= 0) return apiFail("无效的用户ID");
+    const parsed = await readAdminResetSubscriptionBody(c.req);
+    if (parsed instanceof Response) return parsed;
+    if (parsed.planId <= 0) return apiFail("参数错误");
+    return resetPlanSubscriptions(c, s, parsed.planId, userId.n, parsed.advanceResetTime);
   });
 
   r.post("/api/subscription/epay/notify", (c) => handleSubscriptionEpayNotify(c));
@@ -2325,6 +2327,27 @@ async function testIoNet(c: C): Promise<Response> {
   return apiOk(testIoNetTotals((fetched.json || {}) as { hardware?: { available?: number }[]; total?: number }));
 }
 
+async function readAdminResetSubscriptionBody(
+  req: Request,
+): Promise<{ planId: number; advanceResetTime: boolean } | Response> {
+  let body: { plan_id?: unknown; advance_reset_time?: unknown };
+  try {
+    const text = await req.text();
+    if (!text) return apiFail("参数错误");
+    body = JSON.parse(text) as typeof body;
+  } catch {
+    return apiFail("参数错误");
+  }
+  if (body.advance_reset_time != null && typeof body.advance_reset_time !== "boolean") return apiFail("参数错误");
+  if (body.plan_id != null && (typeof body.plan_id !== "number" || !Number.isInteger(body.plan_id))) {
+    return apiFail("参数错误");
+  }
+  return {
+    planId: typeof body.plan_id === "number" ? body.plan_id : 0,
+    advanceResetTime: body.advance_reset_time == null ? true : body.advance_reset_time,
+  };
+}
+
 async function resetPlanSubscriptions(
   c: C,
   s: Store,
@@ -2333,21 +2356,20 @@ async function resetPlanSubscriptions(
   advanceResetTime: boolean,
 ): Promise<Response> {
   const plan = await s.getPlan(planId);
-  if (!plan) return apiFail("无效的ID");
+  if (!plan) return apiFail("record not found");
   const published = publicPlan(plan);
   const now = nowSec();
   const rows = await s.listActiveUserSubs(userId, planId);
   if (userId && !rows.length) return apiFail("该用户没有有效的此套餐订阅");
   const users = new Set<number>();
   for (const row of rows) {
-    const nextReset = advanceResetTime ? calcNextResetTime(now, published, Number(row.end_time || row.expire_at || 0)) : Number(row.next_reset_time || 0);
-    await s.updateUserSub(Number(row.id), {
-      amount_used: 0,
-      remaining_quota: Number(published.total_amount || 0),
-      next_reset_time: nextReset,
-      last_reset_time: advanceResetTime ? (nextReset > 0 ? now : 0) : row.last_reset_time,
-      updated_at: now,
-    });
+    const patch: Record<string, unknown> = { amount_used: 0, updated_at: now };
+    if (advanceResetTime) {
+      const nextReset = calcNextResetTime(now, published, Number(row.end_time || row.expire_at || 0));
+      patch.next_reset_time = nextReset;
+      patch.last_reset_time = nextReset > 0 ? now : 0;
+    }
+    await s.updateUserSub(Number(row.id), patch);
     users.add(Number(row.user_id));
   }
   return apiOk({
