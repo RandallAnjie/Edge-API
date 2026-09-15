@@ -1841,42 +1841,37 @@ export class Store {
     return { items: results, total: num(totalRow?.c) };
   }
 
+  /** Original `model.GetGroupEnabledModels` (`abilities` only; no `channels.models` CSV fallback). */
   async enabledModels(group: string): Promise<string[]> {
-    return this.enabledModelsForGroups([group]);
+    const { results } = await this.db
+      .prepare(`SELECT DISTINCT model FROM abilities WHERE "group" = ? AND enabled = 1`)
+      .bind(group)
+      .all<{ model: string }>();
+    return results.map((r) => r.model);
   }
 
+  /** Original `model.GetEnabledModels`. */
   async enabledModelsAll(): Promise<string[]> {
     const { results } = await this.db
       .prepare(`SELECT DISTINCT model FROM abilities WHERE enabled = 1`)
       .all<{ model: string }>();
-    if (results.length) return results.map((r) => r.model);
-    const channels = await this.enabledChannels();
-    const set = new Set<string>();
-    for (const c of channels) {
-      for (const m of csv(c.models)) set.add(m);
-    }
-    return [...set];
+    return results.map((r) => r.model);
   }
 
+  /** Original `service.GetGroupsEnabledModels` (group order, first-seen wins). */
   async enabledModelsForGroups(groups: string[]): Promise<string[]> {
-    if (!groups.length) return [];
     const want = groups.filter(Boolean);
     if (!want.length) return [];
-    const ph = want.map(() => "?").join(",");
-    const { results } = await this.db
-      .prepare(`SELECT DISTINCT model FROM abilities WHERE enabled = 1 AND "group" IN (${ph})`)
-      .bind(...want)
-      .all<{ model: string }>();
-    if (results.length) return results.map((r) => r.model);
-    const channels = await this.enabledChannels();
-    const set = new Set<string>();
-    const wantSet = new Set(want);
-    for (const c of channels) {
-      const chGroups = csv(c.group || "default");
-      if (wantSet.size && !chGroups.includes("all") && !chGroups.some((g) => wantSet.has(g))) continue;
-      for (const m of csv(c.models)) set.add(m);
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const group of want) {
+      for (const model of await this.enabledModels(group)) {
+        if (seen.has(model)) continue;
+        seen.add(model);
+        out.push(model);
+      }
     }
-    return [...set];
+    return out;
   }
 
   async hasCheckedIn(userId: number, date: string): Promise<boolean> {
