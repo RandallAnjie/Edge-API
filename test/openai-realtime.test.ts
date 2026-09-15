@@ -256,7 +256,7 @@ test("original OpenAI Realtime DoWssRequest is HTTP 101 Upgrade websocket and ba
     handshakeMs = ms;
     return origTimeout.call(AbortSignal, ms);
   }) as typeof AbortSignal.timeout;
-  (globalThis as { WebSocketPair: unknown }).WebSocketPair = MockPair;
+  (globalThis as unknown as { WebSocketPair: unknown }).WebSocketPair = MockPair;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const headers = new Headers(init?.headers);
@@ -326,7 +326,7 @@ test("original OpenAI Realtime DoWssRequest is HTTP 101 Upgrade websocket and ba
   } finally {
     globalThis.fetch = origFetch;
     AbortSignal.timeout = origTimeout;
-    if (OrigPair) (globalThis as { WebSocketPair: unknown }).WebSocketPair = OrigPair;
+    if (OrigPair) (globalThis as unknown as { WebSocketPair: unknown }).WebSocketPair = OrigPair;
     else delete (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
   }
 });
