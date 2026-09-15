@@ -37,6 +37,39 @@ function authHeader(key: string): HeadersInit {
   return { authorization: "Bearer " + String(key || "").split(/[\n,]/)[0].trim() };
 }
 
+/** Original `controller.GetAuthHeader`. */
+function getAuthHeader(token: string): HeadersInit {
+  return { Authorization: "Bearer " + String(token || "") };
+}
+
+/** Original `controller.GetResponseBody` (status must be exactly 200). */
+async function getResponseBody(url: string, headers: HeadersInit): Promise<string> {
+  const res = await fetch(url, { method: "GET", headers });
+  if (res.status !== 200) throw new Error(`status code: ${res.status}`);
+  return res.text();
+}
+
+function unmarshalJSON<T>(raw: string): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    throw new Error(goJSONSyntaxError(raw, err));
+  }
+}
+
+/** Original `strconv.ParseFloat(s, 64)`. */
+function parseFloat64(s: string): number {
+  const t = String(s);
+  if (!t.trim() || Number.isNaN(Number(t))) {
+    throw new Error(`strconv.ParseFloat: parsing ${JSON.stringify(t)}: invalid syntax`);
+  }
+  const n = Number(t);
+  if (!Number.isFinite(n)) {
+    throw new Error(`strconv.ParseFloat: parsing ${JSON.stringify(t)}: invalid syntax`);
+  }
+  return n;
+}
+
 async function getJson(url: string, key: string): Promise<{ ok: boolean; status: number; json: Record<string, unknown>; raw: string }> {
   const res = await fetch(url, { headers: authHeader(key) });
   const raw = await res.text();
@@ -56,16 +89,69 @@ async function openaiBillingBalance(baseURL: string, key: string): Promise<numbe
   const hard = Number(sub.json.hard_limit_usd || 0);
   const hasPayment = Boolean(sub.json.has_payment_method);
   const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const ymd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const startDate = hasPayment
-    ? `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`
-    : new Date(now.getTime() - 100 * 86400000).toISOString().slice(0, 10);
-  const endDate = now.toISOString().slice(0, 10);
+    ? `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01`
+    : ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 100));
+  const endDate = ymd(now);
   const usage = await getJson(`${base}/v1/dashboard/billing/usage?start_date=${startDate}&end_date=${endDate}`, key);
   if (!usage.ok) throw new Error(`status code: ${usage.status}`);
   return hard - Number(usage.json.total_usage || 0) / 100;
 }
 
-export async function queryChannelBalance(ch: ChannelRow): Promise<ChannelBalanceResult> {
+/** Original `controller.updateChannelAIProxyBalance`. */
+async function updateChannelAIProxyBalance(key: string): Promise<number> {
+  const raw = await getResponseBody("https://aiproxy.io/api/report/getUserOverview", { "Api-Key": key });
+  const response = unmarshalJSON<{
+    success?: boolean;
+    message?: string;
+    error_code?: number;
+    data?: { totalPoints?: number };
+  }>(raw);
+  if (!response.success) {
+    throw new Error(`code: ${Number(response.error_code || 0)}, message: ${response.message || ""}`);
+  }
+  return Number(response.data?.totalPoints || 0);
+}
+
+/** Original `controller.updateChannelAPI2GPTBalance`. */
+async function updateChannelAPI2GPTBalance(key: string): Promise<number> {
+  const raw = await getResponseBody("https://api.api2gpt.com/dashboard/billing/credit_grants", getAuthHeader(key));
+  const response = unmarshalJSON<{ total_remaining?: number }>(raw);
+  return Number(response.total_remaining || 0);
+}
+
+/** Original `controller.updateChannelDeepSeekBalance`. */
+async function updateChannelDeepSeekBalance(key: string): Promise<number> {
+  const raw = await getResponseBody("https://api.deepseek.com/user/balance", getAuthHeader(key));
+  const response = unmarshalJSON<{
+    balance_infos?: { currency?: string; total_balance?: string }[];
+  }>(raw);
+  const infos = response.balance_infos || [];
+  const index = infos.findIndex((info) => info.currency === "CNY");
+  if (index === -1) throw new Error("currency CNY not found");
+  return parseFloat64(String(infos[index].total_balance ?? ""));
+}
+
+/** Original `controller.updateChannelMoonshotBalance` (CNY → USD via `operation_setting.Price`). */
+async function updateChannelMoonshotBalance(key: string, price: number): Promise<number> {
+  const raw = await getResponseBody("https://api.moonshot.cn/v1/users/me/balance", getAuthHeader(key));
+  const response = unmarshalJSON<{
+    code?: number;
+    data?: { available_balance?: number };
+    scode?: string;
+    status?: boolean;
+  }>(raw);
+  if (!response.status || Number(response.code || 0) !== 0) {
+    throw new Error(
+      `failed to update moonshot balance, status: ${Boolean(response.status)}, code: ${Number(response.code || 0)}, scode: ${response.scode || ""}`,
+    );
+  }
+  return Number(response.data?.available_balance || 0) / price;
+}
+
+export async function queryChannelBalance(ch: ChannelRow, opts?: { price?: number }): Promise<ChannelBalanceResult> {
   if (ch.type === CHANNEL_TYPE_TASK_PLUGIN) {
     throw new Error("Task Plugin channels do not support balance queries");
   }
@@ -92,35 +178,19 @@ export async function queryChannelBalance(ch: ChannelRow): Promise<ChannelBalanc
       const data = (fetched.json.data || {}) as { totalBalance?: string };
       return { balance: Number(data.totalBalance || 0) };
     }
-    case CHANNEL_TYPE_DEEPSEEK: {
-      const fetched = await getJson("https://api.deepseek.com/user/balance", key);
-      if (!fetched.ok) throw new Error(`status code: ${fetched.status}`);
-      const infos = ((fetched.json.balance_infos || []) as { currency?: string; total_balance?: string }[]);
-      const cny = infos.find((i) => i.currency === "CNY") || infos[0];
-      return { balance: Number(cny?.total_balance || 0) };
-    }
-    case CHANNEL_TYPE_MOONSHOT: {
-      const fetched = await getJson("https://api.moonshot.cn/v1/users/me/balance", key);
-      if (!fetched.ok) throw new Error(`status code: ${fetched.status}`);
-      const data = (fetched.json.data || {}) as { available_balance?: number };
-      return { balance: Number(data.available_balance || 0) };
-    }
-    case CHANNEL_TYPE_API2GPT: {
-      const fetched = await getJson("https://api.api2gpt.com/dashboard/billing/credit_grants", key);
-      if (!fetched.ok) throw new Error(`status code: ${fetched.status}`);
-      return { balance: Number(fetched.json.total_available || 0) };
-    }
+    case CHANNEL_TYPE_DEEPSEEK:
+      return { balance: await updateChannelDeepSeekBalance(key) };
+    case CHANNEL_TYPE_MOONSHOT:
+      return { balance: await updateChannelMoonshotBalance(key, opts?.price ?? 7.3) };
+    case CHANNEL_TYPE_API2GPT:
+      return { balance: await updateChannelAPI2GPTBalance(key) };
     case CHANNEL_TYPE_AIGC2D: {
       const fetched = await getJson("https://api.aigc2d.com/dashboard/billing/credit_grants", key);
       if (!fetched.ok) throw new Error(`status code: ${fetched.status}`);
       return { balance: Number(fetched.json.total_available || 0) };
     }
-    case CHANNEL_TYPE_AIPROXY: {
-      const fetched = await getJson("https://aiproxy.io/api/user/info", key);
-      if (!fetched.ok) throw new Error(`status code: ${fetched.status}`);
-      const data = (fetched.json.data || {}) as { totalPoints?: number };
-      return { balance: Number(data.totalPoints || 0) };
-    }
+    case CHANNEL_TYPE_AIPROXY:
+      return { balance: await updateChannelAIProxyBalance(key) };
     case CHANNEL_TYPE_OPENAI:
     case CHANNEL_TYPE_CUSTOM: {
       const base = customBase || defaultBaseUrl(ch.type) || "https://api.openai.com";
@@ -333,7 +403,7 @@ export function channelBalanceResponse(result: ChannelBalanceResult): Response {
 
 export async function updateOneChannelBalance(store: Store, ch: ChannelRow): Promise<Response> {
   try {
-    const result = await queryChannelBalance(ch);
+    const result = await queryChannelBalance(ch, { price: await store.optionNum("Price", 7.3) });
     if ("balance" in result) {
       await store.updateChannel(ch.id, { balance: result.balance, balance_updated_time: nowSec() });
     }
@@ -349,10 +419,11 @@ export async function updateOneChannelBalance(store: Store, ch: ChannelRow): Pro
 
 export async function updateAllChannelBalances(store: Store): Promise<Response> {
   const channels = await store.enabledChannels();
+  const price = await store.optionNum("Price", 7.3);
   for (const ch of channels) {
     if (isMultiKey(ch) || ch.type === CHANNEL_TYPE_TASK_PLUGIN) continue;
     try {
-      const result = await queryChannelBalance(ch);
+      const result = await queryChannelBalance(ch, { price });
       if ("balance" in result) {
         await store.updateChannel(ch.id, { balance: result.balance, balance_updated_time: nowSec() });
       }
