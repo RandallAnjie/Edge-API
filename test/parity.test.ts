@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
+import { taskPluginSyncRevision } from "../src/dto.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -640,6 +641,9 @@ test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, Lis
   assert.ok(rt.body.data.last_rebuild);
   assert.equal(rt.body.data.last_rebuild.status, "never");
   assert.ok("plugin_errors" in rt.body.data);
+  assert.match(String(rt.body.data.database_revision), /^[0-9a-f]{64}$/);
+  assert.equal(rt.body.data.database_revision, taskPluginSyncRevision([]));
+  assert.notEqual(rt.body.data.database_revision, "0");
 
   await json(
     new Request("http://local/api/channel/", {

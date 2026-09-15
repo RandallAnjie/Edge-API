@@ -14,6 +14,7 @@ import {
 } from "../src/channel-validate.js";
 import { CHANNEL_BASE_URLS, CHANNEL_TYPES, channelDefaultBaseURLs } from "../src/catalog.js";
 import { relayErrorHandler } from "../src/http.js";
+import { taskPluginSyncRevision } from "../src/dto.js";
 import type { ChannelRow, Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -1662,12 +1663,28 @@ test("original JSON fields: perf-metrics, rankings, quota data, model sync", asy
   }
 
   const runtime = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
-  const rtd = runtime.body.data as { last_rebuild: Record<string, unknown>; plugin_errors: unknown };
+  const rtd = runtime.body.data as {
+    current_generation: number;
+    generation_published_at: string;
+    database_revision: string;
+    last_rebuild: Record<string, unknown>;
+    plugin_errors: unknown;
+  };
+  for (const k of ["current_generation", "generation_published_at", "database_revision", "last_rebuild", "plugin_errors"]) {
+    assert.ok(k in rtd, "missing taskPluginRuntimeStatus " + k);
+  }
+  assert.equal("database_error" in rtd, false);
+  assert.match(rtd.database_revision, /^[0-9a-f]{64}$/);
+  assert.equal(rtd.database_revision, taskPluginSyncRevision([]));
+  assert.notEqual(rtd.database_revision, "0");
+  assert.equal(typeof rtd.current_generation, "number");
+  assert.equal(typeof rtd.generation_published_at, "string");
   assert.equal(rtd.last_rebuild.status, "never");
   assert.equal(typeof rtd.last_rebuild.attempted_at, "string");
   assert.equal(typeof rtd.last_rebuild.generation, "number");
   assert.equal(typeof rtd.last_rebuild.plugin_error_count, "number");
   assert.equal("error" in rtd.last_rebuild, false);
+  assert.equal("database_revision" in rtd.last_rebuild, false);
   assert.equal(typeof rtd.plugin_errors, "object");
 
   const uptime = await json(new Request("http://local/api/uptime/status"), e);

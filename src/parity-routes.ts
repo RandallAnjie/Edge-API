@@ -58,7 +58,7 @@ import {
 } from "./auth.js";
 import { Store } from "./store.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
-import { enrichModelMeta, extractPluginMeta, listAdminModels, metadataRecordVersion, publicFlowQuotaData, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView, vendorOperationPreviewVersion } from "./dto.js";
+import { enrichModelMeta, extractPluginMeta, listAdminModels, metadataRecordVersion, publicFlowQuotaData, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicTaskPluginRuntimeStatus, publicVendor, taskArtifactsView, taskPluginMetaView, vendorOperationPreviewVersion } from "./dto.js";
 import {
   factoryPluginIcon,
   factoryTaskPluginDetail,
@@ -1088,19 +1088,35 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const plugins = (await s.listTaskPlugins()) as { status: string; key: string }[];
-    return apiOk({
-      current_generation: 0,
-      generation_published_at: GO_ZERO_TIME,
-      database_revision: String(plugins.length),
-      last_rebuild: {
-        status: "never",
-        attempted_at: GO_ZERO_TIME,
-        generation: 0,
-        plugin_error_count: 0,
-      },
-      plugin_errors: {},
-    });
+    const lastRebuild = {
+      status: "never",
+      attempted_at: GO_ZERO_TIME,
+      generation: 0,
+      plugin_error_count: 0,
+    };
+    try {
+      const snapshot = await s.getTaskPluginSyncSnapshot();
+      return apiOk(
+        publicTaskPluginRuntimeStatus({
+          current_generation: 0,
+          generation_published_at: GO_ZERO_TIME,
+          database_revision: snapshot.revision,
+          last_rebuild: lastRebuild,
+          plugin_errors: {},
+        }),
+      );
+    } catch {
+      return apiOk(
+        publicTaskPluginRuntimeStatus({
+          current_generation: 0,
+          generation_published_at: GO_ZERO_TIME,
+          database_revision: "",
+          database_error: "database snapshot unavailable",
+          last_rebuild: lastRebuild,
+          plugin_errors: {},
+        }),
+      );
+    }
   });
   r.get("/api/plugin/task/marketplace/sources", async (c) => {
     const s = store(c);

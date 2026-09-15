@@ -1798,8 +1798,112 @@ export function publicPrefill(row: Record<string, unknown>): Record<string, unkn
   };
 }
 
+/** Original `model.TaskPlugin.Enabled` / GORM bool stored as SQLite INTEGER. */
+export function taskPluginRowEnabled(row: Record<string, unknown>): boolean {
+  if (row.enabled != null) return Boolean(Number(row.enabled) || row.enabled === true || row.enabled === "true");
+  return String(row.status || "") === "active" || String(row.status || "") === "enabled";
+}
+
+/** Original `model.TaskPlugin.Active`. */
+export function taskPluginRowActive(row: Record<string, unknown>): boolean {
+  if (row.active != null) return Boolean(Number(row.active) || row.active === true);
+  return taskPluginRowEnabled(row);
+}
+
+/** Original `GetTaskPluginSyncSnapshot` revisionEntry JSON fields. */
+export type TaskPluginRevisionEntry = {
+  key: string;
+  api_version: number;
+  version: string;
+  source_hash: string;
+  enabled: boolean;
+};
+
+export function taskPluginRevisionEntry(row: Record<string, unknown>): TaskPluginRevisionEntry {
+  return {
+    key: String(row.key || ""),
+    api_version: Math.trunc(Number(row.api_version ?? row.apiVersion ?? 1) || 0),
+    version: String(row.version || ""),
+    source_hash: String(row.source_hash || ""),
+    enabled: taskPluginRowEnabled(row),
+  };
+}
+
+function compareTaskPluginRevisionEntry(a: TaskPluginRevisionEntry, b: TaskPluginRevisionEntry): number {
+  if (a.key !== b.key) return a.key < b.key ? -1 : 1;
+  if (a.version !== b.version) return a.version < b.version ? -1 : 1;
+  return 0;
+}
+
+/** Original `common.Marshal([]revisionEntry)` after sort by key, then version. */
+export function taskPluginSyncRevisionPayload(entries: TaskPluginRevisionEntry[]): string {
+  const sorted = [...entries].sort(compareTaskPluginRevisionEntry);
+  return (
+    "[" +
+    sorted
+      .map((entry) =>
+        goJsonStruct([
+          { key: "key", value: entry.key },
+          { key: "api_version", value: entry.api_version },
+          { key: "version", value: entry.version },
+          { key: "source_hash", value: entry.source_hash },
+          { key: "enabled", value: entry.enabled },
+        ]),
+      )
+      .join(",") +
+    "]"
+  );
+}
+
+/** Original `model.GetTaskPluginSyncSnapshot` SHA-256 hex of the revision payload. */
+export function taskPluginSyncRevision(entries: TaskPluginRevisionEntry[]): string {
+  return bytesToHex(sha256BytesSync(utf8Bytes(taskPluginSyncRevisionPayload(entries))));
+}
+
+export function taskPluginSyncRevisionFromRows(rows: Record<string, unknown>[]): string {
+  return taskPluginSyncRevision(rows.map(taskPluginRevisionEntry));
+}
+
+/** Original `controller.taskPluginRebuildOutcome` JSON (`database_revision` / `error` omitempty). */
+export type TaskPluginRebuildOutcomeView = {
+  status: string;
+  attempted_at: string;
+  generation: number;
+  plugin_error_count: number;
+  database_revision?: string;
+  error?: string;
+};
+
+/** Original `controller.taskPluginRuntimeStatus` JSON (`database_error` omitempty). */
+export function publicTaskPluginRuntimeStatus(status: {
+  current_generation: number;
+  generation_published_at: string;
+  database_revision: string;
+  database_error?: string;
+  last_rebuild: TaskPluginRebuildOutcomeView;
+  plugin_errors: Record<string, string>;
+}): Record<string, unknown> {
+  const lastRebuild: Record<string, unknown> = {
+    status: status.last_rebuild.status || "never",
+    attempted_at: status.last_rebuild.attempted_at,
+    generation: status.last_rebuild.generation,
+    plugin_error_count: status.last_rebuild.plugin_error_count,
+  };
+  if (status.last_rebuild.database_revision) lastRebuild.database_revision = status.last_rebuild.database_revision;
+  if (status.last_rebuild.error) lastRebuild.error = status.last_rebuild.error;
+  const out: Record<string, unknown> = {
+    current_generation: status.current_generation,
+    generation_published_at: status.generation_published_at,
+    database_revision: status.database_revision,
+    last_rebuild: lastRebuild,
+    plugin_errors: status.plugin_errors,
+  };
+  if (status.database_error) out.database_error = status.database_error;
+  return out;
+}
+
 export function publicTaskPluginRecord(row: Record<string, unknown>): Record<string, unknown> {
-  const enabled = row.enabled != null ? Boolean(Number(row.enabled) || row.enabled === true || row.enabled === "true") : String(row.status || "") === "active" || String(row.status || "") === "enabled";
+  const enabled = taskPluginRowEnabled(row);
   const active = row.active != null ? Boolean(Number(row.active) || row.active === true) : enabled;
   return {
     id: Number(row.id || 0),

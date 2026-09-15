@@ -36,6 +36,7 @@ import { calcNextResetTime, calcPlanEndTime, normalizeBillingPreference, normali
 import { MODEL_PRICING_OPTION_KEYS } from "./model-pricing.js";
 import { generateSystemTaskId } from "./crypto.js";
 import { storeFormatQuota, storeLogQuota } from "./quota.js";
+import { taskPluginRowEnabled, taskPluginSyncRevisionFromRows } from "./dto.js";
 import type {
   ChannelRow,
   D1Database,
@@ -4223,6 +4224,30 @@ export class Store {
     return results;
   }
 
+  /**
+   * Original `model.GetTaskPluginSyncSnapshot`: every Active database override
+   * (enabled and disabled) hashed as `{key,api_version,version,source_hash,enabled}`
+   * sorted by key then version. `plugins` is the enabled subset used for routing sync.
+   */
+  async getTaskPluginSyncSnapshot(): Promise<{ plugins: Record<string, unknown>[]; revision: string }> {
+    const { results: versionRows } = await this.db
+      .prepare(`SELECT * FROM task_plugin_versions WHERE active = 1 ORDER BY "key", version, id`)
+      .all();
+    const active: Record<string, unknown>[] = [...(versionRows as Record<string, unknown>[])];
+    const { results: versionKeys } = await this.db.prepare(`SELECT DISTINCT "key" FROM task_plugin_versions`).all();
+    const keysWithVersions = new Set((versionKeys as Record<string, unknown>[]).map((row) => String(row.key)));
+    const { results: legacy } = await this.db
+      .prepare(`SELECT * FROM task_plugins WHERE active = 1 ORDER BY "key", version`)
+      .all();
+    for (const row of legacy as Record<string, unknown>[]) {
+      if (!keysWithVersions.has(String(row.key))) active.push(row);
+    }
+    return {
+      plugins: active.filter((row) => taskPluginRowEnabled(row)),
+      revision: taskPluginSyncRevisionFromRows(active),
+    };
+  }
+
   async getTaskPlugin(key: string): Promise<Record<string, unknown> | null> {
     return this.db.prepare("SELECT * FROM task_plugins WHERE key = ?").bind(key).first<Record<string, unknown>>();
   }
@@ -4349,15 +4374,15 @@ export class Store {
     const target = await this.getTaskPluginVersion(key, version);
     if (!target) return false;
     await this.db.prepare("UPDATE task_plugin_versions SET active = 0 WHERE key = ?").bind(key).run();
-    await this.db.prepare("UPDATE task_plugin_versions SET active = 1 WHERE key = ? AND version = ?").bind(key, version).run();
+    await this.db.prepare("UPDATE task_plugin_versions SET active = 1, enabled = 1 WHERE key = ? AND version = ?").bind(key, version).run();
     await this.upsertTaskPlugin({
       ...target,
       key,
       version,
       active_version: version,
-      status: Number(target.enabled) ? "active" : "inactive",
+      status: "active",
       active: 1,
-      enabled: Number(target.enabled ?? 1),
+      enabled: 1,
     });
     return true;
   }
