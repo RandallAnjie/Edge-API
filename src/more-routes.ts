@@ -91,7 +91,7 @@ import {
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { parseChannelBatch } from "./channel-validate.js";
-import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
+import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -202,9 +202,6 @@ async function pingDb(db: Env["DB"]): Promise<void> {
 }
 
 export function registerMore(r: Router<Env>): void {
-  r.get("/api/user-agreement", async (c) => serveRevalidatedJSON(c.req, await store(c).option("UserAgreement")));
-  r.get("/api/privacy-policy", async (c) => serveRevalidatedJSON(c.req, await store(c).option("PrivacyPolicy")));
-
   r.get("/api/status/test", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);

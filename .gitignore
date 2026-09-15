@@ -8,6 +8,6 @@ dist-test/
 .rrangler-dev.capnp
 .DS_Store
 *.log
-env.d.ts
+/env.d.ts
 web/.tanstack/
 

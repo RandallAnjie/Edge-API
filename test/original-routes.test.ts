@@ -709,6 +709,27 @@ test("original JSON fields for status, models, deployments, performance, data, u
   );
   assert.equal(notice304.res.status, 304);
 
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "UserAgreement", value: "hello-agreement" }),
+    }),
+    e,
+  );
+  const agreement = await json(new Request("http://local/api/user-agreement"), e);
+  assert.equal(agreement.body.success, true);
+  assert.equal(agreement.body.message, "");
+  assert.equal(agreement.body.data, "hello-agreement");
+  assert.deepEqual(Object.keys(agreement.body).sort(), ["data", "message", "success"]);
+  assert.match(agreement.res.headers.get("etag") || "", /^W\/"/);
+  assert.equal(agreement.res.headers.get("cache-control"), "no-cache");
+  const agreement304 = await json(
+    new Request("http://local/api/user-agreement", { headers: { "if-none-match": agreement.res.headers.get("etag") || "" } }),
+    e,
+  );
+  assert.equal(agreement304.res.status, 304);
+
   const searchLogs = await json(new Request("http://local/api/log/search", { headers: auth }), e);
   assert.equal(searchLogs.body.success, false);
   assert.equal(searchLogs.body.message, "该接口已废弃");
