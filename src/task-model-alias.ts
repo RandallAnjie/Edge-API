@@ -148,3 +148,10 @@ export async function buildTaskAliasView(
   }
   return view;
 }
+
+/** Original `model.ResolveTaskModelAlias`. */
+export async function resolveTaskModelAlias(store: Store, name: string): Promise<TaskAliasTarget | undefined> {
+  if (!name) return undefined;
+  const view = await buildTaskAliasView(store);
+  return view.get(asciiFoldModel(name));
+}

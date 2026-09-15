@@ -397,6 +397,11 @@ export function pluginRoutePanicError(): Response {
   return json(500, { error: { message: "internal plugin route error", type: "plugin_route_error" } });
 }
 
+/** Original `PrepareTaskPluginSubmit` `AbortWithStatusJSON` invalid_request_error (no `code`). */
+export function invalidTaskPluginRequestError(message: string): Response {
+  return json(400, { error: { message, type: "invalid_request_error" } });
+}
+
 /** Original `controller.RelayNotImplemented`. */
 export function relayNotImplemented(): Response {
   return json(501, {

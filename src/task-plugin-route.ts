@@ -573,6 +573,8 @@ export type PreparedNativeRoute =
       protocol?: string;
       operation?: string;
       protocolContext?: ProtocolRequestContext;
+      /** Original `ContextKeyPinnedRoute`. Legacy `POST /v1/tasks/:key` leaves this unset. */
+      pinnedRoute?: boolean;
     };
 
 export async function prepareTaskPluginRoute(

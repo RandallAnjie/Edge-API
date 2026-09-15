@@ -5,6 +5,7 @@ import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
 import { nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
 import { abortWithOpenAiMessage, apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
+import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
 import { adminRouter } from "./routes.js";
 import {
   listModelsForAuth,
@@ -98,7 +99,7 @@ function relayModeFrom(path: string, method: string): RelayMode | null {
   if (post && path.startsWith("/v1/engines/") && path.endsWith("/embeddings")) return "engines_embeddings";
   if (post && (path === "/v1/video/generations" || path === "/v1/videos")) return "video";
   if (post && /^\/v1\/videos\/[^/]+\/remix$/.test(path)) return "video";
-  if (post && path.startsWith("/v1/tasks/")) return "passthrough";
+  if (post && taskPluginSubmitKey(path)) return "passthrough";
   if (method === "GET" && path.startsWith("/v1/responses/")) return "responses";
   if (post && path.startsWith("/v1beta/models")) return "gemini";
   if (post && path.startsWith("/v1/models/")) return "gemini";
@@ -303,6 +304,13 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     });
   }
 
+  if (req.method === "POST") {
+    const pluginKey = taskPluginSubmitKey(path);
+    if (pluginKey) {
+      return handlePrepareTaskPluginSubmit({ req, env, store, auth, pluginKey });
+    }
+  }
+
   if (req.method === "POST" && (path === "/v1/videos" || path === "/v1/responses")) {
     const claimed = await tryRelayTaskPluginEndpoint({ req, env, store, auth, ctx });
     if (claimed) return claimed;
@@ -420,7 +428,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     originTasks,
   });
 
-  if (req.method === "POST" && (path === "/v1/video/generations" || path === "/v1/videos" || path.startsWith("/v1/tasks/") || path.endsWith("/remix"))) {
+  if (req.method === "POST" && (path === "/v1/video/generations" || path === "/v1/videos" || path.endsWith("/remix"))) {
     const clone = res.clone();
     const text = await clone.text().catch(() => "");
     try {

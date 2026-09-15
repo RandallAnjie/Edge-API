@@ -1225,7 +1225,7 @@ async function relayTaskSubmitOnce(opts: {
 
 function nativeSubmitError(prepared: SubmitKind, engine: PluginEngine, err: NativeTaskError, requestId: string): Response {
   if (prepared.protocol === "openai_responses") return pluginProtocolSubmissionError(err);
-  if (prepared.protocol) return taskErrorJson(err.statusCode, err.code, err.message);
+  if (prepared.protocol || prepared.pinnedRoute === false) return taskErrorJson(err.statusCode, err.code, err.message);
   return respondTaskPluginError(engine, prepared.requestContext, err.statusCode, err.message, requestId);
 }
 
@@ -1236,7 +1236,7 @@ function distributorAbortChannelError(
   err: { status: number; code: string; message: string },
   requestId: string,
 ): Response {
-  if (!prepared.protocol) {
+  if (!prepared.protocol && prepared.pinnedRoute !== false) {
     return respondTaskPluginError(engine, prepared.requestContext, err.status, err.message, requestId);
   }
   return abortWithOpenAiMessage(err.status, err.message, err.code, requestId);
