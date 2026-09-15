@@ -643,7 +643,18 @@ export async function verificationRequirements(
   };
 }
 
-const LOG_OTHER_USER_STRIP = ["admin_info", "root_info", "audit_info", "channel_id", "channel_name", "channel_type", "reject_reason"];
+const LOG_OTHER_ADMIN_INFO_KEY = "admin_info";
+const LOG_OTHER_ROOT_INFO_KEY = "root_info";
+const LOG_OTHER_AUDIT_INFO_KEY = "audit_info";
+const LOG_OTHER_USER_STRIP = [
+  LOG_OTHER_ADMIN_INFO_KEY,
+  LOG_OTHER_ROOT_INFO_KEY,
+  LOG_OTHER_AUDIT_INFO_KEY,
+  "channel_id",
+  "channel_name",
+  "channel_type",
+  "reject_reason",
+];
 
 export type LogVisibility = "user" | "admin" | "root";
 
@@ -653,28 +664,178 @@ export function logVisibilityForRole(role: number): LogVisibility {
   return "user";
 }
 
+function skipJSONWhitespace(s: string, i: number): number {
+  while (i < s.length && (s[i] === " " || s[i] === "\t" || s[i] === "\n" || s[i] === "\r")) i += 1;
+  return i;
+}
+
+function skipJSONString(s: string, i: number): number {
+  if (s[i] !== '"') return -1;
+  i += 1;
+  while (i < s.length) {
+    if (s[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    if (s[i] === '"') return i + 1;
+    i += 1;
+  }
+  return -1;
+}
+
+function skipJSONNumber(s: string, i: number): number {
+  if (s[i] === "-") i += 1;
+  if (i >= s.length || (s[i] < "0" || s[i] > "9")) return -1;
+  if (s[i] === "0") i += 1;
+  else while (i < s.length && s[i] >= "0" && s[i] <= "9") i += 1;
+  if (s[i] === ".") {
+    i += 1;
+    if (i >= s.length || (s[i] < "0" || s[i] > "9")) return -1;
+    while (i < s.length && s[i] >= "0" && s[i] <= "9") i += 1;
+  }
+  if (s[i] === "e" || s[i] === "E") {
+    i += 1;
+    if (s[i] === "+" || s[i] === "-") i += 1;
+    if (i >= s.length || (s[i] < "0" || s[i] > "9")) return -1;
+    while (i < s.length && s[i] >= "0" && s[i] <= "9") i += 1;
+  }
+  return i;
+}
+
+function skipJSONLiteral(s: string, i: number, literal: string): number {
+  if (s.startsWith(literal, i)) return i + literal.length;
+  return -1;
+}
+
+function skipJSONValue(s: string, i: number): number {
+  i = skipJSONWhitespace(s, i);
+  if (i >= s.length) return -1;
+  const c = s[i];
+  if (c === '"') return skipJSONString(s, i);
+  if (c === "{") return skipJSONObject(s, i);
+  if (c === "[") return skipJSONArray(s, i);
+  if (c === "t") return skipJSONLiteral(s, i, "true");
+  if (c === "f") return skipJSONLiteral(s, i, "false");
+  if (c === "n") return skipJSONLiteral(s, i, "null");
+  if (c === "-" || (c >= "0" && c <= "9")) return skipJSONNumber(s, i);
+  return -1;
+}
+
+function skipJSONObject(s: string, i: number): number {
+  if (s[i] !== "{") return -1;
+  i = skipJSONWhitespace(s, i + 1);
+  if (s[i] === "}") return i + 1;
+  while (i < s.length) {
+    i = skipJSONString(s, i);
+    if (i < 0) return -1;
+    i = skipJSONWhitespace(s, i);
+    if (s[i] !== ":") return -1;
+    i = skipJSONValue(s, i + 1);
+    if (i < 0) return -1;
+    i = skipJSONWhitespace(s, i);
+    if (s[i] === "}") return i + 1;
+    if (s[i] !== ",") return -1;
+    i = skipJSONWhitespace(s, i + 1);
+  }
+  return -1;
+}
+
+function skipJSONArray(s: string, i: number): number {
+  if (s[i] !== "[") return -1;
+  i = skipJSONWhitespace(s, i + 1);
+  if (s[i] === "]") return i + 1;
+  while (i < s.length) {
+    i = skipJSONValue(s, i);
+    if (i < 0) return -1;
+    i = skipJSONWhitespace(s, i);
+    if (s[i] === "]") return i + 1;
+    if (s[i] !== ",") return -1;
+    i = skipJSONWhitespace(s, i + 1);
+  }
+  return -1;
+}
+
+/** Original `encoding/json` map[string]json.RawMessage: keep integer lexemes. */
+function parseJSONObjectRaw(value: string): Record<string, string> | null {
+  const s = value.trim();
+  let i = skipJSONWhitespace(s, 0);
+  if (s[i] !== "{") return null;
+  i = skipJSONWhitespace(s, i + 1);
+  const out: Record<string, string> = {};
+  if (s[i] === "}") return skipJSONWhitespace(s, i + 1) === s.length ? out : null;
+  while (i < s.length) {
+    if (s[i] !== '"') return null;
+    const keyStart = i;
+    i = skipJSONString(s, i);
+    if (i < 0) return null;
+    let key: string;
+    try {
+      key = JSON.parse(s.slice(keyStart, i)) as string;
+    } catch {
+      return null;
+    }
+    i = skipJSONWhitespace(s, i);
+    if (s[i] !== ":") return null;
+    i = skipJSONWhitespace(s, i + 1);
+    const valueStart = i;
+    i = skipJSONValue(s, i);
+    if (i < 0) return null;
+    out[key] = s.slice(valueStart, i);
+    i = skipJSONWhitespace(s, i);
+    if (s[i] === "}") return skipJSONWhitespace(s, i + 1) === s.length ? out : null;
+    if (s[i] !== ",") return null;
+    i = skipJSONWhitespace(s, i + 1);
+  }
+  return null;
+}
+
+function marshalJSONObjectRaw(values: Record<string, string>): string {
+  const keys = Object.keys(values).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${values[key]}`).join(",")}}`;
+}
+
+/** Original `model.normalizeLegacyRejectReason`. */
+function normalizeLegacyRejectReason(values: Record<string, string>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(values, "reject_reason")) return false;
+  const rejectReason = values.reject_reason;
+  let adminInfo: Record<string, string> = {};
+  if (Object.prototype.hasOwnProperty.call(values, LOG_OTHER_ADMIN_INFO_KEY)) {
+    const parsed = parseJSONObjectRaw(values[LOG_OTHER_ADMIN_INFO_KEY]);
+    if (parsed) adminInfo = parsed;
+  }
+  if (!Object.prototype.hasOwnProperty.call(adminInfo, "reject_reason")) {
+    adminInfo.reject_reason = rejectReason;
+  }
+  values[LOG_OTHER_ADMIN_INFO_KEY] = marshalJSONObjectRaw(adminInfo);
+  delete values.reject_reason;
+  return true;
+}
+
+/**
+ * Original `model.formatLogOtherJSON`. Role projection keeps untouched JSON
+ * values as raw lexemes so integers larger than JS's safe range survive.
+ */
 export function formatLogOtherJSON(value: string, visibility: LogVisibility): string {
   if (!value) return "";
-  const parsed = parseJson<Record<string, unknown> | null>(value, null);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return visibility === "root" ? value : "{}";
-  }
-  const out = { ...parsed };
+  const values = parseJSONObjectRaw(value);
+  if (!values) return visibility === "root" ? value : "{}";
   let changed = false;
   if (visibility === "user") {
     for (const key of LOG_OTHER_USER_STRIP) {
-      if (key in out) {
-        delete out[key];
+      if (Object.prototype.hasOwnProperty.call(values, key)) {
+        delete values[key];
         changed = true;
       }
     }
-  } else if (visibility === "admin") {
-    if ("root_info" in out) {
-      delete out.root_info;
+  } else {
+    changed = normalizeLegacyRejectReason(values);
+    if (visibility === "admin" && Object.prototype.hasOwnProperty.call(values, LOG_OTHER_ROOT_INFO_KEY)) {
+      delete values[LOG_OTHER_ROOT_INFO_KEY];
       changed = true;
     }
   }
-  return changed ? JSON.stringify(out) : value;
+  if (!changed) return value;
+  return marshalJSONObjectRaw(values);
 }
 
 /** Original `model.MatchesName`. */
