@@ -55,6 +55,7 @@ import { billingUsageFromOpenAICounts, cacheCreationTokensTotal, injectTieredBil
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
 import { relayFormatForClient, requestConversionChain, shouldPostAudioConsumeQuota } from "./log-info-generate.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
+import { applySseScannerEndReason, StreamStatus } from "./stream-status.js";
 import { buildAdvancedCustomRelayTarget, shouldApplyAdvancedCustomClaudeHeaders } from "./channel-validate.js";
 import { buildCodexRelayTarget } from "./codex-models.js";
 import { pickChannelKey } from "./select.js";
@@ -625,6 +626,7 @@ export async function testChannel(
 
   const mappedModel = applyModelMapping(channel, originModel);
   const built = buildTestRequest(originModel, endpointType, isStream);
+  const paramOverrideAudit: string[] = [];
   let target: UpstreamTarget;
   try {
     target = buildTestTarget(channel, mode, requestPath, originModel, mappedModel, built.body, isStream, built.kind, {
@@ -636,6 +638,7 @@ export async function testChannel(
       requestPath,
       isChannelTest: true,
       geminiVersionSettings: parseJson(await store.option("gemini.version_settings"), DEFAULT_GEMINI_VERSION_SETTINGS),
+      paramOverrideAudit,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -851,6 +854,8 @@ export async function testChannel(
       }
     }
     const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
+    const streamStatus = isStream ? new StreamStatus() : undefined;
+    if (streamStatus) applySseScannerEndReason(streamStatus, text);
     await store.insertLog({
       user_id: user.id,
       type: LOG_CONSUME,
@@ -912,6 +917,8 @@ export async function testChannel(
         toolSurcharges: textSummary?.toolSurchargeItems,
         audioInputPrice: textSummary?.audioInputPrice,
         audioInputTokens: textSummary?.audioTokens,
+        paramOverrideAudit,
+        streamStatus,
       }),
     });
   }

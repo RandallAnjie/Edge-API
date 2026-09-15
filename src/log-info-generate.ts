@@ -6,6 +6,7 @@
  * (`audio: true`) and must not merge the two.
  */
 import { quotaClampAuditMap, type QuotaClamp } from "./task-plugin-usage.js";
+import { StreamStatus } from "./stream-status.js";
 
 export const RELAY_FORMAT_OPENAI = "openai";
 export const RELAY_FORMAT_CLAUDE = "claude";
@@ -47,8 +48,10 @@ export type TextOtherInfoOpts = {
   subscriptionPlanTitle?: string;
   subscriptionAmountTotal?: number;
   subscriptionAmountUsedAfterPreConsume?: number;
-  paramOverride?: unknown;
-  streamStatus?: unknown;
+  /** Original `RelayInfo.ParamOverrideAudit` consume-log `po` (`[]string`). */
+  paramOverrideAudit?: string[];
+  /** Original `RelayInfo.StreamStatus` consume-log `stream_status` (only when `IsStream`). */
+  streamStatus?: StreamStatus | null;
 };
 
 export type ClaudeOtherInfoOpts = TextOtherInfoOpts & {
@@ -215,11 +218,31 @@ export function generateTextOtherInfo(opts: TextOtherInfoOpts): Record<string, u
   if (conversion) other.request_conversion = conversion;
   if (opts.claude) other.claude = true;
   appendBillingInfo(other, opts);
-  if (opts.paramOverride && typeof opts.paramOverride === "object" && Object.keys(opts.paramOverride as object).length) {
-    other.po = opts.paramOverride;
-  }
-  if (opts.streamStatus) other.stream_status = opts.streamStatus;
+  appendParamOverrideInfo(other, opts.paramOverrideAudit);
+  appendStreamStatus(other, opts.streamStatus);
   return other;
+}
+
+/** Original `appendParamOverrideInfo`. */
+function appendParamOverrideInfo(other: Record<string, unknown>, audit: string[] | undefined): void {
+  if (!audit?.length) return;
+  other.po = audit;
+}
+
+/** Original `appendStreamStatus` (`IsStream && StreamStatus != nil` is the caller's job). */
+function appendStreamStatus(other: Record<string, unknown>, ss: StreamStatus | null | undefined): void {
+  if (!ss) return;
+  const status = !ss.isNormalEnd() || ss.hasErrors() ? "error" : "ok";
+  const streamInfo: Record<string, unknown> = {
+    status,
+    end_reason: ss.endReason,
+  };
+  if (ss.endError) streamInfo.end_error = ss.endError.message;
+  if (ss.errorCount > 0) {
+    streamInfo.error_count = ss.errorCount;
+    streamInfo.errors = ss.errors.map((entry) => entry.message);
+  }
+  other.stream_status = streamInfo;
 }
 
 /** Original `service.GenerateClaudeOtherInfo`. */

@@ -5,6 +5,168 @@ import type { ChannelRow } from "./types.js";
 
 export const PARAM_OVERRIDE_REQUEST_HEADERS = "request_headers";
 export const PARAM_OVERRIDE_HEADER_OVERRIDE = "header_override";
+const PARAM_OVERRIDE_AUDIT_RECORDER = "__param_override_audit_recorder";
+
+/** Original `paramOverrideSensitivePathPrefixes` (audit without DebugEnabled). */
+const PARAM_OVERRIDE_SENSITIVE_PATH_PREFIXES = [
+  "model",
+  "original_model",
+  "upstream_model",
+  "reasoning",
+  "reasoning_effort",
+  "output_config",
+  "generationConfig.thinkingConfig",
+  "generation_config.thinking_config",
+  "service_tier",
+  "inference_geo",
+  "speed",
+  "messages",
+  "input",
+  "instructions",
+  "system",
+  "contents",
+  "systemInstruction",
+  "system_instruction",
+];
+
+/** Original `common.DebugEnabled` for param-override audit (off in production). */
+let paramOverrideAuditDebugEnabled = false;
+
+export function setParamOverrideAuditDebugEnabled(enabled: boolean): void {
+  paramOverrideAuditDebugEnabled = enabled;
+}
+
+class ParamOverrideAuditRecorder {
+  lines: string[] = [];
+  recordOperation(mode: string, path: string, from: string, to: string, value: unknown): void {
+    const line = buildParamOverrideAuditLine(mode, path, from, to, value);
+    if (!line) return;
+    if (this.lines.includes(line)) return;
+    this.lines.push(line);
+  }
+}
+
+function getParamOverrideAuditRecorder(context: ParamOverrideContext | null | undefined): ParamOverrideAuditRecorder | null {
+  if (!context) return null;
+  const recorder = context[PARAM_OVERRIDE_AUDIT_RECORDER];
+  return recorder instanceof ParamOverrideAuditRecorder ? recorder : null;
+}
+
+function shouldAuditParamPath(path: string): boolean {
+  path = path.trim();
+  if (!path) return false;
+  if (paramOverrideAuditDebugEnabled) return true;
+  for (const prefix of PARAM_OVERRIDE_SENSITIVE_PATH_PREFIXES) {
+    if (path === prefix || path.startsWith(prefix + ".")) return true;
+  }
+  return false;
+}
+
+function shouldAuditOperation(mode: string, path: string, from: string, to: string): boolean {
+  void mode;
+  if (paramOverrideAuditDebugEnabled) return true;
+  return [path, from, to].some(shouldAuditParamPath);
+}
+
+function formatParamOverrideAuditValue(value: unknown): string {
+  if (value == null) return "<empty>";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return String(value);
+  }
+}
+
+function buildParamOverrideAuditLine(mode: string, path: string, from: string, to: string, value: unknown): string {
+  mode = mode.trim();
+  path = path.trim();
+  from = from.trim();
+  to = to.trim();
+  if (!shouldAuditOperation(mode, path, from, to)) return "";
+  switch (mode) {
+    case "set":
+      return path ? `set ${path} = ${formatParamOverrideAuditValue(value)}` : "";
+    case "delete":
+      return path ? `delete ${path}` : "";
+    case "copy":
+      return from && to ? `copy ${from} -> ${to}` : "";
+    case "move":
+      return from && to ? `move ${from} -> ${to}` : "";
+    case "prepend":
+      return path ? `prepend ${path} with ${formatParamOverrideAuditValue(value)}` : "";
+    case "append":
+      return path ? `append ${path} with ${formatParamOverrideAuditValue(value)}` : "";
+    case "trim_prefix":
+    case "trim_suffix":
+    case "ensure_prefix":
+    case "ensure_suffix":
+      return path ? `${mode} ${path} with ${formatParamOverrideAuditValue(value)}` : "";
+    case "trim_space":
+    case "to_lower":
+    case "to_upper":
+      return path ? `${mode} ${path}` : "";
+    case "replace":
+    case "regex_replace":
+      return path ? `${mode} ${path} from ${from} to ${to}` : "";
+    case "set_header":
+      return path ? `set_header ${path} = ${formatParamOverrideAuditValue(value)}` : "";
+    case "delete_header":
+      return path ? `delete_header ${path}` : "";
+    case "copy_header":
+    case "move_header":
+      return from && to ? `${mode} ${from} -> ${to}` : "";
+    case "pass_headers":
+      return `pass_headers ${formatParamOverrideAuditValue(value)}`;
+    case "sync_fields":
+      return from && to ? `sync_fields ${from} -> ${to}` : "";
+    case "return_error":
+      return `return_error ${formatParamOverrideAuditValue(value)}`;
+    default:
+      return path ? `${mode} ${path}` : mode;
+  }
+}
+
+function shouldEnableParamOverrideAudit(paramOverride: Record<string, unknown>): boolean {
+  if (paramOverrideAuditDebugEnabled) return true;
+  if (!paramOverride || !Object.keys(paramOverride).length) return false;
+  const operations = tryParseOperations(paramOverride);
+  if (operations) {
+    for (const operation of operations) {
+      if (
+        shouldAuditParamPath((operation.path || "").trim()) ||
+        shouldAuditParamPath((operation.from || "").trim()) ||
+        shouldAuditParamPath((operation.to || "").trim())
+      ) {
+        return true;
+      }
+    }
+    const legacy: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(paramOverride)) {
+      if (key.toLowerCase() === "operations") continue;
+      legacy[key] = value;
+    }
+    for (const key of Object.keys(legacy)) {
+      if (shouldAuditParamPath(key.trim())) return true;
+    }
+    return false;
+  }
+  for (const key of Object.keys(paramOverride)) {
+    if (shouldAuditParamPath(key.trim())) return true;
+  }
+  return false;
+}
+
+function writeParamOverrideAudit(info: ParamOverrideRelayInfo | undefined, lines: string[] | undefined): void {
+  if (!info) return;
+  const next = lines ? [...lines] : [];
+  if (Array.isArray(info.paramOverrideAudit)) {
+    info.paramOverrideAudit.length = 0;
+    info.paramOverrideAudit.push(...next);
+  } else {
+    info.paramOverrideAudit = next;
+  }
+}
 
 const NEGATIVE_INDEX = /\.(-\d+)/g;
 
@@ -77,6 +239,11 @@ export type ParamOverrideRelayInfo = {
    * on converted Responses JSON when the chat JSON already received it.
    */
   skipParamOverride?: boolean;
+  /**
+   * Original `RelayInfo.ParamOverrideAudit` (`[]string`). Shared array is mutated
+   * in place so spread copies of this info object keep the same lines.
+   */
+  paramOverrideAudit?: string[];
 };
 
 type JsonType = 0 | 1 | 2 | 3 | 4 | 5;
@@ -825,7 +992,11 @@ function copyValue(data: unknown, fromPath: string, toPath: string): unknown {
   return setAt(data, toPath, source.value);
 }
 
-function applyOperationsLegacy(jsonData: unknown, paramOverride: Record<string, unknown>): unknown {
+function applyOperationsLegacy(
+  jsonData: unknown,
+  paramOverride: Record<string, unknown>,
+  auditRecorder: ParamOverrideAuditRecorder | null = null,
+): unknown {
   let result = jsonData;
   if (result == null || typeof result !== "object" || Array.isArray(result)) {
     result = {};
@@ -833,12 +1004,14 @@ function applyOperationsLegacy(jsonData: unknown, paramOverride: Record<string, 
   const obj = result as Record<string, unknown>;
   for (const [key, value] of Object.entries(paramOverride)) {
     obj[key] = value;
+    auditRecorder?.recordOperation("set", key, "", "", value);
   }
   return result;
 }
 
 function applyOperations(jsonData: unknown, operations: ParamOperation[], conditionContext: ParamOverrideContext): unknown {
   const context = conditionContext;
+  const auditRecorder = getParamOverrideAuditRecorder(context);
   let result = jsonData;
   for (const op of operations) {
     if (!checkConditions(result, context, op.conditions, op.logic || "OR")) continue;
@@ -851,64 +1024,112 @@ function applyOperations(jsonData: unknown, operations: ParamOperation[], condit
     try {
       switch (op.mode) {
         case "delete":
-          for (const path of opPaths) result = deleteAt(result, path);
+          for (const path of opPaths) {
+            result = deleteAt(result, path);
+            auditRecorder?.recordOperation("delete", path, "", "", null);
+          }
           break;
         case "set":
           for (const path of opPaths) {
             if (op.keep_origin && getAt(result, path).exists) continue;
             result = setAt(result, path, op.value);
+            auditRecorder?.recordOperation("set", path, "", "", op.value);
           }
           break;
-        case "move":
-          result = moveValue(result, processNegativeIndex(result, op.from || ""), processNegativeIndex(result, op.to || ""));
+        case "move": {
+          const opFrom = processNegativeIndex(result, op.from || "");
+          const opTo = processNegativeIndex(result, op.to || "");
+          result = moveValue(result, opFrom, opTo);
+          auditRecorder?.recordOperation("move", "", opFrom, opTo, null);
           break;
-        case "copy":
+        }
+        case "copy": {
           if (!op.from || !op.to) throw new Error("copy from/to is required");
-          result = copyValue(result, processNegativeIndex(result, op.from), processNegativeIndex(result, op.to));
+          const opFrom = processNegativeIndex(result, op.from);
+          const opTo = processNegativeIndex(result, op.to);
+          result = copyValue(result, opFrom, opTo);
+          auditRecorder?.recordOperation("copy", "", opFrom, opTo, null);
           break;
+        }
         case "prepend":
-          for (const path of opPaths) result = modifyValue(result, path, op.value, Boolean(op.keep_origin), true);
+          for (const path of opPaths) {
+            result = modifyValue(result, path, op.value, Boolean(op.keep_origin), true);
+            auditRecorder?.recordOperation("prepend", path, "", "", op.value);
+          }
           break;
         case "append":
-          for (const path of opPaths) result = modifyValue(result, path, op.value, Boolean(op.keep_origin), false);
+          for (const path of opPaths) {
+            result = modifyValue(result, path, op.value, Boolean(op.keep_origin), false);
+            auditRecorder?.recordOperation("append", path, "", "", op.value);
+          }
           break;
         case "trim_prefix":
-          for (const path of opPaths) result = trimStringValue(result, path, op.value, true);
+          for (const path of opPaths) {
+            result = trimStringValue(result, path, op.value, true);
+            auditRecorder?.recordOperation("trim_prefix", path, "", "", op.value);
+          }
           break;
         case "trim_suffix":
-          for (const path of opPaths) result = trimStringValue(result, path, op.value, false);
+          for (const path of opPaths) {
+            result = trimStringValue(result, path, op.value, false);
+            auditRecorder?.recordOperation("trim_suffix", path, "", "", op.value);
+          }
           break;
         case "ensure_prefix":
-          for (const path of opPaths) result = ensureStringAffix(result, path, op.value, true);
+          for (const path of opPaths) {
+            result = ensureStringAffix(result, path, op.value, true);
+            auditRecorder?.recordOperation("ensure_prefix", path, "", "", op.value);
+          }
           break;
         case "ensure_suffix":
-          for (const path of opPaths) result = ensureStringAffix(result, path, op.value, false);
+          for (const path of opPaths) {
+            result = ensureStringAffix(result, path, op.value, false);
+            auditRecorder?.recordOperation("ensure_suffix", path, "", "", op.value);
+          }
           break;
         case "trim_space":
-          for (const path of opPaths) result = transformStringValue(result, path, (s) => s.trim());
+          for (const path of opPaths) {
+            result = transformStringValue(result, path, (s) => s.trim());
+            auditRecorder?.recordOperation("trim_space", path, "", "", null);
+          }
           break;
         case "to_lower":
-          for (const path of opPaths) result = transformStringValue(result, path, (s) => s.toLowerCase());
+          for (const path of opPaths) {
+            result = transformStringValue(result, path, (s) => s.toLowerCase());
+            auditRecorder?.recordOperation("to_lower", path, "", "", null);
+          }
           break;
         case "to_upper":
-          for (const path of opPaths) result = transformStringValue(result, path, (s) => s.toUpperCase());
+          for (const path of opPaths) {
+            result = transformStringValue(result, path, (s) => s.toUpperCase());
+            auditRecorder?.recordOperation("to_upper", path, "", "", null);
+          }
           break;
         case "replace":
-          for (const path of opPaths) result = replaceStringValue(result, path, op.from || "", op.to || "");
+          for (const path of opPaths) {
+            result = replaceStringValue(result, path, op.from || "", op.to || "");
+            auditRecorder?.recordOperation("replace", path, op.from || "", op.to || "", null);
+          }
           break;
         case "regex_replace":
-          for (const path of opPaths) result = regexReplaceStringValue(result, path, op.from || "", op.to || "");
+          for (const path of opPaths) {
+            result = regexReplaceStringValue(result, path, op.from || "", op.to || "");
+            auditRecorder?.recordOperation("regex_replace", path, op.from || "", op.to || "", null);
+          }
           break;
         case "return_error":
+          auditRecorder?.recordOperation("return_error", op.path, "", "", op.value);
           throw parseParamOverrideReturnError(op.value);
         case "prune_objects":
           for (const path of opPaths) result = pruneObjects(result, path, context, op.value);
           break;
         case "set_header":
           setHeaderOverrideInContext(context, op.path, op.value, Boolean(op.keep_origin));
+          auditRecorder?.recordOperation("set_header", op.path, "", "", op.value);
           break;
         case "delete_header":
           deleteHeaderOverrideInContext(context, op.path);
+          auditRecorder?.recordOperation("delete_header", op.path, "", "", null);
           break;
         case "copy_header": {
           const sourceHeader = (op.from || op.path).trim();
@@ -916,9 +1137,9 @@ function applyOperations(jsonData: unknown, operations: ParamOperation[], condit
           try {
             copyHeaderInContext(context, sourceHeader, targetHeader, Boolean(op.keep_origin));
           } catch (err) {
-            if (err instanceof Error && err.message.startsWith(SOURCE_HEADER_NOT_FOUND)) break;
-            throw err;
+            if (!(err instanceof Error && err.message.startsWith(SOURCE_HEADER_NOT_FOUND))) throw err;
           }
+          auditRecorder?.recordOperation("copy_header", "", sourceHeader, targetHeader, null);
           break;
         }
         case "move_header": {
@@ -927,13 +1148,14 @@ function applyOperations(jsonData: unknown, operations: ParamOperation[], condit
           try {
             moveHeaderInContext(context, sourceHeader, targetHeader, Boolean(op.keep_origin));
           } catch (err) {
-            if (err instanceof Error && err.message.startsWith(SOURCE_HEADER_NOT_FOUND)) break;
-            throw err;
+            if (!(err instanceof Error && err.message.startsWith(SOURCE_HEADER_NOT_FOUND))) throw err;
           }
+          auditRecorder?.recordOperation("move_header", "", sourceHeader, targetHeader, null);
           break;
         }
-        case "pass_headers":
-          for (const headerName of parseHeaderPassThroughNames(op.value)) {
+        case "pass_headers": {
+          const headerNames = parseHeaderPassThroughNames(op.value);
+          for (const headerName of headerNames) {
             try {
               copyHeaderInContext(context, headerName, headerName, Boolean(op.keep_origin));
             } catch (err) {
@@ -941,9 +1163,12 @@ function applyOperations(jsonData: unknown, operations: ParamOperation[], condit
               throw err;
             }
           }
+          auditRecorder?.recordOperation("pass_headers", "", "", "", headerNames);
           break;
+        }
         case "sync_fields":
           result = syncFieldsBetweenTargets(result, context, op.from || "", op.to || "");
+          auditRecorder?.recordOperation("sync_fields", "", op.from || "", op.to || "", null);
           break;
         default:
           throw new Error(`unknown operation: ${op.mode}`);
@@ -966,6 +1191,7 @@ export function applyParamOverride(
 ): unknown {
   if (!paramOverride || !Object.keys(paramOverride).length) return jsonData;
   const context = conditionContext || {};
+  const auditRecorder = getParamOverrideAuditRecorder(context);
   const operations = tryParseOperations(paramOverride);
   if (operations) {
     const legacy: Record<string, unknown> = {};
@@ -974,10 +1200,10 @@ export function applyParamOverride(
       legacy[key] = value;
     }
     let working = cloneJson(jsonData);
-    if (Object.keys(legacy).length) working = applyOperationsLegacy(working, legacy);
+    if (Object.keys(legacy).length) working = applyOperationsLegacy(working, legacy, auditRecorder);
     return applyOperations(working, operations, context);
   }
-  return applyOperationsLegacy(cloneJson(jsonData), paramOverride);
+  return applyOperationsLegacy(cloneJson(jsonData), paramOverride, auditRecorder);
 }
 
 function isHeaderPassthroughRuleKey(key: string): boolean {
@@ -1100,6 +1326,11 @@ export function applyChannelParamOverride(
     { ...info, upstreamModel: info.upstreamModel || model, originalModel: info.originalModel || model, requestPath: info.requestPath },
     seeded,
   );
+  let recorder: ParamOverrideAuditRecorder | undefined;
+  if (Object.keys(paramOverride).length && shouldEnableParamOverrideAudit(paramOverride)) {
+    recorder = new ParamOverrideAuditRecorder();
+    ctx[PARAM_OVERRIDE_AUDIT_RECORDER] = recorder;
+  }
   let nextBody = body;
   if (Object.keys(paramOverride).length) {
     if (typeof body === "string") {
@@ -1115,6 +1346,7 @@ export function applyChannelParamOverride(
     } else if (body != null && typeof body === "object") {
       nextBody = applyParamOverride(body, paramOverride, ctx);
     }
+    writeParamOverrideAudit(info, recorder?.lines);
   }
   const finalHeaders = sanitizeHeaderOverrideMap((ctx[PARAM_OVERRIDE_HEADER_OVERRIDE] as Record<string, unknown>) || {});
   for (const [k, v] of Object.entries(finalHeaders)) {

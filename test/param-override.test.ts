@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyChannelParamOverride, applyParamOverride, asParamOverrideReturnError, parseParamOverrideMap } from "../src/param-override.js";
+import { applyChannelParamOverride, applyParamOverride, asParamOverrideReturnError, parseParamOverrideMap, setParamOverrideAuditDebugEnabled } from "../src/param-override.js";
 import type { ChannelRow } from "../src/types.js";
 
 function roundTrip(value: unknown): unknown {
@@ -157,3 +157,85 @@ test("original ApplyParamOverride trim/set/delete/wildcard/return_error", () => 
   assert.equal((skippedApply as { model?: string }).model, "gpt-4o");
   assert.equal(Object.keys(skipHeaders).length, 0);
 });
+
+test("original ApplyParamOverrideWithRelayInfo ParamOverrideAudit without debug", () => {
+  setParamOverrideAuditDebugEnabled(false);
+  try {
+    const headers: Record<string, string> = {};
+    const audit: string[] = [];
+    const channel = {
+      name: "audit-reasoning",
+      param_override: JSON.stringify({
+        operations: [{ mode: "set", path: "reasoning.effort", value: "max" }],
+      }),
+      header_override: "",
+    } as ChannelRow;
+    applyChannelParamOverride(
+      channel,
+      { reasoning: { effort: "high" } },
+      headers,
+      { paramOverrideAudit: audit },
+    );
+    assert.deepEqual(audit, ["set reasoning.effort = max"]);
+
+    const tempAudit: string[] = [];
+    applyChannelParamOverride(
+      { name: "audit-temp", param_override: JSON.stringify({ temperature: 0.1 }), header_override: "" } as ChannelRow,
+      { temperature: 0.7 },
+      {},
+      { paramOverrideAudit: tempAudit },
+    );
+    assert.deepEqual(tempAudit, []);
+
+    const mixedAudit: string[] = [];
+    applyChannelParamOverride(
+      {
+        name: "audit-mixed",
+        param_override: JSON.stringify({
+          operations: [
+            { mode: "copy", from: "metadata.target_model", to: "model" },
+            { mode: "set", path: "temperature", value: 0.1 },
+          ],
+        }),
+        header_override: "",
+      } as ChannelRow,
+      { model: "gpt-4.1", temperature: 0.7, metadata: { target_model: "gpt-4.1-mini" } },
+      {},
+      { paramOverrideAudit: mixedAudit },
+    );
+    assert.deepEqual(mixedAudit, ["copy metadata.target_model -> model"]);
+  } finally {
+    setParamOverrideAuditDebugEnabled(false);
+  }
+});
+
+test("original ApplyParamOverrideWithRelayInfo records temperature when debug enabled", () => {
+  setParamOverrideAuditDebugEnabled(true);
+  try {
+    const audit: string[] = [];
+    applyChannelParamOverride(
+      {
+        name: "audit-debug",
+        param_override: JSON.stringify({
+          operations: [
+            { mode: "copy", from: "metadata.target_model", to: "model" },
+            { mode: "set", path: "service_tier", value: "flex" },
+            { mode: "set", path: "temperature", value: 0.1 },
+          ],
+        }),
+        header_override: "",
+      } as ChannelRow,
+      { model: "gpt-4.1", temperature: 0.7, metadata: { target_model: "gpt-4.1-mini" } },
+      {},
+      { paramOverrideAudit: audit },
+    );
+    assert.deepEqual(audit, [
+      "copy metadata.target_model -> model",
+      "set temperature = 0.1",
+      "set service_tier = flex",
+    ]);
+  } finally {
+    setParamOverrideAuditDebugEnabled(false);
+  }
+});
+

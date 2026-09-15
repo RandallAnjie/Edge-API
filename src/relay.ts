@@ -159,6 +159,13 @@ import {
   ingestUpstreamToolUsage,
   type ToolUsageState,
 } from "./tool-usage.js";
+import {
+  applySseScannerEndReason,
+  StreamStatus,
+  STREAM_END_REASON_DONE,
+  STREAM_END_REASON_EOF,
+  STREAM_END_REASON_SCANNER_ERR,
+} from "./stream-status.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
 import {
@@ -1419,6 +1426,8 @@ type SettleLogExtra = {
   geminiGoogleSearchCall?: boolean;
   otherRatios?: Record<string, number>;
   toolUsage?: ToolUsageState;
+  paramOverrideAudit?: string[];
+  streamStatus?: StreamStatus;
 };
 
 async function settle(
@@ -1614,6 +1623,8 @@ async function settle(
       toolSurcharges: textSummary?.toolSurchargeItems,
       audioInputPrice: textSummary?.audioInputPrice,
       audioInputTokens: textSummary?.audioTokens,
+      paramOverrideAudit: extra.paramOverrideAudit,
+      streamStatus: stream ? extra.streamStatus : undefined,
     }),
   });
   if (ok && extra.affinity && extra.env) {
@@ -1786,6 +1797,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let viaResponses = false;
     let viaParamApplied = false;
     const viaParamHeaders: Record<string, string> = {};
+    const paramOverrideAudit: string[] = [];
     let passThrough = passThroughGlobal;
     let channelOtherSettings: ChannelDisabledFieldSettings = {};
     const multipartEdits =
@@ -1904,6 +1916,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
                 relayFormat: "openai",
                 isClaudeBetaQuery: new URL(opts.req.url).searchParams.get("beta") === "true",
                 geminiVersionSettings: convertSettings.geminiVersionSettings,
+                paramOverrideAudit,
               },
               pickChannelKey(channel.key),
               mapped,
@@ -1957,6 +1970,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       isClaudeBetaQuery: new URL(opts.req.url).searchParams.get("beta") === "true",
       geminiVersionSettings: convertSettings.geminiVersionSettings,
       skipParamOverride: viaParamApplied,
+      paramOverrideAudit,
     };
     let target: UpstreamTarget;
     try {
@@ -2148,6 +2162,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         relayMode: viaResponses ? "responses" : mode,
         requestTools: asObj(opts.body).tools,
       }),
+      paramOverrideAudit,
     };
 
     if (!res.ok) {
@@ -2217,6 +2232,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       (channel.type === CHANNEL_TYPE_CLOUDFLARE && mode === "responses") ||
       (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM && advancedCustomOpenaiShapedInbound(advancedConverter || "none"));
     if (isSSE && res.body) {
+      extra.streamStatus = new StreamStatus();
       if (
         (usesOpenAIAdaptor(channel.type) ||
           (delegatesClaudeToOpenAIAdaptor(channel.type) && clientFormat === "anthropic") ||
@@ -2225,6 +2241,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       ) {
         const text = await res.text();
         ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
+        noteRelaySseStatus(extra, text);
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted =
@@ -2258,6 +2275,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       ) {
         const text = await res.text();
         ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
+        noteRelaySseStatus(extra, text);
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = geminiSseToClaudeSse(text, {
@@ -2288,6 +2306,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (channel.type === CHANNEL_TYPE_VERTEX && clientFormat === "anthropic" && vertexRequestMode(mapped) === "opensource") {
         const text = await res.text();
         ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
+        noteRelaySseStatus(extra, text);
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = oaiChatSseToClaudeSse(text, { estimatePromptTokens: promptEst });
@@ -2316,6 +2335,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       ) {
         const text = await res.text();
         ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
+        noteRelaySseStatus(extra, text);
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = claudeSseToGeminiSse(text, {
@@ -2345,6 +2365,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (channel.type === CHANNEL_TYPE_VERTEX && clientFormat === "gemini" && vertexRequestMode(mapped) === "opensource") {
         const text = await res.text();
         ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
+        noteRelaySseStatus(extra, text);
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = oaiChatSseToGeminiSse(text, { estimatePromptTokens: promptEst });
@@ -2373,6 +2394,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       ) {
         const text = await res.text();
         ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
+        noteRelaySseStatus(extra, text);
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = oaiResponsesSseToChatSse(text, {
@@ -2409,6 +2431,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       ) {
         const text = await res.text();
         ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
+        noteRelaySseStatus(extra, text);
         let converted: { sse: string; usageBody: Record<string, unknown> };
         try {
           converted = xaiSseToOpenAIChat(text);
@@ -2434,6 +2457,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (!openaiShapedInbound && clientFormat === "openai" && !ollamaResponsesPassthrough) {
         const text = await res.text();
         ingestUpstreamToolUsage(extra.toolUsage, { sseText: text });
+        noteRelaySseStatus(extra, text);
         const includeUsage = shouldIncludeUsage(asObj(opts.body));
         let converted: { body: string; usageBody: Record<string, unknown> };
         try {
@@ -2634,6 +2658,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   return openaiError(lastStatus, lastErr.slice(0, 800), "channel_error");
 }
 
+function noteRelaySseStatus(extra: SettleLogExtra, text: string): void {
+  extra.streamStatus = extra.streamStatus || new StreamStatus();
+  applySseScannerEndReason(extra.streamStatus, text);
+}
+
 async function parseStreamAndSettle(
   store: Store,
   auth: AuthToken,
@@ -2646,12 +2675,35 @@ async function parseStreamAndSettle(
   body: ReadableStream<Uint8Array>,
   extra: SettleLogExtra = {},
 ): Promise<void> {
+  const status = extra.streamStatus || (extra.streamStatus = new StreamStatus());
   const reader = body.getReader();
   const dec = new TextDecoder();
   let buf = "";
   let prompt = promptEst;
   let completion = 0;
   let lastUsage: ReturnType<typeof usageFromOpenAI> | null = null;
+  const processLine = (line: string) => {
+    const t = line.trim();
+    if (!t.startsWith("data:")) return;
+    const data = t.slice(5).trim();
+    if (!data) return;
+    if (data === "[DONE]") {
+      status.setEndReason(STREAM_END_REASON_DONE);
+      return;
+    }
+    try {
+      const obj = JSON.parse(data) as Record<string, unknown>;
+      if (extra.toolUsage) applyToolUsageFromJson(extra.toolUsage, obj, { stream: true });
+      const u = usageFromOpenAI(obj);
+      if (u.prompt || u.completion || u.cachedTokens || u.imageTokens) lastUsage = u;
+      if (u.prompt) prompt = u.prompt;
+      if (u.completion) completion = u.completion;
+      const delta = (obj.choices as { delta?: { content?: string } }[] | undefined)?.[0]?.delta?.content;
+      if (typeof delta === "string") completion += Math.ceil(delta.length / 4);
+    } catch (err) {
+      status.recordError(err instanceof Error ? err.message : String(err));
+    }
+  };
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -2659,28 +2711,17 @@ async function parseStreamAndSettle(
       buf += dec.decode(value, { stream: true });
       const lines = buf.split("\n");
       buf = lines.pop() || "";
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t.startsWith("data:")) continue;
-        const data = t.slice(5).trim();
-        if (!data || data === "[DONE]") continue;
-        try {
-          const obj = JSON.parse(data) as Record<string, unknown>;
-          if (extra.toolUsage) applyToolUsageFromJson(extra.toolUsage, obj, { stream: true });
-          const u = usageFromOpenAI(obj);
-          if (u.prompt || u.completion || u.cachedTokens || u.imageTokens) lastUsage = u;
-          if (u.prompt) prompt = u.prompt;
-          if (u.completion) completion = u.completion;
-          const delta = (obj.choices as { delta?: { content?: string } }[] | undefined)?.[0]?.delta?.content;
-          if (typeof delta === "string") completion += Math.ceil(delta.length / 4);
-        } catch {
-          /* ignore */
-        }
-      }
+      for (const line of lines) processLine(line);
     }
-  } catch {
-    /* ignore parse errors */
+    buf += dec.decode();
+    if (buf) processLine(buf);
+  } catch (err) {
+    status.setEndReason(
+      STREAM_END_REASON_SCANNER_ERR,
+      err instanceof Error ? err : new Error(String(err)),
+    );
   }
+  status.setEndReason(STREAM_END_REASON_EOF);
   if (extra.toolUsage) finishOpenAIChatStreamToolUsage(extra.toolUsage);
   if (lastUsage) attachSettleUsage(extra, lastUsage);
   await settle(store, auth, channel, model, prompt, completion, useTime, true, ip, rid, true, "stream", extra);

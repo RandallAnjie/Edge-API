@@ -225,6 +225,15 @@ Material changes from upstream:
   text/audio/WSS consume logs so `formatUserLogs` strips it. `TryTieredSettle`
   `QuotaRound` overflow is `QuotaRound`/`overflow`; WSS `calculateAudioQuota`
   uses `QuotaFromDecimal`.
+  Original consume-log `po` is `RelayInfo.ParamOverrideAudit` (`[]string`
+  lines such as `set reasoning.effort = max`), not the raw param_override
+  object. Audit follows original sensitive-path prefixes unless debug.
+  Original consume-log `stream_status` is emitted only when `IsStream`
+  (`status` ok/error, `end_reason` done|timeout|client_gone|scanner_error|
+  handler_stop|eof|panic|ping_fail, optional `end_error` / `error_count` /
+  `errors` capped at 20). Extra-OK: workerd has no StreamScanner
+  timeout/ping/client_gone goroutines; converted SSE uses the buffered
+  body to set done/eof.
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented
