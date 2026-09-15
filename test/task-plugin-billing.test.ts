@@ -210,6 +210,48 @@ test("original LogTaskConsumption model_ratio and mapping JSON", () => {
   assert.equal(other.upstream_model_name, "upstream-v1");
 });
 
+test("original LogTaskConsumption appendBillingInfo subscription JSON", () => {
+  const other = logTaskConsumptionOther(
+    input({
+      billing: {
+        billingSource: "subscription",
+        billingPreference: "subscription_only",
+        subscriptionId: 42,
+        subscriptionPreConsumed: 1750000,
+        subscriptionPostDelta: 0,
+        subscriptionPlanId: 7,
+        subscriptionPlanTitle: "Task Subscription",
+        subscriptionAmountTotal: 100_000_000,
+        subscriptionAmountUsedAfterPreConsume: 1750000,
+      },
+    }),
+  );
+  assert.equal(other.billing_source, "subscription");
+  assert.equal(other.billing_preference, "subscription_only");
+  assert.equal(other.subscription_id, 42);
+  assert.equal(other.subscription_pre_consumed, 1750000);
+  assert.equal("subscription_post_delta" in other, false);
+  assert.equal(other.subscription_plan_id, 7);
+  assert.equal(other.subscription_plan_title, "Task Subscription");
+  assert.equal(other.subscription_total, 100_000_000);
+  assert.equal(other.subscription_used, 1750000);
+  assert.equal(other.subscription_remain, 98_250_000);
+  assert.equal(other.subscription_consumed, 1750000);
+  assert.equal(other.wallet_quota_deducted, 0);
+});
+
+test("original LogTaskConsumption appendBillingInfo wallet JSON", () => {
+  const other = logTaskConsumptionOther(
+    input({
+      billing: { billingSource: "wallet", billingPreference: "subscription_first" },
+    }),
+  );
+  assert.equal(other.billing_source, "wallet");
+  assert.equal(other.billing_preference, "subscription_first");
+  assert.equal("subscription_id" in other, false);
+  assert.equal("wallet_quota_deducted" in other, false);
+});
+
 test("original LogTaskConsumption user_group_ratio JSON", () => {
   const other = logTaskConsumptionOther(
     input({
@@ -536,6 +578,44 @@ async function registerHttpUsage(
     }),
     e,
   );
+}
+
+async function seedTaskSubscription(
+  store: Store,
+  userId: number,
+  opts: { amountTotal?: number; amountUsed?: number; title?: string } = {},
+) {
+  const amountTotal = opts.amountTotal ?? 100_000_000;
+  const planId = await store.insertPlan({
+    title: opts.title ?? "Task Subscription",
+    quota_reset_period: "never",
+    total_amount: amountTotal,
+    grant_quota: amountTotal,
+    enabled: 1,
+    allow_wallet_overflow: 1,
+  });
+  const subId = await store.insertUserSub({
+    user_id: userId,
+    plan_id: planId,
+    amount_total: amountTotal,
+    amount_used: opts.amountUsed ?? 0,
+    end_time: Math.floor(Date.now() / 1000) + 365 * 86400,
+    status: "active",
+  });
+  return { planId, subId, amountTotal };
+}
+
+async function setBillingPreference(e: Env, auth: Record<string, string>, preference: string) {
+  const res = await json(
+    new Request("http://local/api/subscription/self/preference", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ billing_preference: preference }),
+    }),
+    e,
+  );
+  assert.equal(res.body.success, true, String(res.body.message));
+  assert.equal((res.body.data as { billing_preference: string }).billing_preference, preference);
 }
 
 test("original native RelayTask PreConsume insufficient wallet JSON", async () => {
@@ -1044,6 +1124,348 @@ test("original sweepTimedOutTasks refunds with timeout reason JSON", async () =>
     assert.equal(Number(user?.quota), ROOT_QUOTA);
     assert.equal(Number(user?.used_quota), 0);
     assert.equal(Number(user?.request_count), 1);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original native RelayTask BillingSourceSubscription consume-log JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  await registerHttpUsage(e, auth, httpUsagePlugin, "mock-sub");
+  const root = await store.getUserByUsername("root");
+  assert.ok(root);
+  const seeded = await seedTaskSubscription(store, root.id, { title: "Task Subscription" });
+  await setBillingPreference(e, auth, "subscription_only");
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://provider.example.test/submit") {
+      return new Response(JSON.stringify({ id: "upstream-sub" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 200, hit.text);
+    const taskId = String((hit.body as { data?: { task_id?: string } }).data?.task_id);
+    const persisted = await store.getTaskByTid(taskId);
+    const priv = JSON.parse(String(persisted?.private_data || "{}")) as {
+      billing_source?: string;
+      subscription_id?: number;
+      token_id?: number;
+    };
+    assert.equal(priv.billing_source, "subscription");
+    assert.equal(priv.subscription_id, seeded.subId);
+    assert.equal(Number(persisted?.quota), 1750000);
+
+    const logs = await json(new Request("http://local/api/log/?type=2", { headers: auth }), e);
+    const items = (logs.body.data as { items: { type: number; quota: number; other: string }[] }).items;
+    assert.ok(items.length, logs.text);
+    assert.equal(items[0].type, LOG_CONSUME);
+    assert.equal(items[0].quota, 1750000);
+    const other = JSON.parse(items[0].other || "{}") as Record<string, unknown>;
+    assert.equal(other.billing_source, "subscription");
+    assert.equal(other.billing_preference, "subscription_only");
+    assert.equal(other.subscription_id, seeded.subId);
+    assert.equal(other.subscription_pre_consumed, 1750000);
+    assert.equal("subscription_post_delta" in other, false);
+    assert.equal(other.subscription_plan_id, seeded.planId);
+    assert.equal(other.subscription_plan_title, "Task Subscription");
+    assert.equal(other.subscription_total, seeded.amountTotal);
+    assert.equal(other.subscription_used, 1750000);
+    assert.equal(other.subscription_remain, seeded.amountTotal - 1750000);
+    assert.equal(other.subscription_consumed, 1750000);
+    assert.equal(other.wallet_quota_deducted, 0);
+
+    const user = await store.getUserByUsername("root");
+    assert.equal(Number(user?.quota), ROOT_QUOTA);
+    assert.equal(Number(user?.used_quota), 1750000);
+    assert.equal(Number(user?.request_count), 1);
+    const sub = await store.getUserSub(seeded.subId);
+    assert.equal(Number(sub?.amount_used), 1750000);
+    const token = await store.getTokenById(Number(priv.token_id));
+    assert.equal(Number(token?.used_quota), 1750000);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original native poll FAILURE RefundTaskQuota subscription JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  const source = httpUsagePlugin.replace(
+    `export function parseTaskResult(){return {status:"SUCCESS"};}`,
+    `export function parseTaskResult(){return {status:"FAILURE",reason:"upstream failed"};}`,
+  );
+  await registerHttpUsage(e, auth, source, "mock-sub-fail");
+  const root = await store.getUserByUsername("root");
+  assert.ok(root);
+  const seeded = await seedTaskSubscription(store, root.id);
+  await setBillingPreference(e, auth, "subscription_only");
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://provider.example.test/submit") {
+      return new Response(JSON.stringify({ id: "upstream-sub-fail" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://provider.example.test/query") {
+      return new Response(JSON.stringify({ status: "FAILURE" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 200, hit.text);
+    const taskId = String((hit.body as { data?: { task_id?: string } }).data?.task_id);
+    const poll = await json(new Request("http://local/vendor/jobs/" + taskId, { headers: { authorization: "Bearer " + sk } }), e);
+    assert.equal(poll.res.status, 200, poll.text);
+    const persisted = await store.getTaskByTid(taskId);
+    assert.equal(String(persisted?.status), "FAILURE");
+    assert.equal(Number(persisted?.quota), 0);
+    const refunds = await json(new Request("http://local/api/log/?type=6", { headers: auth }), e);
+    const items = (refunds.body.data as { items: { type: number; quota: number; content: string; other: string }[] }).items;
+    assert.ok(items.length, refunds.text);
+    assert.equal(items[0].type, LOG_REFUND);
+    assert.equal(items[0].quota, 1750000);
+    assert.equal(items[0].content, "");
+    const other = JSON.parse(items[0].other || "{}") as Record<string, unknown>;
+    assert.equal(other.task_id, taskId);
+    assert.equal(other.reason, "upstream failed");
+    assert.equal("billing_source" in other, false);
+    assert.equal("subscription_id" in other, false);
+    assert.equal("wallet_quota_deducted" in other, false);
+    const user = await store.getUserByUsername("root");
+    assert.equal(Number(user?.quota), ROOT_QUOTA);
+    assert.equal(Number(user?.used_quota), 0);
+    assert.equal(Number(user?.request_count), 1);
+    const sub = await store.getUserSub(seeded.subId);
+    assert.equal(Number(sub?.amount_used), 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original native RelayTask subscription_only no active subscription JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  await registerHttpUsage(e, auth, httpUsagePlugin, "mock-sub-none");
+  await setBillingPreference(e, auth, "subscription_only");
+  let submitHits = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://provider.example.test/submit") {
+      submitHits += 1;
+      return new Response(JSON.stringify({ id: "should-not-fetch" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 403, hit.text);
+    assert.equal(hit.body.code, "permission_denied");
+    assert.match(String(hit.body.message), /订阅额度不足或未配置订阅: no active subscription/);
+    assert.equal(submitHits, 0);
+    const after = await store.getUserByUsername("root");
+    assert.equal(Number(after?.quota), ROOT_QUOTA);
+    assert.equal(Number(after?.used_quota), 0);
+    assert.equal(Number(after?.request_count), 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original native RelayTask subscription quota insufficient JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  await registerHttpUsage(e, auth, httpUsagePlugin, "mock-sub-short");
+  const root = await store.getUserByUsername("root");
+  assert.ok(root);
+  await seedTaskSubscription(store, root.id, { amountTotal: 1000 });
+  await setBillingPreference(e, auth, "subscription_only");
+  let submitHits = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://provider.example.test/submit") {
+      submitHits += 1;
+      return new Response(JSON.stringify({ id: "should-not-fetch" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 403, hit.text);
+    assert.equal(hit.body.code, "permission_denied");
+    assert.match(String(hit.body.message), /订阅额度不足或未配置订阅: subscription quota insufficient, need=1250000/);
+    assert.equal(submitHits, 0);
+    const after = await store.getUserByUsername("root");
+    assert.equal(Number(after?.quota), ROOT_QUOTA);
+    assert.equal(Number(after?.used_quota), 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original native RelayTask subscription Refund restores remaining after fetch 502 JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  await registerHttpUsage(e, auth, httpUsagePlugin, "mock-sub-502");
+  const root = await store.getUserByUsername("root");
+  assert.ok(root);
+  const seeded = await seedTaskSubscription(store, root.id);
+  await setBillingPreference(e, auth, "subscription_only");
+  let submitHits = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) === "https://provider.example.test/submit") {
+      submitHits += 1;
+      return new Response("upstream boom", { status: 502 });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 502, hit.text);
+    assert.equal(submitHits, 1);
+    const after = await store.getUserByUsername("root");
+    assert.equal(Number(after?.quota), ROOT_QUOTA);
+    assert.equal(Number(after?.used_quota), 0);
+    assert.equal(Number(after?.request_count), 0);
+    const sub = await store.getUserSub(seeded.subId);
+    assert.equal(Number(sub?.amount_used), 0);
+    const logs = await json(new Request("http://local/api/log/?type=2", { headers: auth }), e);
+    const items = (logs.body.data as { items: unknown[] }).items;
+    assert.equal(items.length, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original native poll SUCCESS RecalculateTaskQuota subscription JSON", async () => {
+  const { e, auth, store, sk } = await boot();
+  const source = httpUsagePlugin.replace(
+    `export function parseTaskResult(){return {status:"SUCCESS"};}`,
+    `export function parseTaskResult(){return {status:"SUCCESS"};}\nexport function extractUsageOnComplete(){return {seconds:8};}`,
+  );
+  await registerHttpUsage(e, auth, source, "mock-sub-recalc");
+  const expression = `tier("720P", u("seconds") * 5)`;
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "billing_setting.billing_mode", value: JSON.stringify({ "mock-v1": "tiered_expr" }) }),
+    }),
+    e,
+  );
+  await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "billing_setting.billing_expr", value: JSON.stringify({ "mock-v1": expression }) }),
+    }),
+    e,
+  );
+  const root = await store.getUserByUsername("root");
+  assert.ok(root);
+  const seeded = await seedTaskSubscription(store, root.id);
+  await setBillingPreference(e, auth, "subscription_only");
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://provider.example.test/submit") {
+      return new Response(JSON.stringify({ id: "upstream-sub-recalc" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://provider.example.test/query") {
+      return new Response(JSON.stringify({ status: "SUCCESS", seconds: 8 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const hit = await json(
+      new Request("http://local/vendor/jobs", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({ model: "mock-v1", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 200, hit.text);
+    const taskId = String((hit.body as { data?: { task_id?: string } }).data?.task_id);
+    const afterSubmit = await store.getUserSub(seeded.subId);
+    assert.equal(Number(afterSubmit?.amount_used), 12_500_000);
+    const summary = await runTaskPollingOnce(store);
+    assert.equal(summary.null_tasks_failed, 0);
+    const persisted = await store.getTaskByTid(taskId);
+    assert.equal(String(persisted?.status), "SUCCESS");
+    assert.equal(Number(persisted?.quota), 20_000_000);
+    const logs = await json(new Request("http://local/api/log/?type=2", { headers: auth }), e);
+    const items = (logs.body.data as { items: { quota: number; content: string; other: string }[] }).items;
+    const delta = items.find((item) => JSON.parse(item.other || "{}").pre_consumed_quota != null);
+    assert.ok(delta, logs.text);
+    assert.equal(delta?.quota, 7_500_000);
+    assert.equal(delta?.content, "任务用量表达式结算");
+    const other = JSON.parse(delta?.other || "{}") as Record<string, unknown>;
+    assert.equal(other.pre_consumed_quota, 12_500_000);
+    assert.equal(other.actual_quota, 20_000_000);
+    assert.equal("billing_source" in other, false);
+    const user = await store.getUserByUsername("root");
+    assert.equal(Number(user?.quota), ROOT_QUOTA);
+    assert.equal(Number(user?.used_quota), 20_000_000);
+    assert.equal(Number(user?.request_count), 1);
+    const sub = await store.getUserSub(seeded.subId);
+    assert.equal(Number(sub?.amount_used), 20_000_000);
   } finally {
     globalThis.fetch = origFetch;
   }

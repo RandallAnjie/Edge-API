@@ -327,6 +327,16 @@ CREATE TABLE IF NOT EXISTS user_subscriptions (
   created_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS subscription_pre_consume_records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL UNIQUE,
+  user_id INTEGER NOT NULL DEFAULT 0,
+  user_subscription_id INTEGER NOT NULL DEFAULT 0,
+  pre_consumed INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'consumed',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at INTEGER NOT NULL DEFAULT 0,
@@ -533,6 +543,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_tid ON tasks(task_id);
 CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id);
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_topups_user ON topups(user_id);
+CREATE INDEX IF NOT EXISTS idx_sub_preconsume_user ON subscription_pre_consume_records(user_id);
+CREATE INDEX IF NOT EXISTS idx_sub_preconsume_sub ON subscription_pre_consume_records(user_subscription_id);
+CREATE INDEX IF NOT EXISTS idx_sub_preconsume_updated ON subscription_pre_consume_records(updated_at);
 CREATE INDEX IF NOT EXISTS idx_email_codes ON email_codes(email, type);
 CREATE INDEX IF NOT EXISTS idx_perf_bucket_ts ON perf_metrics(bucket_ts);
 `;

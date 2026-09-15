@@ -35,6 +35,7 @@ import { defaultModelPrice } from "./ratio-defaults.js";
 import { getModelPriceFromMap, getModelRatioFromMap } from "./ratio-setting.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import { isAlwaysSkipRetryStatusCode } from "./status-code-ranges.js";
+import { normalizeBillingPreference } from "./subscription.js";
 import type { Store } from "./store.js";
 import {
   buildTaskPluginView,
@@ -114,7 +115,60 @@ export type NativeSubmitInfo = {
 export type NativeTaskBillingSession = {
   preconsumed: number;
   started: boolean;
+  funding: "wallet" | "subscription";
+  requestId: string;
+  extraReserved: number;
+  subscriptionId: number;
+  subscriptionPreConsumed: number;
+  subscriptionAmountTotal: number;
+  subscriptionAmountUsedAfter: number;
+  subscriptionPlanId: number;
+  subscriptionPlanTitle: string;
+  billingPreference: string;
+  postDelta: number;
 };
+
+function emptyNativeTaskBilling(requestId: string): NativeTaskBillingSession {
+  return {
+    preconsumed: 0,
+    started: false,
+    funding: "wallet",
+    requestId,
+    extraReserved: 0,
+    subscriptionId: 0,
+    subscriptionPreConsumed: 0,
+    subscriptionAmountTotal: 0,
+    subscriptionAmountUsedAfter: 0,
+    subscriptionPlanId: 0,
+    subscriptionPlanTitle: "",
+    billingPreference: "subscription_first",
+    postDelta: 0,
+  };
+}
+
+function billingLogFromSession(billing: NativeTaskBillingSession): {
+  billingSource: string;
+  billingPreference: string;
+  subscriptionId: number;
+  subscriptionPreConsumed: number;
+  subscriptionPostDelta: number;
+  subscriptionPlanId: number;
+  subscriptionPlanTitle: string;
+  subscriptionAmountTotal: number;
+  subscriptionAmountUsedAfterPreConsume: number;
+} {
+  return {
+    billingSource: billing.funding,
+    billingPreference: billing.billingPreference,
+    subscriptionId: billing.subscriptionId,
+    subscriptionPreConsumed: billing.subscriptionPreConsumed,
+    subscriptionPostDelta: billing.postDelta,
+    subscriptionPlanId: billing.subscriptionPlanId,
+    subscriptionPlanTitle: billing.subscriptionPlanTitle,
+    subscriptionAmountTotal: billing.subscriptionAmountTotal,
+    subscriptionAmountUsedAfterPreConsume: billing.subscriptionAmountUsedAfter,
+  };
+}
 
 type SubmitKind = Extract<PreparedNativeRoute, { kind: "submit" }>;
 
@@ -159,18 +213,145 @@ async function formatTaskQuota(store: Store, quota: number): Promise<string> {
 }
 
 async function refundNativeTaskBilling(store: Store, auth: AuthToken, billing: NativeTaskBillingSession | null): Promise<void> {
-  if (!billing || !billing.started || billing.preconsumed <= 0) {
-    if (billing) billing.started = false;
-    return;
-  }
+  if (!billing || !billing.started) return;
   const amount = billing.preconsumed;
-  await store.releaseUserQuota(auth.user.id, amount);
-  await store.releaseTokenQuota(auth.token.id, amount);
-  auth.user.quota += amount;
-  auth.token.remain_quota += amount;
-  auth.token.used_quota -= amount;
+  if (billing.funding === "subscription") {
+    if (billing.requestId) {
+      try {
+        await store.refundSubscriptionPreConsume(billing.requestId);
+      } catch {
+        /* original logs refund errors */
+      }
+    }
+    if (billing.extraReserved > 0 && billing.subscriptionId > 0) {
+      try {
+        await store.postConsumeUserSubscriptionDelta(billing.subscriptionId, -billing.extraReserved);
+      } catch {
+        /* original logs refund errors */
+      }
+    }
+  } else if (amount > 0) {
+    await store.releaseUserQuota(auth.user.id, amount);
+    auth.user.quota += amount;
+  }
+  if (amount > 0) {
+    await store.releaseTokenQuota(auth.token.id, amount);
+    auth.token.remain_quota += amount;
+    auth.token.used_quota -= amount;
+  }
   billing.preconsumed = 0;
+  billing.extraReserved = 0;
   billing.started = false;
+}
+
+function userBillingPreference(user: { billing_preference?: string; settings?: string }): string {
+  const settings = parseJson<Record<string, unknown>>(String(user.settings || ""), {});
+  return normalizeBillingPreference(user.billing_preference || settings.billing_preference);
+}
+
+function insufficientSubscriptionMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return `订阅额度不足或未配置订阅: ${msg}`;
+}
+
+async function holdTokenForTask(
+  store: Store,
+  auth: AuthToken,
+  quota: number,
+): Promise<NativeTaskError | null> {
+  if (quota <= 0) return null;
+  const unlimited = Boolean(Number(auth.token.unlimited_quota));
+  if (!unlimited && auth.token.remain_quota < quota) {
+    return taskErr(
+      "insufficient_user_quota",
+      insufficientTokenQuotaMessage(await formatTaskQuota(store, auth.token.remain_quota), await formatTaskQuota(store, quota)),
+      403,
+      true,
+    );
+  }
+  const tokenHeld = await store.tryHoldTokenQuota(auth.token.id, quota, unlimited);
+  if (!tokenHeld) {
+    return taskErr(
+      "insufficient_user_quota",
+      insufficientTokenQuotaMessage(await formatTaskQuota(store, auth.token.remain_quota), await formatTaskQuota(store, quota)),
+      403,
+      true,
+    );
+  }
+  auth.token.remain_quota -= quota;
+  auth.token.used_quota += quota;
+  return null;
+}
+
+async function tryWalletPreConsume(
+  store: Store,
+  auth: AuthToken,
+  billing: NativeTaskBillingSession,
+  quota: number,
+): Promise<NativeTaskError | null> {
+  const remain = auth.user.quota;
+  const formattedRemain = await formatTaskQuota(store, remain);
+  const formattedNeed = await formatTaskQuota(store, quota);
+  if (remain <= 0) {
+    return taskErr("insufficient_user_quota", insufficientWalletQuotaMessage(remain, quota, formattedRemain, formattedNeed), 403, true);
+  }
+  if (remain < quota) {
+    return taskErr("insufficient_user_quota", insufficientWalletQuotaMessage(remain, quota, formattedRemain, formattedNeed), 403, true);
+  }
+  const tokenErr = await holdTokenForTask(store, auth, quota);
+  if (tokenErr) return tokenErr;
+  if (quota > 0) {
+    const userHeld = await store.tryHoldUserQuota(auth.user.id, quota);
+    if (!userHeld) {
+      await store.releaseTokenQuota(auth.token.id, quota);
+      auth.token.remain_quota += quota;
+      auth.token.used_quota -= quota;
+      return taskErr("insufficient_user_quota", insufficientWalletQuotaMessage(remain, quota, formattedRemain, formattedNeed), 403, true);
+    }
+    auth.user.quota -= quota;
+  }
+  billing.started = true;
+  billing.preconsumed = quota;
+  billing.funding = "wallet";
+  billing.subscriptionId = 0;
+  billing.subscriptionPreConsumed = 0;
+  return null;
+}
+
+async function trySubscriptionPreConsume(
+  store: Store,
+  auth: AuthToken,
+  billing: NativeTaskBillingSession,
+  quota: number,
+): Promise<NativeTaskError | null> {
+  const subConsume = quota > 0 ? quota : 1;
+  const tokenErr = await holdTokenForTask(store, auth, subConsume);
+  if (tokenErr) return tokenErr;
+  try {
+    const result = await store.preConsumeUserSubscription(billing.requestId, auth.user.id, subConsume);
+    billing.started = true;
+    billing.preconsumed = subConsume;
+    billing.funding = "subscription";
+    billing.subscriptionId = result.userSubscriptionId;
+    billing.subscriptionPreConsumed = result.preConsumed;
+    billing.subscriptionAmountTotal = result.amountTotal;
+    billing.subscriptionAmountUsedAfter = result.amountUsedAfter;
+    const plan = await store.getSubscriptionPlanInfoByUserSubscriptionId(result.userSubscriptionId);
+    billing.subscriptionPlanId = plan?.planId || 0;
+    billing.subscriptionPlanTitle = plan?.planTitle || "";
+    return null;
+  } catch (err) {
+    if (subConsume > 0) {
+      await store.releaseTokenQuota(auth.token.id, subConsume);
+      auth.token.remain_quota += subConsume;
+      auth.token.used_quota -= subConsume;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("no active subscription") || msg.includes("subscription quota insufficient")) {
+      return taskErr("insufficient_user_quota", insufficientSubscriptionMessage(err), 403, true);
+    }
+    return taskErr("update_data_error", msg, 500, true);
+  }
 }
 
 async function preConsumeNativeTask(
@@ -183,49 +364,42 @@ async function preConsumeNativeTask(
   if (quota < 0) {
     return taskErr("model_price_error", `pre-consume quota cannot be negative: ${quota}`, 400, true);
   }
-  const remain = auth.user.quota;
-  const formattedRemain = await formatTaskQuota(store, remain);
-  const formattedNeed = await formatTaskQuota(store, quota);
-  if (remain <= 0) {
-    return taskErr("insufficient_user_quota", insufficientWalletQuotaMessage(remain, quota, formattedRemain, formattedNeed), 403, true);
+  const pref = userBillingPreference(auth.user);
+  billing.billingPreference = pref;
+  const tryWallet = () => tryWalletPreConsume(store, auth, billing, quota);
+  const trySubscription = () => trySubscriptionPreConsume(store, auth, billing, quota);
+  switch (pref) {
+    case "subscription_only":
+      return trySubscription();
+    case "wallet_only":
+      return tryWallet();
+    case "wallet_first": {
+      const walletErr = await tryWallet();
+      if (walletErr && walletErr.code === "insufficient_user_quota") return trySubscription();
+      return walletErr;
+    }
+    case "subscription_first":
+    default: {
+      let hasSub = false;
+      try {
+        hasSub = await store.hasActiveUserSubscription(auth.user.id);
+      } catch (err) {
+        return taskErr("query_data_error", err instanceof Error ? err.message : String(err), 500, true);
+      }
+      if (!hasSub) return tryWallet();
+      const subErr = await trySubscription();
+      if (subErr && subErr.code === "insufficient_user_quota") {
+        let allowOverflow = false;
+        try {
+          allowOverflow = await store.userActiveSubscriptionsAllowWalletOverflow(auth.user.id);
+        } catch (err) {
+          return taskErr("query_data_error", err instanceof Error ? err.message : String(err), 500, true);
+        }
+        if (allowOverflow) return tryWallet();
+      }
+      return subErr;
+    }
   }
-  if (remain < quota) {
-    return taskErr("insufficient_user_quota", insufficientWalletQuotaMessage(remain, quota, formattedRemain, formattedNeed), 403, true);
-  }
-  if (quota === 0) {
-    billing.started = true;
-    billing.preconsumed = 0;
-    return null;
-  }
-  const unlimited = Boolean(Number(auth.token.unlimited_quota));
-  if (!unlimited && auth.token.remain_quota < quota) {
-    return taskErr(
-      "insufficient_user_quota",
-      insufficientTokenQuotaMessage(await formatTaskQuota(store, auth.token.remain_quota), formattedNeed),
-      403,
-      true,
-    );
-  }
-  const tokenHeld = await store.tryHoldTokenQuota(auth.token.id, quota, unlimited);
-  if (!tokenHeld) {
-    return taskErr(
-      "insufficient_user_quota",
-      insufficientTokenQuotaMessage(await formatTaskQuota(store, auth.token.remain_quota), formattedNeed),
-      403,
-      true,
-    );
-  }
-  const userHeld = await store.tryHoldUserQuota(auth.user.id, quota);
-  if (!userHeld) {
-    await store.releaseTokenQuota(auth.token.id, quota);
-    return taskErr("insufficient_user_quota", insufficientWalletQuotaMessage(remain, quota, formattedRemain, formattedNeed), 403, true);
-  }
-  billing.started = true;
-  billing.preconsumed = quota;
-  auth.user.quota -= quota;
-  auth.token.remain_quota -= quota;
-  auth.token.used_quota += quota;
-  return null;
 }
 
 async function reserveNativeTask(
@@ -237,16 +411,32 @@ async function reserveNativeTask(
   if (!billing.started) return null;
   const extra = target - billing.preconsumed;
   if (extra <= 0) return null;
-  await store.decreaseUserQuota(auth.user.id, extra);
-  const tokenHeld = await store.tryHoldTokenQuota(auth.token.id, extra, Boolean(Number(auth.token.unlimited_quota)));
-  if (!tokenHeld) {
-    await store.releaseUserQuota(auth.user.id, extra);
-    return taskErr("insufficient_user_quota", "insufficient quota for adjusted task cost", 403, true);
+  if (billing.funding === "subscription") {
+    try {
+      await store.postConsumeUserSubscriptionDelta(billing.subscriptionId, extra);
+    } catch (err) {
+      return taskErr("insufficient_user_quota", insufficientSubscriptionMessage(err), 403, true);
+    }
+    const tokenHeld = await store.tryHoldTokenQuota(auth.token.id, extra, Boolean(Number(auth.token.unlimited_quota)));
+    if (!tokenHeld) {
+      await store.postConsumeUserSubscriptionDelta(billing.subscriptionId, -extra);
+      return taskErr("insufficient_user_quota", "insufficient quota for adjusted task cost", 403, true);
+    }
+    billing.subscriptionPreConsumed += extra;
+    billing.subscriptionAmountUsedAfter += extra;
+  } else {
+    await store.decreaseUserQuota(auth.user.id, extra);
+    const tokenHeld = await store.tryHoldTokenQuota(auth.token.id, extra, Boolean(Number(auth.token.unlimited_quota)));
+    if (!tokenHeld) {
+      await store.releaseUserQuota(auth.user.id, extra);
+      return taskErr("insufficient_user_quota", "insufficient quota for adjusted task cost", 403, true);
+    }
+    auth.user.quota -= extra;
   }
-  billing.preconsumed += extra;
-  auth.user.quota -= extra;
   auth.token.remain_quota -= extra;
   auth.token.used_quota += extra;
+  billing.preconsumed += extra;
+  billing.extraReserved += extra;
   return null;
 }
 
@@ -254,17 +444,23 @@ async function settleNativeTask(store: Store, auth: AuthToken, billing: NativeTa
   if (!billing.started) return;
   const delta = actual - billing.preconsumed;
   if (delta === 0) return;
-  if (delta < 0) {
+  if (billing.funding === "subscription") {
+    await store.postConsumeUserSubscriptionDelta(billing.subscriptionId, delta);
+    billing.postDelta += delta;
+  } else if (delta < 0) {
     const refund = -delta;
     await store.releaseUserQuota(auth.user.id, refund);
-    await store.releaseTokenQuota(auth.token.id, refund);
     auth.user.quota += refund;
-    auth.token.remain_quota += refund;
-    auth.token.used_quota -= refund;
   } else {
-    await store.tryHoldTokenQuota(auth.token.id, delta, Boolean(Number(auth.token.unlimited_quota)));
     await store.decreaseUserQuota(auth.user.id, delta);
     auth.user.quota -= delta;
+  }
+  if (delta < 0) {
+    await store.releaseTokenQuota(auth.token.id, -delta);
+    auth.token.remain_quota += -delta;
+    auth.token.used_quota -= -delta;
+  } else {
+    await store.tryHoldTokenQuota(auth.token.id, delta, Boolean(Number(auth.token.unlimited_quota)));
     auth.token.remain_quota -= delta;
     auth.token.used_quota += delta;
   }
@@ -741,6 +937,7 @@ async function persistNativeTask(opts: {
   otherRatios: Record<string, number>;
   price: TaskPriceData;
   snapshot?: BillingSnapshot | null;
+  billing: NativeTaskBillingSession;
 }): Promise<Record<string, unknown>> {
   const immediate = taskStatusFromImmediate(opts.parsed.immediate);
   const meta = pluginMeta(opts.engine);
@@ -748,7 +945,10 @@ async function persistNativeTask(opts: {
   const privateData: Record<string, unknown> = {
     upstream_task_id: opts.parsed.upstreamTaskId,
     token_id: opts.auth.token.id,
-    billing_source: "wallet",
+    billing_source: opts.billing.funding,
+    ...(opts.billing.funding === "subscription" && opts.billing.subscriptionId > 0
+      ? { subscription_id: opts.billing.subscriptionId }
+      : {}),
     execution: {
       request_id: opts.requestId,
       request_path: opts.requestPath,
@@ -1125,7 +1325,7 @@ export async function executeNativeTaskSubmission(
     price: TaskPriceData;
     snapshot: BillingSnapshot | null;
   } | null = null;
-  const billing: NativeTaskBillingSession = { preconsumed: 0, started: false };
+  const billing = emptyNativeTaskBilling(requestId);
 
   for (let attempt = 0; attempt <= retryTimes; attempt++) {
     if (!channel) break;
@@ -1190,6 +1390,7 @@ export async function executeNativeTaskSubmission(
       otherRatios: outcome.otherRatios,
       price: outcome.price,
       snapshot: outcome.snapshot,
+      billing,
     });
   } catch (err) {
     await refundNativeTaskBilling(store, auth, billing);
@@ -1233,6 +1434,7 @@ export async function executeNativeTaskSubmission(
         upstreamTaskId: outcome.parsed.upstreamTaskId,
         plugin: taskPluginSnapshotFromMeta(meta, plugin),
         perCall: outcome.price.usePrice,
+        billing: billingLogFromSession(billing),
         tiered: outcome.snapshot
           ? {
               exprString: outcome.snapshot.exprString,

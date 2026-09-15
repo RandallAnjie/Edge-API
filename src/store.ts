@@ -2301,6 +2301,193 @@ export class Store {
       .run();
   }
 
+  async getUserSub(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM user_subscriptions WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  }
+
+  /** Original `model.HasActiveUserSubscription`. */
+  async hasActiveUserSubscription(userId: number): Promise<boolean> {
+    if (userId <= 0) throw new Error("invalid userId");
+    const row = await this.db
+      .prepare(
+        `SELECT COUNT(*) as c FROM user_subscriptions
+         WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+           AND COALESCE(end_time, expire_at, 0) > ?`,
+      )
+      .bind(userId, nowSec())
+      .first<{ c: number }>();
+    return Number(row?.c || 0) > 0;
+  }
+
+  /** Original `model.UserActiveSubscriptionsAllowWalletOverflow`. */
+  async userActiveSubscriptionsAllowWalletOverflow(userId: number): Promise<boolean> {
+    if (userId <= 0) throw new Error("invalid userId");
+    const row = await this.db
+      .prepare(
+        `SELECT COUNT(*) as c FROM user_subscriptions
+         WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+           AND COALESCE(end_time, expire_at, 0) > ? AND allow_wallet_overflow = 0`,
+      )
+      .bind(userId, nowSec())
+      .first<{ c: number }>();
+    return Number(row?.c || 0) === 0;
+  }
+
+  /** Original `model.GetSubscriptionPlanInfoByUserSubscriptionId`. */
+  async getSubscriptionPlanInfoByUserSubscriptionId(
+    userSubscriptionId: number,
+  ): Promise<{ planId: number; planTitle: string } | null> {
+    if (userSubscriptionId <= 0) return null;
+    const row = await this.db
+      .prepare(
+        `SELECT s.plan_id as plan_id, COALESCE(p.title, '') as plan_title
+         FROM user_subscriptions s LEFT JOIN subscription_plans p ON p.id = s.plan_id
+         WHERE s.id = ?`,
+      )
+      .bind(userSubscriptionId)
+      .first<{ plan_id: number; plan_title: string }>();
+    if (!row) return null;
+    return { planId: Number(row.plan_id || 0), planTitle: String(row.plan_title || "") };
+  }
+
+  async maybeResetUserSubscription(sub: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const now = nowSec();
+    const nextReset = Number(sub.next_reset_time || 0);
+    if (nextReset <= 0 || nextReset > now) return sub;
+    const plan = await this.getPlan(Number(sub.plan_id || 0));
+    const period = String(plan?.quota_reset_period || "never");
+    if (period === "never" || !plan) return sub;
+    await this.db
+      .prepare("UPDATE user_subscriptions SET amount_used = 0, last_reset_time = ?, next_reset_time = ?, updated_at = ? WHERE id = ?")
+      .bind(now, nextReset, now, Number(sub.id))
+      .run();
+    return { ...sub, amount_used: 0, last_reset_time: now };
+  }
+
+  /** Original `model.PreConsumeUserSubscription`. */
+  async preConsumeUserSubscription(
+    requestId: string,
+    userId: number,
+    amount: number,
+  ): Promise<{
+    userSubscriptionId: number;
+    preConsumed: number;
+    amountTotal: number;
+    amountUsedBefore: number;
+    amountUsedAfter: number;
+  }> {
+    if (userId <= 0) throw new Error("invalid userId");
+    if (!String(requestId || "").trim()) throw new Error("requestId is empty");
+    if (amount <= 0) throw new Error("amount must be > 0");
+    const now = nowSec();
+    const existing = await this.db
+      .prepare("SELECT * FROM subscription_pre_consume_records WHERE request_id = ?")
+      .bind(requestId)
+      .first<Record<string, unknown>>();
+    if (existing) {
+      if (String(existing.status) === "refunded") throw new Error("subscription pre-consume already refunded");
+      const sub = await this.getUserSub(Number(existing.user_subscription_id || 0));
+      if (!sub) throw new Error("no active subscription");
+      return {
+        userSubscriptionId: Number(sub.id),
+        preConsumed: Number(existing.pre_consumed || 0),
+        amountTotal: Number(sub.amount_total || 0),
+        amountUsedBefore: Number(sub.amount_used || 0),
+        amountUsedAfter: Number(sub.amount_used || 0),
+      };
+    }
+    const { results: subs } = await this.db
+      .prepare(
+        `SELECT * FROM user_subscriptions
+         WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+           AND COALESCE(end_time, expire_at, 0) > ?
+         ORDER BY COALESCE(end_time, expire_at) ASC, id ASC`,
+      )
+      .bind(userId, now)
+      .all<Record<string, unknown>>();
+    if (!subs.length) throw new Error("no active subscription");
+    for (const candidate of subs) {
+      const sub = await this.maybeResetUserSubscription(candidate);
+      const usedBefore = Number(sub.amount_used || 0);
+      const amountTotal = Number(sub.amount_total || 0);
+      if (amountTotal > 0 && amountTotal - usedBefore < amount) continue;
+      try {
+        await this.db
+          .prepare(
+            `INSERT INTO subscription_pre_consume_records
+             (request_id, user_id, user_subscription_id, pre_consumed, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 'consumed', ?, ?)`,
+          )
+          .bind(requestId, userId, Number(sub.id), amount, now, now)
+          .run();
+      } catch {
+        const dup = await this.db
+          .prepare("SELECT * FROM subscription_pre_consume_records WHERE request_id = ?")
+          .bind(requestId)
+          .first<Record<string, unknown>>();
+        if (dup) {
+          if (String(dup.status) === "refunded") throw new Error("subscription pre-consume already refunded");
+          return {
+            userSubscriptionId: Number(sub.id),
+            preConsumed: Number(dup.pre_consumed || 0),
+            amountTotal,
+            amountUsedBefore: Number(sub.amount_used || 0),
+            amountUsedAfter: Number(sub.amount_used || 0),
+          };
+        }
+        throw new Error("no active subscription");
+      }
+      await this.db
+        .prepare("UPDATE user_subscriptions SET amount_used = amount_used + ?, updated_at = ? WHERE id = ?")
+        .bind(amount, now, Number(sub.id))
+        .run();
+      return {
+        userSubscriptionId: Number(sub.id),
+        preConsumed: amount,
+        amountTotal,
+        amountUsedBefore: usedBefore,
+        amountUsedAfter: usedBefore + amount,
+      };
+    }
+    throw new Error(`subscription quota insufficient, need=${amount}`);
+  }
+
+  /** Original `model.RefundSubscriptionPreConsume`. */
+  async refundSubscriptionPreConsume(requestId: string): Promise<void> {
+    if (!String(requestId || "").trim()) throw new Error("requestId is empty");
+    const record = await this.db
+      .prepare("SELECT * FROM subscription_pre_consume_records WHERE request_id = ?")
+      .bind(requestId)
+      .first<Record<string, unknown>>();
+    if (!record) throw new Error("record not found");
+    if (String(record.status) === "refunded") return;
+    const preConsumed = Number(record.pre_consumed || 0);
+    if (preConsumed > 0) {
+      await this.postConsumeUserSubscriptionDelta(Number(record.user_subscription_id || 0), -preConsumed);
+    }
+    await this.db
+      .prepare("UPDATE subscription_pre_consume_records SET status = 'refunded', updated_at = ? WHERE id = ?")
+      .bind(nowSec(), Number(record.id))
+      .run();
+  }
+
+  /** Original `model.PostConsumeUserSubscriptionDelta`. */
+  async postConsumeUserSubscriptionDelta(userSubscriptionId: number, delta: number): Promise<void> {
+    if (userSubscriptionId <= 0) throw new Error("invalid userSubscriptionId");
+    if (!delta) return;
+    const sub = await this.getUserSub(userSubscriptionId);
+    if (!sub) throw new Error("invalid userSubscriptionId");
+    const amountTotal = Number(sub.amount_total || 0);
+    const newUsed = Math.max(Number(sub.amount_used || 0) + delta, 0);
+    if (amountTotal > 0 && newUsed > amountTotal) {
+      throw new Error(`subscription used exceeds total, used=${newUsed} total=${amountTotal}`);
+    }
+    await this.db
+      .prepare("UPDATE user_subscriptions SET amount_used = ?, updated_at = ? WHERE id = ?")
+      .bind(newUsed, nowSec(), userSubscriptionId)
+      .run();
+  }
+
   async vendorModelCounts(): Promise<Record<string, number>> {
     const { results } = await this.db
       .prepare("SELECT vendor_id as vendor_id, COUNT(*) as count FROM model_meta GROUP BY vendor_id")

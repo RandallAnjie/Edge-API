@@ -62,6 +62,20 @@ export type TaskConsumptionLogInput = {
     estimatedTier: string;
     usageFacts?: Record<string, unknown>;
   } | null;
+  billing?: TaskBillingLogInfo | null;
+};
+
+/** Original `relaycommon.RelayInfo` subscription fields used by `appendBillingInfo`. */
+export type TaskBillingLogInfo = {
+  billingSource: string;
+  billingPreference?: string;
+  subscriptionId?: number;
+  subscriptionPreConsumed?: number;
+  subscriptionPostDelta?: number;
+  subscriptionPlanId?: number;
+  subscriptionPlanTitle?: string;
+  subscriptionAmountTotal?: number;
+  subscriptionAmountUsedAfterPreConsume?: number;
 };
 
 export type LogOtherMaps = {
@@ -224,7 +238,34 @@ export function logTaskConsumptionOther(input: TaskConsumptionLogInput): Record<
     plugin: input.plugin,
   });
   attachQuotaSaturationToOther(other, input.price.clamp);
+  appendBillingInfo(other, input.billing);
   return logOtherSnapshot(other);
+}
+
+/** Original `service.appendBillingInfo`. */
+export function appendBillingInfo(other: LogOtherMaps, billing: TaskBillingLogInfo | null | undefined): void {
+  if (!billing || !billing.billingSource) return;
+  setLogOtherPublic(other, "billing_source", billing.billingSource);
+  if (billing.billingPreference) setLogOtherPublic(other, "billing_preference", billing.billingPreference);
+  if (billing.billingSource !== "subscription") return;
+  if (billing.subscriptionId) setLogOtherPublic(other, "subscription_id", billing.subscriptionId);
+  if ((billing.subscriptionPreConsumed || 0) > 0) {
+    setLogOtherPublic(other, "subscription_pre_consumed", billing.subscriptionPreConsumed);
+  }
+  if (billing.subscriptionPostDelta) setLogOtherPublic(other, "subscription_post_delta", billing.subscriptionPostDelta);
+  if (billing.subscriptionPlanId) setLogOtherPublic(other, "subscription_plan_id", billing.subscriptionPlanId);
+  if (billing.subscriptionPlanTitle) setLogOtherPublic(other, "subscription_plan_title", billing.subscriptionPlanTitle);
+  let consumed = (billing.subscriptionPreConsumed || 0) + (billing.subscriptionPostDelta || 0);
+  let usedFinal = (billing.subscriptionAmountUsedAfterPreConsume || 0) + (billing.subscriptionPostDelta || 0);
+  if (consumed < 0) consumed = 0;
+  if (usedFinal < 0) usedFinal = 0;
+  if ((billing.subscriptionAmountTotal || 0) > 0) {
+    setLogOtherPublic(other, "subscription_total", billing.subscriptionAmountTotal);
+    setLogOtherPublic(other, "subscription_used", usedFinal);
+    setLogOtherPublic(other, "subscription_remain", Math.max((billing.subscriptionAmountTotal || 0) - usedFinal, 0));
+  }
+  if (consumed > 0) setLogOtherPublic(other, "subscription_consumed", consumed);
+  setLogOtherPublic(other, "wallet_quota_deducted", 0);
 }
 
 export function taskPluginSnapshotFromMeta(
@@ -497,8 +538,15 @@ async function recordTaskBillingLog(opts: {
 }
 
 async function taskAdjustFunding(store: Store, row: Record<string, unknown>, delta: number): Promise<void> {
+  if (!delta) return;
+  const privateData = objectFrom(row.private_data);
+  const subscriptionId = Number(privateData.subscription_id || 0);
+  if (String(privateData.billing_source || "") === "subscription" && subscriptionId > 0) {
+    await store.postConsumeUserSubscriptionDelta(subscriptionId, delta);
+    return;
+  }
   const userId = Number(row.user_id || 0);
-  if (!userId || delta === 0) return;
+  if (!userId) return;
   if (delta > 0) await store.decreaseUserQuota(userId, delta);
   else await store.releaseUserQuota(userId, -delta);
 }
