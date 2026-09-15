@@ -341,7 +341,7 @@ test("original login AUTH_SESSION_ISSUANCE_LIMIT JSON uses a strict created_at c
       last_seen: now - i - 1,
       created_at: now - i - 1,
       expires_at: now + 3600,
-      revoked: i % 3 === 0 ? 1 : 0,
+      revoked: 1,
       user_auth_version: 1,
     });
   }
