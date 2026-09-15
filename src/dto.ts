@@ -1323,7 +1323,7 @@ export function openaiCreatedAtRfc3339(): string {
   return new Date(OPENAI_MODEL_CREATED * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-export { getModelSupportEndpointTypes, invalidatePricingCache } from "./pricing-cache.js";
+export { getModelQuotaTypes, getModelSupportEndpointTypes, invalidatePricingCache } from "./pricing-cache.js";
 
 export function openAIModel(id: string, ownedBy = "custom", endpointTypes?: string[]): Record<string, unknown> {
   return {

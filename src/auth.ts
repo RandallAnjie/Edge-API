@@ -10,8 +10,8 @@ import {
   USER_SESSION_ACTIVE_LIMIT,
   USER_SESSION_ISSUANCE_LIMIT,
   USER_SESSION_ISSUANCE_WINDOW_SEC,
-  csv,
   nowSec,
+  tokenModelLimitsMap,
 } from "./constants.js";
 import { canWithPolicies, capabilitiesFromStore, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import {
@@ -535,9 +535,7 @@ export async function authenticateApiToken(c: Context<Env>, store: Store): Promi
 
 export function tokenAllowsModel(token: TokenRow, model: string): boolean {
   if (!token.model_limits_enabled) return true;
-  const limit: Record<string, boolean> = {};
-  for (const m of csv(token.model_limits)) limit[m] = true;
-  return tokenModelLimitAllows(limit, model);
+  return tokenModelLimitAllows(tokenModelLimitsMap(String(token.model_limits || "")), model);
 }
 
 export async function rateLimit(env: Env, tokenId: number): Promise<boolean> {
