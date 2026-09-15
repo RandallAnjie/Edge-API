@@ -2242,9 +2242,11 @@ test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch,
   assert.equal(typeof page.page, "number");
   assert.equal(typeof page.page_size, "number");
   assert.ok(page.items.length);
-  for (const k of ["id", "user_id", "key", "status", "name", "quota", "created_time", "redeemed_time", "used_user_id", "expired_time"]) {
+  for (const k of ["id", "user_id", "key", "status", "name", "quota", "created_time", "redeemed_time", "count", "used_user_id", "DeletedAt", "expired_time"]) {
     assert.ok(k in page.items[0], "missing Redemption field " + k);
   }
+  assert.equal(page.items[0].count, 0);
+  assert.equal(page.items[0].DeletedAt, null);
 
   const prefill = await json(
     new Request("http://local/api/prefill_group/", {

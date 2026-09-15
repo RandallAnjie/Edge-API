@@ -283,6 +283,7 @@ export function publicToken(t: TokenRow): Record<string, unknown> {
     group: t.group || "",
     cross_group_retry: Boolean(Number(t.cross_group_retry)),
     auto_groups: auto.length ? auto : null,
+    DeletedAt: ginDeletedAt(t.deleted_at),
   };
 }
 
@@ -290,6 +291,12 @@ export function publicToken(t: TokenRow): Record<string, unknown> {
 export function ginStringPtr(v: string | null | undefined): string | null {
   if (v == null || v === "") return null;
   return v;
+}
+
+/** Original `gorm.DeletedAt` JSON: RFC3339 timestamp or `null`. */
+export function ginDeletedAt(unixSeconds?: number | null): string | null {
+  const n = Number(unixSeconds || 0);
+  return n ? new Date(n * 1000).toISOString() : null;
 }
 
 export function publicChannel(c: ChannelRow, includeKey = false): Record<string, unknown> {
@@ -1240,7 +1247,9 @@ export function publicRedemption(row: RedemptionRow | Record<string, unknown>): 
     quota: Number(row.quota || 0),
     created_time: Number(row.created_time || 0),
     redeemed_time: Number(row.redeemed_time || 0),
+    count: 0,
     used_user_id: Number(row.used_user_id || 0),
+    DeletedAt: ginDeletedAt(Number(row.deleted_at || 0)),
     expired_time: Number(row.expired_time || 0),
   };
 }

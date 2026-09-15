@@ -133,6 +133,8 @@ export interface TokenRow {
   group: string;
   auto_groups?: string;
   cross_group_retry?: number;
+  /** Original GORM `DeletedAt`; 0/unset means not deleted. */
+  deleted_at?: number;
 }
 
 export interface ChannelRow {
@@ -203,6 +205,8 @@ export interface RedemptionRow {
   used_user_id: number;
   user_id?: number;
   expired_time?: number;
+  /** Original GORM `DeletedAt`; 0/unset means not deleted. */
+  deleted_at?: number;
 }
 
 export interface SessionUser {
