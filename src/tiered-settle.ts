@@ -30,6 +30,7 @@ export type BillingUsageDetails = {
   cache_write_tokens?: number;
   image_tokens?: number;
   audio_tokens?: number;
+  text_tokens?: number;
   cached_tokens_details?: {
     text_tokens?: number | null;
     image_tokens?: number | null;
@@ -47,6 +48,7 @@ export type BillingUsage = {
   completion_tokens_details?: {
     image_tokens?: number;
     audio_tokens?: number;
+    text_tokens?: number;
   };
 };
 
@@ -325,6 +327,8 @@ export function billingUsageFromOpenAICounts(usage: {
   cachedCreationTokens?: number;
   completionImageTokens?: number;
   completionAudioTokens?: number;
+  textTokens?: number;
+  completionTextTokens?: number;
   usageSemantic?: string;
   claudeCacheCreation5mTokens?: number;
   claudeCacheCreation1hTokens?: number;
@@ -341,6 +345,7 @@ export function billingUsageFromOpenAICounts(usage: {
       cache_write_tokens: usage.cacheWriteTokens || 0,
       image_tokens: usage.imageTokens || 0,
       audio_tokens: usage.audioTokens || 0,
+      text_tokens: usage.textTokens || 0,
       cached_tokens_details:
         usage.cachedImageTokens == null
           ? null
@@ -349,6 +354,7 @@ export function billingUsageFromOpenAICounts(usage: {
     completion_tokens_details: {
       image_tokens: usage.completionImageTokens || 0,
       audio_tokens: usage.completionAudioTokens || 0,
+      text_tokens: usage.completionTextTokens || 0,
     },
   };
 }

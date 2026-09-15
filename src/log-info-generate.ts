@@ -1,7 +1,9 @@
 /**
  * Original `service.GenerateTextOtherInfo` / `GenerateClaudeOtherInfo` /
- * `GenerateWssOtherInfo` public consume-log JSON on workerd.
- * Must not import store / relay / convert / query / submit.
+ * `GenerateAudioOtherInfo` / `GenerateWssOtherInfo` public consume-log JSON
+ * on workerd. Must not import store / relay / convert / query / submit.
+ * WSS (`ws: true`) stays in openai-realtime-usage; this file owns HTTP audio
+ * (`audio: true`) and must not merge the two.
  */
 
 export const RELAY_FORMAT_OPENAI = "openai";
@@ -80,6 +82,23 @@ export type ConsumeLogOtherOpts = ClaudeOtherInfoOpts & {
   inputTokensTotal?: number;
   usageSource?: string;
   publicExtra?: Record<string, unknown>;
+  /** original GenerateAudioOtherInfo usage.PromptTokensDetails.AudioTokens */
+  audioInput?: number;
+  /** original GenerateAudioOtherInfo usage.CompletionTokenDetails.AudioTokens */
+  audioOutput?: number;
+  /** original GenerateAudioOtherInfo usage.PromptTokensDetails.TextTokens */
+  textInput?: number;
+  /** original GenerateAudioOtherInfo usage.CompletionTokenDetails.TextTokens */
+  textOutput?: number;
+  /** original PostAudioConsumeQuota `ratio_setting.GetAudioRatio` */
+  audioRatio?: number;
+  /** original PostAudioConsumeQuota `ratio_setting.GetAudioCompletionRatio` */
+  audioCompletionRatio?: number;
+  /**
+   * original `ContainsAudioRatio || ContainsAudioCompletionRatio` on
+   * compatible/chat PostAudioConsumeQuota.
+   */
+  containsAudioRatios?: boolean;
 };
 
 /** Original `appendRequestConversionChain` display labels. */
@@ -209,6 +228,53 @@ export function generateClaudeOtherInfo(opts: ClaudeOtherInfoOpts): Record<strin
   return other;
 }
 
+export type AudioOtherInfoOpts = TextOtherInfoOpts & {
+  audioInput?: number;
+  audioOutput?: number;
+  textInput?: number;
+  textOutput?: number;
+  audioRatio?: number;
+  audioCompletionRatio?: number;
+};
+
+/** original service.GenerateAudioOtherInfo */
+export function generateAudioOtherInfo(opts: AudioOtherInfoOpts): Record<string, unknown> {
+  const other = generateTextOtherInfo({
+    ...opts,
+    cacheTokens: 0,
+    cacheRatio: 0,
+  });
+  other.audio = true;
+  other.audio_input = Number(opts.audioInput ?? 0);
+  other.audio_output = Number(opts.audioOutput ?? 0);
+  other.text_input = Number(opts.textInput ?? 0);
+  other.text_output = Number(opts.textOutput ?? 0);
+  other.audio_ratio = Number(opts.audioRatio ?? 0);
+  other.audio_completion_ratio = Number(opts.audioCompletionRatio ?? 0);
+  return other;
+}
+
+/**
+ * original AudioHelper / compatible_handler / responses_handler
+ * `PostAudioConsumeQuota` vs `PostTextConsumeQuota`.
+ */
+export function shouldPostAudioConsumeQuota(opts: {
+  audioInput?: number;
+  audioOutput?: number;
+  finalRequestFormat?: string;
+  containsAudioRatios?: boolean;
+  originModelName?: string;
+}): boolean {
+  const format = opts.finalRequestFormat || "";
+  if (format === RELAY_FORMAT_OPENAI_RESPONSES && String(opts.originModelName || "").startsWith("gpt-4o-audio")) {
+    return true;
+  }
+  const hasAudioTokens = (opts.audioInput || 0) > 0 || (opts.audioOutput || 0) > 0;
+  if (!hasAudioTokens) return false;
+  if (format === RELAY_FORMAT_OPENAI_AUDIO) return true;
+  return Boolean(opts.containsAudioRatios);
+}
+
 /** Original `cacheWriteTokensTotal` on `PostTextConsumeQuota`. */
 export function cacheWriteTokensTotal(opts: {
   cacheCreationTokens?: number;
@@ -295,30 +361,41 @@ function consumeLogAdmin(opts: ConsumeLogOtherOpts): Record<string, unknown> {
 }
 
 /**
- * Original text-relay `RecordConsumeLog` `Log.Other` JSON:
- * `GenerateTextOtherInfo` / `GenerateClaudeOtherInfo` public fields plus
- * `AppendRelayLogAdminInfo`.
+ * Original text/audio-relay `RecordConsumeLog` `Log.Other` JSON:
+ * `GenerateTextOtherInfo` / `GenerateClaudeOtherInfo` / `GenerateAudioOtherInfo`
+ * public fields plus `AppendRelayLogAdminInfo`.
  */
 export function consumeLogOther(opts: ConsumeLogOtherOpts): string {
   const finalFormat = opts.finalRequestFormat || (opts.requestConversion || [])[(opts.requestConversion || []).length - 1];
   const claudeFinal = finalFormat === RELAY_FORMAT_CLAUDE;
-  const other = opts.isClaudeUsageSemantic
-    ? generateClaudeOtherInfo({ ...opts, claude: true })
-    : generateTextOtherInfo({ ...opts, claude: opts.claude || claudeFinal });
-  appendPostTextQuotaOther(other, {
-    isClaudeUsageSemantic: opts.isClaudeUsageSemantic,
+  const useAudio = shouldPostAudioConsumeQuota({
+    audioInput: opts.audioInput,
+    audioOutput: opts.audioOutput,
     finalRequestFormat: finalFormat,
-    imageTokens: opts.imageTokens,
-    imageRatio: opts.imageRatio,
-    cacheCreationTokens: opts.cacheCreationTokens,
-    cacheCreationRatio: opts.cacheCreationRatio,
-    cacheCreationTokens5m: opts.cacheCreationTokens5m,
-    cacheCreationRatio5m: opts.cacheCreationRatio5m,
-    cacheCreationTokens1h: opts.cacheCreationTokens1h,
-    cacheCreationRatio1h: opts.cacheCreationRatio1h,
-    inputTokensTotal: opts.inputTokensTotal,
-    usageSource: opts.usageSource,
+    containsAudioRatios: opts.containsAudioRatios,
+    originModelName: opts.model,
   });
+  const other = useAudio
+    ? generateAudioOtherInfo(opts)
+    : opts.isClaudeUsageSemantic
+      ? generateClaudeOtherInfo({ ...opts, claude: true })
+      : generateTextOtherInfo({ ...opts, claude: opts.claude || claudeFinal });
+  if (!useAudio) {
+    appendPostTextQuotaOther(other, {
+      isClaudeUsageSemantic: opts.isClaudeUsageSemantic,
+      finalRequestFormat: finalFormat,
+      imageTokens: opts.imageTokens,
+      imageRatio: opts.imageRatio,
+      cacheCreationTokens: opts.cacheCreationTokens,
+      cacheCreationRatio: opts.cacheCreationRatio,
+      cacheCreationTokens5m: opts.cacheCreationTokens5m,
+      cacheCreationRatio5m: opts.cacheCreationRatio5m,
+      cacheCreationTokens1h: opts.cacheCreationTokens1h,
+      cacheCreationRatio1h: opts.cacheCreationRatio1h,
+      inputTokensTotal: opts.inputTokensTotal,
+      usageSource: opts.usageSource,
+    });
+  }
   if (opts.publicExtra) Object.assign(other, opts.publicExtra);
   other.admin_info = consumeLogAdmin(opts);
   return JSON.stringify(other);

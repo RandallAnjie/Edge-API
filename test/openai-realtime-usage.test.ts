@@ -224,6 +224,7 @@ test("original calculateAudioQuota and GenerateWssOtherInfo JSON fields", () => 
     upstreamModelName: "gpt-4o-realtime-preview",
   });
   assert.equal(other.ws, true);
+  assert.equal("audio" in other, false);
   assert.equal(other.audio_input, 2);
   assert.equal(other.audio_output, 5);
   assert.equal(other.text_input, 8);

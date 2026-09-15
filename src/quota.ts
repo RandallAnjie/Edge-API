@@ -1,6 +1,8 @@
 import { BILLING_MODE_TIERED_EXPR, getBillingExpr, getBillingMode } from "./billing-setting.js";
 import { DEFAULT_GROUP_RATIO, parseJson } from "./constants.js";
 import {
+  getAudioCompletionRatioFromMap,
+  getAudioRatioFromMap,
   getCacheRatioFromMap,
   getCompletionRatio,
   getCreateCacheRatioFromMap,
@@ -40,6 +42,8 @@ export type TextConsumePriceData = {
   cacheCreationRatio5m: number;
   cacheCreationRatio1h: number;
   imageRatio: number;
+  audioRatio: number;
+  audioCompletionRatio: number;
   modelPrice: number;
   userGroupRatio: number;
   hasSpecialRatio: boolean;
@@ -71,6 +75,8 @@ export async function textConsumePriceData(
       cacheCreationRatio5m: 0,
       cacheCreationRatio1h: 0,
       imageRatio: 0,
+      audioRatio: 0,
+      audioCompletionRatio: 0,
       modelPrice: 0,
       userGroupRatio: groupInfo.groupSpecialRatio,
       hasSpecialRatio: groupInfo.hasSpecialRatio,
@@ -89,6 +95,8 @@ export async function textConsumePriceData(
       cacheCreationRatio5m: 0,
       cacheCreationRatio1h: 0,
       imageRatio: 0,
+      audioRatio: 0,
+      audioCompletionRatio: 0,
       modelPrice: priced.price,
       userGroupRatio: groupInfo.groupSpecialRatio,
       hasSpecialRatio: groupInfo.hasSpecialRatio,
@@ -100,6 +108,8 @@ export async function textConsumePriceData(
   const cacheRatioMap = parseJson<Record<string, number>>(await store.option("CacheRatio"), {});
   const createCacheRatioMap = parseJson<Record<string, number>>(await store.option("CreateCacheRatio"), {});
   const imageRatioMap = parseJson<Record<string, number>>(await store.option("ImageRatio"), {});
+  const audioRatioMap = parseJson<Record<string, number>>(await store.option("AudioRatio"), {});
+  const audioCompletionRatioMap = parseJson<Record<string, number>>(await store.option("AudioCompletionRatio"), {});
   const cacheCreation = getCreateCacheRatioFromMap(model, createCacheRatioMap).ratio;
   return {
     modelRatio,
@@ -110,11 +120,39 @@ export async function textConsumePriceData(
     cacheCreationRatio5m: cacheCreation,
     cacheCreationRatio1h: cacheCreation * CLAUDE_CACHE_CREATION_1H_MULTIPLIER,
     imageRatio: getImageRatioFromMap(model, imageRatioMap).ratio,
+    audioRatio: getAudioRatioFromMap(model, audioRatioMap).ratio,
+    audioCompletionRatio: getAudioCompletionRatioFromMap(model, audioCompletionRatioMap).ratio,
     modelPrice: -1,
     userGroupRatio: groupInfo.groupSpecialRatio,
     hasSpecialRatio: groupInfo.hasSpecialRatio,
     usePrice: false,
     tiered: false,
+  };
+}
+
+/**
+ * original PostAudioConsumeQuota `GetAudioRatio` / `GetAudioCompletionRatio` /
+ * `GetCompletionRatio` (always from maps, not PriceData zeros on usePrice).
+ */
+export async function audioConsumeLogRatios(
+  store: Store,
+  model: string,
+): Promise<{
+  audioRatio: number;
+  audioCompletionRatio: number;
+  containsAudioRatios: boolean;
+  completionRatio: number;
+}> {
+  const audioRatioMap = parseJson<Record<string, number>>(await store.option("AudioRatio"), {});
+  const audioCompletionRatioMap = parseJson<Record<string, number>>(await store.option("AudioCompletionRatio"), {});
+  const completionRatioMap = parseJson<Record<string, number>>(await store.option("CompletionRatio"), {});
+  const audio = getAudioRatioFromMap(model, audioRatioMap);
+  const audioCompletion = getAudioCompletionRatioFromMap(model, audioCompletionRatioMap);
+  return {
+    audioRatio: audio.ratio,
+    audioCompletionRatio: audioCompletion.ratio,
+    containsAudioRatios: audio.configured || audioCompletion.configured,
+    completionRatio: getCompletionRatio(model, completionRatioMap),
   };
 }
 

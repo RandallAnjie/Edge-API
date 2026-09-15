@@ -53,7 +53,7 @@ import type { Store } from "./store.js";
 import type { ChannelRow, LogRow, RedemptionRow, TokenRow, UserRow } from "./types.js";
 
 export { extractPluginMeta, taskPluginMetaView } from "./plugin-meta.js";
-export { consumeLogOther, generateClaudeOtherInfo, generateTextOtherInfo } from "./log-info-generate.js";
+export { consumeLogOther, generateAudioOtherInfo, generateClaudeOtherInfo, generateTextOtherInfo } from "./log-info-generate.js";
 
 export const DEFAULT_USABLE_GROUPS: Record<string, string> = {
   default: "默认分组",

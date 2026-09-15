@@ -301,6 +301,7 @@ test("original text-relay consume log JSON has GenerateTextOtherInfo fields", as
   assert.deepEqual(other.request_conversion, ["OpenAI Compatible"]);
   assert.equal(other.reasoning_effort, "low");
   assert.equal("group" in other, false);
+  assert.equal("audio" in other, false);
   assert.equal(items[0].group, "default");
 });
 

@@ -176,6 +176,18 @@ Material changes from upstream:
   frozen request. Extra-OK: `param()`/`header()` request-rule `_trace` uses a
   Function-sandbox rewrite rather than expr-lang AST Patch; `hour`/`minute`
   /`weekday`/`month`/`day` stay 0 instead of `time.Now()`.
+  Original `service.GenerateAudioOtherInfo` audio-relay consume-log JSON wraps
+  `GenerateTextOtherInfo` with `cache_tokens`/`cache_ratio` 0, then always-sets
+  `audio: true`, `audio_input`, `audio_output`, `text_input`, `text_output`,
+  `audio_ratio`, `audio_completion_ratio`. `PostAudioConsumeQuota` is used when
+  AudioHelper sees audio tokens, compatible/chat has audio tokens plus
+  `ContainsAudioRatio`/`ContainsAudioCompletionRatio`, or Responses
+  `gpt-4o-audio*` (even with zero audio tokens). Log ratios use
+  `GetAudioRatio`/`GetAudioCompletionRatio`/`GetCompletionRatio` even when
+  PriceData zeros them on usePrice/tiered_expr (`gpt-4o-mini-tts` `audio_ratio`
+  25, `completion_ratio` 20, `model_price` 0.3). WSS stays `ws: true` without
+  `audio: true`. Extra-OK: binary speech with no usage audio tokens still uses
+  `PostTextConsumeQuota` like original AudioHelper.
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented

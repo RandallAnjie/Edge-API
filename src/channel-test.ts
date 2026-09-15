@@ -45,11 +45,11 @@ import { parseVolcengineAuth, runVolcTtsWebSocket, volcTtsEncodingFromRequest, v
 import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
-import { computeQuota, textConsumePriceData } from "./quota.js";
+import { computeQuota, textConsumePriceData, audioConsumeLogRatios } from "./quota.js";
 import { openaiImageDataCount } from "./image-billing.js";
 import { billingUsageFromOpenAICounts, cacheCreationTokensTotal, injectTieredBillingInfo, resolveRelayTieredQuota } from "./tiered-settle.js";
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
-import { relayFormatForClient, requestConversionChain } from "./log-info-generate.js";
+import { relayFormatForClient, requestConversionChain, shouldPostAudioConsumeQuota } from "./log-info-generate.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
 import { buildAdvancedCustomRelayTarget, shouldApplyAdvancedCustomClaudeHeaders } from "./channel-validate.js";
 import { buildCodexRelayTarget } from "./codex-models.js";
@@ -751,8 +751,10 @@ export async function testChannel(
     });
     const quota = tiered ? tiered.quota : await computeQuota(store, originModel, group, usage.prompt, usage.completion);
     const price = await textConsumePriceData(store, originModel, group, user.group);
+    const audioLog = await audioConsumeLogRatios(store, originModel);
     const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
     const details = billingUsage.prompt_tokens_details || {};
+    const outDetails = billingUsage.completion_tokens_details || {};
     const clientFormat = built.kind === "anthropic" ? "anthropic" : built.kind === "gemini" ? "gemini" : "openai";
     const destinationFormat =
       built.kind === "anthropic"
@@ -762,6 +764,13 @@ export async function testChannel(
           : built.kind === "responses" || built.kind === "responses-compact"
             ? "openai_responses"
             : relayFormatForClient(clientFormat, mode);
+    const useAudioOther = shouldPostAudioConsumeQuota({
+      audioInput: details.audio_tokens,
+      audioOutput: outDetails.audio_tokens,
+      finalRequestFormat: destinationFormat,
+      containsAudioRatios: audioLog.containsAudioRatios,
+      originModelName: originModel,
+    });
     await store.insertLog({
       user_id: user.id,
       type: LOG_CONSUME,
@@ -782,9 +791,9 @@ export async function testChannel(
         group,
         groupRatio: price.groupRatio,
         modelRatio: price.modelRatio,
-        completionRatio: price.completionRatio,
-        cacheTokens: usage.cachedTokens,
-        cacheRatio: price.cacheRatio,
+        completionRatio: useAudioOther ? audioLog.completionRatio : price.completionRatio,
+        cacheTokens: useAudioOther ? 0 : usage.cachedTokens,
+        cacheRatio: useAudioOther ? 0 : price.cacheRatio,
         modelPrice: price.modelPrice,
         userGroupRatio: price.userGroupRatio,
         frt: milliseconds,
@@ -806,6 +815,13 @@ export async function testChannel(
         cacheCreationRatio: price.cacheCreationRatio,
         imageTokens: details.image_tokens,
         imageRatio: price.imageRatio,
+        audioInput: details.audio_tokens,
+        audioOutput: outDetails.audio_tokens,
+        textInput: details.text_tokens,
+        textOutput: outDetails.text_tokens,
+        audioRatio: audioLog.audioRatio,
+        audioCompletionRatio: audioLog.audioCompletionRatio,
+        containsAudioRatios: audioLog.containsAudioRatios,
         billingSource: "wallet",
         publicExtra,
       }),

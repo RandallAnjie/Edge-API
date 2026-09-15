@@ -143,7 +143,7 @@ import {
   type ChannelAttemptError,
 } from "./channel-error.js";
 import type { OriginTaskRef } from "./origin-task.js";
-import { computeQuota, remainingOk, textConsumePriceData } from "./quota.js";
+import { computeQuota, remainingOk, textConsumePriceData, audioConsumeLogRatios } from "./quota.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
 import {
@@ -205,6 +205,7 @@ import {
 import {
   DEFAULT_RELAY_FRT_MS,
   requestConversionChain,
+  shouldPostAudioConsumeQuota,
 } from "./log-info-generate.js";
 import { getModelSupportEndpointTypes } from "./pricing-cache.js";
 import { listModelsTokenLimitAllows } from "./ratio-setting.js";
@@ -1438,12 +1439,22 @@ async function settle(
     });
   }
   const price = await textConsumePriceData(store, model, auth.usingGroup, auth.user.group);
+  const audioLog = await audioConsumeLogRatios(store, model);
   const details = billingUsage.prompt_tokens_details || {};
+  const outDetails = billingUsage.completion_tokens_details || {};
   const cacheCreationTokens = cacheCreationTokensTotal(details);
   const frt =
     extra.firstResponseMs != null && extra.startMs != null
       ? extra.firstResponseMs - extra.startMs
       : DEFAULT_RELAY_FRT_MS;
+  const finalRequestFormat = (extra.requestConversion || [])[(extra.requestConversion || []).length - 1];
+  const useAudioOther = shouldPostAudioConsumeQuota({
+    audioInput: details.audio_tokens,
+    audioOutput: outDetails.audio_tokens,
+    finalRequestFormat,
+    containsAudioRatios: audioLog.containsAudioRatios,
+    originModelName: model,
+  });
   await store.insertLog({
     user_id: auth.user.id,
     type: ok ? LOG_CONSUME : LOG_ERROR,
@@ -1467,9 +1478,9 @@ async function settle(
       group: auth.usingGroup,
       groupRatio: price.groupRatio,
       modelRatio: price.modelRatio,
-      completionRatio: price.completionRatio,
-      cacheTokens: Number(details.cached_tokens || 0),
-      cacheRatio: price.cacheRatio,
+      completionRatio: useAudioOther ? audioLog.completionRatio : price.completionRatio,
+      cacheTokens: useAudioOther ? 0 : Number(details.cached_tokens || 0),
+      cacheRatio: useAudioOther ? 0 : price.cacheRatio,
       modelPrice: price.modelPrice,
       userGroupRatio: price.userGroupRatio,
       frt,
@@ -1484,7 +1495,7 @@ async function settle(
       requestPath: extra.requestPath,
       requestConversion: extra.requestConversion,
       isClaudeUsageSemantic: isClaude,
-      finalRequestFormat: (extra.requestConversion || [])[(extra.requestConversion || []).length - 1],
+      finalRequestFormat,
       cacheCreationTokens,
       cacheCreationRatio: price.cacheCreationRatio,
       cacheCreationTokens5m: billingUsage.claude_cache_creation_5_m_tokens,
@@ -1493,6 +1504,13 @@ async function settle(
       cacheCreationRatio1h: price.cacheCreationRatio1h,
       imageTokens: details.image_tokens,
       imageRatio: price.imageRatio,
+      audioInput: details.audio_tokens,
+      audioOutput: outDetails.audio_tokens,
+      textInput: details.text_tokens,
+      textOutput: outDetails.text_tokens,
+      audioRatio: audioLog.audioRatio,
+      audioCompletionRatio: audioLog.audioCompletionRatio,
+      containsAudioRatios: audioLog.containsAudioRatios,
       isMultiKey: parseChannelInfo(String(channel.channel_info || "")).is_multi_key,
       useChannel: extra.useChannel,
       channelAffinity: extra.channelAffinity,
