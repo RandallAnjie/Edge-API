@@ -4040,6 +4040,38 @@ test("original Coze/Dify/Moonshot ConvertImage/Audio/Embedding/Responses error s
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_CLOUDFLARE, "embeddings"), undefined);
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU, "images"), "not implemented");
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU, "embeddings"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU_V2, "images"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU_V2, "audio_speech"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU_V2, "audio_transcription"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU_V2, "embeddings"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU_V2, "rerank"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU_V2, "responses"), "not implemented");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU_V2, "chat"), undefined);
+  const baiduV2Opts = {
+    channelType: CHANNEL_TYPE_BAIDU_V2,
+    originModelName: "ernie-4.0-8k",
+    upstreamModelName: "ernie-4.0-8k",
+  };
+  assert.throws(
+    () => convertOpenAIRequest({ model: "ernie-4.0-8k", prompt: "a cat" }, { ...baiduV2Opts, relayMode: "images" }),
+    /not implemented/,
+  );
+  assert.throws(
+    () => convertOpenAIRequest({ model: "ernie-4.0-8k", input: "hi" }, { ...baiduV2Opts, relayMode: "audio_speech" }),
+    /not implemented/,
+  );
+  assert.throws(
+    () => convertOpenAIRequest({ model: "ernie-4.0-8k", input: "hi" }, { ...baiduV2Opts, relayMode: "embeddings" }),
+    /not implemented/,
+  );
+  assert.throws(
+    () => convertOpenAIRequest({ model: "ernie-4.0-8k", query: "q", documents: ["a"] }, { ...baiduV2Opts, relayMode: "rerank" }),
+    /not implemented/,
+  );
+  assert.throws(
+    () => convertOpenAIResponsesRequest({ model: "ernie-4.0-8k", input: "hi" }, baiduV2Opts),
+    /not implemented/,
+  );
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_OLLAMA, "images"), "not implemented");
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_OLLAMA, "embeddings"), undefined);
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_ALI, "audio_speech"), "not implemented");

@@ -476,6 +476,13 @@ test("original Zhipu/Perplexity/Cloudflare/MiniMax ConvertImage/Audio/Responses 
     models: "abab6.5s-chat",
     group: "default",
   });
+  await addChannel(e, auth, {
+    name: "baidu-v2-endpoint",
+    type: CHANNEL_TYPE_BAIDU_V2,
+    key: "tok|app",
+    models: "ernie-4.0-8k",
+    group: "default",
+  });
 
   const origFetch = globalThis.fetch;
   globalThis.fetch = (async () => {
@@ -505,6 +512,11 @@ test("original Zhipu/Perplexity/Cloudflare/MiniMax ConvertImage/Audio/Responses 
     await assertFailed("/v1/embeddings", { input: "hi" }, "sonar", "not implemented");
     await assertFailed("/v1/images/generations", { prompt: "a cat" }, "llama-3", "not implemented");
     await assertFailed("/v1/responses", { input: "hi" }, "abab6.5s-chat", "not implemented");
+    await assertFailed("/v1/images/generations", { prompt: "a cat" }, "ernie-4.0-8k", "not implemented");
+    await assertFailed("/v1/audio/speech", { input: "hi" }, "ernie-4.0-8k", "not implemented");
+    await assertFailed("/v1/embeddings", { input: "hi" }, "ernie-4.0-8k", "not implemented");
+    await assertFailed("/v1/rerank", { query: "q", documents: ["a"] }, "ernie-4.0-8k", "not implemented");
+    await assertFailed("/v1/responses", { input: "hi" }, "ernie-4.0-8k", "not implemented");
   } finally {
     globalThis.fetch = origFetch;
   }

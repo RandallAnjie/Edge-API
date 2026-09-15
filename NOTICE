@@ -63,7 +63,9 @@ Material changes from upstream:
   ConvertOpenAIRequest stays sync; URL fetch runs in convertOutbound before
   ConvertRequest. Zhipu v4, Volcengine, Perplexity, Ali, NewAPI, and Sub2API
   ConvertOpenAIResponsesRequest return the request JSON as-is (no openai.Adaptor
-  reasoning-suffix rewrite). xAI ConvertOpenAIResponsesRequest fills empty `model` from
+  reasoning-suffix rewrite). Baidu v2 ConvertImageRequest / ConvertAudioRequest /
+  ConvertEmbeddingRequest / ConvertRerankRequest / ConvertOpenAIResponsesRequest
+  are original `not implemented`. xAI ConvertOpenAIResponsesRequest fills empty `model` from
   UpstreamModelName and does not run openai.Adaptor reasoning-suffix stripping.
   Volcengine TTS uses the original HTTP path
   (`wss://openspeech.bytedance.com/api/v1/tts/ws_binary` binary frames, or

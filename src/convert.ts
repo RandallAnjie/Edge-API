@@ -819,6 +819,9 @@ export function nativeOpenAIConvertEndpointError(channelType: number, mode?: str
   if (channelType === CHANNEL_TYPE_CLOUDFLARE && images) return "not implemented";
   if (channelType === CHANNEL_TYPE_COHERE && (images || audio || responses)) return "not implemented";
   if (channelType === CHANNEL_TYPE_BAIDU && (images || audio || responses)) return "not implemented";
+  if (channelType === CHANNEL_TYPE_BAIDU_V2 && (images || audio || embeddings || rerank || responses)) {
+    return "not implemented";
+  }
   if (channelType === CHANNEL_TYPE_OLLAMA && (images || audio)) return "not implemented";
   if (channelType === CHANNEL_TYPE_VERTEX && (audio || embeddings || rerank || responses)) return "not implemented";
   if (channelType === CHANNEL_TYPE_JIMENG && (audio || embeddings || rerank || responses)) return "not implemented";
@@ -932,9 +935,6 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
     return convertCloudflareOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
   }
   if (opts.channelType === CHANNEL_TYPE_BAIDU_V2) {
-    if (opts.relayMode === "embeddings" || opts.relayMode === "rerank") {
-      throw new Error("not implemented");
-    }
     return convertBaiduV2OpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
   }
   if (opts.channelType === CHANNEL_TYPE_MINIMAX) {

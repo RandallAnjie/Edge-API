@@ -571,9 +571,6 @@ async function convertOutbound(
   if (client === "openai" && channelType === CHANNEL_TYPE_CLOUDFLARE && mode === "completions") {
     return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
   }
-  if (client === "openai" && channelType === CHANNEL_TYPE_BAIDU_V2 && (mode === "embeddings" || mode === "rerank")) {
-    throw new Error("not implemented");
-  }
   if (client === "openai" && channelType === CHANNEL_TYPE_MINIMAX && (mode === "images" || mode === "audio_speech")) {
     return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
   }
