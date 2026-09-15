@@ -402,7 +402,8 @@ CREATE TABLE IF NOT EXISTS vendors (
   status INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT 0,
   created_time INTEGER NOT NULL DEFAULT 0,
-  updated_time INTEGER NOT NULL DEFAULT 0
+  updated_time INTEGER NOT NULL DEFAULT 0,
+  deleted_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS prefill_groups (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -412,7 +413,8 @@ CREATE TABLE IF NOT EXISTS prefill_groups (
   description TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL DEFAULT 0,
   created_time INTEGER NOT NULL DEFAULT 0,
-  updated_time INTEGER NOT NULL DEFAULT 0
+  updated_time INTEGER NOT NULL DEFAULT 0,
+  deleted_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS oauth_providers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -461,7 +463,7 @@ CREATE TABLE IF NOT EXISTS passkeys (
 );
 CREATE TABLE IF NOT EXISTS model_meta (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  model_name TEXT NOT NULL UNIQUE,
+  model_name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   vendor_id INTEGER NOT NULL DEFAULT 0,
   icon TEXT NOT NULL DEFAULT '',
@@ -472,7 +474,8 @@ CREATE TABLE IF NOT EXISTS model_meta (
   name_rule INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT 0,
   created_time INTEGER NOT NULL DEFAULT 0,
-  updated_time INTEGER NOT NULL DEFAULT 0
+  updated_time INTEGER NOT NULL DEFAULT 0,
+  deleted_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS task_plugins (
   key TEXT PRIMARY KEY,
@@ -556,6 +559,12 @@ CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_key ON api_tokens(key);
 CREATE INDEX IF NOT EXISTS idx_tokens_deleted_at ON api_tokens(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_redemptions_deleted_at ON redemptions(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_model_meta_deleted_at ON model_meta(deleted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_model_name_delete_at ON model_meta(model_name) WHERE deleted_at = 0;
+CREATE INDEX IF NOT EXISTS idx_vendors_deleted_at ON vendors(deleted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_vendor_name_delete_at ON vendors(name) WHERE deleted_at = 0;
+CREATE INDEX IF NOT EXISTS idx_prefill_deleted_at ON prefill_groups(deleted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_prefill_name ON prefill_groups(name) WHERE deleted_at = 0;
 CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
 CREATE INDEX IF NOT EXISTS idx_abilities_channel ON abilities(channel_id);
 CREATE INDEX IF NOT EXISTS idx_abilities_enabled ON abilities(enabled, "group");
@@ -689,6 +698,9 @@ const USER_ALTERS = [
   "ALTER TABLE users ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE api_tokens ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE redemptions ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE model_meta ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE vendors ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE prefill_groups ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE redemptions ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE redemptions ADD COLUMN expired_time INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE topups ADD COLUMN payment_provider TEXT NOT NULL DEFAULT ''",
@@ -729,6 +741,39 @@ import type { D1Database } from "./types.js";
 
 const schemaReady = new WeakSet<D1Database>();
 
+/** Drop leftover `UNIQUE(model_name)` so GORM `uk_model_name_delete_at` can reuse names after soft-delete. */
+async function migrateModelMetaSoftDelete(db: D1Database): Promise<void> {
+  const row = await db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'model_meta'").first<{ sql: string }>();
+  if (!row?.sql || !/model_name TEXT NOT NULL UNIQUE/i.test(row.sql)) return;
+  await db.exec(`
+    CREATE TABLE model_meta__softdel (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      model_name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      vendor_id INTEGER NOT NULL DEFAULT 0,
+      icon TEXT NOT NULL DEFAULT '',
+      tags TEXT NOT NULL DEFAULT '',
+      endpoints TEXT NOT NULL DEFAULT '',
+      status INTEGER NOT NULL DEFAULT 1,
+      sync_official INTEGER NOT NULL DEFAULT 1,
+      name_rule INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT 0,
+      created_time INTEGER NOT NULL DEFAULT 0,
+      updated_time INTEGER NOT NULL DEFAULT 0,
+      deleted_at INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO model_meta__softdel (
+      id, model_name, description, vendor_id, icon, tags, endpoints, status, sync_official, name_rule, created_at, created_time, updated_time, deleted_at
+    )
+    SELECT id, model_name, description, vendor_id, icon, tags, endpoints, status, sync_official, name_rule, created_at, created_time, updated_time, COALESCE(deleted_at, 0)
+    FROM model_meta;
+    DROP TABLE model_meta;
+    ALTER TABLE model_meta__softdel RENAME TO model_meta;
+    CREATE INDEX IF NOT EXISTS idx_model_meta_deleted_at ON model_meta(deleted_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS uk_model_name_delete_at ON model_meta(model_name) WHERE deleted_at = 0;
+  `);
+}
+
 export async function ensureSchema(db: D1Database): Promise<void> {
   if (schemaReady.has(db)) return;
   await db.exec(SCHEMA_SQL);
@@ -739,6 +784,7 @@ export async function ensureSchema(db: D1Database): Promise<void> {
       /* column already exists on fresh installs */
     }
   }
+  await migrateModelMetaSoftDelete(db);
   const now = Math.floor(Date.now() / 1000);
   await db.exec(
     `INSERT OR IGNORE INTO casbin_rule (ptype, v0, v1, v2, v3, v4, v5) VALUES ('p', 'role:admin', 'channel', 'read', 'allow', '', '');

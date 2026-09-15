@@ -1471,7 +1471,21 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.deleteVendor(Number(c.params.id));
+    const id = Number(c.params.id);
+    if (!(await s.getVendor(id))) {
+      return json(400, { success: false, message: "vendor data changed; preview again before applying: source vendor does not exist" });
+    }
+    const counts = await s.vendorModelCounts();
+    const n = counts[String(id)] || 0;
+    if (n > 0) {
+      return json(409, {
+        success: false,
+        message: "vendors are still referenced by models; transfer or clear their assignments first",
+        code: "VENDOR_REFERENCED",
+        reference_counts: { [String(id)]: n },
+      });
+    }
+    await s.deleteVendor(id);
     return apiOk(null);
   });
 

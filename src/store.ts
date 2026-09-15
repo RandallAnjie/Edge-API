@@ -2323,7 +2323,8 @@ export class Store {
     const { results } = await this.db
       .prepare(
         `SELECT m.model_name as model_name, COALESCE(v.name, '') as vendor, COALESCE(v.icon, '') as vendor_icon
-         FROM model_meta m LEFT JOIN vendors v ON v.id = m.vendor_id`,
+         FROM model_meta m LEFT JOIN vendors v ON v.id = m.vendor_id AND v.deleted_at = 0
+         WHERE m.deleted_at = 0`,
       )
       .all<{ model_name: string; vendor: string; vendor_icon: string }>();
     const out: Record<string, { vendor: string; vendor_icon: string }> = {};
@@ -2958,7 +2959,7 @@ export class Store {
 
   async vendorModelCounts(): Promise<Record<string, number>> {
     const { results } = await this.db
-      .prepare("SELECT vendor_id as vendor_id, COUNT(*) as count FROM model_meta GROUP BY vendor_id")
+      .prepare("SELECT vendor_id as vendor_id, COUNT(*) as count FROM model_meta WHERE deleted_at = 0 GROUP BY vendor_id")
       .all<{ vendor_id: number; count: number }>();
     const out: Record<string, number> = {};
     for (const row of results) out[String(row.vendor_id || 0)] = Number(row.count || 0);
@@ -3218,7 +3219,7 @@ export class Store {
   }
 
   async listVendors(): Promise<unknown[]> {
-    const { results } = await this.db.prepare("SELECT * FROM vendors ORDER BY id").all();
+    const { results } = await this.db.prepare("SELECT * FROM vendors WHERE deleted_at = 0 ORDER BY id").all();
     return results;
   }
 
@@ -3229,7 +3230,7 @@ export class Store {
     offset: number;
     limit: number;
   }): Promise<{ items: Record<string, unknown>[]; total: number }> {
-    const where: string[] = ["1=1"];
+    const where: string[] = ["deleted_at = 0"];
     const binds: unknown[] = [];
     const keyword = opts.keyword || "";
     if (keyword) {
@@ -3239,9 +3240,9 @@ export class Store {
     }
     const association = opts.association || "";
     if (association === "linked") {
-      where.push("EXISTS (SELECT 1 FROM model_meta WHERE model_meta.vendor_id = vendors.id)");
+      where.push("EXISTS (SELECT 1 FROM model_meta WHERE model_meta.vendor_id = vendors.id AND model_meta.deleted_at = 0)");
     } else if (association === "unlinked") {
-      where.push("NOT EXISTS (SELECT 1 FROM model_meta WHERE model_meta.vendor_id = vendors.id)");
+      where.push("NOT EXISTS (SELECT 1 FROM model_meta WHERE model_meta.vendor_id = vendors.id AND model_meta.deleted_at = 0)");
     }
     const whereSql = where.join(" AND ");
     const totalRow = await this.db
@@ -3256,7 +3257,7 @@ export class Store {
   }
 
   async getVendor(id: number): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM vendors WHERE id = ?").bind(id).first<Record<string, unknown>>();
+    return this.db.prepare("SELECT * FROM vendors WHERE id = ? AND deleted_at = 0").bind(id).first<Record<string, unknown>>();
   }
 
   async insertVendor(name: string, description = "", icon = ""): Promise<number> {
@@ -3276,19 +3277,20 @@ export class Store {
       vals.push(v);
     }
     vals.push(id);
-    await this.db.prepare(`UPDATE vendors SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+    await this.db.prepare(`UPDATE vendors SET ${cols.join(", ")} WHERE id = ? AND deleted_at = 0`).bind(...vals).run();
   }
 
+  /** Original `model.Vendor.Delete` (GORM soft delete; live name unique so names can be reused). */
   async deleteVendor(id: number): Promise<void> {
-    await this.db.prepare("DELETE FROM vendors WHERE id = ?").bind(id).run();
+    await this.db.prepare("UPDATE vendors SET deleted_at = ? WHERE id = ? AND deleted_at = 0").bind(nowSec(), id).run();
   }
 
   async listPrefill(type = ""): Promise<unknown[]> {
     if (type) {
-      const { results } = await this.db.prepare("SELECT * FROM prefill_groups WHERE type = ? ORDER BY id").bind(type).all();
+      const { results } = await this.db.prepare("SELECT * FROM prefill_groups WHERE type = ? AND deleted_at = 0 ORDER BY id").bind(type).all();
       return results;
     }
-    const { results } = await this.db.prepare("SELECT * FROM prefill_groups ORDER BY id").all();
+    const { results } = await this.db.prepare("SELECT * FROM prefill_groups WHERE deleted_at = 0 ORDER BY id").all();
     return results;
   }
 
@@ -3309,11 +3311,12 @@ export class Store {
       vals.push(v);
     }
     vals.push(id);
-    await this.db.prepare(`UPDATE prefill_groups SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+    await this.db.prepare(`UPDATE prefill_groups SET ${cols.join(", ")} WHERE id = ? AND deleted_at = 0`).bind(...vals).run();
   }
 
+  /** Original `model.DeletePrefillGroupByID` (GORM soft delete; live name unique so names can be reused). */
   async deletePrefill(id: number): Promise<void> {
-    await this.db.prepare("DELETE FROM prefill_groups WHERE id = ?").bind(id).run();
+    await this.db.prepare("UPDATE prefill_groups SET deleted_at = ? WHERE id = ? AND deleted_at = 0").bind(nowSec(), id).run();
   }
 
   async listOAuthProviders(): Promise<unknown[]> {
@@ -3557,7 +3560,7 @@ export class Store {
   }
 
   async listModelMeta(): Promise<unknown[]> {
-    const { results } = await this.db.prepare("SELECT * FROM model_meta ORDER BY id").all();
+    const { results } = await this.db.prepare("SELECT * FROM model_meta WHERE deleted_at = 0 ORDER BY id").all();
     return results;
   }
 
@@ -3575,7 +3578,7 @@ export class Store {
   async isModelNameDuplicated(id: number, name: string): Promise<boolean> {
     if (!name) return false;
     const row = await this.db
-      .prepare("SELECT id FROM model_meta WHERE model_name = ? AND id <> ?")
+      .prepare("SELECT id FROM model_meta WHERE model_name = ? AND id <> ? AND deleted_at = 0")
       .bind(name, id)
       .first<{ id: number }>();
     return Boolean(row);
@@ -3605,7 +3608,7 @@ export class Store {
     }
     if (!cols.length) return;
     vals.push(id);
-    await this.db.prepare(`UPDATE model_meta SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+    await this.db.prepare(`UPDATE model_meta SET ${cols.join(", ")} WHERE id = ? AND deleted_at = 0`).bind(...vals).run();
   }
 
   async deleteModelMeta(id: number): Promise<void> {
@@ -3613,7 +3616,7 @@ export class Store {
   }
 
   async getModelMeta(id: number): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM model_meta WHERE id = ?").bind(id).first<Record<string, unknown>>();
+    return this.db.prepare("SELECT * FROM model_meta WHERE id = ? AND deleted_at = 0").bind(id).first<Record<string, unknown>>();
   }
 
   async searchModelMeta(keyword: string): Promise<unknown[]> {
@@ -3627,7 +3630,7 @@ export class Store {
     status?: number | null;
     syncOfficial?: number | null;
   }): Promise<Record<string, unknown>[]> {
-    const where: string[] = ["1=1"];
+    const where: string[] = ["model_meta.deleted_at = 0"];
     const binds: unknown[] = [];
     const keyword = (opts.keyword || "").trim();
     if (keyword) {
@@ -3642,7 +3645,7 @@ export class Store {
         where.push("model_meta.vendor_id = ?");
         binds.push(Number(vendor));
       } else {
-        join = "JOIN vendors ON vendors.id = model_meta.vendor_id";
+        join = "JOIN vendors ON vendors.id = model_meta.vendor_id AND vendors.deleted_at = 0";
         where.push("vendors.name LIKE ?");
         binds.push(`%${vendor}%`);
       }
@@ -3719,7 +3722,10 @@ export class Store {
       }
     }
     const ph = modelIDs.map(() => "?").join(",");
-    await this.db.prepare(`DELETE FROM model_meta WHERE id IN (${ph})`).bind(...modelIDs).run();
+    await this.db
+      .prepare(`UPDATE model_meta SET deleted_at = ? WHERE id IN (${ph}) AND deleted_at = 0`)
+      .bind(nowSec(), ...modelIDs)
+      .run();
     result.deleted_count = records.length;
     return result;
   }
@@ -3962,12 +3968,12 @@ export class Store {
   }
 
   async prefillNameTaken(name: string, exceptId = 0): Promise<boolean> {
-    const row = await this.db.prepare("SELECT id FROM prefill_groups WHERE name = ? AND id <> ?").bind(name, exceptId).first();
+    const row = await this.db.prepare("SELECT id FROM prefill_groups WHERE name = ? AND id <> ? AND deleted_at = 0").bind(name, exceptId).first();
     return Boolean(row);
   }
 
   async getPrefill(id: number): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM prefill_groups WHERE id = ?").bind(id).first<Record<string, unknown>>();
+    return this.db.prepare("SELECT * FROM prefill_groups WHERE id = ? AND deleted_at = 0").bind(id).first<Record<string, unknown>>();
   }
 
   async listDeployments(): Promise<unknown[]> {
