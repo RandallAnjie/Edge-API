@@ -29,7 +29,16 @@ import {
   CLAUDE_VERSION,
   parseJson,
 } from "./constants.js";
-import { awsConverseUrl, getAwsModelID, parseAwsApiKey } from "./aws-convert.js";
+import {
+  awsConverseUrl,
+  getAwsModelID,
+  isNovaModel,
+  parseAwsAkskKey,
+  parseAwsApiKey,
+  prepareAwsInvokeBody,
+  resolveAwsInvokeModelId,
+  awsInvokeUrl,
+} from "./aws-convert.js";
 import { baiduWorkshopURL } from "./baidu-convert.js";
 import { applyBaiduV2Auth, baiduV2RequestURL } from "./baidu-v2-convert.js";
 import { cloudflareRequestURL } from "./cloudflare-convert.js";
@@ -199,30 +208,35 @@ export function buildUpstream(
   if (channel.type === CHANNEL_TYPE_AWS) {
     const settings = parseJson<Record<string, unknown>>(channel.settings || "", {});
     const keyType = String(settings.aws_key_type || "");
-    const parts = apiKey.split("|");
-    if (keyType === "api_key" || parts.length === 2) {
-      const parsed = parseAwsApiKey(apiKey);
-      url = awsConverseUrl(getAwsModelID(upstreamModel), parsed.region);
-      headers.authorization = `Bearer ${apiKey}`;
-      headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
-      payload = applyChannelParamOverride(channel, payload, headers, {
-        ...relayInfo,
-        originalModel: relayInfo.originalModel || model,
-        upstreamModel: relayInfo.upstreamModel || upstreamModel,
-        requestPath: relayInfo.requestPath || requestPath,
-      }, apiKey, upstreamModel);
-      return { url, headers, body: payload, method };
-    }
-    if (parts.length !== 3) throw new Error("invalid aws secret key");
-    url = awsConverseUrl(getAwsModelID(upstreamModel), parts[2]);
-    headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
-    payload = applyChannelParamOverride(channel, payload, headers, {
+    const info = {
       ...relayInfo,
       originalModel: relayInfo.originalModel || model,
       upstreamModel: relayInfo.upstreamModel || upstreamModel,
       requestPath: relayInfo.requestPath || requestPath,
-    }, apiKey, upstreamModel);
-    return { url, headers, body: payload, method };
+    };
+    if (keyType === "api_key") {
+      const parsed = parseAwsApiKey(apiKey);
+      url = awsConverseUrl(getAwsModelID(upstreamModel), parsed.region);
+      headers.authorization = `Bearer ${apiKey}`;
+      headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
+      payload = applyChannelParamOverride(channel, payload, headers, info, apiKey, upstreamModel);
+      return { url, headers, body: payload, method };
+    }
+    const creds = parseAwsAkskKey(apiKey);
+    const mappedId = getAwsModelID(upstreamModel);
+    const nova = isNovaModel(mappedId) || isNovaModel(upstreamModel);
+    const stream =
+      !nova &&
+      (Boolean(relayInfo.isStream) || (payloadIsObject(body) && Boolean((body as { stream?: boolean }).stream)));
+    const invokeModelId = resolveAwsInvokeModelId(upstreamModel, creds.region);
+    url = awsInvokeUrl(creds.region, invokeModelId, stream);
+    headers.accept = "application/json";
+    headers["content-type"] = "application/json";
+    headers["anthropic-version"] = extraHeaders["anthropic-version"] || CLAUDE_VERSION;
+    payload = applyChannelParamOverride(channel, payload, headers, info, apiKey, upstreamModel);
+    payload = prepareAwsInvokeBody(payload, headers, { nova, passThrough: Boolean(relayInfo.passThrough) });
+    if (creds.mode === "bearer") headers.authorization = `Bearer ${creds.token}`;
+    return { url, headers, body: payload, method, apiKey };
   }
 
   if (channel.type === CHANNEL_TYPE_VERTEX) {

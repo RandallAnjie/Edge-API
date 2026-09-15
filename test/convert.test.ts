@@ -2578,6 +2578,51 @@ test("original AWS ConvertOpenAIRequest Nova JSON and Converse URL sprintf order
     "https://bedrock-runtime.anthropic.claude-3-5-sonnet-20241022-v2:0.amazonaws.com/model/us-east-1/converse",
   );
 
+  const aksk = testChannel({
+    type: CHANNEL_TYPE_AWS,
+    key: "AKID|secret|us-east-1",
+    settings: JSON.stringify({ aws_key_type: "ak_sk" }),
+    models: "nova-lite-v1:0,claude-3-5-sonnet-20241022",
+  });
+  const akskNova = buildUpstream(aksk, "chat", "/v1/chat/completions", "nova-lite-v1:0", nova);
+  assert.equal(akskNova.url, "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.amazon.nova-lite-v1%3A0/invoke");
+  assert.equal((akskNova.body as { schemaVersion?: string }).schemaVersion, "messages-v1");
+  const akskClaude = buildUpstream(aksk, "chat", "/v1/chat/completions", "claude-3-5-sonnet-20241022", claude, {
+    "anthropic-beta": "computer-use-2025-01-24",
+  });
+  assert.equal(
+    akskClaude.url,
+    "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-3-5-sonnet-20241022-v2%3A0/invoke",
+  );
+  const akskClaudeBody = akskClaude.body as Record<string, unknown>;
+  assert.equal(akskClaudeBody.anthropic_version, "bedrock-2023-05-31");
+  assert.deepEqual(akskClaudeBody.anthropic_beta, ["computer-use-2025-01-24"]);
+  assert.equal("model" in akskClaudeBody, false);
+  assert.equal("stream" in akskClaudeBody, false);
+  const aksk2 = testChannel({
+    type: CHANNEL_TYPE_AWS,
+    key: "bedrock-token|us-east-1",
+    settings: JSON.stringify({ aws_key_type: "ak_sk" }),
+    models: "claude-3-5-sonnet-20241022",
+  });
+  const akskBearer = buildUpstream(aksk2, "chat", "/v1/chat/completions", "claude-3-5-sonnet-20241022", claude);
+  assert.equal(akskBearer.headers.authorization, "Bearer bedrock-token");
+  assert.equal(
+    akskBearer.url,
+    "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-3-5-sonnet-20241022-v2%3A0/invoke",
+  );
+  assert.throws(
+    () =>
+      buildUpstream(
+        testChannel({ type: CHANNEL_TYPE_AWS, key: "onlyone", settings: JSON.stringify({ aws_key_type: "ak_sk" }) }),
+        "chat",
+        "/v1/chat/completions",
+        "claude-3-5-sonnet-20241022",
+        claude,
+      ),
+    /invalid aws secret key/,
+  );
+
   const mapped = openaiFromNovaResponse(
     {
       output: { message: { content: [{ text: "hello nova" }] } },

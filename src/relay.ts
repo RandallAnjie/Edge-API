@@ -52,6 +52,8 @@ import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
 import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
 import { compactUuid, looksLikeSse } from "./openai-usage.js";
 import { isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
+import { applyAwsAkskAuth } from "./aws-auth.js";
+import { decodeAwsEventStreamResponse } from "./aws-eventstream.js";
 import { openaiFromOllamaChatResponse, openaiFromOllamaEmbedding, ollamaUpstreamToOpenAIChat } from "./ollama-convert.js";
 import { convertVertexClaudeRequest, convertVertexGeminiRequest, imagenUsage, openaiFromImagenResponse, vertexRequestMode } from "./vertex-convert.js";
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest, openaiFromBaiduEmbedding, openaiFromBaiduResponse, baiduUpstreamToOpenAIChat } from "./baidu-convert.js";
@@ -267,7 +269,8 @@ async function fetchUpstream(target: ReturnType<typeof buildUpstream>, timeoutMs
       init.body = JSON.stringify(target.body);
     }
   }
-  return fetch(target.url, init);
+  const res = await fetch(target.url, init);
+  return decodeAwsEventStreamResponse(res);
 }
 
 async function reasoningSettingsFromStore(store: Store): Promise<ReasoningHostSettings> {
@@ -1620,6 +1623,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       retryIndex: retry,
       affinityTemplate: affinity?.template,
       isStream: opts.stream,
+      passThrough,
       relayFormat: clientFormat === "anthropic" ? "claude" : clientFormat === "gemini" ? "gemini" : "openai",
       isClaudeBetaQuery: new URL(opts.req.url).searchParams.get("beta") === "true",
       geminiVersionSettings: convertSettings.geminiVersionSettings,
@@ -1695,6 +1699,16 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       if (channel.type === CHANNEL_TYPE_VERTEX) {
         await applyVertexAdcAuth(channel, target.headers, target.apiKey || pickChannelKey(channel.key));
+      }
+      if (channel.type === CHANNEL_TYPE_AWS) {
+        target.body = await applyAwsAkskAuth(
+          channel,
+          target.headers,
+          target.url,
+          target.method || "POST",
+          target.body,
+          target.apiKey || pickChannelKey(channel.key),
+        );
       }
       if (channel.type === CHANNEL_TYPE_ZHIPU) {
         await applyZhipuV3Authorization(target.headers, pickChannelKey(channel.key));

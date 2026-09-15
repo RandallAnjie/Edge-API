@@ -46,12 +46,13 @@ Material changes from upstream:
 - The original QuantumNous/new-api TanStack + Rsbuild frontend is vendored
   under web/ and served as ASSETS (public/ is the production build). It is
   not a compact replacement SPA.
-- Channel types that require vendor SDKs or local plugins (AWS SigV4 service
-  accounts, in-process JS task plugins)
-  are exposed in the catalog and will relay when the channel is
+- Channel types that require vendor SDKs or local plugins (in-process JS task
+  plugins) are exposed in the catalog and will relay when the channel is
   OpenAI/Anthropic/Gemini compatible or uses HTTP pass-through; otherwise they
   return a structured error. Vertex ADC uses the original HTTP path (RS256 JWT
-  + `https://www.googleapis.com/oauth2/v4/token`, no Google SDK). Stripe/Epay/Creem/Waffo checkout use HTTP APIs
+  + `https://www.googleapis.com/oauth2/v4/token`, no Google SDK). AWS AKSK uses
+  the original HTTP path (Bedrock `InvokeModel` / `InvokeModelWithResponseStream`
+  + SigV4 service `bedrock`, no AWS SDK). Stripe/Epay/Creem/Waffo checkout use HTTP APIs
   (no vendor SDK). io.net model deployments use the original HTTP API (no
   vendor SDK). Original QuantumNous factory task plugins (`plugins/tasks/*/plugin.js`)
   are embedded and listed/routed with original JSON (`source: "factory"`).

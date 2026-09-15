@@ -64,6 +64,8 @@ export type ParamOverrideRelayInfo = {
   affinityTemplate?: Record<string, unknown>;
   /** Original `relaycommon.RelayInfo.IsStream`. */
   isStream?: boolean;
+  /** Original `PassThroughRequestEnabled` / `ChannelSetting.PassThroughBodyEnabled`. */
+  passThrough?: boolean;
   /** Original `relaycommon.RelayInfo.RelayFormat` (NewAPI/Sub2API SetupRequestHeader). */
   relayFormat?: "openai" | "claude" | "gemini";
   /** Original `relaycommon.RelayInfo.IsClaudeBetaQuery` (`c.Query("beta") == "true"`). */

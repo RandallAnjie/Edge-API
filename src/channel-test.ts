@@ -9,6 +9,7 @@ import {
   CHANNEL_TYPE_REPLICATE,
   CHANNEL_TYPE_SILICONFLOW,
   CHANNEL_TYPE_TENCENT,
+  CHANNEL_TYPE_AWS,
   CHANNEL_TYPE_VERTEX,
   CHANNEL_TYPE_VOLC,
   CHANNEL_TYPE_XUNFEI,
@@ -32,6 +33,8 @@ import {
 } from "./convert.js";
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest } from "./baidu-convert.js";
 import { applyVertexAdcAuth } from "./vertex-auth.js";
+import { applyAwsAkskAuth } from "./aws-auth.js";
+import { decodeAwsEventStreamResponse } from "./aws-eventstream.js";
 import { applyZhipuV3Authorization } from "./zhipu-convert.js";
 import { applyTencentTc3Authorization, tencentUsesNativeAdaptor } from "./tencent-convert.js";
 import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
@@ -284,7 +287,8 @@ async function fetchTarget(target: UpstreamTarget): Promise<Response> {
   if (target.method !== "GET" && target.method !== "HEAD" && target.body != null) {
     init.body = typeof target.body === "string" ? target.body : JSON.stringify(target.body);
   }
-  return fetch(target.url, init);
+  const res = await fetch(target.url, init);
+  return decodeAwsEventStreamResponse(res);
 }
 
 function detectErrorMessageFromJSON(parsed: unknown): string {
@@ -571,6 +575,16 @@ export async function testChannel(
     }
     if (channel.type === CHANNEL_TYPE_VERTEX) {
       await applyVertexAdcAuth(channel, target.headers, target.apiKey || pickChannelKey(channel.key));
+    }
+    if (channel.type === CHANNEL_TYPE_AWS) {
+      target.body = await applyAwsAkskAuth(
+        channel,
+        target.headers,
+        target.url,
+        target.method || "POST",
+        target.body,
+        target.apiKey || pickChannelKey(channel.key),
+      );
     }
     if (channel.type === CHANNEL_TYPE_ZHIPU) {
       await applyZhipuV3Authorization(target.headers, pickChannelKey(channel.key));
