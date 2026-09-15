@@ -773,7 +773,11 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    return apiOk(await s.fixAbilities());
+    try {
+      return apiOk(await s.fixAbilities());
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.post("/api/channel/:id/codex/refresh", async (c) => {

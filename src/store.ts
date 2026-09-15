@@ -179,6 +179,10 @@ export function parseChannelStatusFilter(statusParam: string): number {
   }
 }
 
+// Original model.FixAbility uses sync.Mutex.TryLock around truncate + chunked
+// AddAbilities. A second concurrent repair returns this exact string via ApiError.
+let channelFixRunning = false;
+
 export class Store {
   constructor(private db: D1Database) {}
 
@@ -863,19 +867,41 @@ export class Store {
   }
 
   async fixAbilities(): Promise<{ success: number; fails: number }> {
-    await this.db.exec("DELETE FROM abilities");
-    const { results } = await this.db.prepare("SELECT * FROM channels").all<ChannelRow>();
-    let success = 0;
-    let fails = 0;
-    for (const ch of results) {
-      try {
-        await this.replaceChannelAbilities(ch);
-        success += 1;
-      } catch {
-        fails += 1;
-      }
+    if (channelFixRunning) {
+      throw new Error("已经有一个修复任务在运行中，请稍后再试");
     }
-    return { success, fails };
+    channelFixRunning = true;
+    try {
+      await this.db.exec("DELETE FROM abilities");
+      const { results } = await this.db.prepare("SELECT * FROM channels").all<ChannelRow>();
+      if (!results.length) return { success: 0, fails: 0 };
+      let success = 0;
+      let fails = 0;
+      for (let i = 0; i < results.length; i += 50) {
+        const chunk = results.slice(i, i + 50);
+        try {
+          const ph = chunk.map(() => "?").join(",");
+          await this.db
+            .prepare(`DELETE FROM abilities WHERE channel_id IN (${ph})`)
+            .bind(...chunk.map((ch) => ch.id))
+            .run();
+        } catch {
+          fails += chunk.length;
+          continue;
+        }
+        for (const ch of chunk) {
+          try {
+            await this.replaceChannelAbilities(ch);
+            success += 1;
+          } catch {
+            fails += 1;
+          }
+        }
+      }
+      return { success, fails };
+    } finally {
+      channelFixRunning = false;
+    }
   }
 
   async updateChannel(id: number, patch: Record<string, unknown>): Promise<void> {
