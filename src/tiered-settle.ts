@@ -254,6 +254,7 @@ export function billingUsageFromOpenAICounts(usage: {
   prompt: number;
   completion: number;
   cachedTokens?: number;
+  promptCacheHitTokens?: number;
   imageTokens?: number;
   cachedImageTokens?: number | null;
   audioTokens?: number;
