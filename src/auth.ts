@@ -34,6 +34,7 @@ import {
   cookieGet,
   isSecureRequest,
   json,
+  readJson,
   refreshCookie,
   sessionCookie,
   sessionHintCookie,
@@ -41,6 +42,7 @@ import {
   invalidChannelIdMessage,
   SPECIFIC_CHANNEL_VERSION,
 } from "./http.js";
+import { verifyBackupCode, verifyTotp } from "./totp.js";
 import { ipAllowed } from "./select.js";
 import { Store, permissionsFor, publicUser } from "./store.js";
 import { containsGroupRatio, userUsableGroups } from "./dto.js";
@@ -617,6 +619,23 @@ export async function issueSessionSafe(
   }
 }
 
+/** Original `model.AuthFlowPurposeLoginVerification`. */
+export const AUTH_FLOW_PURPOSE_LOGIN_VERIFICATION = "login_verification";
+
+/** Original `service.VerificationMethodTwoFA`. */
+export const VERIFICATION_METHOD_TWO_FA = "2fa";
+
+/** Original `service.ErrProofMethod` via `writeSecurityOperationError`. */
+const ERR_PROOF_METHOD = "This verification method is not allowed for this action.";
+/** Original `service.ErrVerificationFailed`. */
+const ERR_VERIFICATION_FAILED = "Verification failed. Please try again.";
+/** Original `model.ErrTwoFANotEnabled` via `writeSecurityOperationError`. */
+const ERR_TWOFA_NOT_ENABLED = "Two-factor authentication is not enabled.";
+/** Original `writeSecurityOperationError` for `ErrAuthFlowInvalid` / Expired / Consumed. */
+const ERR_AUTH_FLOW_INVALID = "Verification flow expired";
+/** Original `service.ErrVerificationUnavailable`. */
+const ERR_VERIFICATION_UNAVAILABLE = "This verification method is currently unavailable.";
+
 /** Original `service.LoginVerificationTTL`. */
 export const LOGIN_VERIFICATION_TTL_SEC = 300;
 
@@ -627,6 +646,21 @@ export type LoginChallenge = {
   expires_at: number;
   methods: { method: string; available: boolean; reason?: string }[];
 };
+
+export function isLoginVerificationFlow(type: string): boolean {
+  return type === AUTH_FLOW_PURPOSE_LOGIN_VERIFICATION;
+}
+
+async function loginVerificationMethods(store: Store, user: UserRow): Promise<LoginChallenge["methods"]> {
+  const methods: LoginChallenge["methods"] = [];
+  if (Number(user.totp_enabled) === 1) methods.push({ method: VERIFICATION_METHOD_TWO_FA, available: true });
+  const hasPasskey = (await store.listPasskeys(user.id)).length > 0;
+  if (hasPasskey) {
+    if (await store.optionBool("PasskeyEnabled", true)) methods.push({ method: "passkey", available: true });
+    else methods.push({ method: "passkey", available: false, reason: "Passkey authentication is disabled." });
+  }
+  return methods;
+}
 
 /**
  * Original `service.StartLoginVerification`.
@@ -639,29 +673,21 @@ export async function startLoginVerification(
 ): Promise<{ challenge: LoginChallenge | null } | { error: Response }> {
   const authVersion = Number(user.auth_version || 1) || 1;
   if (!user.id || authVersion <= 0 || !loginMethod) {
-    return { error: apiFailCode("Verification flow expired", "AUTH_FLOW_INVALID") };
+    return { error: apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID") };
   }
   if (user.status !== USER_ENABLED) {
     return { error: authUnauthorized() };
   }
-  const hasTwoFA = Number(user.totp_enabled) === 1;
-  const hasPasskey = (await store.listPasskeys(user.id)).length > 0;
-  const passkeyEnabled = await store.optionBool("PasskeyEnabled", true);
-  const methods: LoginChallenge["methods"] = [];
-  if (hasTwoFA) methods.push({ method: "2fa", available: true });
-  if (hasPasskey) {
-    if (passkeyEnabled) methods.push({ method: "passkey", available: true });
-    else methods.push({ method: "passkey", available: false, reason: "Passkey authentication is disabled." });
-  }
+  const methods = await loginVerificationMethods(store, user);
   if (!methods.length) return { challenge: null };
   if (!methods.some((m) => m.available)) {
-    return { error: apiFailCode("This verification method is currently unavailable.", "SECURITY_METHOD_UNAVAILABLE") };
+    return { error: apiFailCode(ERR_VERIFICATION_UNAVAILABLE, "SECURITY_METHOD_UNAVAILABLE") };
   }
   const flow = randomHex(16);
   const expires_at = nowSec() + LOGIN_VERIFICATION_TTL_SEC;
   await store.insertAuthFlow({
     token: flow,
-    type: hasTwoFA ? "2fa_login" : "login_verify",
+    type: AUTH_FLOW_PURPOSE_LOGIN_VERIFICATION,
     user_id: user.id,
     expires_at,
     payload: JSON.stringify({ auth_version: authVersion, login_method: loginMethod }),
@@ -684,4 +710,113 @@ export async function setupLogin(
   if (issued instanceof Response) return issued;
   await store.audit(user.id, user.username, "login", `Logged in successfully via ${loginMethod}`, clientIp(req));
   return sessionResponse(issued);
+}
+
+type LoginFlowPayload = { auth_version: number; login_method: string };
+
+async function requireLoginVerification(
+  store: Store,
+  token: string,
+  method: string,
+): Promise<{ flow: { token: string; user_id: number }; user: UserRow; payload: LoginFlowPayload } | { error: Response }> {
+  const flow = await store.getAuthFlow(token);
+  if (!flow || !isLoginVerificationFlow(flow.type)) {
+    return { error: apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID") };
+  }
+  if (Number(flow.consumed_at || 0) > 0 || flow.expires_at < nowSec()) {
+    return { error: apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID") };
+  }
+  let payload: LoginFlowPayload | null = null;
+  try {
+    const parsed = JSON.parse(flow.payload || "{}") as { auth_version?: unknown; login_method?: unknown };
+    const authVersion = Number(parsed.auth_version || 0);
+    const loginMethod = typeof parsed.login_method === "string" ? parsed.login_method : "";
+    if (authVersion > 0 && loginMethod) payload = { auth_version: authVersion, login_method: loginMethod };
+  } catch {
+    payload = null;
+  }
+  if (!payload) return { error: apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID") };
+  const user = await store.getUserById(flow.user_id);
+  if (!user || user.status !== USER_ENABLED || Number(user.auth_version || 1) !== payload.auth_version) {
+    return { error: authUnauthorized() };
+  }
+  const methods = await loginVerificationMethods(store, user);
+  const option = methods.find((m) => m.method === method);
+  if (!option) return { error: apiFailCode(ERR_PROOF_METHOD, "SECURITY_PROOF_METHOD_MISMATCH") };
+  if (!option.available) return { error: apiFailCode(ERR_VERIFICATION_UNAVAILABLE, "SECURITY_METHOD_UNAVAILABLE") };
+  return { flow, user, payload };
+}
+
+/** Original `service.VerifyTwoFactorCode` for login (TOTP or backup code). */
+async function verifyLoginTwoFactor(store: Store, user: UserRow, code: string): Promise<Response | null> {
+  if (Number(user.totp_enabled) !== 1) return apiFailCode(ERR_TWOFA_NOT_ENABLED, "TWOFA_NOT_ENABLED");
+  const totpOk = await verifyTotp(user.totp_secret || "", code);
+  const backup = totpOk ? { ok: false, rest: user.totp_backup || "" } : verifyBackupCode(user.totp_backup || "", code);
+  if (!totpOk && !backup.ok) return apiFailCode(ERR_VERIFICATION_FAILED, "SECURITY_VERIFICATION_FAILED");
+  if (backup.ok) await store.updateUser(user.id, { totp_backup: backup.rest });
+  return null;
+}
+
+/**
+ * Original `service.CompleteLoginVerification` + `controller.completeVerifiedLoginResponse`.
+ * Session `login_method` is the primary method stored on the flow (`password`, `oauth:github`, …),
+ * not the factor used to complete the challenge.
+ */
+export async function completeLoginVerification(
+  store: Store,
+  env: Env,
+  req: Request,
+  token: string,
+  method: string,
+): Promise<Response> {
+  const loaded = await requireLoginVerification(store, token, method);
+  if ("error" in loaded) return loaded.error;
+  const consumed = await store.consumeAuthFlow(token, {
+    type: AUTH_FLOW_PURPOSE_LOGIN_VERIFICATION,
+    user_id: loaded.user.id,
+  });
+  if (consumed !== "ok") return apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID");
+  const issued = await issueSessionSafe(store, env, loaded.user, req, loaded.payload.login_method);
+  if (issued instanceof Response) return issued;
+  await store.audit(
+    loaded.user.id,
+    loaded.user.username,
+    "login",
+    `Logged in successfully via ${loaded.payload.login_method}`,
+    clientIp(req),
+    { method: loaded.payload.login_method, other: JSON.stringify({ verification_method: method }) },
+  );
+  return sessionResponse(issued);
+}
+
+/**
+ * Original `controller.VerifyLogin` / `controller.Verify2FALogin`.
+ * Empty `method` defaults to `2fa`; any other method is `SECURITY_PROOF_METHOD_MISMATCH`.
+ */
+export async function verifyLogin(store: Store, env: Env, req: Request, rawBody: unknown): Promise<Response> {
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) return apiFail("参数错误");
+  const body = rawBody as { flow_token?: unknown; method?: unknown; code?: unknown };
+  const flowToken = typeof body.flow_token === "string" ? body.flow_token : "";
+  const code = typeof body.code === "string" ? body.code : "";
+  if (!flowToken || !code) return apiFail("参数错误");
+  const method = typeof body.method === "string" && body.method ? body.method : VERIFICATION_METHOD_TWO_FA;
+  if (method !== VERIFICATION_METHOD_TWO_FA) {
+    return apiFailCode(ERR_PROOF_METHOD, "SECURITY_PROOF_METHOD_MISMATCH");
+  }
+  const loaded = await requireLoginVerification(store, flowToken, method);
+  if ("error" in loaded) return loaded.error;
+  const totpErr = await verifyLoginTwoFactor(store, loaded.user, code);
+  if (totpErr) return totpErr;
+  return completeLoginVerification(store, env, req, flowToken, method);
+}
+
+/** Original `controller.VerifyLogin` request decoding. */
+export async function verifyLoginFromRequest(store: Store, env: Env, req: Request): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await readJson(req);
+  } catch {
+    return apiFail("参数错误");
+  }
+  return verifyLogin(store, env, req, body);
 }

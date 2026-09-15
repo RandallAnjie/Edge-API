@@ -76,6 +76,7 @@ import {
   requireUser,
   sessionResponse,
   sessionSecret,
+  verifyLoginFromRequest,
 } from "./auth.js";
 import { Store } from "./store.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
@@ -564,26 +565,7 @@ export function registerParity(r: Router<Env>): void {
     }),
   );
 
-  r.post("/api/user/login/verify", async (c) => {
-    const s = store(c);
-    const body = (await readJson(c.req)) as { flow_token?: string; method?: string; code?: string };
-    if (!body.flow_token || !body.code) return apiFail("参数错误");
-    const flow = await s.getAuthFlow(body.flow_token);
-    if (!flow || (flow.type !== "2fa_login" && flow.type !== "login_verify") || flow.expires_at < nowSec()) {
-      return apiFail("登录流程已过期");
-    }
-    const user = await s.getUserById(flow.user_id);
-    if (!user) return apiFail("用户不存在");
-    const { verifyTotp, verifyBackupCode } = await import("./totp.js");
-    const totpOk = await verifyTotp(user.totp_secret || "", body.code);
-    const backup = totpOk ? { ok: false, rest: user.totp_backup || "" } : verifyBackupCode(user.totp_backup || "", body.code);
-    if (!totpOk && !backup.ok) return apiFail("验证码错误");
-    if (backup.ok) await s.updateUser(user.id, { totp_backup: backup.rest });
-    await s.deleteAuthFlow(body.flow_token);
-    const issued = await issueSessionSafe(s, c.env, user, c.req, "2fa");
-    if (issued instanceof Response) return issued;
-    return sessionResponse(issued);
-  });
+  r.post("/api/user/login/verify", async (c) => verifyLoginFromRequest(store(c), c.env, c.req));
 
   r.post("/api/user/passkey/verify/begin", async (c) => {
     const s = store(c);

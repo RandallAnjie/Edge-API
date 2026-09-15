@@ -355,7 +355,7 @@ test("2FA login still require_2fa plus original LoginChallenge fields", async ()
   );
   assert.equal(done.body.success, true, done.body.message);
   assert.ok(done.body.data.access_token);
-  assert.equal(done.body.data.session.login_method, "2fa");
+  assert.equal(done.body.data.session.login_method, "password");
 });
 
 test("payments topup info reflects config; oauth state returns flow_token", async () => {

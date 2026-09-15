@@ -70,6 +70,7 @@ import {
   publicSelf,
   sessionResponse,
   sessionSecret,
+  startLoginVerification,
 } from "./auth.js";
 import { Store, publicUser, stripChannelKey, parseChannelStatusFilter } from "./store.js";
 import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, publicUserLogs, dashboardListModels, channelListModels, publicOptions, publicQuotaData, manageUserView, publicMj, publicChannel, publicRedemption } from "./dto.js";
@@ -315,28 +316,12 @@ export function adminRouter(): Router<Env> {
     if (!user || !(await verifyPassword(password, user.password)) || user.status !== USER_ENABLED) {
       return apiFail("用户名或密码错误，或用户已被封禁");
     }
-    const passkeys = (await s.listPasskeys(user.id)).length > 0;
-    const totp = Number(user.totp_enabled) === 1;
-    if (totp || passkeys) {
-      const { randomHex } = await import("./constants.js");
-      const flow = randomHex(16);
-      const expires = nowSec() + 300;
-      await s.insertAuthFlow({
-        token: flow,
-        type: totp ? "2fa_login" : "login_verify",
-        user_id: user.id,
-        expires_at: expires,
-        payload: JSON.stringify({ login_method: "password", auth_version: Number(user.auth_version || 1) || 1 }),
-      });
-      const methods = [];
-      if (totp) methods.push({ method: "2fa", available: true });
-      if (passkeys) methods.push({ method: "passkey", available: true });
+    const started = await startLoginVerification(s, user, "password");
+    if ("error" in started) return started.error;
+    if (started.challenge) {
       return apiOk({
-        require_verification: true,
-        require_2fa: totp,
-        flow_token: flow,
-        expires_at: expires,
-        methods,
+        ...started.challenge,
+        require_2fa: started.challenge.methods.some((m) => m.method === "2fa"),
       });
     }
     const issued = await issueSessionSafe(s, c.env, user, c.req, "password");

@@ -97,6 +97,10 @@ import {
   requireUser,
   sessionResponse,
   sessionSecret,
+  completeLoginVerification,
+  isLoginVerificationFlow,
+  verifyLoginFromRequest,
+} from "./auth.js";
 } from "./auth.js";
 import { httpStats } from "./metrics.js";
 import { Store, publicUser } from "./store.js";
@@ -302,24 +306,7 @@ export function registerMore(r: Router<Env>): void {
     return apiOk(password, "");
   });
 
-  r.post("/api/user/login/2fa", async (c) => {
-    const s = store(c);
-    const body = (await readJson(c.req)) as { flow_token?: string; code?: string };
-    if (!body.flow_token || !body.code) return apiFail("无效的参数");
-    const flow = await s.getAuthFlow(body.flow_token);
-    if (!flow || (flow.type !== "2fa_login" && flow.type !== "login_verify") || flow.expires_at < nowSec()) return apiFail("登录流程已过期");
-    const user = await s.getUserById(flow.user_id);
-    if (!user) return apiFail("用户不存在");
-    const totpOk = await verifyTotp(user.totp_secret || "", body.code);
-    const backup = totpOk ? { ok: false, rest: user.totp_backup || "" } : verifyBackupCode(user.totp_backup || "", body.code);
-    if (!totpOk && !backup.ok) return apiFail("验证码错误");
-    if (backup.ok) await s.updateUser(user.id, { totp_backup: backup.rest });
-    await s.deleteAuthFlow(body.flow_token);
-    const issued = await issueSessionSafe(s, c.env, user, c.req, "2fa");
-    if (issued instanceof Response) return issued;
-    await s.audit(user.id, user.username, "login", "Logged in via 2FA", clientIp(c.req));
-    return sessionResponse(issued);
-  });
+  r.post("/api/user/login/2fa", async (c) => verifyLoginFromRequest(store(c), c.env, c.req));
 
   r.get("/api/user/2fa/status", async (c) => {
     const s = store(c);
@@ -658,7 +645,7 @@ export function registerMore(r: Router<Env>): void {
     const body = (await readJson(c.req)) as { flow_token?: string; rp_id?: string };
     if (!body.flow_token) return apiFail("参数错误");
     const flow = await s.getAuthFlow(body.flow_token);
-    if (!flow || (flow.type !== "2fa_login" && flow.type !== "login_verify") || flow.expires_at < nowSec()) {
+    if (!flow || !isLoginVerificationFlow(flow.type) || flow.expires_at < nowSec()) {
       return apiFail("登录流程已过期");
     }
     const user = await s.getUserById(flow.user_id);
@@ -703,7 +690,7 @@ export function registerMore(r: Router<Env>): void {
       credential_id?: string;
     };
     const loginFlow = await s.getAuthFlow(body.flow_token || "");
-    if (!loginFlow || (loginFlow.type !== "2fa_login" && loginFlow.type !== "login_verify") || loginFlow.expires_at < nowSec()) {
+    if (!loginFlow || !isLoginVerificationFlow(loginFlow.type) || loginFlow.expires_at < nowSec()) {
       return apiFail("登录流程已过期");
     }
     const passkeyFlow = await s.getAuthFlow(body.passkey_flow_token || "");
@@ -716,11 +703,8 @@ export function registerMore(r: Router<Env>): void {
     const user = await s.getUserById(loginFlow.user_id);
     if (!user) return apiFail("用户不存在");
     await s.touchPasskey(pk.credential_id);
-    await s.deleteAuthFlow(loginFlow.token);
     await s.deleteAuthFlow(passkeyFlow.token);
-    const issued = await issueSessionSafe(s, c.env, user, c.req, "passkey");
-    if (issued instanceof Response) return issued;
-    return sessionResponse(issued);
+    return completeLoginVerification(s, c.env, c.req, loginFlow.token, "passkey");
   });
 
   r.delete("/api/user/passkey", async (c) => {
