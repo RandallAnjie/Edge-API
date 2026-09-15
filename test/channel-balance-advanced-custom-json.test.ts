@@ -176,10 +176,10 @@ test("original UpdateChannelBalance Advanced Custom credit_summary vs raw_respon
     assert.equal(created.body.balance, undefined);
     assert.equal(created.body.raw_response, undefined);
 
-    nextBody = { status: 200, body: "not-json" };
+    nextBody = { status: 200, body: "hello" };
     const invalid = await json(new Request("http://local/api/channel/update_balance/" + id, { headers: auth }), e);
     assert.equal(invalid.body.success, false);
-    assert.equal(invalid.body.message, "invalid balance JSON response: invalid character 'n' looking for beginning of value");
+    assert.equal(invalid.body.message, "invalid balance JSON response: invalid character 'h' looking for beginning of value");
 
     nextBody = { status: 200, body: `{"pad":"${"a".repeat(262145)}"}` };
     const tooLarge = await json(new Request("http://local/api/channel/update_balance/" + id, { headers: auth }), e);
