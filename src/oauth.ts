@@ -1,14 +1,42 @@
 import { generateAffCode, generateTokenKey } from "./crypto.js";
 import { hmacSha256Hex, sha256Bytes, timingSafeEqualStr } from "./crypto.js";
-import { nowSec, randomHex } from "./constants.js";
-import { apiFail, apiFailCode, apiOk, json } from "./http.js";
+import { nowSec, randomHex, ROLE_USER, USER_ENABLED } from "./constants.js";
+import { apiFail, apiFailCode, apiOk, i18nPair, json } from "./http.js";
 import { ERR_TELEGRAM_ACCOUNT_NOT_BOUND } from "./telegram-oauth.js";
-import { notifyAccountSecurityChange } from "./mail.js";
-import { setupLogin } from "./auth.js";
+import { notifyAccountSecurityChange, normalizeEmail } from "./mail.js";
+import { authUnauthorized, setupLogin } from "./auth.js";
 import { finishInsertUser } from "./user-insert.js";
 import type { Store } from "./store.js";
 import type { Env, UserRow } from "./types.js";
 import type { Context } from "./router.js";
+
+/** Original `model.UserNameMaxLength`. */
+const USER_NAME_MAX_LENGTH = 20;
+
+/** Original `oauth.OAuthError` / `handleOAuthError` i18n pair. */
+export class OAuthI18nError extends Error {
+  constructor(
+    readonly zh: string,
+    readonly en: string,
+  ) {
+    super(en);
+    this.name = "OAuthI18nError";
+  }
+}
+
+/** Original `i18n.MsgOAuthNotEnabled`. */
+export function oauthNotEnabledMessage(req: Request, name: string): string {
+  return i18nPair(
+    req,
+    `管理员未开启通过 ${name} 登录以及注册`,
+    `${name} login and registration has not been enabled by administrator`,
+  );
+}
+
+/** Original `i18n.MsgOAuthInvalidCode`. */
+export function oauthInvalidCodeMessage(req: Request): string {
+  return i18nPair(req, "无效的授权码", "Invalid authorization code");
+}
 
 export interface OAuthProfile {
   id: string;
@@ -61,18 +89,26 @@ export async function exchangeGithub(clientId: string, secret: string, code: str
     body: JSON.stringify({ client_id: clientId, client_secret: secret, code }),
   });
   const tokenJson = (await tokenRes.json()) as { access_token?: string };
-  if (!tokenJson.access_token) throw new Error("GitHub 授权失败");
+  if (!tokenJson.access_token) {
+    throw new OAuthI18nError("GitHub 获取 Token 失败，请检查设置", "Failed to get token from GitHub, please check settings");
+  }
   const userRes = await fetch("https://api.github.com/user", {
-    headers: { authorization: `Bearer ${tokenJson.access_token}`, "user-agent": "edge-api" },
+    headers: { authorization: `Bearer ${tokenJson.access_token}` },
   });
-  const gh = (await userRes.json()) as { id?: number; login?: string };
-  if (!gh.id) throw new Error("无法读取 GitHub 用户");
+  if (!userRes.ok) {
+    throw new OAuthI18nError("获取用户信息失败", "Failed to get user information");
+  }
+  const gh = (await userRes.json()) as { id?: number; login?: string; name?: string | null; email?: string | null };
+  if (!gh.id || !gh.login) {
+    throw new OAuthI18nError("GitHub 获取用户信息为空，请检查设置", "GitHub returned empty user info, please check settings");
+  }
   return {
     id: String(gh.id),
-    username: gh.login || `gh_${gh.id}`,
-    display_name: gh.login || `gh_${gh.id}`,
+    username: gh.login,
+    display_name: gh.name || "",
+    email: gh.email || undefined,
     field: "github_id",
-    extra: gh.login ? { legacy_id: gh.login } : undefined,
+    extra: { legacy_id: gh.login },
   };
 }
 
@@ -171,6 +207,140 @@ export async function exchangeOidc(opts: {
 
 export { exchangeCustom } from "./custom-oauth.js";
 
+function oauthLoginMethod(profile: OAuthProfile): string {
+  return "oauth:" + (profile.slug || profile.field.replace(/_id$/, ""));
+}
+
+function oauthUsernamePrefix(profile: OAuthProfile): string {
+  if (profile.slug) return `${profile.slug}_`;
+  switch (profile.field) {
+    case "github_id":
+      return "github_";
+    case "discord_id":
+      return "discord_";
+    case "linuxdo_id":
+      return "linuxdo_";
+    case "oidc_id":
+      return "oidc_";
+    case "wechat_id":
+      return "wechat_";
+    case "telegram_id":
+      return "telegram_";
+    default:
+      return "oauth_";
+  }
+}
+
+/** Original LinuxDO `FillUserByLinuxDOId` and custom `GetUserByOAuthBinding` return `gorm.ErrRecordNotFound`. */
+function oauthFillReturnsRecordNotFound(profile: OAuthProfile): boolean {
+  return profile.field === "linuxdo_id" || Boolean(profile.provider_id);
+}
+
+async function oauthIdTaken(store: Store, profile: OAuthProfile, providerUserId: string): Promise<boolean> {
+  if (!providerUserId) return false;
+  if (profile.provider_id) return store.oauthBindingTaken(profile.provider_id, providerUserId);
+  // Original `IsOidcIdAlreadyTaken` is scoped; GitHub/Discord/LinuxDO/WeChat/Telegram are Unscoped.
+  const includeDeleted = profile.field !== "oidc_id";
+  return Boolean(await store.getUserByField(profile.field, providerUserId, { includeDeleted }));
+}
+
+async function fillLiveOAuthUser(store: Store, profile: OAuthProfile, providerUserId: string): Promise<UserRow | null> {
+  if (profile.provider_id) return store.getUserByOAuthBinding(profile.provider_id, providerUserId);
+  return store.getUserByField(profile.field, providerUserId);
+}
+
+/**
+ * Original `controller.findOrCreateOAuthUser`.
+ * Telegram never auto-registers. Soft-deleted GitHub/Discord/WeChat IDs return `oauth.user_deleted`
+ * because Fill ignores `ErrRecordNotFound` and leaves `Id == 0`.
+ */
+async function findOrCreateOAuthUser(
+  store: Store,
+  req: Request,
+  profile: OAuthProfile,
+  affiliateCode: string,
+): Promise<UserRow | Response> {
+  if (profile.field === "telegram_id") {
+    const user = await store.getUserByField("telegram_id", profile.id);
+    if (!user) return apiFailCode(ERR_TELEGRAM_ACCOUNT_NOT_BOUND, "TELEGRAM_ACCOUNT_NOT_BOUND");
+    return user;
+  }
+
+  if (await oauthIdTaken(store, profile, profile.id)) {
+    const user = await fillLiveOAuthUser(store, profile, profile.id);
+    if (!user) {
+      if (oauthFillReturnsRecordNotFound(profile)) return authUnauthorized();
+      return apiFail(i18nPair(req, "用户已注销", "User has been deleted"));
+    }
+    return user;
+  }
+
+  const legacyId = profile.extra?.legacy_id || "";
+  if (legacyId && (await oauthIdTaken(store, profile, legacyId))) {
+    const user = await fillLiveOAuthUser(store, profile, legacyId);
+    if (user) {
+      if (profile.field === "github_id") {
+        try {
+          await store.updateUser(user.id, { github_id: profile.id });
+        } catch {
+          // Original continues login even if `UpdateGitHubId` fails.
+        }
+        return (await store.getUserById(user.id)) || user;
+      }
+      return user;
+    }
+  }
+
+  if (!(await store.optionBool("RegisterEnabled", true))) {
+    return apiFail(
+      i18nPair(req, "管理员关闭了新用户注册", "New user registration has been disabled by administrator"),
+    );
+  }
+
+  let username = oauthUsernamePrefix(profile) + String((await store.maxUserId()) + 1);
+  if (profile.username) {
+    const exists = await store.getUserByUsername(profile.username, { includeDeleted: true });
+    if (!exists && profile.username.length <= USER_NAME_MAX_LENGTH) username = profile.username;
+  }
+
+  const providerName = await oauthProviderDisplayName(store, profile.slug || profile.field.replace(/_id$/, ""));
+  const displayName = profile.display_name || profile.username || `${providerName} User`;
+
+  let email = "";
+  if (profile.email) {
+    email = normalizeEmail(profile.email);
+    if (email && (await store.getUserByEmail(email, { includeDeleted: true }))) {
+      return apiFail(i18nPair(req, "邮箱地址已被占用", "Email address is already in use"));
+    }
+  }
+
+  let inviterId = 0;
+  if (affiliateCode) {
+    const inviter = await store.getUserByAff(affiliateCode);
+    inviterId = inviter?.id || 0;
+  }
+
+  const row: Partial<UserRow> = {
+    username,
+    display_name: displayName,
+    email,
+    role: ROLE_USER,
+    status: USER_ENABLED,
+    quota: await store.optionNum("QuotaForNewUser", 0),
+    aff_code: generateAffCode(),
+    inviter_id: inviterId,
+  };
+  if (!profile.provider_id) {
+    (row as Record<string, unknown>)[profile.field] = profile.id;
+  }
+  const id = await store.insertUser(row);
+  if (profile.provider_id) await store.upsertUserOAuthBinding(id, profile.provider_id, profile.id);
+  await finishInsertUser(store, id, inviterId);
+  const created = await store.getUserById(id);
+  if (!created) return apiFail("用户不存在");
+  return created;
+}
+
 export async function loginOrBindOAuth(
   store: Store,
   env: Env,
@@ -178,6 +348,7 @@ export async function loginOrBindOAuth(
   profile: OAuthProfile,
   existingUser: UserRow | null,
   intent = existingUser ? "bind" : "login",
+  affiliateCode = "",
 ): Promise<Response> {
   if (intent === "bind") {
     if (!existingUser) return json(401, { success: false, message: "绑定操作需要登录" });
@@ -194,36 +365,12 @@ export async function loginOrBindOAuth(
     const notification_warning = await notifyAccountSecurityChange(store, existingUser.email || "", "OAuth account linked");
     return apiOk({ action: "bind", notification_warning });
   }
-  let user: UserRow | null = null;
-  if (profile.provider_id) {
-    user = await store.getUserByOAuthBinding(profile.provider_id, profile.id);
-  } else {
-    user = await store.getUserByField(profile.field, profile.id);
+  const user = await findOrCreateOAuthUser(store, req, profile, affiliateCode);
+  if (user instanceof Response) return user;
+  if (user.status !== USER_ENABLED) {
+    return apiFail(i18nPair(req, "用户已被封禁", "User has been banned"));
   }
-  if (!user) {
-    if (profile.field === "telegram_id") return apiFailCode(ERR_TELEGRAM_ACCOUNT_NOT_BOUND, "TELEGRAM_ACCOUNT_NOT_BOUND");
-    if (!(await store.optionBool("RegisterEnabled", true))) return apiFail("管理员关闭了新用户注册");
-    const bound = await store.getUserByField(profile.field, profile.id, { includeDeleted: true });
-    if (bound) return apiFail("该 OAuth 账号已被绑定");
-    const exists = await store.getUserByUsername(profile.username, { includeDeleted: true });
-    const finalName = exists ? `${profile.field.slice(0, 2)}_${profile.id}`.slice(0, 20) : profile.username;
-    const id = await store.insertUser({
-      username: finalName,
-      display_name: profile.display_name,
-      email: profile.email || "",
-      quota: await store.optionNum("QuotaForNewUser", 0),
-      aff_code: generateAffCode(),
-      [profile.field]: profile.provider_id ? "" : profile.id,
-    } as Partial<UserRow>);
-    if (!profile.provider_id && profile.field !== "github_id") {
-      await store.updateUser(id, { [profile.field]: profile.id });
-    }
-    if (profile.provider_id) await store.upsertUserOAuthBinding(id, profile.provider_id, profile.id);
-    await finishInsertUser(store, id, 0);
-    user = await store.getUserById(id);
-  }
-  if (user && user.status !== 1) return apiFail("用户已被封禁");
-  return setupLogin(store, env, user!, req, "oauth:" + (profile.slug || profile.field.replace(/_id$/, "")));
+  return setupLogin(store, env, user, req, oauthLoginMethod(profile));
 }
 
 export function oauthAuthorizeUrl(provider: string, clientId: string, redirect: string, extra: Record<string, string> = {}): string {

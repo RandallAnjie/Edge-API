@@ -26,8 +26,11 @@ import {
   getBoundOAuthUserId,
   loginOrBindOAuth,
   newAccessToken,
+  oauthInvalidCodeMessage,
+  oauthNotEnabledMessage,
   oauthProviderDisplayName,
   oauthProviderKnown,
+  OAuthI18nError,
   type OAuthProfile,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
@@ -997,6 +1000,8 @@ export function registerMore(r: Router<Env>): void {
     const payload = parseJson<{
       provider?: string;
       intent?: string;
+      aff?: string;
+      affiliate_code?: string;
       telegram?: TelegramOAuthFlow;
       session_identity?: AuthSessionIdentityJSON;
       verification?: { scope?: string; context_hash?: string; provider_user_id?: string; auth_version?: number; session_version?: number };
@@ -1116,28 +1121,44 @@ export function registerMore(r: Router<Env>): void {
         });
         return apiOk(proof);
       }
-      return loginOrBindOAuth(s, c.env, c.req, profile, null, "login");
+      return loginOrBindOAuth(
+        s,
+        c.env,
+        c.req,
+        profile,
+        null,
+        "login",
+        String(payload.affiliate_code || payload.aff || ""),
+      );
+    };
+
+    const denyIfDisabled = async (optKey: string): Promise<Response | null> => {
+      if (!(await s.optionBool(optKey, false))) {
+        return apiFail(oauthNotEnabledMessage(c.req, await oauthProviderDisplayName(s, provider)));
+      }
+      if (!code) return apiFail(oauthInvalidCodeMessage(c.req));
+      return null;
     };
 
     try {
       if (provider === "github") {
-        if (!(await s.optionBool("GitHubOAuthEnabled", false))) return apiFail("GitHub OAuth 未启用");
-        if (!code) return apiFail("无效的授权码");
+        const denied = await denyIfDisabled("GitHubOAuthEnabled");
+        if (denied) return denied;
         return finish(await exchangeGithub(await s.option("GitHubClientId"), await s.option("GitHubClientSecret"), code));
       }
       if (provider === "discord") {
-        if (!(await s.optionBool("DiscordOAuthEnabled", false))) return apiFail("Discord OAuth 未启用");
-        if (!code) return apiFail("无效的授权码");
+        const denied = await denyIfDisabled("DiscordOAuthEnabled");
+        if (denied) return denied;
         return finish(await exchangeDiscord(await s.option("DiscordClientId"), await s.option("DiscordClientSecret"), code, redirect));
       }
       if (provider === "linuxdo") {
-        if (!(await s.optionBool("LinuxDOOAuthEnabled", false))) return apiFail("LinuxDO OAuth 未启用");
-        if (!code) return apiFail("无效的授权码");
+        const denied = await denyIfDisabled("LinuxDOOAuthEnabled");
+        if (denied) return denied;
         return finish(await exchangeLinuxDO(await s.option("LinuxDOClientId"), await s.option("LinuxDOClientSecret"), code, redirect));
       }
       if (provider === "oidc") {
-        if (!(await s.optionBool("OIDCAuthEnabled", false))) return apiFail("OIDC 未启用");
-        if (!code) return apiFail("无效的授权码");
+        const denied = await denyIfDisabled("OIDCAuthEnabled");
+        if (denied) return denied;
         return finish(
           await exchangeOidc({
             tokenUrl: await s.option("OIDCTokenEndpoint"),
@@ -1168,11 +1189,12 @@ export function registerMore(r: Router<Env>): void {
       }
       const custom = await s.getOAuthProvider(provider);
       if (!custom) return json(400, { success: false, message: i18nPair(c.req, "未知的 OAuth 提供商", "Unknown OAuth provider") });
-      if (!code) return apiFail("无效的授权码");
+      if (!code) return apiFail(oauthInvalidCodeMessage(c.req));
       const server = ((await s.option("ServerAddress")) || origin).replace(/\/+$/, "");
       const customRedirect = `${server}/oauth/${provider}`;
       return finish(await exchangeCustom(custom, code, customRedirect));
     } catch (e) {
+      if (e instanceof OAuthI18nError) return apiFail(i18nPair(c.req, e.zh, e.en));
       return apiFail(e instanceof Error ? e.message : String(e));
     }
   });
