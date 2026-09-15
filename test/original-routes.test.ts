@@ -2963,8 +2963,9 @@ test("original AddChannel, FetchModels, channel status, and RelayNotFound JSON",
   assert.equal(extraConversations.res.status, 404);
   assert.equal((extraConversations.body.error as { message: string }).message, "Invalid URL (GET /api/conversations)");
   const extraChannelTypes = await json(new Request("http://local/api/channel/types", { headers: auth }), e);
-  assert.equal(extraChannelTypes.res.status, 404);
-  assert.equal((extraChannelTypes.body.error as { message: string }).message, "Invalid URL (GET /api/channel/types)");
+  assert.equal(extraChannelTypes.res.status, 200);
+  assert.equal(extraChannelTypes.body.success, false);
+  assert.equal(extraChannelTypes.body.message, 'strconv.Atoi: parsing "types": invalid syntax');
   const extraPostBalance = await json(
     new Request("http://local/api/channel/1/update_balance", { method: "POST", headers: auth }),
     e,
