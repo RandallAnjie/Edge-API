@@ -46,6 +46,29 @@ const EXPR_ENV_KEYS = [
 
 export type BillingUnit = "token" | "request";
 
+/** Original `billingexpr.TokenParams` (log `billing_tokens` keys). */
+export type TokenParams = {
+  p: number;
+  c: number;
+  len: number;
+  cr: number;
+  cc: number;
+  cc1h: number;
+  img: number;
+  img_cr: number;
+  img_o: number;
+  ai: number;
+  ao: number;
+};
+
+export function emptyTokenParams(): TokenParams {
+  return { p: 0, c: 0, len: 0, cr: 0, cc: 0, cc1h: 0, img: 0, img_cr: 0, img_o: 0, ai: 0, ao: 0 };
+}
+
+export function normalizeTokenParams(tokens?: Partial<TokenParams> | { p?: number; c?: number; len?: number }): TokenParams {
+  return { ...emptyTokenParams(), ...(tokens || {}) };
+}
+
 export type BillingSnapshot = {
   billingMode: string;
   modelName: string;
@@ -75,6 +98,8 @@ export type TieredResult = {
   matchedTier: string;
   crossedTier: boolean;
   clamp: QuotaClamp | null;
+  billingUnit: BillingUnit;
+  billingTokens?: TokenParams;
 };
 
 export function parseExprVersion(exprStr: string): { version: number; body: string } {
@@ -90,6 +115,21 @@ export function exprVersion(exprStr: string): number {
 /** Original `billingexpr.ExprHashString`. */
 export function exprHashString(expr: string): string {
   return bytesToHex(sha256BytesSync(utf8Bytes(expr)));
+}
+
+/** Original `billingexpr.UsedVars` identifier names (strings stripped). */
+export function usedVars(exprStr: string): Record<string, boolean> | null {
+  if (!exprStr) return null;
+  const { body } = parseExprVersion(exprStr);
+  const stripped = body.replace(/"(?:\\.|[^"\\])*"/g, '""').replace(/'(?:\\.|[^'\\])*'/g, "''");
+  const vars: Record<string, boolean> = {};
+  const re = /[A-Za-z_][A-Za-z0-9_]*/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(stripped))) {
+    if (match[0] === "_trace" || match[0] === "_trace_int") continue;
+    vars[match[0]] = true;
+  }
+  return Object.keys(vars).length ? vars : null;
 }
 
 /** Original `billingexpr.UsedUsageKeys` (literal `u("...")` only). */
@@ -113,23 +153,24 @@ function rewriteExpr(body: string): string {
 }
 
 function envFor(
-  tokens: { p: number; c: number; len: number },
+  tokens: Partial<TokenParams> & { p: number; c: number; len: number },
   usage: Record<string, unknown> = {},
   trace?: { matchedTier: string; billingUnit: BillingUnit; cost: number },
 ) {
+  const params = normalizeTokenParams(tokens);
   return {
     image_count: 1,
-    p: tokens.p,
-    c: tokens.c,
-    len: tokens.len,
-    cr: 0,
-    cc: 0,
-    cc1h: 0,
-    img: 0,
-    img_cr: 0,
-    img_o: 0,
-    ai: 0,
-    ao: 0,
+    p: params.p,
+    c: params.c,
+    len: params.len,
+    cr: params.cr,
+    cc: params.cc,
+    cc1h: params.cc1h,
+    img: params.img,
+    img_cr: params.img_cr,
+    img_o: params.img_o,
+    ai: params.ai,
+    ao: params.ao,
     tier: (name: string, value: number) => {
       const cost = Number(value);
       if (trace) {
@@ -201,7 +242,7 @@ export function compileBillingExpr(exprStr: string): Error | null {
 export function runExprWithRequest(
   exprStr: string,
   usage: Record<string, unknown> = {},
-  tokens: { p: number; c: number; len: number } = { p: 0, c: 0, len: 0 },
+  tokens: Partial<TokenParams> & { p?: number; c?: number; len?: number } = {},
 ): ExprTraceResult {
   const { body } = parseExprVersion(exprStr);
   const fn = compile(body);
@@ -210,7 +251,7 @@ export function runExprWithRequest(
     billingUnit: "token",
     cost: 0,
   };
-  const env = envFor(tokens, usage, trace);
+  const env = envFor(normalizeTokenParams(tokens), usage, trace);
   const cost = Number(fn(...envValues(env)));
   if (!Number.isFinite(cost)) throw new Error(`expr run error: result is ${cost}`);
   return { cost, matchedTier: trace.matchedTier, billingUnit: trace.billingUnit };
@@ -221,24 +262,34 @@ function quotaConversion(exprOutput: number, snap: BillingSnapshot): number {
   return (exprOutput / 1_000_000) * snap.quotaPerUnit;
 }
 
+/** Original `billingexpr.ComputeTieredQuota`. */
+export function computeTieredQuota(snap: BillingSnapshot, params: TokenParams): TieredResult {
+  return computeTieredQuotaWithRequest(snap, snap.usageFacts || {}, params);
+}
+
 /** Original `billingexpr.ComputeTieredQuotaWithRequest`. */
 export function computeTieredQuotaWithRequest(
   snap: BillingSnapshot,
   usage: Record<string, unknown> = {},
+  params?: Partial<TokenParams>,
 ): TieredResult {
   if (snap.taskUsageBilling && usesFixedPricing(snap.exprString)) {
     throw new Error("fixed pricing is not supported for task usage expressions");
   }
-  const { cost, matchedTier } = runExprWithRequest(snap.exprString, usage);
+  const tokens = normalizeTokenParams(params);
+  const { cost, matchedTier, billingUnit } = runExprWithRequest(snap.exprString, usage, tokens);
   const quotaBeforeGroup = quotaConversion(cost, snap);
   const afterGroup = quotaRoundChecked(quotaBeforeGroup * snap.groupRatio);
-  return {
+  const result: TieredResult = {
     actualQuotaBeforeGroup: quotaBeforeGroup,
     actualQuotaAfterGroup: afterGroup.quota,
     matchedTier,
     crossedTier: matchedTier !== snap.estimatedTier,
     clamp: afterGroup.clamp,
+    billingUnit,
   };
+  if (billingUnit === "token" && usedVars(snap.exprString)?.img_cr) result.billingTokens = tokens;
+  return result;
 }
 
 /** Original `service.EvaluateTaskCompletionUsage`. */

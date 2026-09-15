@@ -1305,6 +1305,7 @@ export function consumeLogOther(opts: {
   multiKeyIndex?: number;
   billingSource?: string;
   channelAffinity?: Record<string, unknown>;
+  publicExtra?: Record<string, unknown>;
 }): string {
   const other: Record<string, unknown> = {
     group_ratio: opts.groupRatio,
@@ -1314,6 +1315,7 @@ export function consumeLogOther(opts: {
     billing_source: opts.billingSource || "wallet",
   };
   if (opts.requestPath) other.request_path = opts.requestPath;
+  if (opts.publicExtra) Object.assign(other, opts.publicExtra);
   const admin: Record<string, unknown> = {
     use_channel: [String(opts.channelId)],
     channel_id: opts.channelId,

@@ -7,6 +7,14 @@ import {
   getBillingExpr,
   getBillingMode,
 } from "../src/billing-setting.js";
+import { computeTieredQuota, exprHashString, usedVars } from "../src/billing-expr.js";
+import {
+  billingTokensJSON,
+  buildTieredTokenParams,
+  injectTieredBillingInfo,
+  tryTieredSettle,
+  type BillingUsage,
+} from "../src/tiered-settle.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
@@ -118,5 +126,101 @@ test("original GetRatioConfig and GetOptions expose builtin image billing JSON",
   for (const name of IMAGE_BUILTIN_MODELS) {
     assert.equal(modes[name], BILLING_MODE_TIERED_EXPR);
     assert.equal(exprs[name], IMAGE_EXPR);
+  }
+});
+
+function quotaSnap(expression: string) {
+  return {
+    billingMode: BILLING_MODE_TIERED_EXPR,
+    modelName: "gpt-image-2",
+    exprString: expression,
+    exprHash: exprHashString(expression),
+    groupRatio: 1,
+    estimatedPromptTokens: 0,
+    estimatedCompletionTokens: 0,
+    estimatedQuotaBeforeGroup: 0,
+    estimatedQuotaAfterGroup: 0,
+    estimatedTier: "",
+    quotaPerUnit: 500000,
+    exprVersion: 1,
+    taskUsageBilling: false,
+    usageFacts: {},
+  };
+}
+
+test("original gpt-6-astra builtin ComputeTieredQuota JSON", () => {
+  const expression = BUILTIN_BILLING_EXPR["gpt-6-astra"];
+  const vars = usedVars(expression);
+  assert.equal(vars?.len, true);
+  assert.equal(vars?.cr, true);
+  assert.equal(vars?.cc, true);
+  const snap = { ...quotaSnap(expression), modelName: "gpt-6-astra" };
+  for (const tc of [
+    { name: "standard", input: 1000, output: 100, cached: 0, written: 0, quota: 7500 },
+    { name: "cache at context boundary", input: 272000, output: 1000, cached: 200000, written: 20000, quota: 510000 },
+    { name: "whole request above boundary", input: 272001, output: 1000, cached: 200000, written: 20000, quota: 1007510 },
+  ]) {
+    const usage: BillingUsage = {
+      prompt_tokens: tc.input,
+      completion_tokens: tc.output,
+      prompt_tokens_details: { cached_tokens: tc.cached, cache_write_tokens: tc.written },
+    };
+    const params = buildTieredTokenParams(usage, false, vars);
+    const result = computeTieredQuota(snap, params);
+    assert.equal(result.actualQuotaAfterGroup, tc.quota, tc.name);
+    assert.equal(result.billingUnit, "token");
+    assert.equal(result.matchedTier, tc.input <= 272000 ? "standard" : "long_context");
+  }
+});
+
+test("original image builtin ComputeTieredQuota is 4113 with billing_tokens JSON", () => {
+  for (const name of IMAGE_BUILTIN_MODELS) {
+    const expression = BUILTIN_BILLING_EXPR[name];
+    const usage: BillingUsage = {
+      prompt_tokens: 1000,
+      completion_tokens: 100,
+      prompt_tokens_details: {
+        cached_tokens: 300,
+        image_tokens: 600,
+        cached_tokens_details: { image_tokens: 200 },
+      },
+    };
+    const params = buildTieredTokenParams(usage, false, usedVars(expression));
+    assert.deepEqual(params, {
+      p: 300,
+      c: 100,
+      len: 1000,
+      cr: 100,
+      cc: 0,
+      cc1h: 0,
+      img: 400,
+      img_cr: 200,
+      img_o: 0,
+      ai: 0,
+      ao: 0,
+    });
+    const snap = { ...quotaSnap(expression), modelName: name };
+    const result = computeTieredQuota(snap, params);
+    assert.equal(result.actualQuotaAfterGroup, 4113, name);
+    assert.equal(result.matchedTier, "standard");
+    assert.equal(result.billingUnit, "token");
+    assert.ok(result.billingTokens);
+    const tokens = billingTokensJSON(result.billingTokens!);
+    assert.deepEqual(Object.keys(tokens).sort(), ["ai", "ao", "c", "cc", "cc1h", "cr", "img", "img_cr", "img_o", "len", "p"]);
+    assert.equal(tokens.p, 300);
+    assert.equal(tokens.cr, 100);
+    assert.equal(tokens.img, 400);
+    assert.equal(tokens.img_cr, 200);
+    assert.equal(tokens.c, 100);
+    const other = injectTieredBillingInfo({}, snap, result);
+    assert.equal(other.billing_mode, "tiered_expr");
+    assert.equal(other.matched_tier, "standard");
+    assert.equal(other.billing_unit, "token");
+    assert.equal(other.image_cache_tokens, 200);
+    assert.deepEqual(other.billing_tokens, tokens);
+    assert.equal(other.expr_b64, Buffer.from(expression, "utf8").toString("base64"));
+    const settled = tryTieredSettle(snap, params);
+    assert.equal(settled.ok, true);
+    if (settled.ok) assert.equal(settled.quota, 4113);
   }
 });

@@ -43,6 +43,7 @@ import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
 import { computeQuota, quotaRatios } from "./quota.js";
+import { billingUsageFromOpenAICounts, injectTieredBillingInfo, resolveRelayTieredQuota } from "./tiered-settle.js";
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
 import { buildAdvancedCustomRelayTarget, shouldApplyAdvancedCustomClaudeHeaders } from "./channel-validate.js";
@@ -729,8 +730,11 @@ export async function testChannel(
   if (!user) user = await store.getRootUser();
   if (user && (await store.optionBool("LogConsumeEnabled", true))) {
     const group = opts.group || user.group || "default";
-    const quota = await computeQuota(store, originModel, group, usage.prompt, usage.completion);
+    const billingUsage = billingUsageFromOpenAICounts({ prompt: usage.prompt, completion: usage.completion });
+    const tiered = await resolveRelayTieredQuota(store, originModel, group, billingUsage, false);
+    const quota = tiered ? tiered.quota : await computeQuota(store, originModel, group, usage.prompt, usage.completion);
     const ratios = await quotaRatios(store, originModel, group);
+    const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
     await store.insertLog({
       user_id: user.id,
       type: LOG_CONSUME,
@@ -758,6 +762,7 @@ export async function testChannel(
         ok: true,
         requestPath,
         billingSource: "wallet",
+        publicExtra,
       }),
     });
   }

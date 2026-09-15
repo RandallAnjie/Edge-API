@@ -247,9 +247,41 @@ export function openaiFromImagenResponse(upstream: Record<string, unknown>, opts
   };
 }
 
-export function imagenUsage(imageCount: number): { prompt: number; completion: number; total: number; cachedTokens: number; promptCacheHitTokens: number } {
+export function imagenUsage(imageCount: number): {
+  prompt: number;
+  completion: number;
+  total: number;
+  cachedTokens: number;
+  promptCacheHitTokens: number;
+  imageTokens: number;
+  cachedImageTokens: number | null;
+  audioTokens: number;
+  cacheWriteTokens: number;
+  cachedCreationTokens: number;
+  completionImageTokens: number;
+  completionAudioTokens: number;
+  usageSemantic: string;
+  claudeCacheCreation5mTokens: number;
+  claudeCacheCreation1hTokens: number;
+} {
   const prompt = VERTEX_IMAGE_TOKENS * Math.max(0, imageCount);
-  return { prompt, completion: 0, total: prompt, cachedTokens: 0, promptCacheHitTokens: 0 };
+  return {
+    prompt,
+    completion: 0,
+    total: prompt,
+    cachedTokens: 0,
+    promptCacheHitTokens: 0,
+    imageTokens: 0,
+    cachedImageTokens: null,
+    audioTokens: 0,
+    cacheWriteTokens: 0,
+    cachedCreationTokens: 0,
+    completionImageTokens: 0,
+    completionAudioTokens: 0,
+    usageSemantic: "",
+    claudeCacheCreation5mTokens: 0,
+    claudeCacheCreation1hTokens: 0,
+  };
 }
 
 /** Original `vertex.GetModelRegion`. */

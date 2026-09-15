@@ -35,6 +35,7 @@ import {
   openaiToGemini,
   sseFromOpenAIChatCompletion,
   sseOpenAIFromText,
+  emptyOpenAIUsageCounts,
   usageFromOpenAI,
   type ChatMessage,
   convertClaudeMessagesToGeminiGenerateContent,
@@ -193,6 +194,12 @@ import { tokenAllowsModel } from "./auth.js";
 import { OPENAI_MODELS_MAP } from "./channel-models.js";
 import { factoryPluginMeta, listRoutingPlugins } from "./task-plugin-factory.js";
 import { hasModelBillingConfig } from "./billing-setting.js";
+import {
+  billingUsageFromOpenAICounts,
+  injectTieredBillingInfo,
+  resolveRelayTieredQuota,
+  type BillingUsage,
+} from "./tiered-settle.js";
 import { getModelSupportEndpointTypes } from "./pricing-cache.js";
 import { listModelsTokenLimitAllows } from "./ratio-setting.js";
 
@@ -1334,6 +1341,15 @@ async function openaiClientFromProvider(
   return { body: stream ? sseFromOpenAIChatCompletion(converted) : JSON.stringify(converted), usageBody: converted };
 }
 
+function attachSettleUsage(
+  extra: { cachedTokens?: number; promptCacheHitTokens?: number; billingUsage?: BillingUsage },
+  usage: ReturnType<typeof usageFromOpenAI>,
+): void {
+  extra.cachedTokens = usage.cachedTokens;
+  extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+  extra.billingUsage = billingUsageFromOpenAICounts(usage);
+}
+
 async function settle(
   store: Store,
   auth: AuthToken,
@@ -1356,9 +1372,21 @@ async function settle(
     clientFormat?: string;
     cachedTokens?: number;
     promptCacheHitTokens?: number;
+    billingUsage?: BillingUsage;
   } = {},
 ): Promise<void> {
-  const quota = await computeQuota(store, model, auth.usingGroup, prompt, completion);
+  const billingUsage =
+    extra.billingUsage ||
+    billingUsageFromOpenAICounts({
+      prompt,
+      completion,
+      cachedTokens: extra.cachedTokens || 0,
+      promptCacheHitTokens: extra.promptCacheHitTokens || 0,
+    });
+  const isClaude = extra.clientFormat === "anthropic" || billingUsage.usage_semantic === "anthropic";
+  const tiered = await resolveRelayTieredQuota(store, model, auth.usingGroup, billingUsage, isClaude);
+  let quota = tiered ? tiered.quota : await computeQuota(store, model, auth.usingGroup, prompt, completion);
+  const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
   if (ok && quota > 0) {
     await store.consumeQuota(auth.user.id, auth.token.id, channel.id, quota);
     await store.bumpQuotaData(auth.user, model, quota, prompt + completion, {
@@ -1399,6 +1427,7 @@ async function settle(
       requestPath: extra.requestPath,
       isMultiKey: parseChannelInfo(String(channel.channel_info || "")).is_multi_key,
       channelAffinity: extra.channelAffinity,
+      publicExtra,
     }),
   });
   if (ok && extra.affinity && extra.env) {
@@ -1974,8 +2003,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           return openaiError(500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
-        extra.cachedTokens = usage.cachedTokens;
-        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        attachSettleUsage(extra, usage);
         ctx?.waitUntil(
           settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
         );
@@ -2007,8 +2035,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           return openaiError(500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
-        extra.cachedTokens = usage.cachedTokens;
-        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        attachSettleUsage(extra, usage);
         ctx?.waitUntil(
           settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
         );
@@ -2032,8 +2059,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           return openaiError(500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
-        extra.cachedTokens = usage.cachedTokens;
-        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        attachSettleUsage(extra, usage);
         ctx?.waitUntil(
           settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
         );
@@ -2064,8 +2090,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           return openaiError(500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
-        extra.cachedTokens = usage.cachedTokens;
-        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        attachSettleUsage(extra, usage);
         ctx?.waitUntil(
           settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
         );
@@ -2089,8 +2114,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           return openaiError(500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
-        extra.cachedTokens = usage.cachedTokens;
-        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        attachSettleUsage(extra, usage);
         ctx?.waitUntil(
           settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
         );
@@ -2123,8 +2147,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           return openaiError(500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
-        extra.cachedTokens = usage.cachedTokens;
-        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        attachSettleUsage(extra, usage);
         ctx?.waitUntil(
           settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
         );
@@ -2153,8 +2176,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           return openaiError(500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
-        extra.cachedTokens = usage.cachedTokens;
-        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        attachSettleUsage(extra, usage);
         ctx?.waitUntil(
           settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
         );
@@ -2191,8 +2213,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           return openaiError(500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody);
-        extra.cachedTokens = usage.cachedTokens;
-        extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+        attachSettleUsage(extra, usage);
         ctx?.waitUntil(
           settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
         );
@@ -2337,15 +2358,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     if (channel.type === CHANNEL_TYPE_CLOUDFLARE && isCloudflareSTTRelayMode(mode)) {
       const sttUsage = cloudflareSTTUsage(String(converted.text || ""), mapped, promptEst);
       usage = {
+        ...emptyOpenAIUsageCounts(),
         prompt: sttUsage.prompt_tokens,
         completion: sttUsage.completion_tokens,
         total: sttUsage.total_tokens,
-        cachedTokens: 0,
-        promptCacheHitTokens: 0,
       };
     }
-    extra.cachedTokens = usage.cachedTokens;
-    extra.promptCacheHitTokens = usage.promptCacheHitTokens;
+    attachSettleUsage(extra, usage);
     await settle(
       store,
       auth,
@@ -2380,13 +2399,14 @@ async function parseStreamAndSettle(
   ip: string,
   rid: string,
   body: ReadableStream<Uint8Array>,
-  extra: { upstreamRequestId?: string; requestPath?: string } = {},
+  extra: { upstreamRequestId?: string; requestPath?: string; cachedTokens?: number; promptCacheHitTokens?: number; billingUsage?: BillingUsage } = {},
 ): Promise<void> {
   const reader = body.getReader();
   const dec = new TextDecoder();
   let buf = "";
   let prompt = promptEst;
   let completion = 0;
+  let lastUsage: ReturnType<typeof usageFromOpenAI> | null = null;
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -2402,6 +2422,7 @@ async function parseStreamAndSettle(
         try {
           const obj = JSON.parse(data) as Record<string, unknown>;
           const u = usageFromOpenAI(obj);
+          if (u.prompt || u.completion || u.cachedTokens || u.imageTokens) lastUsage = u;
           if (u.prompt) prompt = u.prompt;
           if (u.completion) completion = u.completion;
           const delta = (obj.choices as { delta?: { content?: string } }[] | undefined)?.[0]?.delta?.content;
@@ -2414,6 +2435,7 @@ async function parseStreamAndSettle(
   } catch {
     /* ignore parse errors */
   }
+  if (lastUsage) attachSettleUsage(extra, lastUsage);
   await settle(store, auth, channel, model, prompt, completion, useTime, true, ip, rid, true, "stream", extra);
 }
 

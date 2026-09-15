@@ -152,7 +152,12 @@ Material changes from upstream:
   Channel field). Original `billing_setting.builtinBillingExpr` includes
   `gpt-image-2` / `gpt-image-2.5-sunburst` / `gpt-image-2.5-flare` /
   `gpt-6-astra`; GetRatioConfig and GetOptions expose those via
-  GetBillingModeCopy / GetBillingExprCopy.
+  GetBillingModeCopy / GetBillingExprCopy. Original
+  `service.BuildTieredTokenParams` + `billingexpr.ComputeTieredQuota` settle
+  those exprs (image quota `4113` with ImageTokens/CachedTokensDetails;
+  gpt-6-astra standard `7500` / boundary `510000` / long-context `1007510`)
+  and `InjectTieredBillingInfo` public log JSON (`billing_mode`, `expr_b64`,
+  `billing_tokens`, `image_cache_tokens`, `matched_tier`, `billing_unit`).
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented

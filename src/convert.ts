@@ -192,25 +192,73 @@ export {
   GeminiToChatStreamState,
 } from "./gemini-response.js";
 
-export function usageFromOpenAI(body: Record<string, unknown> | null): {
+export type OpenAIUsageCounts = {
   prompt: number;
   completion: number;
   total: number;
   cachedTokens: number;
   promptCacheHitTokens: number;
-} {
-  if (!body) return { prompt: 0, completion: 0, total: 0, cachedTokens: 0, promptCacheHitTokens: 0 };
+  imageTokens: number;
+  cachedImageTokens: number | null;
+  audioTokens: number;
+  cacheWriteTokens: number;
+  cachedCreationTokens: number;
+  completionImageTokens: number;
+  completionAudioTokens: number;
+  usageSemantic: string;
+  claudeCacheCreation5mTokens: number;
+  claudeCacheCreation1hTokens: number;
+};
+
+export function emptyOpenAIUsageCounts(): OpenAIUsageCounts {
+  return {
+    prompt: 0,
+    completion: 0,
+    total: 0,
+    cachedTokens: 0,
+    promptCacheHitTokens: 0,
+    imageTokens: 0,
+    cachedImageTokens: null,
+    audioTokens: 0,
+    cacheWriteTokens: 0,
+    cachedCreationTokens: 0,
+    completionImageTokens: 0,
+    completionAudioTokens: 0,
+    usageSemantic: "",
+    claudeCacheCreation5mTokens: 0,
+    claudeCacheCreation1hTokens: 0,
+  };
+}
+
+export function usageFromOpenAI(body: Record<string, unknown> | null): OpenAIUsageCounts {
+  if (!body) return emptyOpenAIUsageCounts();
   const usage = (body.usage || {}) as Record<string, unknown>;
   const meta = (body.usageMetadata || {}) as Record<string, unknown>;
   const promptDetails = (usage.prompt_tokens_details || usage.input_tokens_details || {}) as Record<string, unknown>;
+  const completionDetails = (usage.completion_tokens_details || usage.output_tokens_details || {}) as Record<string, unknown>;
+  const cachedDetails = (promptDetails.cached_tokens_details || null) as Record<string, unknown> | null;
   const prompt = Number(usage.prompt_tokens || usage.input_tokens || meta.promptTokenCount || 0);
   const completion = Number(usage.completion_tokens || usage.output_tokens || meta.candidatesTokenCount || 0);
+  const cachedImage =
+    cachedDetails && cachedDetails.image_tokens != null && cachedDetails.image_tokens !== ""
+      ? Number(cachedDetails.image_tokens)
+      : null;
   return {
     prompt,
     completion,
     total: Number(usage.total_tokens || meta.totalTokenCount || prompt + completion),
     cachedTokens: Number(promptDetails.cached_tokens || 0),
     promptCacheHitTokens: Number(usage.prompt_cache_hit_tokens || 0),
+    imageTokens: Number(promptDetails.image_tokens || 0),
+    cachedImageTokens: cachedImage != null && Number.isFinite(cachedImage) ? cachedImage : null,
+    audioTokens: Number(promptDetails.audio_tokens || 0),
+    cacheWriteTokens: Number(promptDetails.cache_write_tokens || 0),
+    cachedCreationTokens: Number(promptDetails.cached_creation_tokens || 0),
+    completionImageTokens: Number(completionDetails.image_tokens || 0),
+    completionAudioTokens: Number(completionDetails.audio_tokens || 0),
+    usageSemantic: String(usage.usage_semantic || ""),
+    claudeCacheCreation5mTokens: Number(usage.claude_cache_creation_5_m_tokens || 0),
+    claudeCacheCreation1hTokens: Number(usage.claude_cache_creation_1_h_tokens || 0),
   };
 }
 
