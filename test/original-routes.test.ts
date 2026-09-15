@@ -5135,7 +5135,11 @@ test("original auto-group selection, playground group, affinity TTL/usage cache,
       e,
     );
     assert.equal(deniedPg.res.status, 403);
-    assert.equal((deniedPg.body.error as { message: string }).message, "No permission to access this group");
+    const deniedPgErr = deniedPg.body.error as { message: string; type: string; code: string; param?: unknown };
+    assert.deepEqual(Object.keys(deniedPgErr).sort(), ["code", "message", "type"]);
+    assert.equal(deniedPgErr.message, "No permission to access this group");
+    assert.equal(deniedPgErr.type, "new_api_error");
+    assert.equal(deniedPgErr.code, "");
 
     seen.length = 0;
     const pg = await json(
@@ -5303,7 +5307,11 @@ test("original TokenAuth group checks, admin channel pin, and token model limits
     e,
   );
   assert.equal(ghostRelay.res.status, 403);
-  assert.equal((ghostRelay.body.error as { message: string }).message, "无权访问 ghost 分组");
+  const ghostErr = ghostRelay.body.error as { message: string; type: string; code: string; param?: unknown };
+  assert.deepEqual(Object.keys(ghostErr).sort(), ["code", "message", "type"]);
+  assert.equal(ghostErr.message, "无权访问 ghost 分组");
+  assert.equal(ghostErr.type, "new_api_error");
+  assert.equal(ghostErr.code, "");
 
   const defCh = await json(
     new Request("http://local/api/channel/", {
@@ -5414,7 +5422,11 @@ test("original TokenAuth group checks, admin channel pin, and token model limits
     e,
   );
   assert.equal(deniedPin.res.status, 403);
-  assert.equal((deniedPin.body.error as { message: string }).message, "普通用户不支持指定渠道");
+  const pinErr = deniedPin.body.error as { message: string; type: string; code: string; param?: unknown };
+  assert.deepEqual(Object.keys(pinErr).sort(), ["code", "message", "type"]);
+  assert.equal(pinErr.message, "普通用户不支持指定渠道");
+  assert.equal(pinErr.type, "new_api_error");
+  assert.equal(pinErr.code, "");
   assert.equal(deniedPin.res.headers.get("specific_channel_version"), "701e3ae1dc3f7975556d354e0675168d004891c8");
 
   const limitedTk = await json(
@@ -5440,7 +5452,11 @@ test("original TokenAuth group checks, admin channel pin, and token model limits
     e,
   );
   assert.equal(forbidden.res.status, 403);
-  assert.equal((forbidden.body.error as { message: string }).message, "This token has no access to model gpt-4o-mini");
+  const forbiddenErr = forbidden.body.error as { message: string; type: string; code: string; param?: unknown };
+  assert.deepEqual(Object.keys(forbiddenErr).sort(), ["code", "message", "type"]);
+  assert.equal(forbiddenErr.message, "This token has no access to model gpt-4o-mini");
+  assert.equal(forbiddenErr.type, "new_api_error");
+  assert.equal(forbiddenErr.code, "");
 
   await json(
     new Request("http://local/api/channel/", {

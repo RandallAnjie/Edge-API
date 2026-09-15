@@ -146,6 +146,50 @@ export function ipAllowed(allowIps: string, ip: string): boolean {
   });
 }
 
+/** Original `model.Token.GetIpLimits`. */
+export function tokenIpLimits(allowIps: string | null | undefined): string[] {
+  if (allowIps == null) return [];
+  const cleanIps = String(allowIps).replace(/ /g, "");
+  if (!cleanIps) return [];
+  const out: string[] = [];
+  for (const line of cleanIps.split("\n")) {
+    const ip = line.replace(/,/g, "").trim();
+    if (ip) out.push(ip);
+  }
+  return out;
+}
+
+/** Original `net.ParseIP` nonempty result. */
+export function parseIP(ip: string): string | null {
+  const s = ip.trim();
+  if (!s) return null;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (v4) {
+    const oct = [Number(v4[1]), Number(v4[2]), Number(v4[3]), Number(v4[4])];
+    if (oct.some((n) => !Number.isInteger(n) || n > 255)) return null;
+    return oct.join(".");
+  }
+  if (!s.includes(":") || /[^0-9a-fA-F:.]/.test(s)) return null;
+  if (s.split(":").length < 3) return null;
+  return s;
+}
+
+/** Original `common.IsIpInCIDRList`. */
+export function isIpInCIDRList(ip: string, cidrList: string[]): boolean {
+  const parsed = parseIP(ip);
+  if (!parsed) return false;
+  for (const cidr of cidrList) {
+    const network = cidr.includes("/") ? cidr : "";
+    if (network) {
+      if (cidrContains(network, parsed)) return true;
+      continue;
+    }
+    const whitelistIP = parseIP(cidr);
+    if (whitelistIP && whitelistIP === parsed) return true;
+  }
+  return false;
+}
+
 function cidrContains(cidr: string, ip: string): boolean {
   const [range, bitsStr] = cidr.split("/");
   const bits = Number(bitsStr);

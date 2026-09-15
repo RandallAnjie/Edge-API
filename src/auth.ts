@@ -27,24 +27,27 @@ import {
   verifySession,
 } from "./crypto.js";
 import {
+  abortWithOpenAiMessage,
   apiFail,
   apiFailCode,
   apiOk,
   clearAuthCookies,
   clientIp,
   cookieGet,
+  databaseErrorMessage,
   isSecureRequest,
   json,
   readJson,
   refreshCookie,
   sessionHintCookie,
   withSetCookies,
-  openaiError,
   invalidChannelIdMessage,
+  tokenInvalidMessage,
+  userBannedMessage,
   SPECIFIC_CHANNEL_VERSION,
 } from "./http.js";
 import { twoFAVerificationOption, verifyTwoFactorCode } from "./totp.js";
-import { ipAllowed } from "./select.js";
+import { isIpInCIDRList, parseIP, tokenIpLimits } from "./select.js";
 import { Store, permissionsFor, publicUser } from "./store.js";
 import { containsGroupRatio, userUsableGroups } from "./dto.js";
 import { tokenModelLimitAllows } from "./ratio-setting.js";
@@ -552,43 +555,66 @@ export async function authenticateTokenReadOnly(
   return { token, user };
 }
 
+function tokenAuthAbort(
+  req: Request,
+  status: number,
+  message: string,
+  code = "",
+  extra?: HeadersInit,
+): Response {
+  return abortWithOpenAiMessage(status, message, code, req.headers.get("x-oneapi-request-id") || "", extra);
+}
+
 export async function authenticateApiToken(c: Context<Env>, store: Store): Promise<AuthToken | Response> {
   const parsed = extractRequestApiKeyParts(c.req, c.url);
   const key = parsed.key;
-  if (!key) return openaiError(401, "未提供令牌", "invalid_api_key");
+  if (!key) return tokenAuthAbort(c.req, 401, tokenInvalidMessage(c.req));
   const token = await store.getTokenByKey(key);
-  if (!token) return openaiError(401, "令牌无效", "invalid_api_key");
-  if (token.status !== TOKEN_ENABLED) return openaiError(403, "令牌已禁用", "token_disabled");
-  if (token.expired_time > 0 && token.expired_time < nowSec()) {
-    return openaiError(403, "令牌已过期", "token_expired");
+  if (!token || token.status !== TOKEN_ENABLED) {
+    return tokenAuthAbort(c.req, 401, tokenInvalidMessage(c.req));
+  }
+  if (token.expired_time !== -1 && token.expired_time < nowSec()) {
+    return tokenAuthAbort(c.req, 401, tokenInvalidMessage(c.req));
+  }
+  if (!token.unlimited_quota && token.remain_quota <= 0) {
+    return tokenAuthAbort(c.req, 401, tokenInvalidMessage(c.req));
+  }
+  const allowIps = tokenIpLimits(token.allow_ips);
+  if (allowIps.length) {
+    const ip = clientIp(c.req);
+    if (!parseIP(ip)) {
+      return tokenAuthAbort(c.req, 403, "无法解析客户端 IP 地址");
+    }
+    if (!isIpInCIDRList(ip, allowIps)) {
+      return tokenAuthAbort(c.req, 403, "您的 IP 不在令牌允许访问的列表中", "access_denied");
+    }
   }
   const user = await store.getUserById(token.user_id);
-  if (!user || user.status !== USER_ENABLED) return openaiError(403, "用户已被封禁", "user_disabled");
-  const ip = c.req.headers.get("cf-connecting-ip") || c.req.headers.get("x-real-ip") || "";
-  if (!ipAllowed(token.allow_ips, ip)) return openaiError(403, "您的 IP 不在令牌允许访问的列表中", "access_denied");
+  if (!user) return tokenAuthAbort(c.req, 500, databaseErrorMessage(c.req));
+  if (user.status !== USER_ENABLED) return tokenAuthAbort(c.req, 403, userBannedMessage(c.req));
   const userGroup = user.group || "default";
   let usingGroup = userGroup;
   const tokenGroup = String(token.group || "");
   if (tokenGroup) {
     const usable = await userUsableGroups(store, userGroup);
     if (usable[tokenGroup] == null) {
-      return openaiError(403, `无权访问 ${tokenGroup} 分组`, "access_denied");
+      return tokenAuthAbort(c.req, 403, `无权访问 ${tokenGroup} 分组`);
     }
     if (tokenGroup !== "auto" && !(await containsGroupRatio(store, tokenGroup))) {
-      return openaiError(403, `分组 ${tokenGroup} 已被弃用`, "access_denied");
+      return tokenAuthAbort(c.req, 403, `分组 ${tokenGroup} 已被弃用`);
     }
     usingGroup = tokenGroup;
   }
   let pinnedChannelId: number | undefined;
   if (parsed.extra.length) {
     if (user.role < ROLE_ADMIN) {
-      return openaiError(403, "普通用户不支持指定渠道", "access_denied", "new_api_error", {
+      return tokenAuthAbort(c.req, 403, "普通用户不支持指定渠道", "", {
         specific_channel_version: SPECIFIC_CHANNEL_VERSION,
       });
     }
     const rawId = parsed.extra[0];
     if (!/^-?\d+$/.test(rawId)) {
-      return openaiError(400, invalidChannelIdMessage(c.req), "invalid_channel_id");
+      return tokenAuthAbort(c.req, 400, invalidChannelIdMessage(c.req));
     }
     pinnedChannelId = Number(rawId);
   }

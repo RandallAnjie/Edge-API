@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { channelInGroup, channelSupportsModel, ipAllowed, orderChannels, pickAbilityChannelId, pickWeighted } from "../src/select.js";
+import { channelInGroup, channelSupportsModel, ipAllowed, isIpInCIDRList, orderChannels, parseIP, pickAbilityChannelId, pickWeighted, tokenIpLimits } from "../src/select.js";
 import type { ChannelRow } from "../src/types.js";
 
 function ch(p: Partial<ChannelRow> & { id: number }): ChannelRow {
@@ -83,4 +83,21 @@ test("ipAllowed", () => {
   assert.equal(ipAllowed("1.1.1.1", "1.1.1.1"), true);
   assert.equal(ipAllowed("10.0.0.0/8", "10.2.3.4"), true);
   assert.equal(ipAllowed("10.0.0.0/8", "11.0.0.1"), false);
+});
+
+test("original Token.GetIpLimits and IsIpInCIDRList", () => {
+  assert.deepEqual(tokenIpLimits(""), []);
+  assert.deepEqual(tokenIpLimits("   "), []);
+  assert.deepEqual(tokenIpLimits("10.0.0.1\n10.0.0.2"), ["10.0.0.1", "10.0.0.2"]);
+  assert.deepEqual(tokenIpLimits(" 10.0.0.1 \n 10.0.0.2 "), ["10.0.0.1", "10.0.0.2"]);
+  assert.deepEqual(tokenIpLimits("10.0.0.1,10.0.0.2"), ["10.0.0.110.0.0.2"]);
+  assert.equal(parseIP(""), null);
+  assert.equal(parseIP("not-an-ip"), null);
+  assert.equal(parseIP("10.0.0.1"), "10.0.0.1");
+  assert.equal(parseIP("999.1.1.1"), null);
+  assert.equal(parseIP("::1"), "::1");
+  assert.equal(isIpInCIDRList("10.2.3.4", ["10.0.0.0/8"]), true);
+  assert.equal(isIpInCIDRList("11.0.0.1", ["10.0.0.0/8"]), false);
+  assert.equal(isIpInCIDRList("10.0.0.1", ["10.0.0.1"]), true);
+  assert.equal(isIpInCIDRList("10.0.0.1", ["10.0.0.2"]), false);
 });

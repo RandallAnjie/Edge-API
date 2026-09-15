@@ -140,7 +140,62 @@ export function tokenModelForbiddenMessage(req: Request, model: string): string 
 
 /** Original `i18n.MsgDistributorInvalidChannelId`. */
 export function invalidChannelIdMessage(req: Request): string {
-  return i18nPair(req, "无效的渠道 Id", "Invalid channel ID");
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "無效的管道 Id";
+    case "zh-CN":
+      return "无效的渠道 Id";
+    default:
+      return "Invalid channel ID";
+  }
+}
+
+/** Original `i18n.MsgTokenInvalid`. */
+export function tokenInvalidMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "無效的令牌";
+    case "zh-CN":
+      return "无效的令牌";
+    default:
+      return "Invalid token";
+  }
+}
+
+/** Original `i18n.MsgAuthUserBanned`. */
+export function userBannedMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "使用者已被封禁";
+    case "zh-CN":
+      return "用户已被封禁";
+    default:
+      return "User has been banned";
+  }
+}
+
+/** Original `i18n.MsgDatabaseError`. */
+export function databaseErrorMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "資料庫出錯，請聯繫管理員";
+    case "zh-CN":
+      return "数据库出错，请联系管理员";
+    default:
+      return "Database error, please contact the administrator";
+  }
+}
+
+/** Original `i18n.MsgDistributorModelNameRequired`. */
+export function modelNameRequiredMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "未指定模型名稱，模型名稱不能為空";
+    case "zh-CN":
+      return "未指定模型名称，模型名称不能为空";
+    default:
+      return "Model name not specified, model name cannot be empty";
+  }
 }
 
 /** Original `i18n.MsgDistributorChannelDisabled`. */
@@ -368,14 +423,26 @@ export function messageWithRequestId(message: string, requestId: string): string
 }
 
 /** Original `middleware.abortWithOpenAiMessage` OpenAI envelope (no `param`). */
-export function abortWithOpenAiMessage(status: number, message: string, code = "", requestId = ""): Response {
-  return json(status, {
-    error: {
-      message: messageWithRequestId(message, requestId),
-      type: "new_api_error",
-      code,
+export function abortWithOpenAiMessage(
+  status: number,
+  message: string,
+  code = "",
+  requestId = "",
+  extra?: HeadersInit,
+): Response {
+  const headers = new Headers(extra);
+  if (requestId) headers.set("X-Oneapi-Request-Id", requestId);
+  return json(
+    status,
+    {
+      error: {
+        message: messageWithRequestId(message, requestId),
+        type: "new_api_error",
+        code,
+      },
     },
-  });
+    headers,
+  );
 }
 
 /** Original `middleware.abortTaskPluginRouteErrorDetail` host fallback JSON. */

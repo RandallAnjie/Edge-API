@@ -112,7 +112,7 @@ import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-c
 import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
-import { abortWithOpenAiMessage, clientIp, groupAccessDeniedMessage, json, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
+import { abortWithOpenAiMessage, clientIp, groupAccessDeniedMessage, json, modelNameRequiredMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, channelParamOverrideMap, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import { removeDisabledFields, usesRemoveDisabledFields, type ChannelDisabledFieldSettings } from "./relay-disabled-fields.js";
 import {
@@ -1424,9 +1424,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   const { store, mode, clientFormat, path, ctx } = opts;
   const auth = opts.auth;
   let model = opts.model;
-  if (!model) return openaiError(400, "未提供模型名称", "model_not_found");
+  const abortRid = opts.req.headers.get("x-oneapi-request-id") || "";
+  if (!model) return abortWithOpenAiMessage(400, modelNameRequiredMessage(opts.req), "", abortRid);
   if (!tokenAllowsModel(auth.token, model)) {
-    return openaiError(403, tokenModelForbiddenMessage(opts.req, model), "model_not_allowed");
+    return abortWithOpenAiMessage(403, tokenModelForbiddenMessage(opts.req, model), "", abortRid);
   }
 
   if (opts.playground) {
@@ -1434,7 +1435,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     if (pgGroup) {
       const allowed = await groupInUserUsableGroups(store, auth.user.group || "default", pgGroup);
       if (!allowed && pgGroup !== auth.usingGroup) {
-        return openaiError(403, groupAccessDeniedMessage(opts.req), "access_denied");
+        return abortWithOpenAiMessage(403, groupAccessDeniedMessage(opts.req), "", abortRid);
       }
       auth.usingGroup = pgGroup;
     }
