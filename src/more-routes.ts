@@ -87,6 +87,13 @@ function store(c: C): Store {
   return new Store(c.env.DB);
 }
 
+/** Original PrefillGroup `JSONValue` binding: omitted/null → empty (JSON `null`); otherwise raw JSON. */
+function encodePrefillItems(items: unknown): string {
+  if (items == null) return "";
+  if (typeof items === "string") return items;
+  return JSON.stringify(items);
+}
+
 async function passkeyLoginBeginSelection(
   s: Store,
   req: Request,
@@ -1396,7 +1403,7 @@ export function registerMore(r: Router<Env>): void {
     const body = (await readJson(c.req)) as { name?: string; type?: string; items?: unknown; description?: string };
     if (!body.name || !body.type) return apiFail("组名称和类型不能为空");
     if (await s.prefillNameTaken(body.name)) return apiFail("组名称已存在");
-    const items = typeof body.items === "string" ? body.items : JSON.stringify(body.items ?? []);
+    const items = encodePrefillItems(body.items);
     const id = await s.insertPrefill(body.name, body.type, items, body.description || "");
     const row = await s.getPrefill(id);
     return apiOk(publicPrefill(row || { id, name: body.name, type: body.type, items }));
@@ -1406,13 +1413,24 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number; name?: string };
+    const body = (await readJson(c.req)) as {
+      id?: number;
+      name?: string;
+      type?: string;
+      items?: unknown;
+      description?: string;
+      created_time?: number;
+    };
     if (!body.id) return apiFail("缺少组 ID");
     if (body.name && (await s.prefillNameTaken(body.name, body.id))) return apiFail("组名称已存在");
-    const patch: Record<string, unknown> = { updated_time: nowSec() };
-    for (const k of ["name", "type", "description"]) if (body[k] != null) patch[k] = body[k];
-    if (body.items != null) patch.items = typeof body.items === "string" ? body.items : JSON.stringify(body.items);
-    await s.updatePrefill(body.id, patch);
+    await s.savePrefill({
+      id: body.id,
+      name: String(body.name || ""),
+      type: String(body.type || ""),
+      items: encodePrefillItems(body.items),
+      description: String(body.description || ""),
+      created_time: Number(body.created_time || 0),
+    });
     const row = await s.getPrefill(body.id);
     return apiOk(row ? publicPrefill(row) : null);
   });

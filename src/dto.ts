@@ -1783,20 +1783,18 @@ export function publicVendor(row: Record<string, unknown>, modelCount = 0): Reco
 
 export function publicPrefill(row: Record<string, unknown>): Record<string, unknown> {
   const raw = row.items;
-  let items: unknown = raw;
-  if (typeof raw === "string") {
-    const parsed = parseJson<unknown>(raw, raw);
-    items = parsed;
+  let items: unknown = raw == null || raw === "" ? null : raw;
+  if (typeof raw === "string" && raw) {
+    items = parseJson<unknown>(raw, raw);
   }
-  const created = Number(row.created_time || row.created_at || 0);
   return {
     id: Number(row.id || 0),
     name: String(row.name || ""),
     type: String(row.type || ""),
     items,
     description: String(row.description || ""),
-    created_time: created,
-    updated_time: Number(row.updated_time || created),
+    created_time: Number(row.created_time || 0),
+    updated_time: Number(row.updated_time || 0),
   };
 }
 

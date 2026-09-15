@@ -3536,10 +3536,15 @@ export class Store {
 
   async listPrefill(type = ""): Promise<unknown[]> {
     if (type) {
-      const { results } = await this.db.prepare("SELECT * FROM prefill_groups WHERE type = ? AND deleted_at = 0 ORDER BY id").bind(type).all();
+      const { results } = await this.db
+        .prepare("SELECT * FROM prefill_groups WHERE type = ? AND deleted_at = 0 ORDER BY updated_time DESC, id DESC")
+        .bind(type)
+        .all();
       return results;
     }
-    const { results } = await this.db.prepare("SELECT * FROM prefill_groups WHERE deleted_at = 0 ORDER BY id").all();
+    const { results } = await this.db
+      .prepare("SELECT * FROM prefill_groups WHERE deleted_at = 0 ORDER BY updated_time DESC, id DESC")
+      .all();
     return results;
   }
 
@@ -3552,15 +3557,21 @@ export class Store {
     return Number(r.meta.last_row_id || 0);
   }
 
-  async updatePrefill(id: number, patch: Record<string, unknown>): Promise<void> {
-    const cols: string[] = [];
-    const vals: unknown[] = [];
-    for (const [k, v] of Object.entries(patch)) {
-      cols.push(`${k} = ?`);
-      vals.push(v);
-    }
-    vals.push(id);
-    await this.db.prepare(`UPDATE prefill_groups SET ${cols.join(", ")} WHERE id = ? AND deleted_at = 0`).bind(...vals).run();
+  /** Original `PrefillGroup.Update` (`DB.Save` replaces all columns, including zero values). */
+  async savePrefill(row: {
+    id: number;
+    name: string;
+    type: string;
+    items: string;
+    description: string;
+    created_time: number;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE prefill_groups SET name = ?, type = ?, items = ?, description = ?, created_time = ?, updated_time = ? WHERE id = ? AND deleted_at = 0",
+      )
+      .bind(row.name, row.type, row.items, row.description, row.created_time, nowSec(), row.id)
+      .run();
   }
 
   /** Original `model.DeletePrefillGroupByID` (GORM soft delete; live name unique so names can be reused). */
