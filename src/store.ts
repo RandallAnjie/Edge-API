@@ -26,7 +26,7 @@ import {
   type ChannelFilter,
 } from "./channel-constraint.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
-import { normalizeBillingPreference } from "./subscription.js";
+import { calcNextResetTime, normalizeBillingPreference, normalizeResetPeriod } from "./subscription.js";
 import { MODEL_PRICING_OPTION_KEYS } from "./model-pricing.js";
 import type {
   ChannelRow,
@@ -2295,7 +2295,7 @@ export class Store {
       .prepare(
         `UPDATE user_subscriptions SET status = 'expired', updated_at = ?
          WHERE (status = 'active' OR status = 1 OR status = '1')
-           AND COALESCE(end_time, expire_at, 0) > 0 AND COALESCE(end_time, expire_at, 0) < ?`,
+           AND COALESCE(end_time, expire_at, 0) > 0 AND COALESCE(end_time, expire_at, 0) <= ?`,
       )
       .bind(now, now)
       .run();
@@ -2350,18 +2350,79 @@ export class Store {
     return { planId: Number(row.plan_id || 0), planTitle: String(row.plan_title || "") };
   }
 
-  async maybeResetUserSubscription(sub: Record<string, unknown>): Promise<Record<string, unknown>> {
+  /** Original `model.maybeResetUserSubscriptionWithPlanTx`. */
+  async maybeResetUserSubscription(
+    sub: Record<string, unknown>,
+    planRow?: Record<string, unknown> | null,
+  ): Promise<Record<string, unknown>> {
     const now = nowSec();
     const nextReset = Number(sub.next_reset_time || 0);
-    if (nextReset <= 0 || nextReset > now) return sub;
-    const plan = await this.getPlan(Number(sub.plan_id || 0));
-    const period = String(plan?.quota_reset_period || "never");
-    if (period === "never" || !plan) return sub;
+    if (nextReset > 0 && nextReset > now) return sub;
+    const plan = planRow ?? (await this.getPlan(Number(sub.plan_id || 0)));
+    if (!plan || normalizeResetPeriod(plan.quota_reset_period) === "never") return sub;
+    const endUnix = Number(sub.end_time || sub.expire_at || 0);
+    let baseUnix = Number(sub.last_reset_time || 0);
+    if (baseUnix <= 0) baseUnix = Number(sub.start_time || sub.start_at || 0);
+    let next = calcNextResetTime(baseUnix, plan, endUnix);
+    let advanced = false;
+    let base = baseUnix;
+    while (next > 0 && next <= now) {
+      advanced = true;
+      base = next;
+      next = calcNextResetTime(base, plan, endUnix);
+    }
+    if (!advanced) {
+      if (nextReset === 0 && next > 0) {
+        await this.db
+          .prepare("UPDATE user_subscriptions SET last_reset_time = ?, next_reset_time = ?, updated_at = ? WHERE id = ?")
+          .bind(base, next, now, Number(sub.id))
+          .run();
+        return { ...sub, last_reset_time: base, next_reset_time: next };
+      }
+      return sub;
+    }
     await this.db
       .prepare("UPDATE user_subscriptions SET amount_used = 0, last_reset_time = ?, next_reset_time = ?, updated_at = ? WHERE id = ?")
-      .bind(now, nextReset, now, Number(sub.id))
+      .bind(base, next, now, Number(sub.id))
       .run();
-    return { ...sub, amount_used: 0, last_reset_time: now };
+    return { ...sub, amount_used: 0, last_reset_time: base, next_reset_time: next };
+  }
+
+  /** Original `model.ResetDueSubscriptions`. */
+  async resetDueSubscriptions(limit = 200): Promise<number> {
+    const n = Number.isInteger(limit) && limit > 0 ? limit : 200;
+    const now = nowSec();
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM user_subscriptions
+         WHERE next_reset_time > 0 AND next_reset_time <= ?
+           AND (status = 'active' OR status = 1 OR status = '1')
+         ORDER BY next_reset_time ASC LIMIT ?`,
+      )
+      .bind(now, n)
+      .all<Record<string, unknown>>();
+    let resetCount = 0;
+    for (const row of results || []) {
+      const locked = await this.getUserSub(Number(row.id));
+      if (!locked) continue;
+      if (Number(locked.next_reset_time || 0) <= 0 || Number(locked.next_reset_time) > now) continue;
+      const plan = await this.getPlan(Number(locked.plan_id || 0));
+      if (!plan) continue;
+      await this.maybeResetUserSubscription(locked, plan);
+      resetCount += 1;
+    }
+    return resetCount;
+  }
+
+  /** Original `model.CleanupSubscriptionPreConsumeRecords`. */
+  async cleanupSubscriptionPreConsumeRecords(olderThanSeconds = 7 * 24 * 3600): Promise<number> {
+    const older = olderThanSeconds > 0 ? olderThanSeconds : 7 * 24 * 3600;
+    const cutoff = nowSec() - older;
+    const r = await this.db
+      .prepare("DELETE FROM subscription_pre_consume_records WHERE updated_at < ?")
+      .bind(cutoff)
+      .run();
+    return Number(r.meta.changes || 0);
   }
 
   /** Original `model.PreConsumeUserSubscription`. */
@@ -3517,6 +3578,12 @@ export class Store {
     await this.db.prepare("DELETE FROM auth_flows WHERE expires_at < ?").bind(cutoff).run();
     await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE expires_at > 0 AND expires_at < ?").bind(nowSec()).run();
     await this.expireSubscriptions();
+    const batch = 300;
+    for (;;) {
+      const n = await this.resetDueSubscriptions(batch);
+      if (!n || n < batch) break;
+    }
+    await this.cleanupSubscriptionPreConsumeRecords();
   }
 }
 

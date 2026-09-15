@@ -191,7 +191,8 @@ export function calcNextResetTime(baseSec: number, plan: Record<string, unknown>
     next = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 1));
   } else {
     const custom = asInt(plan.quota_reset_custom_seconds, 0);
-    next = new Date((baseSec + (custom > 0 ? custom : 86400)) * 1000);
+    if (custom <= 0) return 0;
+    next = new Date((baseSec + custom) * 1000);
   }
   const unix = Math.floor(next.getTime() / 1000);
   if (endUnix > 0 && unix > endUnix) return 0;
