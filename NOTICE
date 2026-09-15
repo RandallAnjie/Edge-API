@@ -217,7 +217,19 @@ Material changes from upstream:
   Original `GetAndValidAudioRequest` requires `model` for speech and
   transcription/translation (no whisper-1 default), defaults empty
   `response_format` to `json` on non-speech, and `IsStream` is
-  `stream_format == "sse"`. Extra-OK: Ali `ImageCount(true)` still runs
+  `stream_format == "sse"`. Original `GetAndValidateEmbeddingRequest`
+  rejects nil `input` (`input is empty`; `""` / `[]` pass) and drops
+  unknown JSON keys. Original `GetAndValidateRerankRequest` rejects
+  empty `query` / `documents`. Original `GetAndValidateGeminiRequest`
+  requires `contents` or `requests` and bounds `maxOutputTokens`.
+  Original `GetAndValidateTextRequest` requires chat `messages` unless
+  FIM `prefix`/`suffix`, defaults `web_search_options.search_context_size`
+  to `medium`, and rejects `max_tokens` above `MaxInt32/2`. Original
+  Responses `input` is required except `/v1/responses/compact`. Extra-OK:
+  GetAndValid runs after distributor model check and before channel
+  select, so invalid bodies 400 even when no channel exists; `/v1/engines/:model/embeddings`
+  keeps Path2RelayMode embedding validation rather than original
+  RelayFormatGemini contents-required. Extra-OK: Ali `ImageCount(true)` still runs
   after channel select.
   HTTP PostAudio uses original
   `calculateAudioQuota` (`QuotaFromDecimal`, details text/audio tokens,

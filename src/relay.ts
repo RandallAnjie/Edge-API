@@ -115,6 +115,7 @@ import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaud
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import { abortWithOpenAiMessage, clientIp, groupAccessDeniedMessage, json, modelNameRequiredMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
+import { applyGetAndValidateRequest } from "./valid-request.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, channelParamOverrideMap, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
 import { removeDisabledFields, usesRemoveDisabledFields, type ChannelDisabledFieldSettings } from "./relay-disabled-fields.js";
 import {
@@ -1673,6 +1674,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       auth.usingGroup = pgGroup;
     }
     auth.token = { ...auth.token, name: `playground-${auth.usingGroup}`, group: auth.usingGroup };
+  }
+
+  try {
+    opts.body = applyGetAndValidateRequest(mode, path, opts.body);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return openaiError(400, message, "invalid_request");
   }
 
   const requestPath = opts.requestPath || path;
