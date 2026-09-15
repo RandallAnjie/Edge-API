@@ -542,6 +542,14 @@ CREATE TABLE IF NOT EXISTS perf_metrics (
   generation_ms INTEGER NOT NULL DEFAULT 0,
   UNIQUE(model_name, "group", bucket_ts)
 );
+CREATE TABLE IF NOT EXISTS system_instances (
+  node_name TEXT PRIMARY KEY,
+  info TEXT NOT NULL DEFAULT '',
+  started_at INTEGER NOT NULL DEFAULT 0,
+  last_seen_at INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_tokens_key ON api_tokens(key);
 CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
@@ -563,6 +571,7 @@ CREATE INDEX IF NOT EXISTS idx_sub_preconsume_sub ON subscription_pre_consume_re
 CREATE INDEX IF NOT EXISTS idx_sub_preconsume_updated ON subscription_pre_consume_records(updated_at);
 CREATE INDEX IF NOT EXISTS idx_email_codes ON email_codes(email, type);
 CREATE INDEX IF NOT EXISTS idx_perf_bucket_ts ON perf_metrics(bucket_ts);
+CREATE INDEX IF NOT EXISTS idx_system_instances_last_seen ON system_instances(last_seen_at);
 `;
 
 const USER_ALTERS = [

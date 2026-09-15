@@ -249,7 +249,9 @@ test("system-info, task plugin upsert, original token usage, sessions view", asy
   assert.equal(info.body.data[0].node_name, "edge-api");
   assert.equal(info.body.data[0].status, "online");
   assert.equal(info.body.data[0].stale_after_seconds, 90);
-  assert.equal(info.body.data[0].info.runtime, "workerd");
+  assert.equal(info.body.data[0].info.schema_version, 1);
+  assert.equal(info.body.data[0].info.runtime.goos, "workerd");
+  assert.equal(info.body.data[0].info.node.source, "hostname");
 
   const plugin = await json(
     new Request("http://local/api/plugin/task", {

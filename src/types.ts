@@ -49,6 +49,8 @@ export interface Env {
   SESSION_SECRET?: string;
   SYSTEM_NAME?: string;
   GENERATE_DEFAULT_TOKEN?: string;
+  NODE_NAME?: string;
+  NODE_TYPE?: string;
 }
 
 export interface ExecutionContextLike {

@@ -3919,6 +3919,47 @@ export class Store {
     return results;
   }
 
+  /** Original `model.UpsertSystemInstance`. Conflict updates info/started_at/last_seen_at/updated_at only. */
+  async upsertSystemInstance(nodeName: string, info: string, startedAt: number, lastSeenAt: number): Promise<void> {
+    const now = lastSeenAt || nowSec();
+    await this.db
+      .prepare(
+        `INSERT INTO system_instances (node_name, info, started_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(node_name) DO UPDATE SET
+           info = excluded.info,
+           started_at = excluded.started_at,
+           last_seen_at = excluded.last_seen_at,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(nodeName, info, startedAt, now, now, now)
+      .run();
+  }
+
+  /** Original `model.ListSystemInstances` order `last_seen_at desc`. */
+  async listSystemInstances(): Promise<Record<string, unknown>[]> {
+    const { results } = await this.db.prepare("SELECT * FROM system_instances ORDER BY last_seen_at DESC").all();
+    return results as Record<string, unknown>[];
+  }
+
+  /** Original `model.DeleteStaleSystemInstances`. */
+  async deleteStaleSystemInstances(now: number, staleAfterSeconds: number): Promise<number> {
+    const r = await this.db
+      .prepare("DELETE FROM system_instances WHERE last_seen_at < ?")
+      .bind(now - staleAfterSeconds)
+      .run();
+    return Number(r.meta?.changes || 0);
+  }
+
+  /** Original `model.DeleteStaleSystemInstance`. */
+  async deleteStaleSystemInstance(nodeName: string, now: number, staleAfterSeconds: number): Promise<boolean> {
+    const r = await this.db
+      .prepare("DELETE FROM system_instances WHERE node_name = ? AND last_seen_at < ?")
+      .bind(nodeName, now - staleAfterSeconds)
+      .run();
+    return Number(r.meta?.changes || 0) > 0;
+  }
+
   async getDeployment(id: number): Promise<Record<string, unknown> | null> {
     return this.db.prepare("SELECT * FROM deployments WHERE id = ?").bind(id).first<Record<string, unknown>>();
   }

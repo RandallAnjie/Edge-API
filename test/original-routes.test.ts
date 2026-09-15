@@ -293,6 +293,23 @@ test("original JSON fields for status, models, deployments, performance, data, u
   assert.equal(nodes[0].stale_after_seconds, 90);
   assert.equal(typeof nodes[0].started_at, "number");
   assert.equal(typeof nodes[0].last_seen_at, "number");
+  const instInfo = nodes[0].info as {
+    schema_version: number;
+    node: { name: string; source: string };
+    role: { is_master: boolean };
+    runtime: { goos: string; goarch: string; started_at: number; version: string };
+    host: { hostname: string };
+    resources: { cpu: { usage_percent: number }; memory: { usage_percent: number } };
+  };
+  assert.equal(instInfo.schema_version, 1);
+  assert.equal(instInfo.node.name, "edge-api");
+  assert.equal(instInfo.node.source, "hostname");
+  assert.equal(typeof instInfo.role.is_master, "boolean");
+  assert.equal(instInfo.runtime.goos, "workerd");
+  assert.equal(instInfo.runtime.goarch, "wasm");
+  assert.equal(typeof instInfo.runtime.started_at, "number");
+  assert.equal(instInfo.host.hostname, "edge-api");
+  assert.equal(typeof instInfo.resources.cpu.usage_percent, "number");
 
   const topup = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
   const ti = topup.body.data as Record<string, unknown>;

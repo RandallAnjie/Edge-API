@@ -1,7 +1,7 @@
 import { billingCopies } from "./billing-setting.js";
-import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, GO_ZERO_TIME, ROLE_ROOT, ROLE_USER, START_TIME, VERSION, csv, nowSec, parseJson, randomHex } from "./constants.js";
+import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, GO_ZERO_TIME, ROLE_ROOT, ROLE_USER, csv, nowSec, parseJson, randomHex } from "./constants.js";
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
-import { httpStats, performanceStats, resetMetrics } from "./metrics.js";
+import { performanceStats, resetMetrics } from "./metrics.js";
 import {
   completePendingTopup,
   handleCreemWebhook,
@@ -73,6 +73,7 @@ import { channelAffinityCacheStats, clearAffinityCacheAll, clearAffinityCacheByR
 import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
 import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
 import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
+import { SYSTEM_INSTANCE_STALE_AFTER_SECONDS, listSystemInstanceResponses } from "./system-instance.js";
 import { fetchUpstreamRatios, validateFetchRequest } from "./ratio-sync.js";
 import { dryRunPlugin } from "./jsplugin.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
@@ -1328,28 +1329,24 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk([
-      {
-        node_name: "edge-api",
-        status: "online",
-        stale_after_seconds: 90,
-        started_at: Math.floor(START_TIME / 1000),
-        last_seen_at: Math.floor(Date.now() / 1000),
-        info: { version: VERSION, runtime: "workerd", http_stats: httpStats() },
-      },
-    ]);
+    return apiOk(await listSystemInstanceResponses(s, c.env));
   });
   r.delete("/api/system-info/stale-instances", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk({ deleted_count: 0 });
+    const deletedCount = await s.deleteStaleSystemInstances(nowSec(), SYSTEM_INSTANCE_STALE_AFTER_SECONDS);
+    return apiOk({ deleted_count: deletedCount });
   });
   r.delete("/api/system-info/instances/:node_name", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk({ deleted_count: 0 });
+    const nodeName = String(c.params.node_name || "").trim();
+    if (!nodeName) return apiFail("node name is required");
+    const deleted = await s.deleteStaleSystemInstance(nodeName, nowSec(), SYSTEM_INSTANCE_STALE_AFTER_SECONDS);
+    if (!deleted) return apiFail("instance is not stale or no longer exists");
+    return apiOk({ deleted_count: 1 });
   });
 
   r.get("/api/data/users", async (c) => {

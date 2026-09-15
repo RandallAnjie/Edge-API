@@ -24,6 +24,7 @@ import { extractGeminiModelAction } from "./convert.js";
 import { ensureSchema } from "./schema.js";
 import { Store } from "./store.js";
 import { hit } from "./metrics.js";
+import { reportCurrentSystemInstance } from "./system-instance.js";
 import { matchPluginOwnedPath, matchPluginRoute, matchTaskPlugin, type MatchedPlugin } from "./plugin-dispatch.js";
 import { applyOriginTaskIntent, type OriginTaskRef } from "./origin-task.js";
 import { executeNativePluginRoute, handleNativePluginRoute } from "./task-plugin-route.js";
@@ -705,6 +706,11 @@ export default {
         await env.DB.prepare("DELETE FROM audit_logs WHERE created_at < ?").bind(cutoff).run();
         const store = new Store(env.DB);
         await store.cleanupExpired(nowSec());
+        try {
+          await reportCurrentSystemInstance(store, env);
+        } catch {
+          /* original reporter logs and continues */
+        }
         const task = await store.currentSystemTask("channel_test");
         if (task && String(task.status) === "pending") {
           const id = String(task.id || task.task_id || "");
