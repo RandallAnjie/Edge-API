@@ -33,7 +33,7 @@ import {
   verifyTelegramLogin,
   wechatIdFromCode,
 } from "./oauth.js";
-import { bytesToHex, sha256Bytes, md5Hex } from "./crypto.js";
+import { bytesToHex, sha256Bytes } from "./crypto.js";
 import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-oauth.js";
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
@@ -58,7 +58,7 @@ import {
 } from "./auth.js";
 import { Store } from "./store.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
-import { enrichModelMeta, extractPluginMeta, listAdminModels, publicFlowQuotaData, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView } from "./dto.js";
+import { enrichModelMeta, extractPluginMeta, listAdminModels, metadataRecordVersion, publicFlowQuotaData, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView, vendorOperationPreviewVersion } from "./dto.js";
 import {
   factoryPluginIcon,
   factoryTaskPluginDetail,
@@ -126,6 +126,7 @@ async function vendorOperationPreview(s: Store, operation: VendorOp): Promise<Re
   }
   const sources: Record<string, unknown>[] = [];
   const modelsOut: Record<string, unknown>[] = [];
+  const modelRows: Record<string, unknown>[] = [];
   const meta = (await s.listModelMeta()) as Record<string, unknown>[];
   if (action === "assign") {
     const selected = new Set(ids);
@@ -140,6 +141,7 @@ async function vendorOperationPreview(s: Store, operation: VendorOp): Promise<Re
         vendor_name: String(vendor?.name || ""),
         updated_time: Number(m.updated_time || 0),
       });
+      modelRows.push(m);
       if (vendor && !sources.some((x) => x.id === vendor.id)) sources.push(vendor);
     }
     if (modelsOut.length !== ids.length) throw new Error("vendor data changed; preview again before applying: a selected model no longer exists");
@@ -162,9 +164,22 @@ async function vendorOperationPreview(s: Store, operation: VendorOp): Promise<Re
         vendor_name: String(vendor?.name || ""),
         updated_time: Number(m.updated_time || 0),
       });
+      modelRows.push(m);
     }
   }
-  const version = await md5Hex(JSON.stringify({ action, sources: sources.map((v) => v.id), models: modelsOut.map((m) => m.id), target: target?.id ?? 0 }));
+  if (action === "delete" && modelsOut.length > 0) {
+    const counts: Record<string, number> = {};
+    for (const m of modelsOut) {
+      const vendorId = String(m.vendor_id || 0);
+      counts[vendorId] = (counts[vendorId] || 0) + 1;
+    }
+    throw Object.assign(new Error("vendors are still referenced by models; transfer or clear their assignments first"), {
+      reference_counts: counts,
+    });
+  }
+  sources.sort((a, b) => Number(a.id) - Number(b.id));
+  const modelVersions = modelRows.map((row) => metadataRecordVersion(row, null, null));
+  const version = vendorOperationPreviewVersion({ action, sources, target, models: modelsOut }, modelVersions);
   return { action, sources, target, models: modelsOut, version };
 }
 

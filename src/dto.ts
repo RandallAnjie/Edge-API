@@ -1605,6 +1605,110 @@ export function vendorRecordVersion(row: Record<string, unknown>): string {
   return bytesToHex(sha256BytesSync(utf8Bytes(vendorRecordPayload(row))));
 }
 
+function goJsonOmitempty(value: unknown): boolean {
+  return value === null || value === undefined || value === false || value === 0 || value === "";
+}
+
+/** Original `encoding/json.Marshal` for numbers, strings, bools, null, and arrays of those. */
+export function goJsonMarshal(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return "null";
+    return Number.isInteger(value) ? String(value) : String(value);
+  }
+  if (typeof value === "string") return goJsonQuote(value);
+  if (Array.isArray(value)) return "[" + value.map((item) => goJsonMarshal(item)).join(",") + "]";
+  throw new Error("goJsonMarshal: structs need goJsonStruct");
+}
+
+export function goJsonStruct(fields: { key: string; value?: unknown; raw?: string; omitempty?: boolean }[]): string {
+  const parts: string[] = [];
+  for (const field of fields) {
+    if (field.omitempty && field.raw === undefined && goJsonOmitempty(field.value)) continue;
+    const encoded = field.raw !== undefined ? field.raw : goJsonMarshal(field.value);
+    parts.push(goJsonQuote(field.key) + ":" + encoded);
+  }
+  return "{" + parts.join(",") + "}";
+}
+
+/** Original `model.Vendor` JSON as loaded by `Find` (ModelCount 0, Version empty/omitted). */
+export function goMarshalVendor(row: Record<string, unknown>): string {
+  return goJsonStruct([
+    { key: "model_count", value: Math.trunc(Number(row.model_count || 0)) },
+    { key: "version", value: "", omitempty: true },
+    { key: "id", value: Math.trunc(Number(row.id || 0)) },
+    { key: "name", value: String(row.name || "") },
+    { key: "description", value: String(row.description || ""), omitempty: true },
+    { key: "icon", value: String(row.icon || ""), omitempty: true },
+    { key: "status", value: Math.trunc(Number(row.status ?? 1)) },
+    { key: "created_time", value: Math.trunc(Number(row.created_time || row.created_at || 0)) },
+    { key: "updated_time", value: Math.trunc(Number(row.updated_time || row.created_time || row.created_at || 0)) },
+  ]);
+}
+
+/** Original `model.Model` JSON as loaded by `Find` (`gorm:"-"` fields at zero values). */
+export function goMarshalModelMetaRecord(row: Record<string, unknown>): string {
+  return goJsonStruct([
+    { key: "id", value: Math.trunc(Number(row.id || 0)) },
+    { key: "model_name", value: String(row.model_name || "") },
+    { key: "description", value: String(row.description || ""), omitempty: true },
+    { key: "icon", value: String(row.icon || ""), omitempty: true },
+    { key: "tags", value: String(row.tags || ""), omitempty: true },
+    { key: "vendor_id", value: Math.trunc(Number(row.vendor_id || 0)), omitempty: true },
+    { key: "endpoints", value: String(row.endpoints || ""), omitempty: true },
+    { key: "status", value: Math.trunc(Number(row.status ?? 1)) },
+    { key: "sync_official", value: Math.trunc(Number(row.sync_official ?? 1)) },
+    { key: "created_time", value: Math.trunc(Number(row.created_time || row.created_at || 0)) },
+    { key: "updated_time", value: Math.trunc(Number(row.updated_time || 0)) },
+    { key: "name_rule", value: Math.trunc(Number(row.name_rule || 0)) },
+    { key: "has_metadata", value: false },
+    { key: "configured_channel_count", value: 0 },
+    { key: "square_state", value: "" },
+  ]);
+}
+
+export function goMarshalVendorAssignmentModel(row: Record<string, unknown>): string {
+  return goJsonStruct([
+    { key: "id", value: Math.trunc(Number(row.id || 0)) },
+    { key: "model_name", value: String(row.model_name || "") },
+    { key: "name_rule", value: Math.trunc(Number(row.name_rule || 0)) },
+    { key: "vendor_id", value: Math.trunc(Number(row.vendor_id || 0)) },
+    { key: "vendor_name", value: String(row.vendor_name || "") },
+    { key: "updated_time", value: Math.trunc(Number(row.updated_time || 0)) },
+  ]);
+}
+
+/** Original `model.MetadataRecordVersion`. */
+export function metadataRecordVersion(
+  local: Record<string, unknown> | null,
+  localVendor: Record<string, unknown> | null = null,
+  upstreamVendor: Record<string, unknown> | null = null,
+): string {
+  const encoded = `[${local ? goMarshalModelMetaRecord(local) : "null"},${localVendor ? goMarshalVendor(localVendor) : "null"},${upstreamVendor ? goMarshalVendor(upstreamVendor) : "null"}]`;
+  return bytesToHex(sha256BytesSync(utf8Bytes(encoded)));
+}
+
+/** Original `buildVendorOperationPreview` version: SHA-256 of `Marshal([]any{preview, modelVersions})` before Version is set. */
+export function vendorOperationPreviewVersion(
+  preview: {
+    action: string;
+    sources: Record<string, unknown>[];
+    target: Record<string, unknown> | null;
+    models: Record<string, unknown>[];
+  },
+  modelVersions: string[],
+): string {
+  const previewJson = goJsonStruct([
+    { key: "action", value: preview.action },
+    { key: "sources", raw: "[" + preview.sources.map((v) => goMarshalVendor(v)).join(",") + "]" },
+    { key: "target", raw: preview.target ? goMarshalVendor(preview.target) : "null" },
+    { key: "models", raw: "[" + preview.models.map((m) => goMarshalVendorAssignmentModel(m)).join(",") + "]" },
+    { key: "version", value: "" },
+  ]);
+  return bytesToHex(sha256BytesSync(utf8Bytes(`[${previewJson},${goJsonMarshal(modelVersions)}]`)));
+}
+
 export function publicVendor(row: Record<string, unknown>, modelCount = 0): Record<string, unknown> {
   const created = Number(row.created_time || row.created_at || 0);
   const updated = Number(row.updated_time || created);

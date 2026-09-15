@@ -253,3 +253,149 @@ test("original UpdateVendor rejects a stale VendorRecordVersion", async () => {
     ),
   );
 });
+
+function goVendorPreviewJson(v: Record<string, unknown>): string {
+  const parts = [`"model_count":${Number(v.model_count || 0)}`, `"id":${v.id}`, `"name":${JSON.stringify(v.name)}`];
+  if (v.description) parts.push(`"description":${JSON.stringify(v.description)}`);
+  if (v.icon) parts.push(`"icon":${JSON.stringify(v.icon)}`);
+  parts.push(`"status":${v.status}`, `"created_time":${v.created_time}`, `"updated_time":${v.updated_time}`);
+  return `{${parts.join(",")}}`;
+}
+
+function goAssignmentJson(m: Record<string, unknown>): string {
+  return `{"id":${m.id},"model_name":${JSON.stringify(m.model_name)},"name_rule":${m.name_rule},"vendor_id":${m.vendor_id},"vendor_name":${JSON.stringify(m.vendor_name)},"updated_time":${m.updated_time}}`;
+}
+
+function goModelRecordJson(m: Record<string, unknown>): string {
+  const parts = [`"id":${m.id}`, `"model_name":${JSON.stringify(m.model_name)}`];
+  if (m.description) parts.push(`"description":${JSON.stringify(m.description)}`);
+  if (m.icon) parts.push(`"icon":${JSON.stringify(m.icon)}`);
+  if (m.tags) parts.push(`"tags":${JSON.stringify(m.tags)}`);
+  if (m.vendor_id) parts.push(`"vendor_id":${m.vendor_id}`);
+  if (m.endpoints) parts.push(`"endpoints":${JSON.stringify(m.endpoints)}`);
+  parts.push(
+    `"status":${m.status}`,
+    `"sync_official":${m.sync_official}`,
+    `"created_time":${m.created_time}`,
+    `"updated_time":${m.updated_time}`,
+    `"name_rule":${m.name_rule}`,
+    `"has_metadata":false`,
+    `"configured_channel_count":0`,
+    `"square_state":""`,
+  );
+  return `{${parts.join(",")}}`;
+}
+
+test("original VendorOperationPreview version is SHA-256 of Marshal([preview, modelVersions])", async () => {
+  const { e, auth } = await boot();
+  const vd = await createVendor(e, auth, { name: "OpenAI", icon: "OpenAI" });
+  const preview = await json(
+    new Request("http://local/api/vendors/operations/preview", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ action: "delete", vendor_ids: [vd.id] }),
+    }),
+    e,
+  );
+  assert.equal(preview.body.success, true, String(preview.body.message));
+  const pv = preview.body.data as {
+    action: string;
+    sources: Record<string, unknown>[];
+    target: unknown;
+    models: unknown[];
+    version: string;
+  };
+  assert.equal(pv.action, "delete");
+  assert.equal(pv.target, null);
+  assert.equal(pv.models.length, 0);
+  assert.equal(pv.sources.length, 1);
+  assert.match(pv.version, /^[0-9a-f]{64}$/);
+  const previewJson = `{"action":"delete","sources":[${goVendorPreviewJson(pv.sources[0])}],"target":null,"models":[],"version":""}`;
+  assert.equal(pv.version, sha256Hex(`[${previewJson},[]]`));
+});
+
+test("original VendorOperationPreview sources are sorted by id", async () => {
+  const { e, auth } = await boot();
+  const first = await createVendor(e, auth, { name: "Vendor First" });
+  const second = await createVendor(e, auth, { name: "Vendor Second" });
+  const preview = await json(
+    new Request("http://local/api/vendors/operations/preview", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ action: "delete", vendor_ids: [second.id, first.id] }),
+    }),
+    e,
+  );
+  assert.equal(preview.body.success, true, String(preview.body.message));
+  const sources = (preview.body.data as { sources: { id: number }[] }).sources;
+  assert.equal(sources.length, 2);
+  assert.equal(sources[0].id, first.id);
+  assert.equal(sources[1].id, second.id);
+});
+
+test("original delete VendorOperationPreview rejects referenced vendors", async () => {
+  const { e, auth } = await boot();
+  const vd = await createVendor(e, auth, { name: "Referenced Vendor" });
+  const model = await json(
+    new Request("http://local/api/models/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_name: "gpt-ref-test", vendor_id: vd.id, status: 1 }),
+    }),
+    e,
+  );
+  assert.equal(model.body.success, true, String(model.body.message));
+  const preview = await json(
+    new Request("http://local/api/vendors/operations/preview", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ action: "delete", vendor_ids: [vd.id] }),
+    }),
+    e,
+  );
+  assert.equal(preview.res.status, 409);
+  assert.equal(preview.body.success, false);
+  assert.equal(preview.body.code, "VENDOR_REFERENCED");
+  assert.equal(preview.body.message, "vendors are still referenced by models; transfer or clear their assignments first");
+  const counts = preview.body.reference_counts as Record<string, number>;
+  assert.equal(counts[String(vd.id)], 1);
+});
+
+test("original assign VendorOperationPreview version includes MetadataRecordVersion", async () => {
+  const { e, auth } = await boot();
+  const source = await createVendor(e, auth, { name: "Source Vendor" });
+  const target = await createVendor(e, auth, { name: "Target Vendor" });
+  const created = await json(
+    new Request("http://local/api/models/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_name: "gpt-assign-test", vendor_id: source.id, status: 1 }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const model = created.body.data as Record<string, unknown>;
+  const preview = await json(
+    new Request("http://local/api/vendors/operations/preview", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ action: "assign", model_ids: [model.id], target_vendor_id: target.id }),
+    }),
+    e,
+  );
+  assert.equal(preview.body.success, true, String(preview.body.message));
+  const pv = preview.body.data as {
+    action: string;
+    sources: Record<string, unknown>[];
+    target: Record<string, unknown>;
+    models: Record<string, unknown>[];
+    version: string;
+  };
+  assert.equal(pv.action, "assign");
+  assert.equal(pv.models.length, 1);
+  assert.equal(pv.target.id, target.id);
+  const modelVersion = sha256Hex(`[${goModelRecordJson(model)},null,null]`);
+  const previewJson = `{"action":"assign","sources":[${goVendorPreviewJson(pv.sources[0])}],"target":${goVendorPreviewJson(pv.target)},"models":[${goAssignmentJson(pv.models[0])}],"version":""}`;
+  assert.equal(pv.version, sha256Hex(`[${previewJson},${JSON.stringify([modelVersion])}]`));
+});
+
