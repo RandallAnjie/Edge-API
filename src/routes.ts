@@ -135,7 +135,7 @@ async function tokenWriteError(
   }
   if (creating) {
     const maxTokens = await s.optionNum("token_setting.max_user_tokens", 1000);
-    const { total } = await s.listTokens(user.id, 0, 1);
+    const total = await s.countUserTokens(user.id);
     if (total >= maxTokens) return apiFail(`已达到最大令牌数量限制 (${maxTokens})`);
   }
   if (body.group === "auto" && Array.isArray(body.auto_groups) && body.auto_groups.length) {

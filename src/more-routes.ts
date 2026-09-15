@@ -1040,8 +1040,20 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listTokens(u.id, q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
-    return apiOk(pageData(items.map(publicToken), total, q));
+    const maxTokens = await s.optionNum("token_setting.max_user_tokens", 1000);
+    try {
+      const { items, total } = await s.searchUserTokens(
+        u.id,
+        c.url.searchParams.get("keyword") || "",
+        c.url.searchParams.get("token") || "",
+        q.offset,
+        q.page_size,
+        maxTokens,
+      );
+      return apiOk(pageData(items.map(publicToken), total, q));
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/token/auto-groups", async (c) => {

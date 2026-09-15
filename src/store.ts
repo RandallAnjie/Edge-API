@@ -56,6 +56,24 @@ function num(v: unknown, d = 0): number {
   return Number.isFinite(n) ? n : d;
 }
 
+/** Original `model.searchHardLimit` in `SearchUserTokens`. */
+const SEARCH_USER_TOKENS_HARD_LIMIT = 100;
+
+/**
+ * Original `model.sanitizeLikePattern`.
+ * Escapes `!` then `_` (ESCAPE '!'), then rejects `%%`, more than two `%`, or fuzzy keywords shorter than 2.
+ */
+function sanitizeLikePattern(input: string): string {
+  const pattern = input.replaceAll("!", "!!").replaceAll("_", "!_");
+  if (pattern.includes("%%")) throw new Error("搜索模式中不允许包含连续的 % 通配符");
+  const count = pattern.split("%").length - 1;
+  if (count > 2) throw new Error("搜索模式中最多允许包含 2 个 % 通配符");
+  if (count > 0 && pattern.replaceAll("%", "").length < 2) {
+    throw new Error("使用模糊搜索时，关键词长度至少为 2 个字符");
+  }
+  return pattern;
+}
+
 /** Original `model.applyExplicitLogTextFilter` + `sanitizeLikePattern`. */
 function applyExplicitLogTextFilter(column: string, value: string | undefined, where: string[], binds: unknown[]): void {
   if (!value) return;
@@ -64,15 +82,8 @@ function applyExplicitLogTextFilter(column: string, value: string | undefined, w
     binds.push(value);
     return;
   }
-  const pattern = value.replace(/!/g, "!!").replace(/_/g, "!_");
-  if (pattern.includes("%%")) throw new Error("搜索模式中不允许包含连续的 % 通配符");
-  const count = (pattern.match(/%/g) || []).length;
-  if (count > 2) throw new Error("搜索模式中最多允许包含 2 个 % 通配符");
-  if (count > 0 && pattern.replace(/%/g, "").length < 2) {
-    throw new Error("使用模糊搜索时，关键词长度至少为 2 个字符");
-  }
   where.push(`${column} LIKE ? ESCAPE '!'`);
-  binds.push(pattern);
+  binds.push(sanitizeLikePattern(value));
 }
 
 function bool01(v: unknown): number {
@@ -531,26 +542,75 @@ export class Store {
       .run();
   }
 
+  /** Original `model.CountUserTokens`. */
+  async countUserTokens(userId: number): Promise<number> {
+    const totalRow = await this.db
+      .prepare("SELECT COUNT(*) as c FROM api_tokens WHERE user_id = ? AND deleted_at = 0")
+      .bind(userId)
+      .first<{ c: number }>();
+    return num(totalRow?.c);
+  }
+
+  /** Original `model.GetAllUserTokens` + `CountUserTokens`. */
   async listTokens(
     userId: number,
     offset: number,
     limit: number,
-    keyword = "",
   ): Promise<{ items: TokenRow[]; total: number }> {
+    const total = await this.countUserTokens(userId);
+    const { results } = await this.db
+      .prepare("SELECT * FROM api_tokens WHERE user_id = ? AND deleted_at = 0 ORDER BY id DESC LIMIT ? OFFSET ?")
+      .bind(userId, limit, offset)
+      .all<TokenRow>();
+    return { items: results, total };
+  }
+
+  /**
+   * Original `model.SearchUserTokens`.
+   * `keyword` matches `name LIKE` (exact unless the caller includes `%`); `token` matches `"key" LIKE` after `sk-` TrimPrefix.
+   */
+  async searchUserTokens(
+    userId: number,
+    keyword: string,
+    token: string,
+    offset: number,
+    limit: number,
+    maxTokens: number,
+  ): Promise<{ items: TokenRow[]; total: number }> {
+    let pageSize = limit;
+    if (pageSize <= 0 || pageSize > SEARCH_USER_TOKENS_HARD_LIMIT) pageSize = SEARCH_USER_TOKENS_HARD_LIMIT;
+    let start = offset;
+    if (start < 0) start = 0;
+
+    let keyQuery = token;
+    if (keyQuery.startsWith("sk-")) keyQuery = keyQuery.slice("sk-".length);
+
+    const hasFuzzy = keyword.includes("%") || keyQuery.includes("%");
+    if (hasFuzzy) {
+      const count = await this.countUserTokens(userId);
+      if (count > maxTokens) {
+        throw new Error("令牌数量超过上限，仅允许精确搜索，请勿使用 % 通配符");
+      }
+    }
+
     let where = "user_id = ? AND deleted_at = 0";
     const binds: unknown[] = [userId];
     if (keyword) {
-      where += " AND (name LIKE ? OR key LIKE ?)";
-      const q = `%${keyword}%`;
-      binds.push(q, q);
+      where += " AND name LIKE ? ESCAPE '!'";
+      binds.push(sanitizeLikePattern(keyword));
     }
+    if (keyQuery) {
+      where += ` AND "key" LIKE ? ESCAPE '!'`;
+      binds.push(sanitizeLikePattern(keyQuery));
+    }
+
     const totalRow = await this.db
       .prepare(`SELECT COUNT(*) as c FROM api_tokens WHERE ${where}`)
       .bind(...binds)
       .first<{ c: number }>();
     const { results } = await this.db
       .prepare(`SELECT * FROM api_tokens WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
-      .bind(...binds, limit, offset)
+      .bind(...binds, pageSize, start)
       .all<TokenRow>();
     return { items: results, total: num(totalRow?.c) };
   }
