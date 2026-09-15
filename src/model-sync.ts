@@ -1,5 +1,5 @@
 import { nowSec } from "./constants.js";
-import { bytesToHex, sha256Bytes } from "./crypto.js";
+import { metadataRecordVersion, metadataSyncCatalogVersion } from "./dto.js";
 import type { Store } from "./store.js";
 
 const METADATA_SYNC_FIELDS = ["description", "icon", "tags", "vendor", "endpoints", "name_rule", "status"] as const;
@@ -104,15 +104,6 @@ function localValues(row: Record<string, unknown> | undefined, vendorName = ""):
   };
 }
 
-async function recordVersion(
-  local: Record<string, unknown> | null,
-  localVendor: Record<string, unknown> | undefined,
-  upstreamVendor: Record<string, unknown> | undefined,
-): Promise<string> {
-  const encoded = JSON.stringify([local, localVendor || null, upstreamVendor || null]);
-  return bytesToHex(await sha256Bytes(encoded));
-}
-
 export async function fetchMetadataCatalog(localeRaw: string): Promise<{
   source: { locale: string; models_url: string; vendors_url: string; version: string };
   models: Record<string, MetadataValues>;
@@ -127,7 +118,7 @@ export async function fetchMetadataCatalog(localeRaw: string): Promise<{
   for (const vendor of vendorRows) {
     const name = String(vendor.name || "").trim();
     if (!name) continue;
-    vendors[name] = { name, description: vendor.description || "", icon: vendor.icon || "", status: Number(vendor.status ?? 1) };
+    vendors[name] = { name, description: vendor.description || "", icon: vendor.icon || "", status: Number(vendor.status ?? 0) };
   }
   const models: Record<string, MetadataValues> = {};
   for (const item of modelRows) {
@@ -141,11 +132,14 @@ export async function fetchMetadataCatalog(localeRaw: string): Promise<{
       vendor: String(item.vendor_name || "").trim(),
       endpoints: endpointsToString(item.endpoints),
       name_rule: Number(item.name_rule || 0),
-      status: Number(item.status ?? 1),
+      status: Number(item.status ?? 0),
     };
   }
-  const encoded = JSON.stringify([source.locale, models, vendors]);
-  source.version = bytesToHex(await sha256Bytes(encoded));
+  source.version = metadataSyncCatalogVersion(
+    source.locale,
+    models,
+    vendors as unknown as Record<string, Record<string, unknown>>,
+  );
   return { source, models, vendors };
 }
 
@@ -188,7 +182,7 @@ export async function previewMetadataSync(
     candidate.upstream = up;
     const localVendor = local ? vendorsById[String(local.vendor_id || 0)] : undefined;
     const upVendor = findVendor(vendorsByName, up.vendor);
-    candidate.record_version = await recordVersion(local || null, localVendor, upVendor);
+    candidate.record_version = metadataRecordVersion(local || null, localVendor || null, upVendor || null);
     if (local && Number(local.sync_official) === 0) {
       candidate.kind = "blocked";
       candidates.push(candidate);
@@ -277,7 +271,7 @@ export async function applyMetadataSync(
     if (local && Number(local.sync_official) === 0) throw new Error(`metadata sync is disabled for ${sel.model_name}`);
     const localVendor = local ? vendorsById[String(local.vendor_id || 0)] : undefined;
     const upVendor = findVendor(vendorsByName, values.vendor);
-    const version = await recordVersion(local || null, localVendor, upVendor);
+    const version = metadataRecordVersion(local || null, localVendor || null, upVendor || null);
     if (version !== sel.record_version) {
       const err = new Error(`metadata changed; preview again before applying: ${sel.model_name}`);
       (err as Error & { status: number }).status = 409;

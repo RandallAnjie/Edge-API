@@ -1689,6 +1689,57 @@ export function metadataRecordVersion(
   return bytesToHex(sha256BytesSync(utf8Bytes(encoded)));
 }
 
+/** Go `sort.Strings` — UTF-8 byte order. */
+function compareUtf8Bytes(a: string, b: string): number {
+  const left = utf8Bytes(a);
+  const right = utf8Bytes(b);
+  const n = Math.min(left.length, right.length);
+  for (let i = 0; i < n; i++) {
+    if (left[i] !== right[i]) return left[i] - right[i];
+  }
+  return left.length - right.length;
+}
+
+/** Original `encoding/json` map: keys sorted, values already marshaled. */
+export function goJsonObjectMap(marshaledValues: Record<string, string>): string {
+  const keys = Object.keys(marshaledValues).sort(compareUtf8Bytes);
+  return "{" + keys.map((key) => goJsonQuote(key) + ":" + marshaledValues[key]).join(",") + "}";
+}
+
+/** Original `model.MetadataValues` JSON (no omitempty). */
+export function goMarshalMetadataValues(values: {
+  description: string;
+  icon: string;
+  tags: string;
+  vendor: string;
+  endpoints: string;
+  name_rule: number;
+  status: number;
+}): string {
+  return goJsonStruct([
+    { key: "description", value: String(values.description || "") },
+    { key: "icon", value: String(values.icon || "") },
+    { key: "tags", value: String(values.tags || "") },
+    { key: "vendor", value: String(values.vendor || "") },
+    { key: "endpoints", value: String(values.endpoints || "") },
+    { key: "name_rule", value: Math.trunc(Number(values.name_rule ?? 0)) },
+    { key: "status", value: Math.trunc(Number(values.status ?? 0)) },
+  ]);
+}
+
+/** Original `fetchMetadataCatalog` `source.Version` — SHA-256 of `Marshal([]any{locale, models, vendors})`. */
+export function metadataSyncCatalogVersion(
+  locale: string,
+  models: Record<string, { description: string; icon: string; tags: string; vendor: string; endpoints: string; name_rule: number; status: number }>,
+  vendors: Record<string, Record<string, unknown>>,
+): string {
+  const modelJson: Record<string, string> = {};
+  for (const [name, values] of Object.entries(models)) modelJson[name] = goMarshalMetadataValues(values);
+  const vendorJson: Record<string, string> = {};
+  for (const [name, vendor] of Object.entries(vendors)) vendorJson[name] = goMarshalVendor(vendor);
+  return bytesToHex(sha256BytesSync(utf8Bytes(`[${goJsonQuote(locale)},${goJsonObjectMap(modelJson)},${goJsonObjectMap(vendorJson)}]`)));
+}
+
 /** Original `buildVendorOperationPreview` version: SHA-256 of `Marshal([]any{preview, modelVersions})` before Version is set. */
 export function vendorOperationPreviewVersion(
   preview: {
