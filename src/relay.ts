@@ -62,7 +62,14 @@ import { completeCozeNonStreamChat, openaiFromCozeDetailResponse, cozeUpstreamTo
 import { openaiFromDifyResponse, difyUpstreamToOpenAIChat, convertDifyOpenAIRequestWithUploads } from "./dify-convert.js";
 import { applyVertexAdcAuth } from "./vertex-auth.js";
 import { applyZhipuV3Authorization, openaiFromZhipuResponse, openaiFromZhipuV4Image, zhipuUpstreamToOpenAIChat } from "./zhipu-convert.js";
-import { cloudflareUpstreamToOpenAIChat, openaiFromCloudflareResponse } from "./cloudflare-convert.js";
+import {
+  cloudflareSTTUsage,
+  cloudflareUpstreamToOpenAIChat,
+  convertCloudflareAudioRequest,
+  isCloudflareSTTRelayMode,
+  openaiFromCloudflareResponse,
+  openaiFromCloudflareSTT,
+} from "./cloudflare-convert.js";
 import { applyTencentTc3Authorization, openaiFromTencentResponse, tencentUpstreamToOpenAIChat, tencentUsesNativeAdaptor } from "./tencent-convert.js";
 import { openaiFromMokaEmbedding } from "./moka-convert.js";
 import { openaiFromJinaRerank } from "./jina-convert.js";
@@ -844,6 +851,9 @@ async function convertInbound(
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_ZHIPU) {
     return openaiFromZhipuResponse(upstreamJson, { created: opts.created });
   }
+  if (client === "openai" && opts.channelType === CHANNEL_TYPE_CLOUDFLARE && isCloudflareSTTRelayMode(opts.relayMode)) {
+    return openaiFromCloudflareSTT(upstreamJson);
+  }
   if (client === "openai" && opts.channelType === CHANNEL_TYPE_CLOUDFLARE && opts.relayMode !== "responses") {
     return openaiFromCloudflareResponse(upstreamJson, {
       id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
@@ -1137,7 +1147,7 @@ async function openaiClientFromProvider(
     const out = zhipuUpstreamToOpenAIChat(text);
     return { body: stream ? out.sse : JSON.stringify(out.json), usageBody: out.json };
   }
-  if (opts.channelType === CHANNEL_TYPE_CLOUDFLARE && opts.relayMode !== "responses") {
+  if (opts.channelType === CHANNEL_TYPE_CLOUDFLARE && opts.relayMode !== "responses" && !isCloudflareSTTRelayMode(opts.relayMode)) {
     const out = cloudflareUpstreamToOpenAIChat(text, {
       id: `chatcmpl-${opts.requestId}`,
       upstreamModelName: mapped,
@@ -1493,6 +1503,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let advancedConverter: string | undefined;
     let openaiEditForm: OpenAIImageEditForm | undefined;
     let openaiAudioForm: EncodedMultipart | undefined;
+    let cloudflareAudioBody: Uint8Array | undefined;
     let viaResponses = false;
     let viaParamApplied = false;
     const viaParamHeaders: Record<string, string> = {};
@@ -1553,6 +1564,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       } else if (multipartAudio && usesOpenAIAudioAdaptor(channel.type, advancedConverter)) {
         openaiAudioForm = convertOpenAIAudioForm(opts.rawBody as ArrayBuffer, opts.rawContentType || "", mapped);
         outbound = opts.body;
+      } else if (multipartAudio && channel.type === CHANNEL_TYPE_CLOUDFLARE) {
+        cloudflareAudioBody = convertCloudflareAudioRequest(opts.rawBody as ArrayBuffer, opts.rawContentType || "");
+        outbound = opts.body;
+      } else if (channel.type === CHANNEL_TYPE_CLOUDFLARE && isCloudflareSTTRelayMode(mode)) {
+        throw new Error("file is required");
       } else if (opts.rawBody) {
         outbound = opts.body;
       } else {
@@ -1702,6 +1718,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     } else if (openaiAudioForm) {
       target.body = openaiAudioForm.body;
       target.headers["content-type"] = openaiAudioForm.contentType;
+    } else if (cloudflareAudioBody) {
+      target.body = cloudflareAudioBody;
+      delete target.headers["content-type"];
     } else if (opts.rawBody && !aliMultipartEdits) {
       target.body = opts.rawBody;
       if (opts.rawContentType) target.headers["content-type"] = opts.rawContentType;
@@ -2179,6 +2198,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, "bad_response_body", extra);
           return openaiError(500, "bad_response_body", "bad_response_body");
         }
+        if (channel.type === CHANNEL_TYPE_CLOUDFLARE && isCloudflareSTTRelayMode(mode)) {
+          await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, "bad_response_body", extra);
+          return openaiError(500, "bad_response_body", "bad_response_body");
+        }
         await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, true, "binary/text", extra);
         return new Response(text, {
           status: 200,
@@ -2260,6 +2283,16 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     let usage = usageFromOpenAI(converted);
     if (mapped.startsWith("imagen") && Array.isArray(converted.data)) {
       usage = imagenUsage((converted.data as unknown[]).length);
+    }
+    if (channel.type === CHANNEL_TYPE_CLOUDFLARE && isCloudflareSTTRelayMode(mode)) {
+      const sttUsage = cloudflareSTTUsage(String(converted.text || ""), mapped, promptEst);
+      usage = {
+        prompt: sttUsage.prompt_tokens,
+        completion: sttUsage.completion_tokens,
+        total: sttUsage.total_tokens,
+        cachedTokens: 0,
+        promptCacheHitTokens: 0,
+      };
     }
     extra.cachedTokens = usage.cachedTokens;
     extra.promptCacheHitTokens = usage.promptCacheHitTokens;

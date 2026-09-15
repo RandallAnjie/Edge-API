@@ -4465,6 +4465,14 @@ test("original Zhipu, ZhipuV4, Perplexity, Cloudflare, BaiduV2, and MiniMax Conv
     buildUpstream(cfCh, "completions", "/v1/completions", "llama-3", cfComp).url,
     "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/run/llama-3",
   );
+  assert.equal(
+    buildUpstream(cfCh, "audio_transcription", "/v1/audio/transcriptions", "whisper-1", { model: "whisper-1" }).url,
+    "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/run/whisper-1",
+  );
+  assert.equal(
+    buildUpstream(cfCh, "audio_translation", "/v1/audio/translations", "whisper-1", { model: "whisper-1" }).url,
+    "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/run/whisper-1",
+  );
 
   const baiduV2Ch = testChannel({ type: CHANNEL_TYPE_BAIDU_V2, key: "tok|app-1", base_url: "", models: "ernie-4.0-8k-search" });
   const baiduV2Up = buildUpstream(baiduV2Ch, "chat", "/v1/chat/completions", "ernie-4.0-8k", baiduV2);

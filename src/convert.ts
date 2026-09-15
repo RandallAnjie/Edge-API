@@ -437,9 +437,13 @@ export { convertDifyOpenAIRequest, convertDifyOpenAIRequestWithUploads, openaiFr
 export { convertZhipuOpenAIRequest, convertZhipuV4OpenAIRequest, openaiFromZhipuResponse, openaiFromZhipuV4Image } from "./zhipu-convert.js";
 export { convertPerplexityOpenAIRequest } from "./perplexity-convert.js";
 export {
+  cloudflareSTTUsage,
+  convertCloudflareAudioRequest,
   convertCloudflareCompletionsRequest,
   convertCloudflareOpenAIRequest,
+  isCloudflareSTTRelayMode,
   openaiFromCloudflareResponse,
+  openaiFromCloudflareSTT,
 } from "./cloudflare-convert.js";
 export { convertBaiduV2OpenAIRequest } from "./baidu-v2-convert.js";
 export { convertMiniMaxImageRequest, convertMiniMaxOpenAIRequest, convertMiniMaxTTSRequest, openaiFromMiniMaxImage, miniMaxTTSDoResponse } from "./minimax-convert.js";

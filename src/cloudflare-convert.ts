@@ -1,6 +1,8 @@
-/** Original `relay/channel/cloudflare` ConvertOpenAIRequest / GetRequestURL / DoResponse. */
+/** Original `relay/channel/cloudflare` ConvertOpenAIRequest / ConvertAudioRequest / GetRequestURL / DoResponse. */
 
+import { parseMultipartForm } from "./multipart-form.js";
 import { asObj, sseLine } from "./openai-usage.js";
+import { estimateTokenByModel } from "./openai-realtime-usage.js";
 
 export type ConvertCloudflareOpts = {
   upstreamModelName?: string;
@@ -42,6 +44,65 @@ export function cloudflareRequestURL(base: string, account: string, mode: string
   if (mode === "embeddings") return `${prefix}/ai/v1/embeddings`;
   if (mode === "responses") return `${prefix}/ai/v1/responses`;
   return `${prefix}/ai/run/${upstreamModel}`;
+}
+
+/** Original `RelayModeAudioTranscription` / `RelayModeAudioTranslation` (cfSTTHandler). */
+export function isCloudflareSTTRelayMode(mode?: string): boolean {
+  return mode === "audio_transcription" || mode === "audio_translation";
+}
+
+/**
+ * Original `cloudflare.Adaptor.ConvertAudioRequest`.
+ * `FormFile("file")` errors become `"file is required"`; the upstream body is the raw file bytes
+ * (not rewritten multipart). `SetupApiRequestHeader` does not copy Content-Type for STT.
+ */
+export function convertCloudflareAudioRequest(rawBody: ArrayBuffer, contentType: string): Uint8Array {
+  let form;
+  try {
+    form = parseMultipartForm(rawBody, contentType);
+  } catch {
+    throw new Error("file is required");
+  }
+  const file = form.files.find((part) => part.name === "file");
+  if (!file) throw new Error("file is required");
+  return file.data;
+}
+
+/**
+ * Original `cloudflare.cfSTTHandler` client JSON (`dto.AudioResponse`).
+ * Upstream `{ result: { text } }` → `{ text }`. Invalid JSON shape is `ErrorCodeBadResponseBody`.
+ */
+export function openaiFromCloudflareSTT(upstream: unknown): { text: string } {
+  if (upstream == null || typeof upstream !== "object" || Array.isArray(upstream)) {
+    throw new Error("bad_response_body");
+  }
+  const result = (upstream as Record<string, unknown>).result;
+  if (result == null) return { text: "" };
+  if (typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("bad_response_body");
+  }
+  const text = (result as Record<string, unknown>).text;
+  if (text == null) return { text: "" };
+  if (typeof text !== "string") throw new Error("bad_response_body");
+  return { text };
+}
+
+/**
+ * Original `service.ResponseText2Usage` used by `cfSTTHandler`.
+ * Extra-OK: STT `GetEstimatePromptTokens` does not run original `GetAudioDuration` (prompt stays the
+ * worker estimate, 0 for multipart with empty JSON body).
+ */
+export function cloudflareSTTUsage(
+  text: string,
+  upstreamModelName: string,
+  promptTokens: number,
+): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
+  const completion = estimateTokenByModel(upstreamModelName, text);
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completion,
+    total_tokens: promptTokens + completion,
+  };
 }
 
 /** Original Cloudflare chat ConvertOpenAIRequest: passthrough `request`. */

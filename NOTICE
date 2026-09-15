@@ -61,6 +61,10 @@ Material changes from upstream:
   `/openai/realtime?deployment=` + `api-key`, preview-only `openai-beta`, Advanced Custom
   route `https`→`wss` + route auth, OpenaiRealtimeHandler `RealtimeUsage` JSON +
   CountTokenRealtime / PreWssConsumeQuota / PostWssConsumeQuota, no gorilla SDK).
+  Cloudflare Workers AI STT uses the original HTTP path (`ConvertAudioRequest` raw
+  `file` bytes, GetRequestURL `/client/v4/accounts/{ApiVersion}/ai/run/{model}`,
+  cfSTTHandler `{text}` from `{result.text}`, ResponseText2Usage completion tokens).
+  Extra-OK: STT prompt tokens skip original `GetAudioDuration`.
   OpenAI-model realtime text tokens use original `EstimateToken` (tiktoken-go is not
   bundled). Dial-first 101 then async usage is extra-OK vs original upgrade-first
   then blocking handler. Stripe/Epay/Creem/Waffo checkout use HTTP APIs
