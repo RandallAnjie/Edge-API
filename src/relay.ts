@@ -86,6 +86,7 @@ import {
   parseRealtimeEvent,
   remainingRealtimePreConsume,
   websocketMessageText,
+  calculateAudioQuota,
   type RealtimeUsage,
 } from "./openai-realtime-usage.js";
 import { loadWssPriceData, postWssConsumeQuota, preWssConsumeQuota } from "./openai-realtime-billing.js";
@@ -205,6 +206,7 @@ import {
   cacheCreationTokensTotal,
   captureTieredBillingSnapshot,
   injectTieredBillingInfo,
+  isFixedPriceSettlement,
   resolveRelayTieredQuota,
   type BillingUsage,
 } from "./tiered-settle.js";
@@ -1476,8 +1478,26 @@ async function settle(
         otherRatios: extra.otherRatios,
         imageCount: extra.actualImageCount,
       });
+  const quotaPerUnit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
+  const audioQuota = useAudioOther
+    ? calculateAudioQuota({
+        inputTextTokens: Number(details.text_tokens || 0),
+        inputAudioTokens: Number(details.audio_tokens || 0),
+        outputTextTokens: Number(outDetails.text_tokens || 0),
+        outputAudioTokens: Number(outDetails.audio_tokens || 0),
+        modelName: model,
+        usePrice: price.usePrice,
+        modelPrice: price.modelPrice,
+        modelRatio: price.modelRatio,
+        groupRatio: price.groupRatio,
+        completionRatio: audioLog.completionRatio,
+        audioRatio: audioLog.audioRatio,
+        audioCompletionRatio: audioLog.audioCompletionRatio,
+        quotaPerUnit,
+      })
+    : null;
   let quota: number;
-  let quotaClamp = textSummary?.clamp || null;
+  let quotaClamp = textSummary?.clamp || audioQuota?.clamp || null;
   if (tiered) {
     if (textSummary) {
       const composed = composeTieredTextQuota({
@@ -1494,8 +1514,16 @@ async function settle(
     quotaClamp = noteQuotaClamp(quotaClamp, tiered.result?.clamp);
   } else if (textSummary) {
     quota = textSummary.quota;
+  } else if (audioQuota) {
+    quota = audioQuota.quota;
   } else {
     quota = await computeQuota(store, model, auth.usingGroup, prompt, completion);
+  }
+  if (useAudioOther) {
+    const totalTokens = Number(billingUsage.prompt_tokens || 0) + Number(billingUsage.completion_tokens || 0);
+    if (totalTokens === 0 && !isFixedPriceSettlement(tiered?.result, extra.tieredSnapshot || tiered?.snap)) {
+      quota = 0;
+    }
   }
   const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
   if (ok && quota > 0) {

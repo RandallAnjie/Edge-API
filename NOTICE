@@ -201,11 +201,12 @@ Material changes from upstream:
   prompt mutation (`prompt_tokens` logged after cache subtraction), split
   Claude 5m/1h cache-creation ratios, OpenAI `cache_write_tokens`,
   `tool_surcharges` (`name`/`count`/`price`, not legacy `web_search` keys),
-  and Gemini `audio_input_seperate_price`. Extra-OK: PostAudio HTTP still
-  uses `computeQuota`; `CountBillableToolCall` is not fully wired from
-  Responses/Claude/Gemini converters (search-preview still bills from the
-  model-name suffix). Extra-OK: ratio-path `computeQuota` remains for the
-  audio fallback only.
+  and Gemini `audio_input_seperate_price`. Extra-OK: `CountBillableToolCall`
+  is not fully wired from Responses/Claude/Gemini converters (search-preview
+  still bills from the model-name suffix). HTTP PostAudio uses original
+  `calculateAudioQuota` (`QuotaFromDecimal`, details text/audio tokens,
+  map `GetCompletionRatio` / `GetAudioRatio` / `GetAudioCompletionRatio`,
+  zero `TotalTokens` unless fixed-price).
   Original `service.attachQuotaSaturation` nests
   `admin_info.quota_saturation` (`op`, `kind`, `original`, `clamped`) on
   text/audio/WSS consume logs so `formatUserLogs` strips it. `TryTieredSettle`

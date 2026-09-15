@@ -45,10 +45,11 @@ import { parseVolcengineAuth, runVolcTtsWebSocket, volcTtsEncodingFromRequest, v
 import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
+import { calculateAudioQuota } from "./openai-realtime-usage.js";
 import { computeQuota, textConsumePriceData, audioConsumeLogRatios } from "./quota.js";
 import { calculateTextQuotaFromStore, composeTieredTextQuota, noteQuotaClamp } from "./text-quota.js";
 import { openaiImageDataCount } from "./image-billing.js";
-import { billingUsageFromOpenAICounts, cacheCreationTokensTotal, injectTieredBillingInfo, resolveRelayTieredQuota } from "./tiered-settle.js";
+import { billingUsageFromOpenAICounts, cacheCreationTokensTotal, injectTieredBillingInfo, isFixedPriceSettlement, resolveRelayTieredQuota } from "./tiered-settle.js";
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
 import { relayFormatForClient, requestConversionChain, shouldPostAudioConsumeQuota } from "./log-info-generate.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
@@ -782,8 +783,26 @@ export async function testChannel(
           relayMode: mode,
           imageCount: actualImageCount,
         });
+    const quotaPerUnit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
+    const audioQuota = useAudioOther
+      ? calculateAudioQuota({
+          inputTextTokens: Number(details.text_tokens || 0),
+          inputAudioTokens: Number(details.audio_tokens || 0),
+          outputTextTokens: Number(outDetails.text_tokens || 0),
+          outputAudioTokens: Number(outDetails.audio_tokens || 0),
+          modelName: originModel,
+          usePrice: price.usePrice,
+          modelPrice: price.modelPrice,
+          modelRatio: price.modelRatio,
+          groupRatio: price.groupRatio,
+          completionRatio: audioLog.completionRatio,
+          audioRatio: audioLog.audioRatio,
+          audioCompletionRatio: audioLog.audioCompletionRatio,
+          quotaPerUnit,
+        })
+      : null;
     let quota: number;
-    let quotaClamp = textSummary?.clamp || null;
+    let quotaClamp = textSummary?.clamp || audioQuota?.clamp || null;
     if (tiered) {
       if (textSummary) {
         const composed = composeTieredTextQuota({
@@ -800,8 +819,16 @@ export async function testChannel(
       quotaClamp = noteQuotaClamp(quotaClamp, tiered.result?.clamp);
     } else if (textSummary) {
       quota = textSummary.quota;
+    } else if (audioQuota) {
+      quota = audioQuota.quota;
     } else {
       quota = await computeQuota(store, originModel, group, usage.prompt, usage.completion);
+    }
+    if (useAudioOther) {
+      const totalTokens = Number(billingUsage.prompt_tokens || 0) + Number(billingUsage.completion_tokens || 0);
+      if (totalTokens === 0 && !isFixedPriceSettlement(tiered?.result, tiered?.snap)) {
+        quota = 0;
+      }
     }
     const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
     await store.insertLog({

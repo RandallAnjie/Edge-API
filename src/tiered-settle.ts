@@ -405,6 +405,15 @@ export async function resolveRelayTieredQuota(
   return { quota: settled.quota, snap, result: settled.result };
 }
 
+/** Original `service.isFixedPriceSettlement`. */
+export function isFixedPriceSettlement(
+  result?: TieredResult | null,
+  snap?: BillingSnapshot | null,
+): boolean {
+  if (result) return result.billingUnit === "request";
+  return Boolean(snap && snap.billingMode === "tiered_expr" && snap.estimatedBillingUnit === "request");
+}
+
 export function emptyBillingUsage(): BillingUsage {
   return { prompt_tokens: 0, completion_tokens: 0, prompt_tokens_details: {}, completion_tokens_details: {} };
 }

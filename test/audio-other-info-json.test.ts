@@ -11,7 +11,7 @@ import {
   RELAY_FORMAT_OPENAI_RESPONSES,
   shouldPostAudioConsumeQuota,
 } from "../src/log-info-generate.js";
-import { generateWssOtherInfo, emptyRealtimeUsage } from "../src/openai-realtime-usage.js";
+import { calculateAudioQuota, generateWssOtherInfo, emptyRealtimeUsage } from "../src/openai-realtime-usage.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
@@ -387,6 +387,7 @@ test("original chat gpt-4o-audio-preview consume log JSON has GenerateAudioOther
   );
   const items = await consumeLogs(e, auth, "gpt-4o-audio-preview");
   assert.equal(items.length >= 1, true, JSON.stringify(items));
+  assert.equal(items[0].quota, 216);
   const other = parseOther(items[0].other);
   assert.equal(other.audio, true);
   assert.equal("ws" in other, false);
@@ -446,6 +447,7 @@ test("original chat gpt-4o-mini-tts consume log JSON uses GetAudioRatio 25 under
   );
   const items = await consumeLogs(e, auth, "gpt-4o-mini-tts");
   assert.equal(items.length >= 1, true, JSON.stringify(items));
+  assert.equal(items[0].quota, 150000);
   const other = parseOther(items[0].other);
   assert.equal(other.audio, true);
   assert.equal(other.audio_ratio, 25);
@@ -530,4 +532,70 @@ test("original binary /v1/audio/speech without audio tokens stays PostTextConsum
   assert.equal(other.model_ratio, 7.5);
   assert.equal(typeof other.cache_tokens, "number");
   assert.equal(other.request_path, "/v1/audio/speech");
+});
+
+test("original calculateAudioQuota ratio path QuotaFromDecimal JSON 523", () => {
+  const result = calculateAudioQuota({
+    inputTextTokens: 10,
+    outputTextTokens: 2,
+    inputAudioTokens: 20,
+    outputAudioTokens: 5,
+    modelName: "gpt-4o-audio-preview",
+    usePrice: false,
+    modelPrice: -1,
+    modelRatio: 1.25,
+    groupRatio: 1,
+    completionRatio: 4,
+    audioRatio: 16,
+    audioCompletionRatio: 1,
+    quotaPerUnit: 500000,
+  });
+  assert.equal(result.quota, 523);
+  assert.equal(result.clamp, null);
+});
+
+test("original PostAudioConsumeQuota zeros quota when TotalTokens is 0 JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  await createChannel(e, auth);
+  const sk = await createSk(e, auth);
+  await withMockedFetch(
+    () =>
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl-audio-zero",
+          object: "chat.completion",
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+          usage: {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            prompt_tokens_details: { text_tokens: 0, audio_tokens: 4 },
+            completion_tokens_details: { text_tokens: 0, audio_tokens: 0 },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    async () => {
+      const hit = await json(
+        new Request("http://local/v1/chat/completions", {
+          method: "POST",
+          headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-4o-audio-preview",
+            messages: [{ role: "user", content: "hi" }],
+          }),
+        }),
+        e,
+      );
+      assert.equal(hit.res.status, 200, hit.text);
+    },
+  );
+  const items = await consumeLogs(e, auth, "gpt-4o-audio-preview");
+  assert.equal(items.length >= 1, true, JSON.stringify(items));
+  assert.equal(items[0].quota, 0);
+  const other = parseOther(items[0].other);
+  assert.equal(other.audio, true);
+  assert.equal(other.audio_input, 4);
 });
