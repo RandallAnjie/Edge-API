@@ -192,6 +192,24 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON is sent upstrea
     assert.equal(captured.body.model, "deepseek-v4-pro");
     assert.deepEqual(captured.body.thinking, { type: "enabled" });
     assert.equal(captured.body.reasoning_effort, "max");
+
+    const responses = await json(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "deepseek-v4-flash-none",
+          input: "hi",
+        }),
+      }),
+      e,
+    );
+    assert.equal(responses.res.status, 200, responses.text);
+    if (!captured) throw new Error("missing deepseek responses upstream");
+    assert.equal(captured.url, "https://api.deepseek.com/responses");
+    assert.equal(captured.body.model, "deepseek-v4-flash");
+    assert.deepEqual(captured.body.reasoning, { effort: "none" });
+    assert.equal("thinking" in captured.body, false);
   } finally {
     globalThis.fetch = origFetch;
   }

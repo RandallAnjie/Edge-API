@@ -3606,6 +3606,29 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () =
   assert.deepEqual(dsMax.thinking, { type: "enabled" });
   assert.equal(dsMax.reasoning_effort, "max");
 
+  const dsRespNone = convertOpenAIResponsesRequest(
+    { model: "deepseek-v4-flash-none", input: "hi" },
+    {
+      channelType: CHANNEL_TYPE_DEEPSEEK,
+      originModelName: "deepseek-v4-flash-none",
+      upstreamModelName: "deepseek-v4-flash-none",
+    },
+  );
+  assert.equal(dsRespNone.model, "deepseek-v4-flash");
+  assert.deepEqual(dsRespNone.reasoning, { effort: "none" });
+  assert.equal("thinking" in dsRespNone, false);
+
+  const dsRespMax = convertOpenAIResponsesRequest(
+    { model: "deepseek-v4-pro-max", input: "hi", reasoning: { summary: "auto" } },
+    {
+      channelType: CHANNEL_TYPE_DEEPSEEK,
+      originModelName: "deepseek-v4-pro-max",
+      upstreamModelName: "deepseek-v4-pro-max",
+    },
+  );
+  assert.equal(dsRespMax.model, "deepseek-v4-pro");
+  assert.deepEqual(dsRespMax.reasoning, { summary: "auto", effort: "max" });
+
   const volc = testChannel({ type: CHANNEL_TYPE_VOLC, key: "vk", base_url: "", models: "doubao-pro,bot-1,deepseek-v3-thinking" });
   assert.equal(
     buildUpstream(volc, "chat", "/v1/chat/completions", "doubao-pro", volcPlain).url,
@@ -3692,6 +3715,10 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () =
   assert.equal(
     buildUpstream(deepseek, "messages", "/v1/messages", "deepseek-chat", { model: "deepseek-chat" }).url,
     "https://api.deepseek.com/anthropic/v1/messages",
+  );
+  assert.equal(
+    buildUpstream(deepseek, "responses", "/v1/responses", "deepseek-chat", { model: "deepseek-chat", input: "hi" }).url,
+    "https://api.deepseek.com/responses",
   );
   const moonshotCh = testChannel({ type: CHANNEL_TYPE_MOONSHOT, key: "mk", base_url: "", models: "kimi-k2.5" });
   assert.equal(

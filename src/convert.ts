@@ -15,7 +15,7 @@ import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_ALI, CHANNEL_TYPE_ANTHROPIC,
 import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertGeminiImageFromOpenAI, convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
-import { convertDeepSeekClaudeRequest, convertDeepSeekOpenAIRequest, convertVolcOpenAIRequest, convertXaiImageRequest, convertXaiOpenAIRequest, openaiFromXaiResponse, xaiSseToOpenAIChat } from "./vendor-convert.js";
+import { convertDeepSeekClaudeRequest, convertDeepSeekOpenAIRequest, convertDeepSeekResponsesRequest, convertVolcOpenAIRequest, convertXaiImageRequest, convertXaiOpenAIRequest, openaiFromXaiResponse, xaiSseToOpenAIChat } from "./vendor-convert.js";
 import { convertVolcTTSRequest, VOLC_TTS_UNSUPPORTED_AUDIO } from "./volc-tts.js";
 import { convertBaiduEmbeddingRequest, convertBaiduOpenAIRequest } from "./baidu-convert.js";
 import { convertCohereOpenAIRequest, convertCohereRerankRequest } from "./cohere-convert.js";
@@ -499,7 +499,7 @@ export {
   delegatesClaudeToOpenAIAdaptor,
   usesClaudeAdaptorForClaudeRequest,
 };
-export { convertDeepSeekClaudeRequest, convertXaiImageRequest, openaiFromXaiResponse, xaiSseToOpenAIChat };
+export { convertDeepSeekClaudeRequest, convertDeepSeekResponsesRequest, convertXaiImageRequest, openaiFromXaiResponse, xaiSseToOpenAIChat };
 export { openaiChatToClaudeResponse, openaiChatToGeminiResponse } from "./openai-format-convert.js";
 export {
   streamResponseOpenAI2Claude,
@@ -1122,6 +1122,13 @@ export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opt
   }
   if (opts.channelType === CHANNEL_TYPE_GEMINI) {
     return convertOpenAIResponsesRequestToGeminiChat(suffixed.body, {
+      originModelName: opts.originModelName,
+      upstreamModelName: suffixed.upstreamModelName,
+      settings,
+    });
+  }
+  if (opts.channelType === CHANNEL_TYPE_DEEPSEEK) {
+    return convertDeepSeekResponsesRequest(suffixed.body, {
       originModelName: opts.originModelName,
       upstreamModelName: suffixed.upstreamModelName,
       settings,

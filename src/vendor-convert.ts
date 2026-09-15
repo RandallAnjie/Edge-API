@@ -117,6 +117,29 @@ export function convertDeepSeekClaudeRequest(body: Record<string, unknown>, opts
   return req;
 }
 
+/** Original `deepseek.Adaptor.ConvertOpenAIResponsesRequest` / `applyDeepSeekV4ResponsesThinkingSuffix`. */
+export function convertDeepSeekResponsesRequest(body: Record<string, unknown>, opts: VendorConvertOpts): Record<string, unknown> {
+  const settings = opts.settings || {};
+  const model = opts.upstreamModelName || String(body.model || "");
+  const out: Record<string, unknown> = { ...body, model };
+  if (shouldPreserveThinkingSuffix(model, settings) || shouldPreserveThinkingSuffix(opts.originModelName, settings)) {
+    return out;
+  }
+  const parsed = parseDeepSeekV4ThinkingSuffix(model);
+  if (parsed.ok) {
+    let effort = parsed.effort;
+    if (parsed.thinkingType === "disabled") effort = "none";
+    out.model = parsed.base;
+    const reasoning =
+      out.reasoning && typeof out.reasoning === "object" && !Array.isArray(out.reasoning)
+        ? { ...(out.reasoning as Record<string, unknown>) }
+        : {};
+    reasoning.effort = effort;
+    out.reasoning = reasoning;
+  }
+  return out;
+}
+
 function xaiUsageFromRaw(raw: unknown): OpenAIUsage {
   const rec = asObj(raw);
   const usage = emptyOpenAIUsage();
