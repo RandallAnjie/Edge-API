@@ -239,6 +239,7 @@ test("original TryTieredSettle overflow consume-log admin_info.quota_saturation 
     e,
   );
   assert.equal(ch.body.success, true, String(ch.body.message));
+  await e.DB.prepare("UPDATE users SET quota = ? WHERE id = 1").bind(MAX_QUOTA).run();
   const sk = await createSk(e, auth);
   const orig = globalThis.fetch;
   globalThis.fetch = (async () =>
