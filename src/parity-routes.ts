@@ -1639,9 +1639,10 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    if (c.params.id === "meta") return apiOk(await enrichModelMeta(s, (await s.listModelMeta()) as Record<string, unknown>[]));
-    const item = await s.getModelMeta(Number(c.params.id));
-    if (!item) return apiFail("不存在");
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiFail(id.message);
+    const item = await s.getModelMeta(id.n);
+    if (!item) return apiFail("record not found");
     const [enriched] = await enrichModelMeta(s, [item]);
     return apiOk(enriched);
   });

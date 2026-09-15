@@ -384,21 +384,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   start_time INTEGER NOT NULL DEFAULT 0,
   finish_time INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS conversations (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  title TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL DEFAULT 0,
-  updated_at INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation_id INTEGER NOT NULL,
-  role TEXT NOT NULL DEFAULT 'user',
-  content TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL DEFAULT 0
-);
 CREATE TABLE IF NOT EXISTS vendors (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -607,8 +592,6 @@ CREATE INDEX IF NOT EXISTS idx_mj_user ON mj_tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON login_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_tid ON tasks(task_id);
-CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id);
-CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_topups_user ON topups(user_id);
 CREATE INDEX IF NOT EXISTS idx_sub_preconsume_user ON subscription_pre_consume_records(user_id);
 CREATE INDEX IF NOT EXISTS idx_sub_preconsume_sub ON subscription_pre_consume_records(user_subscription_id);

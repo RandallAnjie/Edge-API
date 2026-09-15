@@ -1717,14 +1717,6 @@ export function registerMore(r: Router<Env>): void {
     return apiOk(null);
   });
 
-  r.get("/api/models/meta", async (c) => {
-    const s = store(c);
-    const u = await requireAdmin(c, s);
-    if (isResponse(u)) return u;
-    const meta = await s.listModelMeta();
-    return apiOk(await enrichModelMeta(s, meta as Record<string, unknown>[]));
-  });
-
   r.post("/api/models/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
@@ -1863,64 +1855,6 @@ export function registerMore(r: Router<Env>): void {
       end_timestamp: Number(c.url.searchParams.get("end_timestamp") || 0) || 0,
     });
     return apiOk(pageData(items.map((row) => publicTask(row as Record<string, unknown>, false, 1)), total, q));
-  });
-
-  r.get("/api/conversations", async (c) => {
-    const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    return apiOk(await s.listConversations(u.id));
-  });
-
-  r.post("/api/conversations", async (c) => {
-    const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { title?: string; model?: string };
-    const id = await s.insertConversation(u.id, body.title || "新对话", body.model || "");
-    return apiOk({ id });
-  });
-
-  r.get("/api/conversations/:id", async (c) => {
-    const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const conv = await s.getConversation(Number(c.params.id), u.id);
-    if (!conv) return apiFail("对话不存在");
-    const messages = await s.listMessages(Number(c.params.id));
-    return apiOk({ ...conv, messages });
-  });
-
-  r.put("/api/conversations/:id", async (c) => {
-    const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { title?: string; model?: string };
-    const patch: Record<string, unknown> = {};
-    if (body.title != null) patch.title = body.title;
-    if (body.model != null) patch.model = body.model;
-    await s.updateConversation(Number(c.params.id), u.id, patch);
-    return apiOk(null);
-  });
-
-  r.delete("/api/conversations/:id", async (c) => {
-    const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    await s.deleteConversation(Number(c.params.id), u.id);
-    return apiOk(null);
-  });
-
-  r.post("/api/conversations/:id/messages", async (c) => {
-    const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const conv = await s.getConversation(Number(c.params.id), u.id);
-    if (!conv) return apiFail("对话不存在");
-    const body = (await readJson(c.req)) as { role?: string; content?: string };
-    const id = await s.insertMessage(Number(c.params.id), body.role || "user", body.content || "");
-    await s.updateConversation(Number(c.params.id), u.id, {});
-    return apiOk({ id });
   });
 
   r.get("/api/custom-oauth-provider/", async (c) => {
@@ -2160,7 +2094,6 @@ async function tokenUsage(c: C): Promise<Response> {
   const used = Number(token.used_quota || 0);
   const expiredAt = token.expired_time === -1 ? 0 : token.expired_time;
   return json(200, {
-    success: true,
     code: true,
     message: "ok",
     data: {

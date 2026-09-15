@@ -3940,59 +3940,6 @@ export class Store {
     return { items: results ?? [], total: num(totalRow?.c) };
   }
 
-  async listConversations(userId: number): Promise<unknown[]> {
-    const { results } = await this.db
-      .prepare("SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC")
-      .bind(userId)
-      .all();
-    return results;
-  }
-
-  async getConversation(id: number, userId: number): Promise<Record<string, unknown> | null> {
-    return this.db.prepare("SELECT * FROM conversations WHERE id = ? AND user_id = ?").bind(id, userId).first<Record<string, unknown>>();
-  }
-
-  async insertConversation(userId: number, title: string, model: string): Promise<number> {
-    const r = await this.db
-      .prepare("INSERT INTO conversations (user_id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
-      .bind(userId, title, model, nowSec(), nowSec())
-      .run();
-    return Number(r.meta.last_row_id || 0);
-  }
-
-  async updateConversation(id: number, userId: number, patch: Record<string, unknown>): Promise<void> {
-    const cols: string[] = [];
-    const vals: unknown[] = [];
-    for (const [k, v] of Object.entries(patch)) {
-      cols.push(`${k} = ?`);
-      vals.push(v);
-    }
-    cols.push("updated_at = ?");
-    vals.push(nowSec(), id, userId);
-    await this.db.prepare(`UPDATE conversations SET ${cols.join(", ")} WHERE id = ? AND user_id = ?`).bind(...vals).run();
-  }
-
-  async deleteConversation(id: number, userId: number): Promise<void> {
-    await this.db.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(id).run();
-    await this.db.prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").bind(id, userId).run();
-  }
-
-  async listMessages(conversationId: number): Promise<unknown[]> {
-    const { results } = await this.db
-      .prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY id")
-      .bind(conversationId)
-      .all();
-    return results;
-  }
-
-  async insertMessage(conversationId: number, role: string, content: string): Promise<number> {
-    const r = await this.db
-      .prepare("INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)")
-      .bind(conversationId, role, content, nowSec())
-      .run();
-    return Number(r.meta.last_row_id || 0);
-  }
-
   async listVendors(): Promise<unknown[]> {
     const { results } = await this.db.prepare("SELECT * FROM vendors WHERE deleted_at = 0 ORDER BY id").all();
     return results;

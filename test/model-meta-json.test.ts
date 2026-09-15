@@ -98,3 +98,29 @@ test("original GetAllModelsMeta JSON uses GetModelSupportEndpointTypes and GetMo
   assert.deepEqual(getModelSupportEndpointTypes("gemini-3.5-flash"), ["openai", "openai-response"]);
   assert.deepEqual(getModelQuotaTypes("gemini-3.5-flash"), [0]);
 });
+
+test("original GetModelMeta JSON uses strconv.Atoi and GORM record not found", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const created = await json(
+    new Request("http://local/api/models/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ model_name: "get-model-meta", status: 1 }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const id = Number((created.body.data as { id: number }).id);
+  const got = await json(new Request("http://local/api/models/" + id, { headers: auth }), e);
+  assert.equal(got.body.success, true, String(got.body.message));
+  assert.equal((got.body.data as { model_name: string }).model_name, "get-model-meta");
+  const bad = await json(new Request("http://local/api/models/meta", { headers: auth }), e);
+  assert.equal(bad.res.status, 200);
+  assert.equal(bad.body.success, false);
+  assert.equal(bad.body.message, 'strconv.Atoi: parsing "meta": invalid syntax');
+  const missing = await json(new Request("http://local/api/models/999999", { headers: auth }), e);
+  assert.equal(missing.body.success, false);
+  assert.equal(missing.body.message, "record not found");
+});

@@ -270,6 +270,7 @@ test("system-info, task plugin upsert, original token usage, sessions view", asy
   const sk = tk.body.data.key as string;
   const usage = await json(new Request("http://local/api/usage/token", { headers: { authorization: "Bearer " + sk } }), e);
   assert.equal(usage.body.code, true);
+  assert.equal("success" in usage.body, false);
   assert.equal(usage.body.data.object, "token_usage");
   assert.equal(typeof usage.body.data.total_granted, "number");
   assert.equal(typeof usage.body.data.total_used, "number");
@@ -703,6 +704,7 @@ test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, Lis
 
   const usage = await json(new Request("http://local/api/usage/token", { headers: skAuth }), e);
   assert.equal(usage.body.code, true);
+  assert.equal("success" in usage.body, false);
   assert.equal(usage.body.data.object, "token_usage");
   assert.equal(typeof usage.body.data.total_granted, "number");
   assert.equal(typeof usage.body.data.total_used, "number");

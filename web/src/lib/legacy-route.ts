@@ -54,61 +54,13 @@ function normalizeLegacyPath(pathname: string): string {
   return pathname.replace(/\/+$/, '')
 }
 
-function buildTargetHref(targetPath: string, search: URLSearchParams, hash: string): string {
+function buildTargetHref(targetPath: string, source: URL): string {
   const target = new URL(targetPath, legacyOrigin)
-  search.forEach((value, key) => {
+  source.searchParams.forEach((value, key) => {
     target.searchParams.append(key, value)
   })
-  target.hash = hash
+  target.hash = source.hash
   return `${target.pathname}${target.search}${target.hash}`
-}
-
-function liftHashRouter(source: URL): { url: URL; lifted: boolean } {
-  if (
-    (source.pathname === '/' || source.pathname === '') &&
-    source.hash.startsWith('#/')
-  ) {
-    const inner = new URL(source.hash.slice(1), legacyOrigin)
-    source.searchParams.forEach((value, key) => {
-      if (!inner.searchParams.has(key)) inner.searchParams.append(key, value)
-    })
-    inner.hash = ''
-    return { url: inner, lifted: true }
-  }
-  return { url: source, lifted: false }
-}
-
-function resolveLegacyPath(source: URL): string | null {
-  const pathname = normalizeLegacyPath(source.pathname)
-  if (pathname === '/login') {
-    return buildTargetHref('/sign-in', source.searchParams, source.hash)
-  }
-  if (pathname === '/forbidden') {
-    return buildTargetHref('/403', source.searchParams, source.hash)
-  }
-  if (pathname === '/console/topup') {
-    return buildTargetHref('/wallet', source.searchParams, source.hash)
-  }
-  if (pathname === '/console/setting') {
-    const tab = source.searchParams.get('tab') ?? ''
-    const target = legacySettingsTabs[tab] ?? '/system-settings'
-    return buildTargetHref(target, source.searchParams, source.hash)
-  }
-  if (pathname === '/console/chat') {
-    return buildTargetHref('/dashboard', source.searchParams, source.hash)
-  }
-  if (pathname.startsWith('/console/chat/')) {
-    const chatID = pathname.slice('/console/chat/'.length)
-    return buildTargetHref(chatID ? `/chat/${chatID}` : '/dashboard', source.searchParams, source.hash)
-  }
-
-  const target = legacyConsoleRoutes[pathname]
-  if (target) return buildTargetHref(target, source.searchParams, source.hash)
-  if (pathname.startsWith('/console/')) {
-    return buildTargetHref('/dashboard', source.searchParams, source.hash)
-  }
-
-  return null
 }
 
 export function resolveLegacyRoute(rawHref: string): string | null {
@@ -119,12 +71,34 @@ export function resolveLegacyRoute(rawHref: string): string | null {
     return null
   }
 
-  const lifted = liftHashRouter(source)
-  const mapped = resolveLegacyPath(lifted.url)
-  if (mapped) return mapped
-  if (lifted.lifted) {
-    const path = normalizeLegacyPath(lifted.url.pathname)
-    return `${path}${lifted.url.search}`
+  const pathname = normalizeLegacyPath(source.pathname)
+  if (pathname === '/login') {
+    return buildTargetHref('/sign-in', source)
   }
+  if (pathname === '/forbidden') {
+    return buildTargetHref('/403', source)
+  }
+  if (pathname === '/console/topup') {
+    return buildTargetHref('/wallet', source)
+  }
+  if (pathname === '/console/setting') {
+    const tab = source.searchParams.get('tab') ?? ''
+    const target = legacySettingsTabs[tab] ?? '/system-settings'
+    return buildTargetHref(target, source)
+  }
+  if (pathname === '/console/chat') {
+    return buildTargetHref('/dashboard', source)
+  }
+  if (pathname.startsWith('/console/chat/')) {
+    const chatID = pathname.slice('/console/chat/'.length)
+    return buildTargetHref(chatID ? `/chat/${chatID}` : '/dashboard', source)
+  }
+
+  const target = legacyConsoleRoutes[pathname]
+  if (target) return buildTargetHref(target, source)
+  if (pathname.startsWith('/console/')) {
+    return buildTargetHref('/dashboard', source)
+  }
+
   return null
 }

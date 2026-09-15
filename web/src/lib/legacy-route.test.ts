@@ -88,22 +88,4 @@ describe('legacy frontend route migration', () => {
     expect(resolveLegacyRoute('/dashboard')).toBe(null)
     expect(resolveLegacyRoute('/api/status')).toBe(null)
   })
-
-  test('maps original HashRouter aliases onto current path routes', () => {
-    expect(resolveLegacyRoute('/#/login')).toBe('/sign-in')
-    expect(resolveLegacyRoute('/#/console')).toBe('/dashboard')
-    expect(resolveLegacyRoute('/#/console/channel')).toBe('/channels')
-    expect(resolveLegacyRoute('/#/console/token')).toBe('/keys')
-    expect(resolveLegacyRoute('/#/console/log')).toBe('/usage-logs')
-    expect(resolveLegacyRoute('/#/console/setting?tab=payment')).toBe(
-      '/system-settings/billing/payment?tab=payment'
-    )
-    expect(resolveLegacyRoute('/#/pricing')).toBe('/pricing')
-    expect(resolveLegacyRoute('/#/console/chat/42')).toBe('/chat/42')
-    expect(resolveLegacyRoute('/#/console/personal')).toBe('/profile')
-    expect(resolveLegacyRoute('/#/console/user')).toBe('/users')
-    expect(resolveLegacyRoute('/#/about')).toBe('/about')
-    expect(resolveLegacyRoute('/#/console/redemption')).toBe('/redemption-codes')
-    expect(resolveLegacyRoute('/#/console/playground')).toBe('/playground')
-  })
 })

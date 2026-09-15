@@ -78,6 +78,7 @@ test("original GetTokenUsage JSON uses GetModelLimitsMap including empty keys", 
   );
   assert.equal(emptyUsage.body.code, true);
   assert.equal(emptyUsage.body.message, "ok");
+  assert.equal("success" in emptyUsage.body, false);
   const emptyData = emptyUsage.body.data as Record<string, unknown>;
   assert.equal(emptyData.object, "token_usage");
   assert.deepEqual(emptyData.model_limits, {});
@@ -207,6 +208,7 @@ test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
   assert.equal(usage.res.status, 200, usage.text);
   assert.equal(usage.body.code, true);
   assert.equal(usage.body.message, "ok");
+  assert.equal("success" in usage.body, false);
   const data = usage.body.data as Record<string, unknown>;
   assert.equal(data.object, "token_usage");
   assert.equal(data.name, "disabled-usage");
@@ -215,5 +217,25 @@ test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
   assert.equal(data.total_available, 10);
   assert.equal(data.unlimited_quota, false);
   assert.equal(data.expires_at, 0);
+  assert.deepEqual(Object.keys(data).sort(), [
+    "expires_at",
+    "model_limits",
+    "model_limits_enabled",
+    "name",
+    "object",
+    "total_available",
+    "total_granted",
+    "total_used",
+    "unlimited_quota",
+  ]);
+  assert.deepEqual(Object.keys(usage.body).sort(), ["code", "data", "message"]);
+
+  const slash = await json(
+    new Request("http://local/api/usage/token/", { headers: { authorization: "Bearer " + createdData.key } }),
+    e,
+  );
+  assert.equal(slash.res.status, 200);
+  assert.equal(slash.body.code, true);
+  assert.equal("success" in slash.body, false);
 });
 

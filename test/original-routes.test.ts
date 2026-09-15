@@ -361,6 +361,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
   const usage = await json(new Request("http://local/api/usage/token", { headers: { authorization: "Bearer " + sk } }), e);
   assert.equal(usage.body.code, true);
   assert.equal(usage.body.message, "ok");
+  assert.equal("success" in usage.body, false);
   const ud = usage.body.data as Record<string, unknown>;
   assert.equal(ud.object, "token_usage");
   assert.equal(typeof ud.total_granted, "number");
@@ -2958,6 +2959,13 @@ test("original AddChannel, FetchModels, channel status, and RelayNotFound JSON",
   const unknownApi = await json(new Request("http://local/api/not-a-registered-route", { headers: auth }), e);
   assert.equal(unknownApi.res.status, 404);
   assert.equal((unknownApi.body.error as { message: string }).message, "Invalid URL (GET /api/not-a-registered-route)");
+  const extraConversations = await json(new Request("http://local/api/conversations", { headers: auth }), e);
+  assert.equal(extraConversations.res.status, 404);
+  assert.equal((extraConversations.body.error as { message: string }).message, "Invalid URL (GET /api/conversations)");
+  const extraModelsMeta = await json(new Request("http://local/api/models/meta", { headers: auth }), e);
+  assert.equal(extraModelsMeta.res.status, 200);
+  assert.equal(extraModelsMeta.body.success, false);
+  assert.equal(extraModelsMeta.body.message, 'strconv.Atoi: parsing "meta": invalid syntax');
   const unknownAssets = await json(new Request("http://local/assets/missing.js"), e);
   assert.equal(unknownAssets.res.status, 404);
   assert.equal((unknownAssets.body.error as { message: string }).message, "Invalid URL (GET /assets/missing.js)");
