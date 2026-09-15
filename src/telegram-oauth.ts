@@ -19,6 +19,46 @@ export const ERR_TELEGRAM_OAUTH_FAILED = "Telegram authorization failed. Please 
 export const ERR_TELEGRAM_ACCOUNT_NOT_BOUND =
   "This Telegram account is not linked. Sign in using another method and link it first.";
 
+/** Original `writeSecurityOperationError` for `model.ErrExternalIdentityAlreadyClaimed` on telegram. */
+export const ERR_TELEGRAM_BIND_ALREADY_BOUND = "This Telegram account is already bound.";
+
+/** Original `model.AuthSessionIdentity` JSON stored on oauth bind/verify flows. */
+export interface AuthSessionIdentityJSON {
+  user_id: number;
+  session_id: string;
+  auth_version: number;
+  session_version: number;
+}
+
+/** Original `oauthFlowPayload.SessionIdentity` marshaling. */
+export function authSessionIdentityJSON(identity: {
+  userId: number;
+  sessionId: string;
+  userAuthVersion: number;
+  sessionVersion: number;
+}): AuthSessionIdentityJSON {
+  return {
+    user_id: identity.userId,
+    session_id: identity.sessionId,
+    auth_version: identity.userAuthVersion,
+    session_version: identity.sessionVersion,
+  };
+}
+
+/** Original `*telegramPayload.SessionIdentity != identity` struct equality. */
+export function authSessionIdentitiesEqual(
+  stored: AuthSessionIdentityJSON | Record<string, unknown> | null | undefined,
+  identity: { userId: number; sessionId: string; userAuthVersion: number; sessionVersion: number },
+): boolean {
+  if (!stored || typeof stored !== "object") return false;
+  return (
+    Number(stored.user_id) === identity.userId &&
+    String(stored.session_id || "") === identity.sessionId &&
+    Number(stored.auth_version) === identity.userAuthVersion &&
+    Number(stored.session_version) === identity.sessionVersion
+  );
+}
+
 export type TelegramConfigErrorCode = "TELEGRAM_OAUTH_NOT_CONFIGURED" | "TELEGRAM_OAUTH_CONFLICT";
 
 export interface TelegramOAuthFlow {

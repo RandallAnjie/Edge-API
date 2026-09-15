@@ -30,12 +30,16 @@ import {
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
 import {
+  ERR_TELEGRAM_BIND_ALREADY_BOUND,
   ERR_TELEGRAM_OAUTH_FAILED,
+  authSessionIdentitiesEqual,
+  authSessionIdentityJSON,
   exchangeTelegramOAuth,
   newTelegramOAuthFlow,
   telegramAuthorizationURL,
   telegramConfigurationError,
   TelegramOAuthError,
+  type AuthSessionIdentityJSON,
   type TelegramOAuthFlow,
 } from "./telegram-oauth.js";
 import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues, vendorRecordVersion } from "./dto.js";
@@ -933,6 +937,13 @@ export function registerMore(r: Router<Env>): void {
       const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider } });
       if (isResponse(proof)) return proof;
       payload.session_id = identity.sessionId;
+      payload.session_identity = authSessionIdentityJSON(identity);
+    }
+    if (telegramFlow && (intent === "bind" || intent === "verify") && identity) {
+      if (!(await s.validateAuthSession(identity))) {
+        return json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized" });
+      }
+      payload.session_identity = authSessionIdentityJSON(identity);
     }
     if (intent === "verify" && identity) {
       const secret = await sessionSecret(c.env, s);
@@ -981,20 +992,24 @@ export function registerMore(r: Router<Env>): void {
     const identity = await dashboardIdentity(c, s);
 
     const flow = state ? await s.getAuthFlow(state) : null;
-    if (!flow || flow.type !== "oauth" || flow.expires_at < nowSec()) {
+    if (!flow || flow.type !== "oauth" || flow.expires_at < nowSec() || Number(flow.consumed_at || 0) > 0) {
       return json(403, { success: false, message: i18nPair(c.req, "state 参数为空或不匹配", "State parameter is empty or mismatched") });
     }
     const payload = parseJson<{
       provider?: string;
       intent?: string;
       telegram?: TelegramOAuthFlow;
+      session_identity?: AuthSessionIdentityJSON;
       verification?: { scope?: string; context_hash?: string; provider_user_id?: string; auth_version?: number; session_version?: number };
     }>(flow.payload, {});
     if (payload.provider && payload.provider !== provider) {
       return json(403, { success: false, message: i18nPair(c.req, "state 参数为空或不匹配", "State parameter is empty or mismatched") });
     }
     const intent = payload.intent || "login";
-    if ((intent === "bind" || intent === "verify") && (!identity || identity.userId !== flow.user_id)) {
+    if (
+      (intent === "bind" || intent === "verify") &&
+      (!identity || identity.userId !== flow.user_id || identity.sessionId !== String(flow.session_id || ""))
+    ) {
       return json(403, { success: false, message: i18nPair(c.req, "state 参数为空或不匹配", "State parameter is empty or mismatched") });
     }
     if (provider === "telegram") {
@@ -1002,6 +1017,14 @@ export function registerMore(r: Router<Env>): void {
       if (configErr) return apiFailCode(configErr.message, configErr.code);
       if (!payload.telegram?.code_verifier || !payload.telegram.client_id || !payload.telegram.redirect_uri) {
         return apiFailCode("Verification flow expired", "AUTH_FLOW_INVALID");
+      }
+      if (intent !== "login") {
+        if (!identity || !authSessionIdentitiesEqual(payload.session_identity, identity)) {
+          return apiFailCode("Verification flow expired", "AUTH_FLOW_INVALID");
+        }
+        if (!(await s.validateAuthSession(identity))) {
+          return json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized" });
+        }
       }
     } else {
       await s.deleteAuthFlow(state);
@@ -1063,6 +1086,36 @@ export function registerMore(r: Router<Env>): void {
       if (provider === "telegram") {
         try {
           const telegramUser = await exchangeTelegramOAuth(s, code, payload.telegram!);
+          if (intent === "bind") {
+            if (!identity) return json(401, { success: false, message: "绑定操作需要登录" });
+            const taken = await s.getUserByField("telegram_id", telegramUser.id, { includeDeleted: true });
+            if (taken) {
+              return apiFail(i18nPair(c.req, "该 Telegram 账户已被绑定", "This Telegram account has already been bound"));
+            }
+            const bound = await s.bindTelegramForSession(identity, telegramUser.id);
+            if (bound === "already_claimed") {
+              return apiFailCode(ERR_TELEGRAM_BIND_ALREADY_BOUND, "TELEGRAM_BIND_ALREADY_BOUND");
+            }
+            if (bound === "session_invalid") {
+              return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+            }
+            const consumed = await s.consumeAuthFlow(state, {
+              type: "oauth",
+              user_id: identity.userId,
+              session_id: identity.sessionId,
+            });
+            if (consumed !== "ok") await s.deleteAuthFlow(state);
+            const user = await s.getUserById(identity.userId);
+            const notification_warning = await notifyAccountSecurityChange(
+              s,
+              user?.email || "",
+              "Login account linked: Telegram",
+            );
+            return apiOk(
+              { action: "bind", notification_warning },
+              i18nPair(c.req, "绑定成功", "Binding successful"),
+            );
+          }
           await s.deleteAuthFlow(state);
           return finish({
             id: telegramUser.id,

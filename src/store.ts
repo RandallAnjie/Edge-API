@@ -340,6 +340,81 @@ export class Store {
     await this.db.prepare(`UPDATE users SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
   }
 
+  /**
+   * Original `service.ValidateLoginSession` / `model.ValidateAuthSessionWithTx`.
+   * Dashboard JWT identity must still match an enabled user and active session.
+   */
+  async validateAuthSession(identity: {
+    userId: number;
+    sessionId: string;
+    userAuthVersion: number;
+    sessionVersion: number;
+  }): Promise<boolean> {
+    if (identity.userId <= 0 || !identity.sessionId || identity.userAuthVersion <= 0 || identity.sessionVersion <= 0) {
+      return false;
+    }
+    const now = nowSec();
+    const sess = await this.getSession(identity.sessionId);
+    if (
+      !sess ||
+      sess.revoked ||
+      Number(sess.user_id) !== identity.userId ||
+      (Number(sess.expires_at) > 0 && Number(sess.expires_at) <= now) ||
+      Number(sess.version || 1) !== identity.sessionVersion ||
+      Number(sess.user_auth_version || 1) !== identity.userAuthVersion
+    ) {
+      return false;
+    }
+    const user = await this.getUserById(identity.userId);
+    return Boolean(user && user.status === USER_ENABLED && Number(user.auth_version || 1) === identity.userAuthVersion);
+  }
+
+  /**
+   * Original `model.BindTelegramForSessionWithTx` plus `ClaimExternalIdentityWithTx`.
+   * Caller must already have rejected `IsTelegramIdAlreadyTaken`.
+   */
+  async bindTelegramForSession(
+    identity: { userId: number; sessionId: string; userAuthVersion: number; sessionVersion: number },
+    telegramId: string,
+  ): Promise<"ok" | "already_claimed" | "session_invalid"> {
+    const telegramID = telegramId.trim();
+    if (!telegramID || !(await this.validateAuthSession(identity))) return "session_invalid";
+    const now = nowSec();
+    const user = await this.getUserById(identity.userId);
+    if (!user) return "session_invalid";
+    if (String(user.telegram_id || "") !== "") return "already_claimed";
+    try {
+      await this.db
+        .prepare(
+          "INSERT INTO external_identity_claims (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind("telegram", telegramID, identity.userId, now)
+        .run();
+    } catch {
+      const subjectOwner = await this.db
+        .prepare("SELECT user_id FROM external_identity_claims WHERE provider = ? AND subject = ?")
+        .bind("telegram", telegramID)
+        .first<{ user_id: number }>();
+      if (!subjectOwner || Number(subjectOwner.user_id) !== identity.userId) return "already_claimed";
+      const userClaim = await this.db
+        .prepare("SELECT subject FROM external_identity_claims WHERE provider = ? AND user_id = ?")
+        .bind("telegram", identity.userId)
+        .first<{ subject: string }>();
+      if (!userClaim || String(userClaim.subject) !== telegramID) return "already_claimed";
+    }
+    const userClaim = await this.db
+      .prepare("SELECT subject FROM external_identity_claims WHERE provider = ? AND user_id = ?")
+      .bind("telegram", identity.userId)
+      .first<{ subject: string }>();
+    if (!userClaim || String(userClaim.subject) !== telegramID) return "already_claimed";
+    const updated = await this.db
+      .prepare("UPDATE users SET telegram_id = ? WHERE id = ? AND telegram_id = '' AND deleted_at = 0")
+      .bind(telegramID, identity.userId)
+      .run();
+    if (Number(updated.meta.changes || 0) !== 1) return "already_claimed";
+    return "ok";
+  }
+
   /** Original `model.User.Delete` / `DeleteUserForSession` (GORM soft delete). */
   async softDeleteUser(id: number): Promise<void> {
     await this.db.prepare("UPDATE users SET deleted_at = ? WHERE id = ? AND deleted_at = 0").bind(nowSec(), id).run();

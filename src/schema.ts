@@ -454,6 +454,15 @@ CREATE TABLE IF NOT EXISTS user_oauth_bindings (
   UNIQUE(user_id, provider_id),
   UNIQUE(provider_id, provider_user_id)
 );
+CREATE TABLE IF NOT EXISTS external_identity_claims (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  user_id INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(provider, subject),
+  UNIQUE(provider, user_id)
+);
 CREATE TABLE IF NOT EXISTS passkeys (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
