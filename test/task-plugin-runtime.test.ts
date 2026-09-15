@@ -77,6 +77,15 @@ async function boot() {
   return { e, auth, store: new Store(e.DB) };
 }
 
+function validPluginSource(key: string, version = "1.0.0") {
+  return `export const meta = {apiVersion:1,key:${JSON.stringify(key)},name:${JSON.stringify(key)},version:${JSON.stringify(version)},author:{name:"Test"},models:[${JSON.stringify(key)}],fetchMode:"per_task",routes:[],protocols:[],allowedHosts:[],auth:{type:"none"}};
+export function buildSubmitRequest(){return {url:"https://provider.example/submit"}}
+export function parseSubmitResponse(){return {taskId:"upstream"}}
+export function buildQueryRequest(){return {url:"https://provider.example"}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+`;
+}
+
 function pluginSource(key: string, version = "1.0.0") {
   return `const meta = { apiVersion: 1, key: "${key}", name: "${key}", version: "${version}", author: { name: "test" }, models: ["${key}"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" } };`;
 }
@@ -91,7 +100,7 @@ function assertRuntimeJson(data: Record<string, unknown>) {
     assert.ok(key in last, "missing taskPluginRebuildOutcome " + key);
   }
   assert.equal("error" in last, false);
-  assert.equal("database_revision" in last, false);
+  if ("database_revision" in last) assert.match(String(last.database_revision), /^[0-9a-f]{64}$/);
 }
 
 test("original GetTaskPluginSyncSnapshot hashes encoding/json [] when no active overrides", () => {
@@ -121,22 +130,30 @@ test("original GetTaskPluginRuntime JSON uses SHA-256 database_revision not plug
   const emptyData = empty.body.data as Record<string, unknown>;
   assertRuntimeJson(emptyData);
   assert.equal(emptyData.current_generation, 0);
-  assert.equal(emptyData.generation_published_at, GO_ZERO_TIME);
+  assert.notEqual(emptyData.generation_published_at, GO_ZERO_TIME);
+  assert.match(String(emptyData.generation_published_at), /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(emptyData.database_revision, sha256Hex("[]"));
   assert.notEqual(emptyData.database_revision, "0");
   assert.deepEqual(emptyData.plugin_errors, {});
   const emptyRebuild = emptyData.last_rebuild as Record<string, unknown>;
-  assert.equal(emptyRebuild.status, "never");
-  assert.equal(emptyRebuild.attempted_at, GO_ZERO_TIME);
+  assert.equal(emptyRebuild.status, "success");
+  assert.notEqual(emptyRebuild.attempted_at, GO_ZERO_TIME);
   assert.equal(emptyRebuild.generation, 0);
   assert.equal(emptyRebuild.plugin_error_count, 0);
+  assert.equal(emptyRebuild.database_revision, sha256Hex("[]"));
   assert.deepEqual(
     emptyData,
     publicTaskPluginRuntimeStatus({
       current_generation: 0,
-      generation_published_at: GO_ZERO_TIME,
+      generation_published_at: String(emptyData.generation_published_at),
       database_revision: sha256Hex("[]"),
-      last_rebuild: { status: "never", attempted_at: GO_ZERO_TIME, generation: 0, plugin_error_count: 0 },
+      last_rebuild: {
+        status: "success",
+        attempted_at: String(emptyRebuild.attempted_at),
+        generation: 0,
+        plugin_error_count: 0,
+        database_revision: sha256Hex("[]"),
+      },
       plugin_errors: {},
     }),
   );
@@ -264,4 +281,86 @@ test("original GetTaskPluginRuntime database_revision changes after override upl
   assert.notEqual(afterActivate.revision, snapshot.revision);
   const runtimeV2 = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
   assert.equal((runtimeV2.body.data as { database_revision: string }).database_revision, afterActivate.revision);
+});
+
+test("original GetTaskPluginRuntime last_rebuild is partial when override compile fails", async () => {
+  const { e, auth } = await boot();
+  const uploaded = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ source: pluginSource("runtime-error-probe") }),
+    }),
+    e,
+  );
+  assert.equal(uploaded.body.success, true, String(uploaded.body.message));
+  const runtime = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
+  const data = runtime.body.data as {
+    current_generation: number;
+    database_revision: string;
+    last_rebuild: Record<string, unknown>;
+    plugin_errors: Record<string, string>;
+  };
+  assert.equal(data.last_rebuild.status, "partial");
+  assert.equal(data.last_rebuild.database_revision, data.database_revision);
+  assert.ok(Number(data.last_rebuild.plugin_error_count) >= 1);
+  assert.equal(typeof data.plugin_errors["runtime-error-probe"], "string");
+  assert.ok(data.plugin_errors["runtime-error-probe"].length > 0);
+  assert.equal(data.current_generation, 0);
+});
+
+test("original GetTaskPluginRuntime last_rebuild success publishes a generation for a compiling override", async () => {
+  const { e, auth } = await boot();
+  const uploaded = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ source: validPluginSource("runtime-ok") }),
+    }),
+    e,
+  );
+  assert.equal(uploaded.body.success, true, String(uploaded.body.message));
+  const runtime = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
+  const data = runtime.body.data as {
+    current_generation: number;
+    database_revision: string;
+    last_rebuild: Record<string, unknown>;
+    plugin_errors: Record<string, string>;
+  };
+  assert.equal(data.last_rebuild.status, "success");
+  assert.equal(data.last_rebuild.database_revision, data.database_revision);
+  assert.equal(data.last_rebuild.plugin_error_count, 0);
+  assert.deepEqual(data.plugin_errors, {});
+  assert.equal(data.current_generation, 1);
+  assert.equal(data.last_rebuild.generation, 1);
+  assert.notEqual(data.database_revision, sha256Hex("[]"));
+});
+
+test("original GetTaskPluginRuntime exposes database_revision ahead of local generation", async () => {
+  const { e, auth, store } = await boot();
+  const synced = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
+  const syncedData = synced.body.data as { database_revision: string; last_rebuild: { database_revision: string; status: string }; current_generation: number };
+  assert.equal(syncedData.last_rebuild.status, "success");
+  const syncedRevision = syncedData.last_rebuild.database_revision;
+  assert.equal(syncedRevision, sha256Hex("[]"));
+  assert.equal(syncedData.current_generation, 0);
+
+  await store.saveTaskPluginVersion({
+    key: "runtime-revision-probe",
+    api_version: 1,
+    version: "2.0.0",
+    source: "v2",
+    source_hash: "runtime-v2",
+    enabled: 1,
+  });
+  const ahead = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
+  const aheadData = ahead.body.data as {
+    database_revision: string;
+    current_generation: number;
+    last_rebuild: { database_revision: string; status: string };
+  };
+  assert.equal(aheadData.current_generation, syncedData.current_generation);
+  assert.equal(aheadData.last_rebuild.database_revision, syncedRevision);
+  assert.equal(aheadData.last_rebuild.status, "success");
+  assert.notEqual(aheadData.database_revision, syncedRevision);
 });

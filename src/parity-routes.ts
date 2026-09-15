@@ -1,5 +1,5 @@
 import { billingCopies } from "./billing-setting.js";
-import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, GO_ZERO_TIME, ROLE_ROOT, ROLE_USER, csv, nowSec, parseJson, randomHex } from "./constants.js";
+import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, ROLE_ROOT, ROLE_USER, csv, nowSec, parseJson, randomHex } from "./constants.js";
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { performanceStats, resetMetrics } from "./metrics.js";
 import {
@@ -58,7 +58,7 @@ import {
 } from "./auth.js";
 import { Store } from "./store.js";
 import { updateAllChannelBalances, updateOneChannelBalance } from "./channel-balance.js";
-import { enrichModelMeta, extractPluginMeta, listAdminModels, metadataRecordVersion, publicFlowQuotaData, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicTaskPluginRuntimeStatus, publicVendor, taskArtifactsView, taskPluginMetaView, vendorOperationPreviewVersion } from "./dto.js";
+import { enrichModelMeta, extractPluginMeta, listAdminModels, metadataRecordVersion, publicFlowQuotaData, publicQuotaData, publicSystemTask, publicTaskPluginRecord, publicVendor, taskArtifactsView, taskPluginMetaView, vendorOperationPreviewVersion } from "./dto.js";
 import {
   factoryPluginIcon,
   factoryTaskPluginDetail,
@@ -77,6 +77,7 @@ import { SYSTEM_INSTANCE_STALE_AFTER_SECONDS, listSystemInstanceResponses } from
 import { lazySystemTaskRun, runPendingLogCleanupSystemTask, startLogCleanupTask } from "./system-task.js";
 import { fetchUpstreamRatios, validateFetchRequest } from "./ratio-sync.js";
 import { dryRunPlugin } from "./jsplugin.js";
+import { getTaskPluginRuntimeStatus, syncTaskPluginsOnce } from "./task-plugin-sync.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { rpFromRequest } from "./passkey.js";
 import { passkeyDomainHttpError, passkeySettingsSnapshot, selectPasskeyBeginRpIDs } from "./passkey-domains.js";
@@ -1088,35 +1089,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const lastRebuild = {
-      status: "never",
-      attempted_at: GO_ZERO_TIME,
-      generation: 0,
-      plugin_error_count: 0,
-    };
-    try {
-      const snapshot = await s.getTaskPluginSyncSnapshot();
-      return apiOk(
-        publicTaskPluginRuntimeStatus({
-          current_generation: 0,
-          generation_published_at: GO_ZERO_TIME,
-          database_revision: snapshot.revision,
-          last_rebuild: lastRebuild,
-          plugin_errors: {},
-        }),
-      );
-    } catch {
-      return apiOk(
-        publicTaskPluginRuntimeStatus({
-          current_generation: 0,
-          generation_published_at: GO_ZERO_TIME,
-          database_revision: "",
-          database_error: "database snapshot unavailable",
-          last_rebuild: lastRebuild,
-          plugin_errors: {},
-        }),
-      );
-    }
+    return apiOk(await getTaskPluginRuntimeStatus(s));
   });
   r.get("/api/plugin/task/marketplace/sources", async (c) => {
     const s = store(c);
@@ -1192,6 +1165,8 @@ export function registerParity(r: Router<Env>): void {
     if (!body.version) return apiFail("Key: 'taskPluginActivateRequest.Version' Error:Field validation for 'Version' failed on the 'required' tag");
     const ok = await s.activateTaskPluginVersion(c.params.key, body.version);
     if (!ok) return apiFail("plugin version not found");
+    const syncErr = await syncTaskPluginsAfterMutation(s);
+    if (syncErr) return syncErr;
     return apiOk(null);
   });
   r.post("/api/plugin/task/:key/status", async (c) => {
@@ -1230,6 +1205,8 @@ export function registerParity(r: Router<Env>): void {
       if (!p) return apiOk({ plugin_enabled: body.enabled, disabled_channels: disabledChannels });
     }
     await s.setTaskPluginEnabled(key, body.enabled);
+    const syncErr = await syncTaskPluginsAfterMutation(s);
+    if (syncErr) return syncErr;
     return apiOk({ plugin_enabled: body.enabled, disabled_channels: disabledChannels });
   });
   r.post("/api/plugin/task/:key/dryrun", async (c) => {
@@ -1274,6 +1251,8 @@ export function registerParity(r: Router<Env>): void {
       }
     }
     await s.deleteTaskPluginVersion(key, version);
+    const syncErr = await syncTaskPluginsAfterMutation(s);
+    if (syncErr) return syncErr;
     return apiOk(null);
   });
   r.get("/api/task_plugin_options", async (c) => {
@@ -1975,6 +1954,14 @@ async function publicTaskPlugin(store: Store, row: Record<string, unknown>): Pro
   };
 }
 
+async function syncTaskPluginsAfterMutation(s: Store): Promise<Response | undefined> {
+  try {
+    await syncTaskPluginsOnce(s);
+  } catch (err) {
+    return apiFail(err instanceof Error ? err.message : String(err));
+  }
+}
+
 async function upsertPlugin(c: C): Promise<Response> {
   const s = store(c);
   const u = await requireRoot(c, s);
@@ -2021,6 +2008,8 @@ async function upsertPlugin(c: C): Promise<Response> {
       active: saved.active ? 1 : 0,
       api_version: meta.apiVersion,
     });
+    const syncErr = await syncTaskPluginsAfterMutation(s);
+    if (syncErr) return syncErr;
     return apiOk({
       plugin: publicTaskPluginRecord({ ...saved, icon: undefined }),
       meta,

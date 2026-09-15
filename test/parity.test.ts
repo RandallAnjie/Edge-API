@@ -639,7 +639,8 @@ test("original DashboardListModels, logs, aff, checkin, options, ratio_sync, Lis
   const rt = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
   assert.equal(typeof rt.body.data.current_generation, "number");
   assert.ok(rt.body.data.last_rebuild);
-  assert.equal(rt.body.data.last_rebuild.status, "never");
+  assert.equal(rt.body.data.last_rebuild.status, "success");
+  assert.equal(rt.body.data.last_rebuild.database_revision, taskPluginSyncRevision([]));
   assert.ok("plugin_errors" in rt.body.data);
   assert.match(String(rt.body.data.database_revision), /^[0-9a-f]{64}$/);
   assert.equal(rt.body.data.database_revision, taskPluginSyncRevision([]));

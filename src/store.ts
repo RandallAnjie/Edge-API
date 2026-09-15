@@ -4248,6 +4248,19 @@ export class Store {
     };
   }
 
+  /** Original in-memory `taskPluginSyncState`, persisted per D1 so test DBs stay isolated. */
+  async getTaskPluginSyncPayload(): Promise<string> {
+    const row = await this.db.prepare("SELECT payload FROM task_plugin_sync_state WHERE id = 1").first<{ payload: string }>();
+    return row?.payload ? String(row.payload) : "";
+  }
+
+  async setTaskPluginSyncPayload(payload: string): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO task_plugin_sync_state (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload")
+      .bind(payload)
+      .run();
+  }
+
   async getTaskPlugin(key: string): Promise<Record<string, unknown> | null> {
     return this.db.prepare("SELECT * FROM task_plugins WHERE key = ?").bind(key).first<Record<string, unknown>>();
   }

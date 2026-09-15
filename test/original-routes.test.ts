@@ -1679,12 +1679,13 @@ test("original JSON fields: perf-metrics, rankings, quota data, model sync", asy
   assert.notEqual(rtd.database_revision, "0");
   assert.equal(typeof rtd.current_generation, "number");
   assert.equal(typeof rtd.generation_published_at, "string");
-  assert.equal(rtd.last_rebuild.status, "never");
+  assert.notEqual(rtd.generation_published_at, "0001-01-01T00:00:00Z");
+  assert.equal(rtd.last_rebuild.status, "success");
   assert.equal(typeof rtd.last_rebuild.attempted_at, "string");
   assert.equal(typeof rtd.last_rebuild.generation, "number");
   assert.equal(typeof rtd.last_rebuild.plugin_error_count, "number");
   assert.equal("error" in rtd.last_rebuild, false);
-  assert.equal("database_revision" in rtd.last_rebuild, false);
+  assert.equal(rtd.last_rebuild.database_revision, taskPluginSyncRevision([]));
   assert.equal(typeof rtd.plugin_errors, "object");
 
   const uptime = await json(new Request("http://local/api/uptime/status"), e);

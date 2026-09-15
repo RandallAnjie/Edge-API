@@ -510,6 +510,10 @@ CREATE TABLE IF NOT EXISTS task_plugin_versions (
   remark TEXT NOT NULL DEFAULT '',
   UNIQUE(key, version)
 );
+CREATE TABLE IF NOT EXISTS task_plugin_sync_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  payload TEXT NOT NULL DEFAULT '{}'
+);
 CREATE TABLE IF NOT EXISTS system_tasks (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL DEFAULT '',
