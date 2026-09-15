@@ -72,7 +72,6 @@ import { rpFromRequest } from "./passkey.js";
 import { passkeyDomainHttpError, passkeySettingsSnapshot, selectPasskeyBeginRpIDs } from "./passkey-domains.js";
 import {
   calcNextResetTime,
-  calcPlanEndTime,
   decodePluginIcon,
   parseCodexOAuthKey,
   publicPlan,
@@ -845,26 +844,12 @@ export function registerParity(r: Router<Env>): void {
     const userId = Number(c.params.id);
     const body = (await readJson(c.req)) as { plan_id?: number };
     if (userId <= 0 || !body.plan_id) return apiFail("参数错误");
-    const plan = await s.getPlan(Number(body.plan_id));
-    if (!plan) return apiFail("套餐不存在");
-    const published = publicPlan(plan);
-    const start = nowSec();
-    const expire = calcPlanEndTime(start, published);
-    const nextReset = calcNextResetTime(start, published, expire);
-    await s.insertUserSub({
-      user_id: userId,
-      plan_id: Number(plan.id),
-      start_time: start,
-      end_time: expire,
-      amount_total: Number(published.total_amount || 0),
-      source: "admin",
-      next_reset_time: nextReset,
-      last_reset_time: nextReset > 0 ? start : 0,
-      upgrade_group: String(published.upgrade_group || ""),
-      downgrade_group: String(published.downgrade_group || ""),
-      allow_wallet_overflow: published.allow_wallet_overflow ? 1 : 0,
-    });
-    return apiOk(null);
+    try {
+      const result = await s.adminBindSubscription(userId, Number(body.plan_id));
+      return apiOk(result.message ? { message: result.message } : null);
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
   });
 
   r.post("/api/subscription/admin/users/:id/subscriptions/reset", async (c) => {

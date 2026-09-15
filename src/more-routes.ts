@@ -43,8 +43,6 @@ import {
 import { buildRankingsSnapshot } from "./rankings.js";
 import { requirePaymentCompliance } from "./payments.js";
 import {
-  calcNextResetTime,
-  calcPlanEndTime,
   isActiveSubscription,
   normalizeBillingPreference,
   planFieldsFromBody,
@@ -1241,22 +1239,12 @@ export function registerMore(r: Router<Env>): void {
     const price = Math.ceil(Number(published.price_amount || 0) * quotaPerUnit);
     if (user.quota < price) return apiFail("余额不足");
     if (price) await s.addQuota(u.id, -price);
-    const start = nowSec();
-    const expire = calcPlanEndTime(start, published);
-    const nextReset = calcNextResetTime(start, published, expire);
-    await s.insertUserSub({
-      user_id: u.id,
-      plan_id: Number(plan.id),
-      start_time: start,
-      end_time: expire,
-      amount_total: Number(published.total_amount || 0),
-      source: "order",
-      next_reset_time: nextReset,
-      last_reset_time: nextReset > 0 ? start : 0,
-      upgrade_group: String(published.upgrade_group || ""),
-      downgrade_group: String(published.downgrade_group || ""),
-      allow_wallet_overflow: published.allow_wallet_overflow ? 1 : 0,
-    });
+    try {
+      await s.createUserSubscriptionFromPlan(u.id, plan, "balance");
+    } catch (err) {
+      if (price) await s.addQuota(u.id, price);
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
     return apiOk(null);
   });
 
@@ -1323,26 +1311,12 @@ export function registerMore(r: Router<Env>): void {
     if (denied) return denied;
     const body = (await readJson(c.req)) as { user_id?: number; plan_id?: number };
     if (!body.user_id || !body.plan_id) return apiFail("参数错误");
-    const plan = await s.getPlan(Number(body.plan_id));
-    if (!plan) return apiFail("套餐不存在");
-    const published = publicPlan(plan);
-    const start = nowSec();
-    const expire = calcPlanEndTime(start, published);
-    const nextReset = calcNextResetTime(start, published, expire);
-    await s.insertUserSub({
-      user_id: Number(body.user_id),
-      plan_id: Number(plan.id),
-      start_time: start,
-      end_time: expire,
-      amount_total: Number(published.total_amount || 0),
-      source: "admin",
-      next_reset_time: nextReset,
-      last_reset_time: nextReset > 0 ? start : 0,
-      upgrade_group: String(published.upgrade_group || ""),
-      downgrade_group: String(published.downgrade_group || ""),
-      allow_wallet_overflow: published.allow_wallet_overflow ? 1 : 0,
-    });
-    return apiOk(null);
+    try {
+      const result = await s.adminBindSubscription(Number(body.user_id), Number(body.plan_id));
+      return apiOk(result.message ? { message: result.message } : null);
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
   });
 
   r.get("/api/subscription/admin/users/:id/subscriptions", async (c) => {
@@ -1361,17 +1335,26 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const id = Number(c.params.id);
     if (id <= 0) return apiFail("无效的订阅ID");
-    const now = nowSec();
-    await s.updateUserSub(id, { status: "cancelled", end_time: now, expire_at: now, updated_at: now });
-    return apiOk(null);
+    try {
+      const msg = await s.adminInvalidateUserSubscription(id);
+      return apiOk(msg ? { message: msg } : null);
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
   });
 
   r.delete("/api/subscription/admin/user_subscriptions/:id", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.deleteUserSub(Number(c.params.id));
-    return apiOk(null);
+    const id = Number(c.params.id);
+    if (id <= 0) return apiFail("无效的订阅ID");
+    try {
+      const msg = await s.adminDeleteUserSubscription(id);
+      return apiOk(msg ? { message: msg } : null);
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
   });
 
   r.get("/api/prefill_group/", async (c) => {

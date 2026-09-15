@@ -26,7 +26,7 @@ import {
   type ChannelFilter,
 } from "./channel-constraint.js";
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
-import { calcNextResetTime, normalizeBillingPreference, normalizeResetPeriod } from "./subscription.js";
+import { calcNextResetTime, calcPlanEndTime, normalizeBillingPreference, normalizeResetPeriod } from "./subscription.js";
 import { MODEL_PRICING_OPTION_KEYS } from "./model-pricing.js";
 import type {
   ChannelRow,
@@ -2274,6 +2274,139 @@ export class Store {
     return Number(r.meta.last_row_id || 0);
   }
 
+  async countUserSubscriptionsByPlan(userId: number, planId: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) as c FROM user_subscriptions WHERE user_id = ? AND plan_id = ?")
+      .bind(userId, planId)
+      .first<{ c: number }>();
+    return Number(row?.c || 0);
+  }
+
+  /** Original `model.CreateUserSubscriptionFromPlanTx`. */
+  async createUserSubscriptionFromPlan(
+    userId: number,
+    plan: Record<string, unknown>,
+    source: string,
+  ): Promise<{
+    id: number;
+    prev_user_group: string;
+    upgrade_group: string;
+    downgrade_group: string;
+  }> {
+    if (userId <= 0) throw new Error("invalid user id");
+    const planId = Number(plan.id || 0);
+    if (!planId) throw new Error("invalid plan");
+    const maxPurchase = Number(plan.max_purchase_per_user || 0);
+    if (maxPurchase > 0) {
+      const count = await this.countUserSubscriptionsByPlan(userId, planId);
+      if (count >= maxPurchase) throw new Error("已达到该套餐购买上限");
+    }
+    const now = nowSec();
+    const endUnix = calcPlanEndTime(now, plan);
+    const nextReset = calcNextResetTime(now, plan, endUnix);
+    const lastReset = nextReset > 0 ? now : 0;
+    const upgradeGroup = String(plan.upgrade_group || "").trim();
+    const downgradeGroup = String(plan.downgrade_group || "").trim();
+    let prevGroup = "";
+    if (upgradeGroup) {
+      const user = await this.getUserById(userId);
+      if (!user) throw new Error("invalid user id");
+      const currentGroup = String(user.group || "");
+      if (currentGroup !== upgradeGroup) {
+        prevGroup = currentGroup;
+        await this.updateUser(userId, { group: upgradeGroup });
+      }
+    }
+    const overflow = plan.allow_wallet_overflow == null ? 1 : Number(plan.allow_wallet_overflow) ? 1 : 0;
+    const id = await this.insertUserSub({
+      user_id: userId,
+      plan_id: planId,
+      start_time: now,
+      end_time: endUnix,
+      amount_total: Number(plan.total_amount || plan.grant_quota || 0),
+      source,
+      last_reset_time: lastReset,
+      next_reset_time: nextReset,
+      upgrade_group: upgradeGroup,
+      prev_user_group: prevGroup,
+      downgrade_group: downgradeGroup,
+      allow_wallet_overflow: overflow,
+    });
+    return {
+      id,
+      prev_user_group: prevGroup,
+      upgrade_group: upgradeGroup,
+      downgrade_group: downgradeGroup,
+    };
+  }
+
+  /** Original `model.AdminBindSubscription`. */
+  async adminBindSubscription(
+    userId: number,
+    planId: number,
+  ): Promise<{ id: number; message: string }> {
+    if (userId <= 0 || planId <= 0) throw new Error("invalid userId or planId");
+    const plan = await this.getPlan(planId);
+    if (!plan) throw new Error("套餐不存在");
+    const created = await this.createUserSubscriptionFromPlan(userId, plan, "admin");
+    return {
+      id: created.id,
+      message: created.prev_user_group ? `用户分组将升级到 ${created.upgrade_group}` : "",
+    };
+  }
+
+  /** Original `model.downgradeUserGroupForSubscriptionTx`. */
+  async applySubscriptionGroupDowngrade(sub: Record<string, unknown>, now = nowSec()): Promise<string> {
+    const userId = Number(sub.user_id || 0);
+    const subId = Number(sub.id || 0);
+    const downgradeGroup = String(sub.downgrade_group || "").trim();
+    const upgradeGroup = String(sub.upgrade_group || "").trim();
+    if (!downgradeGroup && !upgradeGroup) return "";
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error("invalid user id");
+    const currentGroup = String(user.group || "");
+    const active = await this.db
+      .prepare(
+        `SELECT id FROM user_subscriptions
+         WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+           AND COALESCE(end_time, expire_at, 0) > ? AND id <> ? AND upgrade_group <> ''
+         ORDER BY COALESCE(end_time, expire_at) DESC, id DESC LIMIT 1`,
+      )
+      .bind(userId, now, subId)
+      .first<{ id: number }>();
+    if (active) return "";
+    let target = downgradeGroup;
+    if (!target) {
+      if (currentGroup !== upgradeGroup) return "";
+      target = String(sub.prev_user_group || "").trim();
+    }
+    if (!target || target === currentGroup) return "";
+    await this.updateUser(userId, { group: target });
+    return target;
+  }
+
+  /** Original `model.AdminInvalidateUserSubscription`. */
+  async adminInvalidateUserSubscription(id: number): Promise<string> {
+    if (id <= 0) throw new Error("invalid userSubscriptionId");
+    const sub = await this.getUserSub(id);
+    if (!sub) throw new Error("record not found");
+    const now = nowSec();
+    await this.updateUserSub(id, { status: "cancelled", end_time: now, expire_at: now, updated_at: now });
+    const target = await this.applySubscriptionGroupDowngrade(sub, now);
+    return target ? `用户分组将回退到 ${target}` : "";
+  }
+
+  /** Original `model.AdminDeleteUserSubscription`. */
+  async adminDeleteUserSubscription(id: number): Promise<string> {
+    if (id <= 0) throw new Error("invalid userSubscriptionId");
+    const sub = await this.getUserSub(id);
+    if (!sub) throw new Error("record not found");
+    const now = nowSec();
+    const target = await this.applySubscriptionGroupDowngrade(sub, now);
+    await this.deleteUserSub(id);
+    return target ? `用户分组将回退到 ${target}` : "";
+  }
+
   async updateUserSub(id: number, patch: Record<string, unknown>): Promise<void> {
     const cols: string[] = [];
     const vals: unknown[] = [];
@@ -2289,16 +2422,67 @@ export class Store {
     await this.db.prepare("DELETE FROM user_subscriptions WHERE id = ?").bind(id).run();
   }
 
-  async expireSubscriptions(): Promise<void> {
+  /** Original `model.ExpireDueSubscriptions`. */
+  async expireSubscriptions(limit = 200): Promise<number> {
+    const n = Number.isInteger(limit) && limit > 0 ? limit : 200;
     const now = nowSec();
-    await this.db
+    const { results } = await this.db
       .prepare(
-        `UPDATE user_subscriptions SET status = 'expired', updated_at = ?
+        `SELECT * FROM user_subscriptions
          WHERE (status = 'active' OR status = 1 OR status = '1')
-           AND COALESCE(end_time, expire_at, 0) > 0 AND COALESCE(end_time, expire_at, 0) <= ?`,
+           AND COALESCE(end_time, expire_at, 0) > 0 AND COALESCE(end_time, expire_at, 0) <= ?
+         ORDER BY COALESCE(end_time, expire_at) ASC, id ASC
+         LIMIT ?`,
       )
-      .bind(now, now)
-      .run();
+      .bind(now, n)
+      .all<Record<string, unknown>>();
+    if (!results?.length) return 0;
+    const userIds = [...new Set(results.map((row) => Number(row.user_id || 0)).filter((id) => id > 0))];
+    let expiredCount = 0;
+    for (const userId of userIds) {
+      const upd = await this.db
+        .prepare(
+          `UPDATE user_subscriptions SET status = 'expired', updated_at = ?
+           WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+             AND COALESCE(end_time, expire_at, 0) > 0 AND COALESCE(end_time, expire_at, 0) <= ?`,
+        )
+        .bind(now, userId, now)
+        .run();
+      expiredCount += Number(upd.meta?.changes || 0);
+      const active = await this.db
+        .prepare(
+          `SELECT id FROM user_subscriptions
+           WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+             AND COALESCE(end_time, expire_at, 0) > ? AND upgrade_group <> ''
+           ORDER BY COALESCE(end_time, expire_at) DESC, id DESC LIMIT 1`,
+        )
+        .bind(userId, now)
+        .first<{ id: number }>();
+      if (active) continue;
+      const lastExpired = await this.db
+        .prepare(
+          `SELECT * FROM user_subscriptions
+           WHERE user_id = ? AND status = 'expired' AND (downgrade_group <> '' OR upgrade_group <> '')
+           ORDER BY COALESCE(end_time, expire_at) DESC, id DESC LIMIT 1`,
+        )
+        .bind(userId)
+        .first<Record<string, unknown>>();
+      if (!lastExpired) continue;
+      const user = await this.getUserById(userId);
+      if (!user) continue;
+      const currentGroup = String(user.group || "");
+      let target = String(lastExpired.downgrade_group || "").trim();
+      if (!target) {
+        const upgradeGroup = String(lastExpired.upgrade_group || "").trim();
+        const prevGroup = String(lastExpired.prev_user_group || "").trim();
+        if (!upgradeGroup || !prevGroup) continue;
+        if (currentGroup !== upgradeGroup) continue;
+        target = prevGroup;
+      }
+      if (!target || target === currentGroup) continue;
+      await this.updateUser(userId, { group: target });
+    }
+    return expiredCount;
   }
 
   async getUserSub(id: number): Promise<Record<string, unknown> | null> {
@@ -3577,8 +3761,11 @@ export class Store {
     await this.db.prepare("DELETE FROM email_codes WHERE expires_at < ?").bind(cutoff).run();
     await this.db.prepare("DELETE FROM auth_flows WHERE expires_at < ?").bind(cutoff).run();
     await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE expires_at > 0 AND expires_at < ?").bind(nowSec()).run();
-    await this.expireSubscriptions();
     const batch = 300;
+    for (;;) {
+      const expired = await this.expireSubscriptions(batch);
+      if (!expired || expired < batch) break;
+    }
     for (;;) {
       const n = await this.resetDueSubscriptions(batch);
       if (!n || n < batch) break;
