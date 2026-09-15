@@ -11,6 +11,7 @@ import {
   REDEMPTION_USED,
   ROLE_ADMIN,
   ROLE_ROOT,
+  ROLE_USER,
   TOKEN_ENABLED,
   USER_ENABLED,
   csv,
@@ -1350,10 +1351,17 @@ export class Store {
       start_timestamp?: number;
       end_timestamp?: number;
       success?: boolean;
+      viewerRole?: number;
+      selfView?: boolean;
     } = {},
   ): Promise<{ items: unknown[]; total: number }> {
     const where: string[] = ["1=1"];
     const binds: unknown[] = [];
+    const viewerRole = opts.viewerRole ?? 0;
+    if (viewerRole < ROLE_ROOT) {
+      where.push("actor_role IN (?, ?)");
+      binds.push(ROLE_USER, ROLE_ADMIN);
+    }
     if (opts.userId) {
       where.push("user_id = ?");
       binds.push(opts.userId);
@@ -1394,10 +1402,13 @@ export class Store {
       .bind(...binds)
       .first<{ c: number }>();
     const { results } = await this.db
-      .prepare(`SELECT * FROM audit_logs WHERE ${w} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM audit_logs WHERE ${w} ORDER BY created_at DESC, event_id DESC LIMIT ? OFFSET ?`)
       .bind(...binds, limit, offset)
       .all<Record<string, unknown>>();
-    return { items: results.map(publicAudit), total: num(totalRow?.c) };
+    let visibility: AuditOtherVisibility = "user";
+    if (!opts.selfView && viewerRole >= ROLE_ROOT) visibility = "root";
+    else if (!opts.selfView && viewerRole >= ROLE_ADMIN) visibility = "admin";
+    return { items: results.map((row) => publicAudit(row, visibility)), total: num(totalRow?.c) };
   }
 
   async accessTokenLastUsed(
@@ -3963,7 +3974,19 @@ export class Store {
   }
 }
 
-export function publicAudit(row: Record<string, unknown>): Record<string, unknown> {
+type AuditOtherVisibility = "user" | "admin" | "root";
+
+/** Original `model.GetAuditLogs` Other projection by viewer role / SelfView. */
+export function publicAudit(
+  row: Record<string, unknown>,
+  visibility: AuditOtherVisibility = "user",
+): Record<string, unknown> {
+  const other = { ...parseJson<Record<string, unknown>>(String(row.other || ""), {}) };
+  if (visibility !== "root") delete other.root_info;
+  if (visibility === "user") {
+    delete other.admin_info;
+    delete other.audit_info;
+  }
   return {
     id: row.id,
     event_id: row.event_id || "",
@@ -3983,7 +4006,7 @@ export function publicAudit(row: Record<string, unknown>): Record<string, unknow
     success: Number(row.success) !== 0,
     request_id: row.request_id || "",
     content: row.content || "",
-    other: parseJson(String(row.other || ""), {}),
+    other,
   };
 }
 

@@ -148,6 +148,31 @@ async function tokenWriteError(
   return null;
 }
 
+/** Original `common.GetPageQuery` then `GetAuditLogs` pagination checks. */
+function auditPageQuery(url: URL): { page: number; page_size: number; offset: number } | Response {
+  const pRaw = url.searchParams.get("p") || "";
+  const parsedPage = pRaw === "" ? NaN : Number.parseInt(pRaw, 10);
+  let page = Number.isFinite(parsedPage) ? parsedPage : 0;
+  if (page < 1) {
+    page = Number.isFinite(parsedPage) && parsedPage !== 0 ? parsedPage : 1;
+  }
+  const sizeRaw = url.searchParams.get("page_size") || url.searchParams.get("ps") || url.searchParams.get("size") || "";
+  const parsedSize = sizeRaw === "" ? NaN : Number.parseInt(sizeRaw, 10);
+  let page_size = Number.isFinite(parsedSize) ? parsedSize : 0;
+  if (page_size === 0) page_size = 10;
+  if (page_size > 100) page_size = 100;
+  if (page < 1 || page_size < 1 || page > 100000000) return apiFail("Invalid audit pagination");
+  return { page, page_size, offset: (page - 1) * page_size };
+}
+
+function parseAuditUnix(raw: string | null): number | "invalid" {
+  if (!raw) return 0;
+  if (!/^-?\d+$/.test(raw)) return "invalid";
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 0) return "invalid";
+  return n;
+}
+
 function auditListFilter(c: C): Response | {
   category: string;
   token_ref: string;
@@ -165,9 +190,9 @@ function auditListFilter(c: C): Response | {
   if ((tokenRef && !/^[0-9a-f]{64}$/.test(tokenRef)) || (exclude && !/^[0-9a-f]{64}$/.test(exclude))) {
     return apiFail("Invalid audit filters");
   }
-  const start = Number(c.url.searchParams.get("start_timestamp") || 0);
-  const end = Number(c.url.searchParams.get("end_timestamp") || 0);
-  if ((c.url.searchParams.get("start_timestamp") && start < 0) || (c.url.searchParams.get("end_timestamp") && end < 0) || (end > 0 && end < start)) {
+  const start = parseAuditUnix(c.url.searchParams.get("start_timestamp"));
+  const end = parseAuditUnix(c.url.searchParams.get("end_timestamp"));
+  if (start === "invalid" || end === "invalid" || (typeof start === "number" && typeof end === "number" && end > 0 && end < start)) {
     return apiFail("Invalid audit time range");
   }
   const successRaw = c.url.searchParams.get("success") || "";
@@ -1515,11 +1540,11 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requirePermission(c, s, "audit", "read");
     if (isResponse(u)) return u;
-    const q = pageQuery(c.url);
-    if (q.page < 1 || q.page_size < 1 || q.page > 100000000) return apiFail("Invalid audit pagination");
+    const q = auditPageQuery(c.url);
+    if (isResponse(q)) return q;
     const filters = auditListFilter(c);
     if (isResponse(filters)) return filters;
-    const { items, total } = await s.listAudit(q.offset, q.page_size, filters);
+    const { items, total } = await s.listAudit(q.offset, q.page_size, { ...filters, viewerRole: u.role });
     return apiOk(pageData(items, total, q));
   });
 
@@ -1527,11 +1552,17 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const q = pageQuery(c.url);
-    if (q.page < 1 || q.page_size < 1 || q.page > 100000000) return apiFail("Invalid audit pagination");
+    const q = auditPageQuery(c.url);
+    if (isResponse(q)) return q;
     const filters = auditListFilter(c);
     if (isResponse(filters)) return filters;
-    const { items, total } = await s.listAudit(q.offset, q.page_size, { ...filters, userId: u.id, username: "" });
+    const { items, total } = await s.listAudit(q.offset, q.page_size, {
+      ...filters,
+      userId: u.id,
+      username: "",
+      viewerRole: u.role,
+      selfView: true,
+    });
     return apiOk(pageData(items, total, q));
   });
 
