@@ -2,7 +2,8 @@
  * Original `controller.runMidjourneyTaskUpdateOnce` + `midjourney_poll` system task.
  */
 import { resolveBaseUrl } from "./catalog.js";
-import { nowMs, randomHex } from "./constants.js";
+import { nowMs } from "./constants.js";
+import { generateSystemTaskId } from "./crypto.js";
 import { refundMidjourneyQuota } from "./midjourney-billing.js";
 import { pickChannelKey } from "./select.js";
 import type { Store } from "./store.js";
@@ -210,7 +211,7 @@ export async function runPendingMidjourneyPoll(store: Store): Promise<Midjourney
     }
   }
   if (!(await store.hasUnfinishedMjTasks())) return null;
-  const id = "systask_" + randomHex(16);
+  const id = generateSystemTaskId();
   await store.insertSystemTask({ id, type: SYSTEM_TASK_TYPE_MIDJOURNEY_POLL, status: "running" });
   try {
     const summary = await runMidjourneyTaskUpdateOnce(store);

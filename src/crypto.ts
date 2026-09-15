@@ -234,6 +234,11 @@ export function randomCharsKey(length: number): string {
   return randomStringFromCharset(length, TOKEN_KEY_CHARS);
 }
 
+/** Original `model.GenerateSystemTaskID` → `systask_` + `GenerateRandomCharsKey(32)`. */
+export function generateSystemTaskId(): string {
+  return "systask_" + randomCharsKey(32);
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function splitRefreshToken(raw: string): { sid: string; secret: string } | null {

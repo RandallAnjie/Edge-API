@@ -28,7 +28,7 @@ import {
   oauthProviderKnown,
   verifyTelegramLogin,
 } from "./oauth.js";
-import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
+import { generateSystemTaskId, generateTokenKey, accessTokenFingerprint } from "./crypto.js";
 import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues, vendorRecordVersion } from "./dto.js";
 import { billingCopies } from "./billing-setting.js";
 import { DEFAULT_MODEL_RATIO_JSON } from "./ratio-defaults.js";
@@ -1126,7 +1126,7 @@ export function registerMore(r: Router<Env>): void {
         },
       });
     }
-    const id = "systask_" + randomHex(16);
+    const id = generateSystemTaskId();
     await s.insertSystemTask({
       id,
       type: "channel_test",

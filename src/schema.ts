@@ -520,9 +520,11 @@ CREATE TABLE IF NOT EXISTS system_tasks (
   state TEXT NOT NULL DEFAULT '',
   error TEXT NOT NULL DEFAULT '',
   locked_by TEXT NOT NULL DEFAULT '',
+  active_key TEXT,
   created_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uk_system_tasks_active_key ON system_tasks(active_key) WHERE active_key IS NOT NULL;
 CREATE TABLE IF NOT EXISTS deployments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL DEFAULT '',
@@ -737,6 +739,8 @@ const USER_ALTERS = [
   "ALTER TABLE tasks ADD COLUMN data TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE tasks ADD COLUMN private_data TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE passkeys ADD COLUMN rp_id TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE system_tasks ADD COLUMN active_key TEXT",
+  "CREATE UNIQUE INDEX IF NOT EXISTS uk_system_tasks_active_key ON system_tasks(active_key) WHERE active_key IS NOT NULL",
 ];
 
 import type { D1Database } from "./types.js";

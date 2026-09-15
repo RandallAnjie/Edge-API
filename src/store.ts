@@ -34,6 +34,7 @@ import {
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
 import { calcNextResetTime, calcPlanEndTime, normalizeBillingPreference, normalizeResetPeriod } from "./subscription.js";
 import { MODEL_PRICING_OPTION_KEYS } from "./model-pricing.js";
+import { generateSystemTaskId } from "./crypto.js";
 import { storeFormatQuota, storeLogQuota } from "./quota.js";
 import type {
   ChannelRow,
@@ -75,6 +76,13 @@ function walletQuotaFromDecimalStrict(value: number): number {
 function num(v: unknown, d = 0): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
+}
+
+/** Original `model.marshalSystemTaskJSON` (`nil` → empty string, not `"null"`). */
+function marshalSystemTaskJSON(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  return JSON.stringify(v);
 }
 
 /** Original `model.searchHardLimit` in `SearchUserTokens`. */
@@ -4389,34 +4397,65 @@ export class Store {
     state?: unknown;
     error?: string;
     locked_by?: string;
+    active_key?: string | null;
   }): Promise<void> {
-    const payload = typeof row.payload === "string" ? row.payload : JSON.stringify(row.payload ?? null);
-    const state = typeof row.state === "string" ? row.state : JSON.stringify(row.state ?? null);
-    const result = typeof row.result === "string" ? row.result : JSON.stringify(row.result ?? null);
+    const status = row.status || "pending";
+    const payload = marshalSystemTaskJSON(row.payload);
+    const state = marshalSystemTaskJSON(row.state);
+    const result = marshalSystemTaskJSON(row.result);
+    const activeKey =
+      row.active_key !== undefined
+        ? row.active_key
+        : status === "pending" || status === "running"
+          ? row.type
+          : null;
     await this.db
       .prepare(
-        "INSERT INTO system_tasks (id, type, status, progress, result, payload, state, error, locked_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO system_tasks (id, type, status, progress, result, payload, state, error, locked_by, active_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         row.id,
         row.type,
-        row.status || "pending",
+        status,
         row.progress ?? "",
         result,
         payload,
         state,
         row.error ?? "",
         row.locked_by ?? "",
+        activeKey,
         nowSec(),
         nowSec(),
       )
       .run();
   }
 
+  /** Original `model.CreateSystemTask` (pending + `active_key` = type). */
+  async createSystemTask(taskType: string, payload: unknown = null, state: unknown = null): Promise<Record<string, unknown>> {
+    const id = generateSystemTaskId();
+    try {
+      await this.insertSystemTask({ id, type: taskType, status: "pending", payload, state });
+    } catch {
+      const existing = await this.currentSystemTask(taskType);
+      if (existing) return existing;
+      throw new Error("create system task failed");
+    }
+    const row = await this.getSystemTask(id);
+    if (row) return row;
+    const existing = await this.currentSystemTask(taskType);
+    if (existing) return existing;
+    throw new Error("create system task failed");
+  }
+
   async updateSystemTask(id: string, patch: Record<string, unknown>): Promise<void> {
+    const next = { ...patch };
+    const status = String(next.status || "");
+    if ((status === "succeeded" || status === "failed") && !("active_key" in next)) {
+      next.active_key = null;
+    }
     const cols: string[] = ["updated_at = ?"];
     const vals: unknown[] = [nowSec()];
-    for (const [k, v] of Object.entries(patch)) {
+    for (const [k, v] of Object.entries(next)) {
       cols.push(`${k} = ?`);
       vals.push(v);
     }
@@ -4427,7 +4466,7 @@ export class Store {
   async listSystemTasks(limit = 20): Promise<Record<string, unknown>[]> {
     const n = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 20;
     const { results } = await this.db
-      .prepare("SELECT rowid, * FROM system_tasks ORDER BY created_at DESC LIMIT ?")
+      .prepare("SELECT rowid, * FROM system_tasks ORDER BY rowid DESC LIMIT ?")
       .bind(n)
       .all();
     return results as Record<string, unknown>[];
@@ -4440,11 +4479,50 @@ export class Store {
   async currentSystemTask(type = ""): Promise<Record<string, unknown> | null> {
     if (type) {
       return this.db
-        .prepare("SELECT rowid, * FROM system_tasks WHERE type = ? AND status IN ('pending', 'running') ORDER BY created_at DESC LIMIT 1")
+        .prepare("SELECT rowid, * FROM system_tasks WHERE type = ? AND status IN ('pending', 'running') ORDER BY rowid DESC LIMIT 1")
         .bind(type)
         .first<Record<string, unknown>>();
     }
-    return this.db.prepare("SELECT rowid, * FROM system_tasks WHERE status IN ('pending', 'running') ORDER BY created_at DESC LIMIT 1").first<Record<string, unknown>>();
+    return this.db.prepare("SELECT rowid, * FROM system_tasks WHERE status IN ('pending', 'running') ORDER BY rowid DESC LIMIT 1").first<Record<string, unknown>>();
+  }
+
+  /** Original `model.FindPendingSystemTasks` earliest pending of one type (`ORDER BY id ASC`). */
+  async findPendingSystemTask(type: string): Promise<Record<string, unknown> | null> {
+    return this.db
+      .prepare("SELECT rowid, * FROM system_tasks WHERE type = ? AND status = 'pending' ORDER BY rowid ASC LIMIT 1")
+      .bind(type)
+      .first<Record<string, unknown>>();
+  }
+
+  /** Original `model.ClaimSystemTask` pending → running + `locked_by`. */
+  async claimSystemTask(taskId: string, runnerId: string): Promise<Record<string, unknown> | null> {
+    const r = await this.db
+      .prepare("UPDATE system_tasks SET status = 'running', locked_by = ?, updated_at = ? WHERE id = ? AND status = 'pending'")
+      .bind(runnerId, nowSec(), taskId)
+      .run();
+    if (!Number(r.meta.changes || 0)) return null;
+    return this.getSystemTask(taskId);
+  }
+
+  /** Original `model.CountOldLog`. */
+  async countOldLogs(targetTimestamp: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) as c FROM request_logs WHERE created_at < ?")
+      .bind(targetTimestamp)
+      .first<{ c: number }>();
+    return Number(row?.c || 0);
+  }
+
+  /** Original `model.DeleteOldLogBatch` (SQLite equivalent of GORM `Limit(limit).Delete`). */
+  async deleteOldLogBatch(targetTimestamp: number, limit: number): Promise<number> {
+    const n = limit > 0 ? limit : 100;
+    const r = await this.db
+      .prepare(
+        "DELETE FROM request_logs WHERE id IN (SELECT id FROM request_logs WHERE created_at < ? ORDER BY id ASC LIMIT ?)",
+      )
+      .bind(targetTimestamp, n)
+      .run();
+    return Number(r.meta.changes || 0);
   }
 
   async prefillNameTaken(name: string, exceptId = 0): Promise<boolean> {

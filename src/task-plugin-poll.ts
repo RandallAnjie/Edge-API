@@ -3,7 +3,8 @@
  * `UpdateBatchTasks` / `UpdateVideoTasks` / `sweepTimedOutTasks` on workerd.
  */
 import { resolveBaseUrl } from "./catalog.js";
-import { nowSec, parseJson, randomHex } from "./constants.js";
+import { nowSec, parseJson } from "./constants.js";
+import { generateSystemTaskId } from "./crypto.js";
 import { compilePlugin, type PluginEngine } from "./jsplugin.js";
 import { pickChannelKey } from "./select.js";
 import { listRoutingPlugins } from "./task-plugin-factory.js";
@@ -317,7 +318,7 @@ export async function runPendingAsyncTaskPoll(store: Store): Promise<TaskPollSum
     }
   }
   if (!(await store.hasUnfinishedSyncTasks())) return null;
-  const id = "systask_" + randomHex(16);
+  const id = generateSystemTaskId();
   await store.insertSystemTask({ id, type: SYSTEM_TASK_TYPE_ASYNC_TASK_POLL, status: "running" });
   try {
     const summary = await runTaskPollingOnce(store);

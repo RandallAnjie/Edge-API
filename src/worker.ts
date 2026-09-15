@@ -25,6 +25,7 @@ import { ensureSchema } from "./schema.js";
 import { Store } from "./store.js";
 import { hit } from "./metrics.js";
 import { reportCurrentSystemInstance } from "./system-instance.js";
+import { runPendingLogCleanupSystemTask } from "./system-task.js";
 import { matchPluginOwnedPath, matchPluginRoute, matchTaskPlugin, type MatchedPlugin } from "./plugin-dispatch.js";
 import { applyOriginTaskIntent, type OriginTaskRef } from "./origin-task.js";
 import { executeNativePluginRoute, handleNativePluginRoute } from "./task-plugin-route.js";
@@ -729,6 +730,7 @@ export default {
         await runPendingModelUpdateSystemTask(store);
         await runPendingAsyncTaskPoll(store);
         await runPendingMidjourneyPoll(store);
+        await runPendingLogCleanupSystemTask(store);
       })(),
     );
   },

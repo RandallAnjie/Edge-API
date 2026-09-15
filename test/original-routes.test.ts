@@ -1550,13 +1550,19 @@ test("original JSON fields: RelayNotImplemented, 2FA stats, groups, manage, plug
   assert.equal(typeof task.id, "number");
   assert.equal(typeof task.task_id, "string");
   assert.equal(task.type, "log_cleanup");
-  assert.equal(task.status, "succeeded");
+  assert.equal(task.status, "pending");
+  assert.equal(task.active_key, "log_cleanup");
   assert.equal(typeof task.payload, "object");
   assert.equal(typeof (task.payload as { target_timestamp: number }).target_timestamp, "number");
+  assert.equal((task.payload as { batch_size: number }).batch_size, 100);
   const currentMissing = await json(new Request("http://local/api/system-task/current", { headers: auth }), e);
   assert.equal(currentMissing.body.message, "type is required");
   const current = await json(new Request("http://local/api/system-task/current?type=log_cleanup", { headers: auth }), e);
   assert.equal(current.body.success, true);
+  const currentTask = current.body.data as Record<string, unknown>;
+  assert.equal(currentTask.task_id, task.task_id);
+  assert.equal(currentTask.status, "pending");
+  assert.equal(currentTask.active_key, "log_cleanup");
 });
 
 test("original JSON fields: perf-metrics, rankings, quota data, model sync", async () => {

@@ -1824,7 +1824,7 @@ export function publicSystemTask(row: Record<string, unknown>, numericId = 0): R
     if (typeof raw !== "string") return raw;
     return parseJson(raw, raw);
   };
-  return {
+  const out: Record<string, unknown> = {
     id: Number(row.rowid || row.numeric_id || numericId || 0),
     task_id: taskId,
     type: String(row.type || ""),
@@ -1837,6 +1837,9 @@ export function publicSystemTask(row: Record<string, unknown>, numericId = 0): R
     created_at: Number(row.created_at || 0),
     updated_at: Number(row.updated_at || 0),
   };
+  const activeKey = row.active_key == null ? "" : String(row.active_key);
+  if (activeKey) out.active_key = activeKey;
+  return out;
 }
 
 const LEGACY_TASK_ACTIONS: Record<string, string> = {

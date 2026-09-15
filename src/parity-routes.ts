@@ -33,7 +33,7 @@ import {
   verifyTelegramLogin,
   wechatIdFromCode,
 } from "./oauth.js";
-import { bytesToHex, sha256Bytes } from "./crypto.js";
+import { bytesToHex, generateSystemTaskId, sha256Bytes } from "./crypto.js";
 import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-oauth.js";
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
@@ -74,6 +74,7 @@ import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
 import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
 import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
 import { SYSTEM_INSTANCE_STALE_AFTER_SECONDS, listSystemInstanceResponses } from "./system-instance.js";
+import { runPendingLogCleanupSystemTask, startLogCleanupTask } from "./system-task.js";
 import { fetchUpstreamRatios, validateFetchRequest } from "./ratio-sync.js";
 import { dryRunPlugin } from "./jsplugin.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
@@ -809,7 +810,7 @@ export function registerParity(r: Router<Env>): void {
         },
       });
     }
-    const id = "systask_" + randomHex(16);
+    const id = generateSystemTaskId();
     await s.insertSystemTask({
       id,
       type: "model_update",
@@ -1296,22 +1297,13 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const targetTimestamp = Number(c.url.searchParams.get("target_timestamp") || 0);
     if (!targetTimestamp) return apiFail("target timestamp is required");
-    const existing = await s.currentSystemTask("log_cleanup");
-    if (existing) return apiOk(publicSystemTask(existing, Number(existing.rowid || 0)));
-    const id = "systask_" + randomHex(16);
-    const payload = { target_timestamp: targetTimestamp, batch_size: 1000 };
-    await s.insertSystemTask({ id, type: "log_cleanup", status: "running", payload, state: { total: 0, processed: 0, progress: 0, remaining: 0 } });
-    const cutoff = targetTimestamp;
-    const del = await c.env.DB.prepare("DELETE FROM request_logs WHERE created_at < ?").bind(cutoff).run();
-    const deleted = Number(del.meta.changes || 0);
-    await s.updateSystemTask(id, {
-      status: "succeeded",
-      progress: "100",
-      result: JSON.stringify({ deleted_count: deleted }),
-      state: JSON.stringify({ total: deleted, processed: deleted, progress: 100, remaining: 0 }),
-    });
-    const task = await s.getSystemTask(id);
-    return apiOk(publicSystemTask(task || { id, type: "log_cleanup", status: "succeeded" }, Number(task?.rowid || 0)));
+    try {
+      const task = await startLogCleanupTask(s, targetTimestamp);
+      c.waitUntil(runPendingLogCleanupSystemTask(s).catch(() => undefined));
+      return apiOk(publicSystemTask(task, Number(task.rowid || 0)));
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
   });
   r.get("/api/system-task/list", async (c) => {
     const s = store(c);
@@ -1319,7 +1311,7 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const limit = Number(c.url.searchParams.get("limit") || 20);
     const items = await s.listSystemTasks(limit);
-    return apiOk(items.map((t, i) => publicSystemTask(t, Number(t.rowid || items.length - i))));
+    return apiOk(items.map((t) => publicSystemTask(t, Number(t.rowid || 0))));
   });
   r.get("/api/system-task/current", async (c) => {
     const s = store(c);
