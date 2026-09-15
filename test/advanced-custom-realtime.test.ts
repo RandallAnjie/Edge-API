@@ -289,7 +289,7 @@ test("original Advanced Custom realtime DoWssRequest is HTTP 101 Upgrade websock
   }
 });
 
-test("original Advanced Custom realtime missing route is get request url failed", async () => {
+test("original Advanced Custom realtime unmatched route is distributor no available channel", async () => {
   const { e, auth, sk } = await boot();
   await json(
     new Request("http://local/api/channel/", {
@@ -318,40 +318,18 @@ test("original Advanced Custom realtime missing route is get request url failed"
     }),
     e,
   );
-  class MockSocket {
-    accept() {}
-    addEventListener() {}
-    send() {}
-    close() {}
-  }
-  class MockPair {
-    0: MockSocket;
-    1: MockSocket;
-    constructor() {
-      this[0] = new MockSocket();
-      this[1] = new MockSocket();
-    }
-  }
-  const OrigPair = (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
-  (globalThis as unknown as { WebSocketPair: unknown }).WebSocketPair = MockPair;
-  try {
-    const missing = await json(
-      new Request("http://local/v1/realtime?model=gpt-realtime", {
-        headers: { authorization: "Bearer " + sk, upgrade: "websocket" },
-      }),
-      e,
-    );
-    assert.equal(missing.res.status, 500, missing.text);
-    assert.equal((missing.body.error as { code?: string }).code, "do_request_failed");
-    assert.equal((missing.body.error as { type?: string }).type, "new_api_error");
-    assert.equal((missing.body.error as { param?: string }).param, "");
-    assert.match(String((missing.body.error as { message?: string }).message), /^get request url failed: /);
-    assert.match(
-      String((missing.body.error as { message?: string }).message),
-      /advanced custom channel does not support request path \/v1\/realtime for model gpt-realtime/,
-    );
-  } finally {
-    if (OrigPair) (globalThis as unknown as { WebSocketPair: unknown }).WebSocketPair = OrigPair;
-    else delete (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
-  }
+  const missing = await json(
+    new Request("http://local/v1/realtime?model=gpt-realtime", {
+      headers: { authorization: "Bearer " + sk, upgrade: "websocket" },
+    }),
+    e,
+  );
+  assert.equal(missing.res.status, 503, missing.text);
+  assert.equal((missing.body.error as { code?: string }).code, "no_available_channel");
+  assert.equal((missing.body.error as { type?: string }).type, "new_api_error");
+  assert.equal((missing.body.error as { param?: string }).param, "");
+  assert.match(
+    String((missing.body.error as { message?: string }).message),
+    /No available channel for model gpt-realtime under group default \(distributor\)/,
+  );
 });
