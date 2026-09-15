@@ -2,7 +2,7 @@
  * Original QuantumNous `jsplugin.ValidateV1Meta` / `normalizeV1Meta`.
  */
 import { CHANNEL_TYPE_TASK_PLUGIN } from "./constants.js";
-import { CAPABILITY_SUBMIT_SSE_DELTA, hasCapability } from "./jsplugin.js";
+import { CAPABILITY_SUBMIT_SSE_DELTA, hasCapability } from "./jsplugin-capability.js";
 import { asciiFoldModel } from "./plugin-meta.js";
 import { MAX_IMAGE_N, MAX_QUOTA, MAX_TASK_DURATION_SECONDS } from "./task-plugin-usage.js";
 
@@ -563,12 +563,13 @@ function hostProtocolKnown(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(HOST_PROTOCOL_MODES, name);
 }
 
-/** Original `jsplugin.ValidateV1Meta`. */
-export function validateV1Meta(meta: Record<string, unknown>): void {
+/** Original `jsplugin.normalizeV1Meta` — mutates meta like CompilePlugin. */
+export function normalizeV1Meta(meta: Record<string, unknown>): void {
   const requiredCapabilities = stringSlice(meta.requiredCapabilities, "requiredCapabilities");
   const submitResponseTypes = Array.isArray(meta.submitResponseTypes)
     ? (meta.submitResponseTypes as unknown[]).map(String)
     : ["json"];
+  meta.submitResponseTypes = submitResponseTypes;
   const seenCapabilities = new Set<string>();
   for (const name of requiredCapabilities) {
     if (!hasCapability(name) || seenCapabilities.has(name)) {
@@ -614,6 +615,7 @@ export function validateV1Meta(meta: Record<string, unknown>): void {
       if (!Number.isInteger(number) || number < 0 || number > 65535) throw new Error("plugin meta website has an invalid port");
     }
   }
+  meta.website = website;
   const apiVersion = Number(meta.apiVersion ?? 0);
   if (apiVersion !== API_VERSION_1) throw new Error(`unsupported plugin apiVersion ${apiVersion}`);
   if (!String(meta.name || "").trim()) throw new Error("plugin meta name is required");
@@ -629,9 +631,11 @@ export function validateV1Meta(meta: Record<string, unknown>): void {
       }
     }
   }
-  if (meta.description != null) readLocalized(meta.description, "description", MAX_META_DESCRIPTION_RUNES);
+  meta.icon = icon;
+  if (meta.description != null) meta.description = readLocalized(meta.description, "description", MAX_META_DESCRIPTION_RUNES);
   const author = meta.author && typeof meta.author === "object" && !Array.isArray(meta.author) ? (meta.author as Record<string, unknown>) : {};
   if (!String(author.name || "").trim()) throw new Error("plugin meta author name is required");
+  author.name = String(author.name || "").trim();
   const authorURL = String(author.url || "").trim();
   if (authorURL) {
     let parsedURL: URL;
@@ -644,8 +648,12 @@ export function validateV1Meta(meta: Record<string, unknown>): void {
       throw new Error("plugin meta author url must be an absolute HTTP(S) URL");
     }
   }
+  if (authorURL) author.url = authorURL;
+  else delete author.url;
+  meta.author = author;
   const baseURL = String(meta.baseUrl || "").trim();
-  if (baseURL) normalizeMetaBaseURL(baseURL);
+  if (baseURL) meta.baseUrl = normalizeMetaBaseURL(baseURL);
+  else delete meta.baseUrl;
   const key = String(meta.key || "");
   if (key.length > 30) throw new Error("plugin meta key must not exceed 30 characters");
   if (!PLUGIN_KEY_PATTERN.test(key)) throw new Error(`plugin meta key must match ${PLUGIN_KEY_PATTERN.source}`);
@@ -656,6 +664,7 @@ export function validateV1Meta(meta: Record<string, unknown>): void {
   }
   const models = stringSlice(meta.models, "models");
   if (!models.length) throw new Error("plugin meta models must contain at least one model");
+  meta.models = models;
   const channelTypes = Array.isArray(meta.channelTypes) ? (meta.channelTypes as unknown[]).map((item) => Number(item)) : [];
   const seenChannelTypes = new Set<number>();
   for (const channelType of channelTypes) {
@@ -677,12 +686,16 @@ export function validateV1Meta(meta: Record<string, unknown>): void {
   }
   const hosts = new Set<string>();
   const allowedHosts = Array.isArray(meta.allowedHosts) ? (meta.allowedHosts as unknown[]).map(String) : [];
+  const normalizedHosts: string[] = [];
   for (const host of allowedHosts) {
     const normalized = normalizeAllowedHost(host);
     if (hosts.has(normalized)) throw new Error("plugin meta allowedHosts must be unique");
     hosts.add(normalized);
+    normalizedHosts.push(normalized);
   }
+  meta.allowedHosts = normalizedHosts;
   const routes = Array.isArray(meta.routes) ? (meta.routes as unknown[]) : [];
+  meta.routes = routes;
   const routeKeys = new Set<string>();
   routes.forEach((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`plugin meta route ${index} must be an object`);
@@ -782,11 +795,13 @@ export function validateV1Meta(meta: Record<string, unknown>): void {
       }
     }
   });
+  meta.protocols = protocols;
   const usageSchema = meta.usageSchema != null ? decodeUsageSchema(meta.usageSchema) : {};
   if (meta.usageSchema != null) {
     for (const name of Object.keys(usageSchema)) {
       if (!name.trim() || name.trim() !== name) throw new Error("plugin meta usageSchema keys must be non-empty canonical names");
     }
+    meta.usageSchema = usageSchema;
   }
   const usageExamples = meta.usageExamples != null ? decodeUsageExamples(meta.usageExamples) : [];
   validateUsageExamples(meta.usageSchema != null ? usageSchema : {}, usageExamples);
@@ -827,7 +842,10 @@ export function validateV1Meta(meta: Record<string, unknown>): void {
     } catch (err) {
       throw new Error(`plugin meta usageProfiles[${index}]: ${err instanceof Error ? err.message : String(err)}`);
     }
+    object.schema = schema;
+    if (object.examples != null) object.examples = examples;
   });
+  if (meta.usageExamples != null) meta.usageExamples = usageExamples;
   let authType = "";
   const auth = meta.auth;
   if (typeof auth === "string") authType = auth;
@@ -845,6 +863,12 @@ export function validateV1Meta(meta: Record<string, unknown>): void {
   if (authType && authType !== "none" && authType !== "api_key" && authType !== "oauth2_jwt") {
     throw new Error(`unsupported plugin auth type ${JSON.stringify(authType)}`);
   }
+  meta.auth = { type: authType };
+}
+
+/** Original `jsplugin.ValidateV1Meta` — clone then normalizeV1Meta. */
+export function validateV1Meta(meta: Record<string, unknown>): void {
+  normalizeV1Meta(structuredClone(meta));
 }
 
 export function routePathShapeForPreflight(routePath: string): string {

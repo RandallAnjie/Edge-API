@@ -357,3 +357,114 @@ export function parseTaskResult() { return {}; }
   assert.equal(listed.body.success, true, String(listed.body.message));
   assert.ok((listed.body.data as { meta: { key: string } }[]).some((item) => item.meta.key === "kling"));
 });
+
+test("original CompilePlugin normalizeV1Meta JSON on GetTaskPlugin and status/delete registry", async () => {
+  const { e, auth } = await boot();
+  const source = `
+export const meta = {
+  apiVersion: 1, key: "compile-normalize", name: "Normalize", version: "1.0.0", author: {name: "Test"},
+  description: "Plain description",
+  baseUrl: "http://localhost:9000/",
+  models: ["compile-normalize"], fetchMode: "per_task",
+  usageSchema: {seconds: {type: "number", unit: "second", description: "Video generation unit price"}},
+  auth: "none"
+};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+`;
+  const uploaded = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ source }),
+    }),
+    e,
+  );
+  assert.equal(uploaded.body.success, true, String(uploaded.body.message));
+  const uploadMeta = (uploaded.body.data as { meta: Record<string, unknown> }).meta;
+  assert.equal(uploadMeta.baseUrl, "http://localhost:9000");
+  assert.deepEqual(uploadMeta.description, { en: "Plain description" });
+  assert.equal((uploadMeta.usageSchema as Record<string, { description: { en: string } }>).seconds.description.en, "Video generation unit price");
+  assert.deepEqual(uploadMeta.auth, { type: "none" });
+  assert.deepEqual(uploadMeta.submitResponseTypes, ["json"]);
+  assert.deepEqual(uploadMeta.allowedHosts, []);
+  assert.deepEqual(uploadMeta.routes, []);
+
+  const detail = await json(new Request("http://local/api/plugin/task/compile-normalize", { headers: auth }), e);
+  assert.equal(detail.body.success, true, String(detail.body.message));
+  const meta = (detail.body.data as { meta: Record<string, unknown> }).meta;
+  assert.equal(meta.baseUrl, "http://localhost:9000");
+  assert.deepEqual(meta.description, { en: "Plain description" });
+  assert.equal((meta.usageSchema as Record<string, { description: { en: string } }>).seconds.description.en, "Video generation unit price");
+
+  const missingStatus = await json(
+    new Request("http://local/api/plugin/task/no-such-plugin/status", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ enabled: false }),
+    }),
+    e,
+  );
+  assert.equal(missingStatus.body.success, false);
+  assert.equal(missingStatus.body.message, "record not found");
+
+  const klingUp = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        source:
+          'export const meta = { apiVersion: 1, key: "kling", name: "Kling Override", version: "1.0.2-del", author: { name: "test" }, models: ["kling-v1"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" } };\nexport function buildSubmitRequest(){return {url:"https://provider.example/submit"}}\nexport function parseSubmitResponse(){return {taskId:"upstream"}}\nexport function buildQueryRequest(){return {url:"https://provider.example"}}\nexport function parseTaskResult(){return {status:"SUCCESS"}}',
+      }),
+    }),
+    e,
+  );
+  assert.equal(klingUp.body.success, true, String(klingUp.body.message));
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "kling-plugin-ch",
+        type: 61,
+        key: "plugin-key",
+        models: "kling-v1",
+        group: "default",
+        setting: { task_plugin_key: "kling" },
+      }),
+    }),
+    e,
+  );
+  const delFactory = await json(
+    new Request("http://local/api/plugin/task/kling/versions/1.0.2-del", { method: "DELETE", headers: auth }),
+    e,
+  );
+  assert.equal(delFactory.body.success, true, String(delFactory.body.message));
+  assert.equal(delFactory.body.data, null);
+
+  await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "norm-plugin-ch",
+        type: 61,
+        key: "plugin-key-2",
+        models: "compile-normalize",
+        group: "default",
+        setting: { task_plugin_key: "compile-normalize" },
+      }),
+    }),
+    e,
+  );
+  const delCustom = await json(
+    new Request("http://local/api/plugin/task/compile-normalize/versions/1.0.0", { method: "DELETE", headers: auth }),
+    e,
+  );
+  assert.equal(delCustom.body.success, false);
+  assert.equal(delCustom.body.message, "task plugin is still in use");
+  assert.equal(typeof (delCustom.body.data as { in_flight_count: number }).in_flight_count, "number");
+  assert.ok(Array.isArray((delCustom.body.data as { channels: unknown[] }).channels));
+});

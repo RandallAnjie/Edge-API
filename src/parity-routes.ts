@@ -1207,9 +1207,6 @@ export function registerParity(r: Router<Env>): void {
     const body = (await readJson(c.req)) as { enabled?: boolean };
     if (typeof body.enabled !== "boolean") return apiFail("enabled is required");
     const key = c.params.key;
-    const p = await s.getTaskPlugin(key);
-    const factory = hasFactoryPlugin(key);
-    if (!p && !factory) return apiFail("task plugin not found");
     let disabledChannels = 0;
     if (!body.enabled) {
       const usage = await s.taskPluginUsage(key);
@@ -1229,13 +1226,19 @@ export function registerParity(r: Router<Env>): void {
         }
       }
     }
+    const p = await s.getTaskPluginVersion(key, "");
+    const factory = hasFactoryPlugin(key);
     if (factory) {
       const keys = await getTaskPluginDisabledFactoryKeys(s);
       const next = body.enabled ? keys.filter((item) => item !== key) : [...keys, key];
       await setTaskPluginDisabledFactoryKeys(s, next);
       if (!p) return apiOk({ plugin_enabled: body.enabled, disabled_channels: disabledChannels });
     }
-    await s.setTaskPluginEnabled(key, body.enabled);
+    try {
+      await s.setTaskPluginEnabled(key, body.enabled);
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
     const syncErr = await syncTaskPluginsAfterMutation(s);
     if (syncErr) return syncErr;
     return apiOk({ plugin_enabled: body.enabled, disabled_channels: disabledChannels });
@@ -1271,7 +1274,7 @@ export function registerParity(r: Router<Env>): void {
     const version = c.params.version;
     const target = await s.getTaskPluginVersion(key, version);
     if (!target) return apiFail("override plugin version not found; factory plugins cannot be deleted");
-    if (Number(target.active) && c.url.searchParams.get("force") !== "true") {
+    if (Number(target.active) && !hasFactoryPlugin(key) && c.url.searchParams.get("force") !== "true") {
       const usage = await s.taskPluginUsage(key);
       if (usage.channels.length > 0 || usage.in_flight_count > 0) {
         return json(200, {

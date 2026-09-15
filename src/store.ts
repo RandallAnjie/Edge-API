@@ -4420,7 +4420,10 @@ export class Store {
   }
 
   async setTaskPluginEnabled(key: string, enabled: boolean): Promise<void> {
-    await this.db.prepare("UPDATE task_plugin_versions SET enabled = ? WHERE key = ? AND active = 1").bind(enabled ? 1 : 0, key).run();
+    const r = await this.db
+      .prepare("UPDATE task_plugin_versions SET enabled = ? WHERE key = ? AND active = 1")
+      .bind(enabled ? 1 : 0, key)
+      .run();
     const p = await this.getTaskPlugin(key);
     if (p) {
       await this.upsertTaskPlugin({
@@ -4430,6 +4433,7 @@ export class Store {
         active: Number(p.active ?? 1) ? 1 : 0,
       });
     }
+    if (!Number(r.meta.changes || 0) && !p) throw new Error("record not found");
   }
 
   async deleteTaskPluginVersion(key: string, version: string): Promise<boolean> {

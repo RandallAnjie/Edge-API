@@ -5,6 +5,8 @@
  * isolate CPU limit rather than Sobek Interrupt.
  */
 import { CHANNEL_TYPE_TASK_PLUGIN } from "./constants.js";
+import { CAPABILITY_JSON_CLONE, CAPABILITY_SUBMIT_SSE_DELTA, hasCapability } from "./jsplugin-capability.js";
+import { normalizeV1Meta } from "./jsplugin-validate.js";
 import {
   bytesToHex,
   bytesToRawURLBase64,
@@ -16,8 +18,7 @@ import {
 } from "./jsplugin-sha256.js";
 
 export const DEFAULT_CALL_TIMEOUT_MS = 5000;
-export const CAPABILITY_JSON_CLONE = "json-clone@1";
-export const CAPABILITY_SUBMIT_SSE_DELTA = "submit-sse-delta@1";
+export { CAPABILITY_JSON_CLONE, CAPABILITY_SUBMIT_SSE_DELTA, hasCapability };
 const MAX_JSON_TOOL_BYTES = 1 << 20;
 const MAX_JSON_TOOL_DEPTH = 32;
 const MAX_JSON_TOOL_NODES = 32768;
@@ -115,10 +116,6 @@ export class UnknownMetaFieldError extends Error {
     this.name = "UnknownMetaFieldError";
     this.field = field;
   }
-}
-
-export function hasCapability(name: string): boolean {
-  return name === CAPABILITY_JSON_CLONE || name === CAPABILITY_SUBMIT_SSE_DELTA;
 }
 
 export function sourceWithoutCommentsAndStrings(source: string): string {
@@ -1216,6 +1213,7 @@ export function compilePlugin(source: string, options: CompileOptions = {}): Loa
   for (const removed of ["resolveRequest", "renderError", "renderers"]) {
     if (engine.hasExport(removed)) throw new Error(`plugin ${key} export ${JSON.stringify(removed)} is no longer supported`);
   }
+  normalizeV1Meta(object);
   return { meta: object, engine };
 }
 
