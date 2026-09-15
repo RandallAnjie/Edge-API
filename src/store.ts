@@ -5,6 +5,7 @@ import {
   DEFAULT_OPTIONS,
   LOG_CONSUME,
   LOG_TOPUP,
+  MAX_WALLET_QUOTA,
   NAME_RULE_EXACT,
   REDEMPTION_DISABLED,
   REDEMPTION_ENABLED,
@@ -14,6 +15,7 @@ import {
   ROLE_USER,
   TOKEN_ENABLED,
   USER_ENABLED,
+  VERSION,
   csv,
   hourStartSec,
   nowMs,
@@ -32,6 +34,7 @@ import {
 import { SCHEMA_SQL, ensureSchema } from "./schema.js";
 import { calcNextResetTime, calcPlanEndTime, normalizeBillingPreference, normalizeResetPeriod } from "./subscription.js";
 import { MODEL_PRICING_OPTION_KEYS } from "./model-pricing.js";
+import { storeFormatQuota } from "./quota.js";
 import type {
   ChannelRow,
   D1Database,
@@ -50,6 +53,20 @@ export const ERR_SUBSCRIPTION_ORDER_NOT_FOUND = "subscription order not found";
 export const ERR_SUBSCRIPTION_ORDER_STATUS_INVALID = "subscription order status invalid";
 /** Original `model.ErrPaymentMethodMismatch`. */
 export const ERR_PAYMENT_METHOD_MISMATCH = "payment method mismatch";
+/** Original `model.ErrInvalidTopUpQuota`. */
+export const ERR_INVALID_TOP_UP_QUOTA = "invalid top-up quota";
+/** Original `model.ErrTopUpQuotaLimitExceeded`. */
+export const ERR_TOP_UP_QUOTA_LIMIT_EXCEEDED = "top-up quota limit exceeded";
+/** Original `model.topUpQueryWindowSeconds`. */
+const TOP_UP_QUERY_WINDOW_SECONDS = 30 * 24 * 60 * 60;
+
+/** Original `common.WalletQuotaFromDecimalStrict` for top-up credits. */
+function walletQuotaFromDecimalStrict(value: number): number {
+  if (!Number.isFinite(value)) throw new Error(ERR_INVALID_TOP_UP_QUOTA);
+  const rounded = Math.round(value);
+  if (rounded <= 0 || rounded > MAX_WALLET_QUOTA) throw new Error(ERR_INVALID_TOP_UP_QUOTA);
+  return rounded;
+}
 
 function num(v: unknown, d = 0): number {
   const n = Number(v);
@@ -2167,24 +2184,30 @@ export class Store {
     return Number(r.meta.last_row_id || 0);
   }
 
+  /**
+   * Original GetUserTopUps / SearchUserTopUps / GetAllTopUps / SearchAllTopUps.
+   * User lists are limited to `topUpQueryWindowSeconds`; admin lists are not.
+   * `keyword` is `trade_no LIKE` after `sanitizeLikePattern` (no automatic `%` wrap).
+   */
   async listTopups(
     userId: number | null,
     offset: number,
     limit: number,
     keyword = "",
   ): Promise<{ items: unknown[]; total: number }> {
-    const cutoff = nowSec() - 30 * 24 * 60 * 60;
-    const where: string[] = ["created_at >= ?"];
-    const binds: unknown[] = [cutoff];
-    if (userId) {
+    const where: string[] = [];
+    const binds: unknown[] = [];
+    if (userId != null) {
       where.push("user_id = ?");
       binds.push(userId);
+      where.push("created_at >= ?");
+      binds.push(nowSec() - TOP_UP_QUERY_WINDOW_SECONDS);
     }
     if (keyword) {
-      where.push("trade_no LIKE ?");
-      binds.push(`%${keyword}%`);
+      where.push("trade_no LIKE ? ESCAPE '!'");
+      binds.push(sanitizeLikePattern(keyword));
     }
-    const w = where.join(" AND ");
+    const w = where.length ? where.join(" AND ") : "1=1";
     const totalRow = await this.db
       .prepare(`SELECT COUNT(*) as c FROM topups WHERE ${w}`)
       .bind(...binds)
@@ -2198,6 +2221,75 @@ export class Store {
 
   async getTopupByTrade(tradeNo: string): Promise<Record<string, unknown> | null> {
     return this.db.prepare("SELECT * FROM topups WHERE trade_no = ?").bind(tradeNo).first<Record<string, unknown>>();
+  }
+
+  /**
+   * Original `model.creditTopUpQuota`: atomic `quota + credited` only when current quota
+   * is within `MaxWalletQuota - creditedQuota`.
+   */
+  async creditTopUpQuota(userId: number, creditedQuota: number): Promise<void> {
+    if (creditedQuota <= 0 || creditedQuota > MAX_WALLET_QUOTA) throw new Error(ERR_INVALID_TOP_UP_QUOTA);
+    const maxCurrent = MAX_WALLET_QUOTA - creditedQuota;
+    const r = await this.db
+      .prepare("UPDATE users SET quota = quota + ? WHERE id = ? AND quota <= ?")
+      .bind(creditedQuota, userId, maxCurrent)
+      .run();
+    if (Number(r.meta.changes || 0) === 1) return;
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error("record not found");
+    throw new Error(ERR_TOP_UP_QUOTA_LIMIT_EXCEEDED);
+  }
+
+  /**
+   * Original `model.ManualCompleteTopUp`.
+   * Stripe credits `Money * QuotaPerUnit`; other providers credit `Amount * QuotaPerUnit`.
+   * Success is idempotent. Records `RecordTopupLog` after settlement.
+   */
+  async manualCompleteTopUp(tradeNo: string, callerIp: string): Promise<void> {
+    if (!tradeNo) throw new Error("未提供订单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("充值订单不存在");
+    if (String(row.status) === "success") return;
+    if (String(row.status) !== "pending") throw new Error("订单状态不是待支付，无法补单");
+
+    const quotaPerUnit = (await this.optionNum("QuotaPerUnit", 500000)) || 500000;
+    const provider = String(row.payment_provider || "");
+    const raw =
+      provider === "stripe" ? Number(row.money || 0) * quotaPerUnit : Number(row.amount || 0) * quotaPerUnit;
+    const quotaToAdd = walletQuotaFromDecimalStrict(raw);
+
+    const id = Number(row.id);
+    const userId = Number(row.user_id);
+    const payMoney = Number(row.money || 0);
+    const paymentMethod = String(row.payment_method || "");
+    const completeTime = nowSec();
+    await this.updateTopup(id, { complete_time: completeTime, status: "success" });
+    try {
+      await this.creditTopUpQuota(userId, quotaToAdd);
+    } catch (err) {
+      await this.updateTopup(id, { complete_time: 0, status: "pending" });
+      throw err;
+    }
+
+    const user = await this.getUserById(userId);
+    const formatted = await storeFormatQuota(this, quotaToAdd);
+    await this.insertLog({
+      user_id: userId,
+      username: user?.username || "",
+      type: LOG_TOPUP,
+      content: `管理员补单成功，充值金额: ${formatted}，支付金额：${payMoney.toFixed(6)}`,
+      ip: callerIp,
+      other: JSON.stringify({
+        admin_info: {
+          server_ip: "",
+          node_name: "edge-api",
+          caller_ip: callerIp,
+          payment_method: paymentMethod,
+          callback_payment_method: "admin",
+          version: VERSION,
+        },
+      }),
+    });
   }
 
   async updateTopup(id: number, patch: Record<string, unknown>): Promise<void> {

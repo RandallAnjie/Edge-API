@@ -78,15 +78,33 @@ export function logQuota(
   return `${formatQuotaOriginal(quota, quotaPerUnit, displayType, usdRate, customSymbol, customRate)} 额度`;
 }
 
+async function quotaDisplayOptions(store: Store): Promise<{
+  unit: number;
+  display: string;
+  usdRate: number;
+  customSymbol: string;
+  customRate: number;
+}> {
+  return {
+    unit: (await store.optionNum("QuotaPerUnit", 500000)) || 500000,
+    display:
+      (await store.option("general_setting.quota_display_type")) || (await store.option("QuotaDisplayType")) || "USD",
+    usdRate: (await store.optionNum("USDExchangeRate", 1)) || 1,
+    customSymbol: (await store.option("general_setting.custom_currency_symbol")) || "¤",
+    customRate: Number(await store.option("general_setting.custom_currency_exchange_rate")) || 1,
+  };
+}
+
+/** Original `logger.FormatQuota` using persisted general_setting / QuotaPerUnit options. */
+export async function storeFormatQuota(store: Store, quota: number): Promise<string> {
+  const o = await quotaDisplayOptions(store);
+  return formatQuotaOriginal(quota, o.unit, o.display, o.usdRate, o.customSymbol, o.customRate);
+}
+
 /** Original `logger.LogQuota` using persisted general_setting / QuotaPerUnit options. */
 export async function storeLogQuota(store: Store, quota: number): Promise<string> {
-  const unit = (await store.optionNum("QuotaPerUnit", 500000)) || 500000;
-  const display =
-    (await store.option("general_setting.quota_display_type")) || (await store.option("QuotaDisplayType")) || "USD";
-  const usdRate = (await store.optionNum("USDExchangeRate", 1)) || 1;
-  const customSymbol = (await store.option("general_setting.custom_currency_symbol")) || "¤";
-  const customRate = Number(await store.option("general_setting.custom_currency_exchange_rate")) || 1;
-  return logQuota(quota, unit, display, usdRate, customSymbol, customRate);
+  const o = await quotaDisplayOptions(store);
+  return logQuota(quota, o.unit, o.display, o.usdRate, o.customSymbol, o.customRate);
 }
 
 /** Original `NewBillingSession` wallet insufficient messages. */

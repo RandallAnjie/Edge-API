@@ -824,8 +824,12 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listTopups(u.id, q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
-    return apiOk(pageData((items as Record<string, unknown>[]).map(publicTopup), total, q));
+    try {
+      const { items, total } = await s.listTopups(u.id, q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
+      return apiOk(pageData((items as Record<string, unknown>[]).map(publicTopup), total, q));
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/user/topup", async (c) => {
@@ -833,19 +837,26 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listTopups(null, q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
-    return apiOk(pageData((items as Record<string, unknown>[]).map(publicTopup), total, q));
+    try {
+      const { items, total } = await s.listTopups(null, q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
+      return apiOk(pageData((items as Record<string, unknown>[]).map(publicTopup), total, q));
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.post("/api/user/topup/complete", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { user_id?: number; quota?: number };
-    if (!body.user_id) return apiFail("无效的参数");
-    await s.addQuota(body.user_id, Number(body.quota || 0));
-    await s.insertTopup({ user_id: body.user_id, amount: Number(body.quota || 0), payment_method: "admin" });
-    return apiOk(null);
+    const body = (await readJson(c.req)) as { trade_no?: string };
+    if (!body.trade_no) return apiFail("参数错误");
+    try {
+      await s.manualCompleteTopUp(body.trade_no, clientIp(c.req));
+      return apiOk(null);
+    } catch (e) {
+      return apiFail(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/user/oauth/bindings", async (c) => {
