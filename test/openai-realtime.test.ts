@@ -131,6 +131,30 @@ test("original OpenAI Realtime GetRequestURL JSON fields", () => {
     ),
     "wss://east.openai.azure.com/openai/realtime?deployment=gpt-4o-realtime-preview&api-version=2025-04-01-preview",
   );
+  assert.equal(
+    openaiRealtimeRequestURL(
+      channel({
+        type: CHANNEL_TYPE_AZURE,
+        key: "az",
+        base_url: "https://east.openai.azure.com",
+        created_time: OPENAI_AZURE_NO_REMOVE_DOT_TIME,
+      }),
+      { requestUrlPath: "/v1/realtime", upstreamModel: "gpt-4.1-realtime-preview" },
+    ),
+    "wss://east.openai.azure.com/openai/realtime?deployment=gpt-4.1-realtime-preview&api-version=2025-04-01-preview",
+  );
+  assert.equal(
+    openaiRealtimeRequestURL(
+      channel({
+        type: CHANNEL_TYPE_AZURE,
+        key: "az",
+        base_url: "https://east.openai.azure.com",
+        created_time: 1,
+      }),
+      { requestUrlPath: "/v1/realtime", upstreamModel: "gpt-4o-realtime-preview" },
+    ),
+    "wss://east.openai.azure.com/openai/realtime?deployment=gpt-4o-realtime-preview&api-version=2025-04-01-preview",
+  );
   const oldAzure = channel({
     type: CHANNEL_TYPE_AZURE,
     key: "az",
@@ -139,8 +163,8 @@ test("original OpenAI Realtime GetRequestURL JSON fields", () => {
   });
   assert.equal(oldAzure.created_time, 1);
   assert.equal(
-    openaiRealtimeRequestURL(oldAzure, { requestUrlPath: "/v1/realtime", upstreamModel: "gpt-4o-realtime-preview" }),
-    "wss://east.openai.azure.com/openai/realtime?deployment=gpt-4orealtimpreview&api-version=2025-04-01-preview",
+    openaiRealtimeRequestURL(oldAzure, { requestUrlPath: "/v1/realtime", upstreamModel: "gpt-4.1-realtime-preview" }),
+    "wss://east.openai.azure.com/openai/realtime?deployment=gpt-41-realtime-preview&api-version=2025-04-01-preview",
   );
   assert.equal(
     openaiRealtimeRequestURL(
@@ -152,11 +176,11 @@ test("original OpenAI Realtime GetRequestURL JSON fields", () => {
         created_time: OPENAI_AZURE_NO_REMOVE_DOT_TIME - 1,
       }),
       {
-        requestUrlPath: "/v1/realtime?model=gpt-4o-realtime-preview&api-version=2024-08-01-preview",
-        upstreamModel: "gpt-4o-realtime-preview",
+        requestUrlPath: "/v1/realtime?model=gpt-4.1-realtime-preview&api-version=2024-08-01-preview",
+        upstreamModel: "gpt-4.1-realtime-preview",
       },
     ),
-    "wss://east.openai.azure.com/openai/realtime?deployment=gpt-4orealtimpreview&api-version=2024-08-01-preview",
+    "wss://east.openai.azure.com/openai/realtime?deployment=gpt-41-realtime-preview&api-version=2024-08-01-preview",
   );
   assert.equal(
     openaiAzureRealtimeApiVersion(
