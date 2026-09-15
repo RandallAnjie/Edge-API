@@ -33,8 +33,9 @@ import {
   getModelPriceFromMap,
   getModelRatioFromMap,
 } from "./ratio-setting.js";
-import { pluginUsageByModel, listRoutingPlugins, type RoutingPlugin } from "./task-plugin-factory.js";
-import { pluginModelNames, pluginUsageForModel } from "./plugin-meta.js";
+import { listRoutingPlugins, type RoutingPlugin } from "./task-plugin-factory.js";
+import { asciiFoldModel, pluginModelNames, pluginUsageForModel } from "./plugin-meta.js";
+import { buildTaskAliasView } from "./task-model-alias.js";
 import {
   getModelQuotaTypes,
   getModelSupportEndpointTypes,
@@ -507,17 +508,20 @@ export async function buildPricing(
   }
   const names = [...groupsByModel.keys()];
   const metaMap = resolveModelMetadata(allMeta, names);
-  const pluginByModel = await pluginUsageByModel(store);
   const routingPlugins = await listRoutingPlugins(store);
-  const pluginsByModel = new Map<string, typeof routingPlugins>();
-  for (const plugin of routingPlugins) {
+  const routingByKey = new Map<string, RoutingPlugin>();
+  const routingByModel = new Map<string, RoutingPlugin>();
+  const pluginsByModel = new Map<string, RoutingPlugin[]>();
+  for (const plugin of routingPlugins.slice().sort(compareRoutingPluginKey)) {
+    routingByKey.set(plugin.key, plugin);
     for (const modelName of pluginModelNames(plugin.meta)) {
+      if (!routingByModel.has(modelName)) routingByModel.set(modelName, plugin);
       const list = pluginsByModel.get(modelName) || [];
       list.push(plugin);
       pluginsByModel.set(modelName, list);
     }
   }
-  for (const list of pluginsByModel.values()) list.sort(compareRoutingPluginKey);
+  const aliasView = await buildTaskAliasView(store, routingPlugins);
   const supported: Record<string, { path: string; method: string }> = {};
   for (const name of names) {
     let endpoints = typesByModel.get(name) || [];
@@ -566,29 +570,44 @@ export async function buildPricing(
     if (audio.configured) item.audio_ratio = audio.ratio;
     const audioCompletion = getAudioCompletionRatioFromMap(name, audioCompletionRatio);
     if (audioCompletion.configured) item.audio_completion_ratio = audioCompletion.ratio;
-    let billingModel = name;
-    let mode = getBillingMode(billingModel, billingMode, modelRatio, modelPrice);
-    if (mode !== "tiered_expr") {
-      const plugin = pluginByModel.get(name);
-      const declared = Array.isArray(plugin?.models) ? String(plugin!.models[0] || "") : "";
-      if (declared && declared !== name) {
-        billingModel = declared;
-        mode = getBillingMode(billingModel, billingMode, modelRatio, modelPrice);
-      }
-    }
+    const mode = getBillingMode(name, billingMode, modelRatio, modelPrice);
     if (mode === "tiered_expr") {
-      const expr = getBillingExpr(billingModel, billingMode, billingExpr, modelRatio, modelPrice);
+      const expr = getBillingExpr(name, billingMode, billingExpr, modelRatio, modelPrice);
       if (expr && expr.trim()) {
         item.billing_mode = mode;
         item.billing_expr = expr;
       }
+    } else {
+      const target = aliasView.get(asciiFoldModel(name));
+      if (target && target.declared) {
+        const tailMode = getBillingMode(target.declared, billingMode, modelRatio, modelPrice);
+        if (tailMode === "tiered_expr") {
+          const expr = getBillingExpr(target.declared, billingMode, billingExpr, modelRatio, modelPrice);
+          if (expr && expr.trim()) {
+            item.billing_mode = tailMode;
+            item.billing_expr = expr;
+          }
+        }
+      }
     }
-    const plugin = pluginByModel.get(name);
-    const usageSchema = plugin?.usageSchema;
-    if (usageSchema && typeof usageSchema === "object" && Object.keys(usageSchema as object).length) {
-      item.billing_usage_schema = usageSchema;
-      const examples = plugin?.usageExamples;
-      if (Array.isArray(examples) && examples.length) item.billing_usage_examples = examples;
+    let usagePlugin = routingByModel.get(name);
+    let usageModel = name;
+    if (!usagePlugin) {
+      const target = aliasView.get(asciiFoldModel(name));
+      if (target) {
+        usagePlugin = routingByKey.get(target.pluginKey);
+        usageModel = target.declared;
+      }
+    }
+    if (usagePlugin) {
+      const usage = pluginUsageForModel(usagePlugin.meta, usageModel);
+      const usageSchema = usage.usageSchema;
+      if (usageSchema && typeof usageSchema === "object" && Object.keys(usageSchema).length) {
+        item.billing_usage_schema = usageSchema;
+        if (Array.isArray(usage.usageExamples) && usage.usageExamples.length) {
+          item.billing_usage_examples = usage.usageExamples;
+        }
+      }
     }
     const providers = pluginsByModel.get(name) || [];
     let hasProviderOverride = false;
