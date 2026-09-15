@@ -3,7 +3,11 @@ import { test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
-import { USER_SESSION_LIST_LIMIT } from "../src/constants.js";
+import {
+  USER_SESSION_ACTIVE_LIMIT,
+  USER_SESSION_ISSUANCE_LIMIT,
+  USER_SESSION_LIST_LIMIT,
+} from "../src/constants.js";
 import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
@@ -184,4 +188,176 @@ test("original ListActiveUserSessions keeps current first and bounds others at 1
 
   const withoutCurrent = await store.listActiveUserSessions(user.id, "missing-current", now);
   assert.equal(withoutCurrent.length, USER_SESSION_LIST_LIMIT);
+});
+
+test("original CountActiveUserSessions includes stale auth versions and excludes expired/revoked", async () => {
+  resetSchemaFlag();
+  const e = env();
+  await boot(e);
+  const store = new Store(e.DB);
+  const user = await store.getUserByUsername("root");
+  assert.ok(user);
+  const now = Math.floor(Date.now() / 1000);
+  await e.DB.prepare("DELETE FROM login_sessions WHERE user_id = ?").bind(user.id).run();
+
+  await insertListedSession(store, e, {
+    sid: "count-current-version",
+    user_id: user.id,
+    last_seen: now - 10,
+    created_at: now - 10,
+    expires_at: now + 3600,
+    user_auth_version: 7,
+  });
+  await insertListedSession(store, e, {
+    sid: "count-stale-version",
+    user_id: user.id,
+    last_seen: now - 9,
+    created_at: now - 9,
+    expires_at: now + 3600,
+    user_auth_version: 2,
+  });
+  await insertListedSession(store, e, {
+    sid: "count-expired",
+    user_id: user.id,
+    last_seen: now - 8,
+    created_at: now - 8,
+    expires_at: now,
+    user_auth_version: 7,
+  });
+  await insertListedSession(store, e, {
+    sid: "count-revoked",
+    user_id: user.id,
+    last_seen: now - 7,
+    created_at: now - 7,
+    expires_at: now + 3600,
+    revoked: 1,
+    user_auth_version: 7,
+  });
+  await insertListedSession(store, e, {
+    sid: "count-cutoff",
+    user_id: user.id,
+    last_seen: now - 3600,
+    created_at: now - 3600,
+    expires_at: now,
+    user_auth_version: 7,
+  });
+
+  assert.equal(await store.countActiveSessions(user.id, now), 2);
+  assert.equal(await store.countSessionsCreatedSince(user.id, now - 3600), 4);
+  assert.equal(await store.countSessionsCreatedSince(0, now - 3600), 4);
+});
+
+test("original login AUTH_SESSION_LIMIT JSON when active sessions are at the cap", async () => {
+  resetSchemaFlag();
+  const e = env();
+  await boot(e);
+  const store = new Store(e.DB);
+  const user = await store.getUserByUsername("root");
+  assert.ok(user);
+  const now = Math.floor(Date.now() / 1000);
+  const need = USER_SESSION_ACTIVE_LIMIT - (await store.countActiveSessions(user.id, now));
+  for (let i = 0; i < need; i++) {
+    await insertListedSession(store, e, {
+      sid: "limit-active-" + i,
+      user_id: user.id,
+      last_seen: now - i,
+      created_at: now - i,
+      expires_at: now + 3600,
+      user_auth_version: i % 2 === 0 ? 1 : 99,
+    });
+  }
+  assert.equal(await store.countActiveSessions(user.id, now), USER_SESSION_ACTIVE_LIMIT);
+
+  const blocked = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(blocked.res.status, 409);
+  assert.equal(blocked.body.success, false);
+  assert.equal(blocked.body.code, "AUTH_SESSION_LIMIT");
+  assert.equal(blocked.body.message, "Conflict");
+  assert.equal(blocked.body.data, null);
+});
+
+test("original login AUTH_SESSION_LIMIT ignores expired sessions", async () => {
+  resetSchemaFlag();
+  const e = env();
+  await boot(e);
+  const store = new Store(e.DB);
+  const user = await store.getUserByUsername("root");
+  assert.ok(user);
+  const now = Math.floor(Date.now() / 1000);
+  for (let i = 0; i < USER_SESSION_ACTIVE_LIMIT; i++) {
+    await insertListedSession(store, e, {
+      sid: "expired-fill-" + i,
+      user_id: user.id,
+      last_seen: now - i,
+      created_at: now - i,
+      expires_at: now,
+      user_auth_version: 1,
+    });
+  }
+  const allowed = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(allowed.res.status, 200);
+  assert.equal(allowed.body.success, true);
+  assert.equal(typeof (allowed.body.data as { access_token: string }).access_token, "string");
+});
+
+test("original login AUTH_SESSION_ISSUANCE_LIMIT JSON uses a strict created_at cutoff", async () => {
+  resetSchemaFlag();
+  const e = env();
+  await boot(e);
+  const store = new Store(e.DB);
+  const user = await store.getUserByUsername("root");
+  assert.ok(user);
+  const now = Math.floor(Date.now() / 1000);
+  const cutoff = now - 24 * 60 * 60;
+  await insertListedSession(store, e, {
+    sid: "issuance-at-cutoff",
+    user_id: user.id,
+    last_seen: cutoff,
+    created_at: cutoff,
+    expires_at: now + 3600,
+    revoked: 1,
+    user_auth_version: 1,
+  });
+  const already = await store.countSessionsCreatedSince(user.id, cutoff);
+  const need = USER_SESSION_ISSUANCE_LIMIT - already;
+  for (let i = 0; i < need; i++) {
+    await insertListedSession(store, e, {
+      sid: "issuance-recent-" + i,
+      user_id: user.id,
+      last_seen: now - i - 1,
+      created_at: now - i - 1,
+      expires_at: now + 3600,
+      revoked: i % 3 === 0 ? 1 : 0,
+      user_auth_version: 1,
+    });
+  }
+  assert.equal(await store.countSessionsCreatedSince(user.id, cutoff), USER_SESSION_ISSUANCE_LIMIT);
+
+  const blocked = await json(
+    new Request("http://local/api/user/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "root", password: "password12" }),
+    }),
+    e,
+  );
+  assert.equal(blocked.res.status, 429);
+  assert.equal(blocked.body.success, false);
+  assert.equal(blocked.body.code, "AUTH_SESSION_ISSUANCE_LIMIT");
+  assert.equal(blocked.body.message, "Too Many Requests");
+  assert.equal(blocked.body.data, null);
 });

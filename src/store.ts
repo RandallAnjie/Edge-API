@@ -1965,19 +1965,29 @@ export class Store {
     return this.db.prepare("SELECT * FROM login_sessions WHERE sid = ?").bind(sid).first<LoginSessionRow>();
   }
 
-  async countActiveSessions(userId: number): Promise<number> {
+  /** Original `model.CountActiveUserSessions` (`revoked=0` and `expires_at > now`; stale auth versions still count). */
+  async countActiveSessions(userId: number, now = nowSec()): Promise<number> {
+    if (userId <= 0) return 0;
     const row = await this.db
-      .prepare("SELECT COUNT(*) as c FROM login_sessions WHERE user_id = ? AND revoked = 0 AND (expires_at = 0 OR expires_at > ?)")
-      .bind(userId, nowSec())
+      .prepare("SELECT COUNT(*) as c FROM login_sessions WHERE user_id = ? AND revoked = 0 AND expires_at > ?")
+      .bind(userId, now)
       .first<{ c: number }>();
     return num(row?.c);
   }
 
-  async countSessionsCreatedSince(userId: number, since: number): Promise<number> {
-    const row = await this.db
-      .prepare("SELECT COUNT(*) as c FROM login_sessions WHERE user_id = ? AND created_at >= ?")
-      .bind(userId, since)
-      .first<{ c: number }>();
+  /** Original `model.CountUserSessionsCreatedSince` (`created_at > createdAfter`; userId 0 is global). */
+  async countSessionsCreatedSince(userId: number, createdAfter: number): Promise<number> {
+    if (userId < 0 || createdAfter <= 0) return 0;
+    const row =
+      userId > 0
+        ? await this.db
+            .prepare("SELECT COUNT(*) as c FROM login_sessions WHERE created_at > ? AND user_id = ?")
+            .bind(createdAfter, userId)
+            .first<{ c: number }>()
+        : await this.db
+            .prepare("SELECT COUNT(*) as c FROM login_sessions WHERE created_at > ?")
+            .bind(createdAfter)
+            .first<{ c: number }>();
     return num(row?.c);
   }
 
