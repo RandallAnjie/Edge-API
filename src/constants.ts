@@ -121,6 +121,22 @@ export const LOG_ERROR = 5;
 export const LOG_REFUND = 6;
 export const LOG_LOGIN = 7;
 
+/** Original `operation_setting.AutomaticDisableKeywords` defaults. */
+export const DEFAULT_AUTOMATIC_DISABLE_KEYWORDS = [
+  "Your credit balance is too low",
+  "This organization has been disabled.",
+  "You exceeded your current quota",
+  "Permission denied",
+  "The security token included in the request is invalid",
+  "Operation not allowed",
+  "Your account is not authorized",
+];
+
+/** Original `operation_setting.AutomaticDisableKeywordsToString`. */
+export function automaticDisableKeywordsToString(keywords = DEFAULT_AUTOMATIC_DISABLE_KEYWORDS): string {
+  return keywords.join("\n");
+}
+
 export const DEFAULT_GROUP = "default";
 export const ROOT_QUOTA = 100_000_000;
 export const DEFAULT_TOKEN_QUOTA = 500_000;
@@ -255,7 +271,7 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   StopOnSensitiveEnabled: "false",
   SensitiveWords: "",
   StreamCacheQueueLength: "0",
-  AutomaticDisableKeywords: "",
+  AutomaticDisableKeywords: automaticDisableKeywordsToString(),
   AutomaticDisableStatusCodes: "401",
   AutomaticRetryStatusCodes: "100-199,300-399,401-407,409-499,500-503,505-523,525-599",
   ModelRequestRateLimitEnabled: "false",

@@ -9,6 +9,7 @@ import {
   increaseChannelSelectRetry,
   selectDistributedChannel,
 } from "./channel-select.js";
+import { channelAttemptFromTaskRelay, processChannelError } from "./channel-error.js";
 import { PIN_RETRY_SINGLE_ATTEMPT } from "./channel-constraint.js";
 import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_VERTEX, DEFAULT_GROUP_RATIO, parseJson, ROLE_ADMIN } from "./constants.js";
 import {
@@ -1356,9 +1357,12 @@ export async function executeNativeTaskSubmission(
     snapshot: BillingSnapshot | null;
   } | null = null;
   const billing = emptyNativeTaskBilling(requestId);
+  const usedChannel: string[] = [];
+  const requestStarted = Date.now();
 
   for (let attempt = 0; attempt <= retryTimes; attempt++) {
     if (!channel) break;
+    usedChannel.push(String(channel.id));
     const apiKey = pickChannelKey(channel.key);
     const info: NativeSubmitInfo = {
       originModelName: model,
@@ -1380,6 +1384,20 @@ export async function executeNativeTaskSubmission(
       break;
     }
     lastErr = result;
+    if (!result.localError) {
+      await processChannelError({
+        store,
+        env,
+        req,
+        auth,
+        channel,
+        model,
+        err: channelAttemptFromTaskRelay(result),
+        useChannel: [...usedChannel],
+        useTimeSeconds: Math.max(0, Math.round((Date.now() - requestStarted) / 1000)),
+        requestId,
+      });
+    }
     const remaining = retryTimes - attempt;
     if (!shouldRetryNativeTaskRelay(result, remaining, suppress)) break;
     if (!selected.pinned) {

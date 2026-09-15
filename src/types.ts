@@ -48,6 +48,8 @@ export interface Env {
   R2?: R2Bucket;
   SESSION_SECRET?: string;
   SYSTEM_NAME?: string;
+  /** Original `ERROR_LOG_ENABLED` (`constant.ErrorLogEnabled`, default false). */
+  ERROR_LOG_ENABLED?: string;
   GENERATE_DEFAULT_TOKEN?: string;
   NODE_NAME?: string;
   NODE_TYPE?: string;

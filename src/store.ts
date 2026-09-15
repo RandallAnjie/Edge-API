@@ -1274,8 +1274,20 @@ export class Store {
     return { channel_count: channels.length, in_flight_count: num(inflight?.c), channels };
   }
 
-  async autoDisableChannel(id: number): Promise<void> {
-    await this.db.prepare("UPDATE channels SET status = ? WHERE id = ? AND auto_ban = 1").bind(CHANNEL_AUTO_DISABLED, id).run();
+  async autoDisableChannel(id: number, reason = ""): Promise<boolean> {
+    const ch = await this.getChannel(id);
+    if (!ch) return false;
+    if (Number(ch.auto_ban) !== 1) return false;
+    if (Number(ch.status) === CHANNEL_AUTO_DISABLED) return false;
+    const info = parseJson<Record<string, unknown>>(String(ch.other_info || ""), {});
+    info.status_reason = reason;
+    info.status_time = nowSec();
+    await this.db
+      .prepare("UPDATE channels SET status = ?, other_info = ? WHERE id = ? AND auto_ban = 1")
+      .bind(CHANNEL_AUTO_DISABLED, JSON.stringify(info), id)
+      .run();
+    await this.db.prepare("UPDATE abilities SET enabled = 0 WHERE channel_id = ?").bind(id).run();
+    return true;
   }
 
   async insertLog(l: Partial<LogRow>): Promise<void> {

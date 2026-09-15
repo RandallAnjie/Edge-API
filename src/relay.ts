@@ -135,6 +135,12 @@ import {
 import { cacheGetRandomSatisfiedChannel, increaseChannelSelectRetry, selectDistributedChannel } from "./channel-select.js";
 import { PIN_RETRY_SAME_CHANNEL, PIN_RETRY_SINGLE_ATTEMPT, type ChannelPin } from "./channel-constraint.js";
 import { retryStatusCodeRangesFromOption, shouldRetryByStatusCode } from "./status-code-ranges.js";
+import {
+  channelAttemptFromNewApi,
+  channelAttemptFromUpstream,
+  processChannelError,
+  type ChannelAttemptError,
+} from "./channel-error.js";
 import type { OriginTaskRef } from "./origin-task.js";
 import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
 import { mapModel, pickChannelKey } from "./select.js";
@@ -1473,9 +1479,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     return abortWithOpenAiMessage(503, noAvailableChannelMessage(opts.req, showGroup, model), "model_not_found", rid);
   }
 
-  const autoDisable = await store.optionBool("AutomaticDisableChannelEnabled", false);
   const retryRanges = retryStatusCodeRangesFromOption(await store.option("AutomaticRetryStatusCodes"));
   const ip = clientIp(opts.req);
+  const usedChannel: string[] = [];
+  const requestStarted = Date.now();
 
   const promptEst = estimatePromptTokens(
     asObj(opts.body).messages as ChatMessage[] | undefined,
@@ -1512,6 +1519,22 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (next.selectGroup && next.selectGroup !== "auto") auth.usingGroup = next.selectGroup;
     }
     if (!channel) break;
+    usedChannel.push(String(channel.id));
+    const attemptChannel = channel;
+    const noteAttempt = (err: ChannelAttemptError) =>
+      processChannelError({
+        store,
+        env: opts.env,
+        req: opts.req,
+        auth,
+        channel: attemptChannel,
+        model,
+        err,
+        useChannel: [...usedChannel],
+        useTimeSeconds: Math.max(0, Math.round((Date.now() - requestStarted) / 1000)),
+        isStream: opts.stream,
+        requestId: rid,
+      });
     const skipFurtherRetry = suppressesRetry || (usedAffinityChannel && Boolean(affinity?.skipRetryOnFailure));
     const lastAttempt = retry === retryTimes || skipFurtherRetry;
     const affinityLog = usedAffinityChannel && affinity ? channelAffinityLogInfo(affinity, auth.usingGroup, channel.id) : undefined;
@@ -1671,6 +1694,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
     } catch (err) {
       const ret = convertRequestFailed(err);
+      await noteAttempt(channelAttemptFromNewApi(ret.message, ret.statusCode, ret.code, ret.skipRetry));
       if (ret.skipRetry || lastAttempt) return openaiError(ret.statusCode, ret.message, ret.code, ret.type);
       lastErr = ret.message;
       lastStatus = ret.statusCode;
@@ -1721,6 +1745,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     } catch (err) {
       const ret = asParamOverrideReturnError(err);
       if (ret) {
+        await noteAttempt(channelAttemptFromNewApi(ret.message, ret.statusCode, ret.code, ret.skipRetry));
         if (ret.skipRetry || lastAttempt) return openaiError(ret.statusCode, ret.message, ret.code, ret.type);
         lastErr = ret.message;
         lastStatus = ret.statusCode;
@@ -1728,6 +1753,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       lastErr = err instanceof Error ? err.message : String(err);
       lastStatus = 400;
+      await noteAttempt(channelAttemptFromNewApi(lastErr, 400, "convert_request_failed"));
       continue;
     }
     if (openaiEditForm) {
@@ -1749,6 +1775,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         } catch (err) {
           const ret = asParamOverrideReturnError(err);
           if (ret) {
+            await noteAttempt(channelAttemptFromNewApi(ret.message, ret.statusCode, ret.code, ret.skipRetry));
             if (ret.skipRetry || lastAttempt) return openaiError(ret.statusCode, ret.message, ret.code, ret.type);
             lastErr = ret.message;
             lastStatus = ret.statusCode;
@@ -1756,6 +1783,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           }
           lastErr = err instanceof Error ? err.message : String(err);
           lastStatus = 400;
+          await noteAttempt(channelAttemptFromNewApi(lastErr, 400, "convert_request_failed"));
           continue;
         }
       }
@@ -1804,10 +1832,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          if (message === "invalid auth") return openaiError(500, message, "channel:invalid_key");
+          if (message === "invalid auth") {
+            await noteAttempt(channelAttemptFromNewApi("invalid auth", 500, "channel:invalid_key"));
+            return openaiError(500, message, "channel:invalid_key");
+          }
           lastErr = message;
           lastStatus = 500;
-          if (autoDisable) await store.autoDisableChannel(channel.id);
+          await noteAttempt(channelAttemptFromNewApi(message, 500, "do_request_failed"));
           if (!lastAttempt && retryable(500, retryRanges)) continue;
           return openaiError(500, message, "do_request_failed");
         }
@@ -1824,6 +1855,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           const message = err instanceof Error ? err.message : String(err);
           const status = Number((err as { status?: number }).status || 502);
           const code = String((err as { code?: string }).code || "bad_response_status_code");
+          await noteAttempt({
+            message,
+            statusCode: status,
+            errorCode: code,
+            errorType: code.startsWith("channel:") ? "new_api_error" : "openai_error",
+          });
           return openaiError(status, message, code);
         }
       } else {
@@ -1832,7 +1869,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
       lastStatus = 502;
-      if (autoDisable) await store.autoDisableChannel(channel.id);
+      await noteAttempt(channelAttemptFromNewApi(lastErr, 502, "do_request_failed"));
       if (skipFurtherRetry) break;
       continue;
     }
@@ -1848,19 +1885,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       promptCacheHitTokens: 0,
     };
 
-    if (!res.ok && retryable(res.status, retryRanges) && !lastAttempt) {
-      lastErr = await res.text().catch(() => res.statusText);
-      lastStatus = res.status;
-      continue;
-    }
-
     if (!res.ok) {
       const text = await res.text();
       lastErr = text || res.statusText;
       lastStatus = res.status;
-      await settle(store, auth, channel, model, promptEst, 0, useTime, opts.stream, ip, rid, false, lastErr.slice(0, 2000), extra);
-      if (res.status >= 500 && autoDisable) await store.autoDisableChannel(channel.id);
+      await noteAttempt(channelAttemptFromUpstream(res.status, text));
       if (!lastAttempt && retryable(res.status, retryRanges)) continue;
+      await settle(store, auth, channel, model, promptEst, 0, useTime, opts.stream, ip, rid, false, lastErr.slice(0, 2000), extra);
       const errRes = relayErrorHandler(res.status, text, String(channel.status_code_mapping || ""));
       const headers = new Headers(errRes.headers);
       headers.set("x-oneapi-request-id", rid);

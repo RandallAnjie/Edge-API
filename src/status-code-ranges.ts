@@ -104,6 +104,14 @@ function parseHTTPStatusCodeToken(token: string): { ok: true; range: StatusCodeR
   return { ok: true, range: { start: code, end: code } };
 }
 
+/** Resolve configured disable ranges: missing/invalid/empty → original default `401`. */
+export function disableStatusCodeRangesFromOption(raw: string): StatusCodeRange[] {
+  const parsed = parseHTTPStatusCodeRanges(raw);
+  if (!parsed.ok) return DEFAULT_DISABLE_STATUS_CODE_RANGES;
+  if (!raw.trim()) return DEFAULT_DISABLE_STATUS_CODE_RANGES;
+  return parsed.ranges;
+}
+
 /** Resolve configured retry ranges: missing/invalid → original defaults; explicit empty → no ranges. */
 export function retryStatusCodeRangesFromOption(raw: string): StatusCodeRange[] {
   const parsed = parseHTTPStatusCodeRanges(raw);

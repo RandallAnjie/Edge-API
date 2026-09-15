@@ -109,6 +109,14 @@ Material changes from upstream:
   `task_id` in `native.render`, persisted `result_url` / `plugin_state`).
   `/v1/videos/:task_id` retrieve uses original `ConvertToOpenAIVideo`
   (`protocols.openai_video.render` + host-owned id/status/progress/model).
+  Original `controller.processChannelError` uses `service.ShouldDisableChannel`
+  (`channel:` codes, default disable range `401`, AutomaticDisableKeywords;
+  not status≥500). Failed attempts set `other_info.status_reason` /
+  `status_time` and `abilities.enabled=0`. `ERROR_LOG_ENABLED` RecordErrorLog
+  other JSON is public `request_path` / `error_type` / `error_code` /
+  `status_code` plus admin `use_channel` (no top-level `channel_id` /
+  `channel_name` / `channel_type`). Extra-OK: keyword match is lowercase
+  substring, not Aho-Corasick; error-log IP is empty unless RecordIpLog.
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented
