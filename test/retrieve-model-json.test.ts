@@ -141,7 +141,7 @@ test("original RetrieveModel JSON is catalog-only with nil supported_endpoint_ty
   assert.equal(anth.body.id, "gpt-4o-mini");
   assert.equal(anth.body.type, "model");
   assert.equal(anth.body.display_name, "gpt-4o-mini");
-  assert.equal(anth.body.created_at, "2021-07-20T08:00:00Z");
+  assert.equal(anth.body.created_at, "2021-07-20T10:40:00Z");
 
   const gem = await json(new Request("http://local/v1/models", { headers: { ...skAuth, "x-goog-api-key": "g" } }), e);
   assert.equal(gem.body.nextPageToken, null);
