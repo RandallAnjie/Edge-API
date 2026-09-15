@@ -24,7 +24,13 @@ async function json(req: Request, e: Env) {
 }
 
 function pluginSource(key: string, routes: string) {
-  return `const meta = { apiVersion: 1, key: "${key}", name: "${key}", version: "1.0.0", author: { name: "test" }, models: ["${key}"], fetchMode: "per_task", routes: ${routes}, protocols: [], allowedHosts: [], auth: { type: "none" } };`;
+  return `export const meta = { apiVersion: 1, key: "${key}", name: "${key}", version: "1.0.0", author: { name: "test" }, models: ["${key}"], fetchMode: "per_task", routes: ${routes}, protocols: [], allowedHosts: [], auth: { type: "none" } };
+export function buildSubmitRequest(){return {url:"https://provider.example/submit"}}
+export function parseSubmitResponse(){return {taskId:"upstream"}}
+export function buildQueryRequest(){return {url:"https://provider.example"}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+export const native = { status: function() { return {}; } };
+`;
 }
 
 async function boot() {
@@ -72,7 +78,7 @@ test("original plugin-router path match, 405 empty body, and plugin_route_error 
       method: "POST",
       headers: auth,
       body: JSON.stringify({
-        source: pluginSource("method-owner", `[{method:"GET",path:"/vendor/jobs/:task_id",type:"query"}]`),
+        source: pluginSource("method-owner", `[{method:"GET",path:"/vendor/jobs/:task_id",type:"query",render:"status"}]`),
       }),
     }),
     e,

@@ -240,7 +240,7 @@ test("original GetTaskPluginRuntime database_revision changes after override upl
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source: pluginSource("runtime-upload") }),
+      body: JSON.stringify({ source: validPluginSource("runtime-upload") }),
     }),
     e,
   );
@@ -260,7 +260,7 @@ test("original GetTaskPluginRuntime database_revision changes after override upl
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source: pluginSource("runtime-upload", "2.0.0") }),
+      body: JSON.stringify({ source: validPluginSource("runtime-upload", "2.0.0") }),
     }),
     e,
   );
@@ -284,16 +284,15 @@ test("original GetTaskPluginRuntime database_revision changes after override upl
 });
 
 test("original GetTaskPluginRuntime last_rebuild is partial when override compile fails", async () => {
-  const { e, auth } = await boot();
-  const uploaded = await json(
-    new Request("http://local/api/plugin/task", {
-      method: "POST",
-      headers: auth,
-      body: JSON.stringify({ source: pluginSource("runtime-error-probe") }),
-    }),
-    e,
-  );
-  assert.equal(uploaded.body.success, true, String(uploaded.body.message));
+  const { e, auth, store } = await boot();
+  await store.saveTaskPluginVersion({
+    key: "runtime-error-probe",
+    api_version: 1,
+    version: "1.0.0",
+    source: pluginSource("runtime-error-probe"),
+    source_hash: "runtime-error",
+    enabled: 1,
+  });
   const runtime = await json(new Request("http://local/api/plugin/task/runtime/status", { headers: auth }), e);
   const data = runtime.body.data as {
     current_generation: number;

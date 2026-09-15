@@ -228,7 +228,7 @@ test("original PluginResponsesMachine TimeoutResponse stays queued", () => {
 
 async function registerResponsesPlugin(e: Env, auth: Record<string, string>, source: string) {
   const registered = await json(
-    new Request("http://local/api/plugin/task", { method: "POST", headers: auth, body: JSON.stringify({ source }) }),
+    new Request("http://local/api/plugin/task", { method: "POST", headers: auth, body: JSON.stringify({ source, force: true }) }),
     e,
   );
   assert.equal(registered.body.success, true, String(registered.body.message));

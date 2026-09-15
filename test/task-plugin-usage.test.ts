@@ -338,7 +338,7 @@ test("original native RelayTask submit AdjustBillingOnSubmit OtherRatios JSON", 
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source: httpUsagePlugin }),
+      body: JSON.stringify({ source: httpUsagePlugin, force: true }),
     }),
     e,
   );
@@ -414,7 +414,7 @@ test("original native RelayTask immediate FAILURE persists zero quota JSON", asy
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source }),
+      body: JSON.stringify({ source, force: true }),
     }),
     e,
   );
@@ -554,7 +554,7 @@ export function parseTaskResult(){return {status:"SUCCESS"};}
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source }),
+      body: JSON.stringify({ source, force: true }),
     }),
     e,
   );

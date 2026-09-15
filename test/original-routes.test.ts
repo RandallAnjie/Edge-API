@@ -73,7 +73,12 @@ async function passwordProof(e: Env, auth: Record<string, string>, scope: string
 }
 
 function pluginSource(key: string, name = key) {
-  return `const meta = { apiVersion: 1, key: "${key}", name: "${name}", version: "1.0.0", author: { name: "test" }, models: ["${key}"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" } };`;
+  return `export const meta = { apiVersion: 1, key: "${key}", name: "${name}", version: "1.0.0", author: { name: "test" }, models: ["${key}"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" } };
+export function buildSubmitRequest(){return {url:"https://provider.example/submit"}}
+export function parseSubmitResponse(){return {taskId:"upstream"}}
+export function buildQueryRequest(){return {url:"https://provider.example"}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+`;
 }
 
 const ORIGINAL_API: { method: string; path: string }[] = [
@@ -1026,7 +1031,7 @@ test("original subscription self/plans wrapping, token mask, plugin get, tag mod
       headers: auth,
       body: JSON.stringify({
         source: pluginSource("demo", "Demo"),
-        icon: "data:image/png;base64,aaaa",
+        icon: "data:image/png;base64,iVBORw0KGgo=",
       }),
     }),
     e,
@@ -3574,7 +3579,7 @@ test("original GetPricing omitempty ratios and models matched_models JSON", asyn
       headers: auth,
       body: JSON.stringify({
         source:
-          'const meta = { apiVersion: 1, key: "usage-task", name: "usage-task", version: "1.0.0", author: { name: "test" }, models: ["usage-task"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" }, usageSchema: { clips: { type: "number", unit: "count" } }, usageExamples: [{ label: "one", facts: { clips: 1 } }] };',
+          'export const meta = { apiVersion: 1, key: "usage-task", name: "usage-task", version: "1.0.0", author: { name: "test" }, models: ["usage-task"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" }, usageSchema: { clips: { type: "number", unit: "count" } }, usageExamples: [{ label: "one", facts: { clips: 1 } }] };\nexport function buildSubmitRequest(){return {url:"https://provider.example/submit"}}\nexport function parseSubmitResponse(){return {taskId:"upstream"}}\nexport function buildQueryRequest(){return {url:"https://provider.example"}}\nexport function parseTaskResult(){return {status:"SUCCESS"}}',
       }),
     }),
     e,

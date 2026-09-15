@@ -266,7 +266,7 @@ test("original factory task-plugin list JSON, options usageSchema, native routes
       headers: auth,
       body: JSON.stringify({
         source:
-          'const meta = { apiVersion: 1, key: "kling", name: "Kling Override", version: "1.0.2-test", author: { name: "test" }, models: ["kling-v1"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" } };',
+          'export const meta = { apiVersion: 1, key: "kling", name: "Kling Override", version: "1.0.2-test", author: { name: "test" }, models: ["kling-v1"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" } };\nexport function buildSubmitRequest(){return {url:"https://provider.example/submit"}}\nexport function parseSubmitResponse(){return {taskId:"upstream"}}\nexport function buildQueryRequest(){return {url:"https://provider.example"}}\nexport function parseTaskResult(){return {status:"SUCCESS"}}',
       }),
     }),
     e,

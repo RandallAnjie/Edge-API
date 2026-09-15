@@ -285,7 +285,7 @@ test("original Distribute honors origin-task pin and token pin beats origin", as
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source: pluginSource("origin-route") }),
+      body: JSON.stringify({ source: pluginSource("origin-route"), force: true }),
     }),
     e,
   );
@@ -377,7 +377,7 @@ test("original origin pin retries same channel; token pin is single-attempt", as
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source: pluginSource("origin-retry") }),
+      body: JSON.stringify({ source: pluginSource("origin-retry"), force: true }),
     }),
     e,
   );
@@ -482,7 +482,7 @@ test("original PrepareTaskPluginEndpoint origin pin JSON fields", async () => {
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source: originEndpointPluginSource() }),
+      body: JSON.stringify({ source: originEndpointPluginSource(), force: true }),
     }),
     e,
   );

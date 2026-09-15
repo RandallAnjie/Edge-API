@@ -48,11 +48,32 @@ export function strconvParseBool(raw: string): { ok: true; v: boolean } | { ok: 
   }
 }
 
+/** Original `i18n.normalizeLang` / `ParseAcceptLanguage`. */
+export function i18nLang(req: Request): "zh-CN" | "zh-TW" | "en" {
+  const header = req.headers.get("accept-language") || "";
+  const first = header.split(",")[0]?.trim().split(";")[0] || "";
+  const lang = first.toLowerCase().trim();
+  if (lang.startsWith("zh-tw")) return "zh-TW";
+  if (lang.startsWith("zh")) return "zh-CN";
+  return "en";
+}
+
 /** Original `i18n.T` with DefaultLang English. */
 export function i18nPair(req: Request, zh: string, en: string): string {
-  const lang = (req.headers.get("accept-language") || "").toLowerCase();
-  if (lang.startsWith("zh")) return zh;
+  if (i18nLang(req) !== "en") return zh;
   return en;
+}
+
+/** Original `i18n.MsgTaskPluginUnknownMetaField`. */
+export function taskPluginUnknownMetaFieldMessage(req: Request, field: string): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return `外掛中繼資料包含未知欄位「${field}」。如果外掛來自官方市集，可能需要較新版本的 new-api。請嘗試更新 new-api 後重新安裝外掛。`;
+    case "zh-CN":
+      return `插件元数据包含未知字段“${field}”。如果插件来自官方市场，可能需要更高版本的 new-api。请尝试更新 new-api 后重新安装插件。`;
+    default:
+      return `Plugin metadata contains an unknown field "${field}". If this plugin was downloaded from the official marketplace, it may require a newer version of new-api. Try updating new-api and installing the plugin again.`;
+  }
 }
 
 /** Original `i18n.MsgDistributorNoAvailableChannel`. */

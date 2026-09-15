@@ -260,7 +260,7 @@ test("system-info, task plugin upsert, original token usage, sessions view", asy
       headers: auth,
       body: JSON.stringify({
         source:
-          'const meta = { apiVersion: 1, key: "demo", name: "Demo", version: "1.0.0", author: { name: "test" }, models: ["demo"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" } };',
+          'export const meta = { apiVersion: 1, key: "demo", name: "Demo", version: "1.0.0", author: { name: "test" }, models: ["demo"], fetchMode: "per_task", routes: [], protocols: [], allowedHosts: [], auth: { type: "none" } };\nexport function buildSubmitRequest(){return {url:"https://provider.example/submit"}}\nexport function parseSubmitResponse(){return {taskId:"upstream"}}\nexport function buildQueryRequest(){return {url:"https://provider.example"}}\nexport function parseTaskResult(){return {status:"SUCCESS"}}',
       }),
     }),
     e,

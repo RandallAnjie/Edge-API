@@ -38,7 +38,7 @@ import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-o
 import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof } from "./security.js";
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
-import { apiFail, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, strconvAtoi, taskArtifactError } from "./http.js";
+import { apiFail, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -76,7 +76,10 @@ import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
 import { SYSTEM_INSTANCE_STALE_AFTER_SECONDS, listSystemInstanceResponses } from "./system-instance.js";
 import { lazySystemTaskRun, runPendingLogCleanupSystemTask, startLogCleanupTask } from "./system-task.js";
 import { fetchUpstreamRatios, validateFetchRequest } from "./ratio-sync.js";
-import { dryRunPlugin } from "./jsplugin.js";
+import { compilePlugin, dryRunPlugin, UnknownMetaFieldError } from "./jsplugin.js";
+import { decodeIconDataURI } from "./jsplugin-icon.js";
+import { currentRoutingGeneration, preflightRoutingConflict, routingMetaFromRecord } from "./jsplugin-preflight.js";
+import { validateV1Meta } from "./jsplugin-validate.js";
 import { getTaskPluginRuntimeStatus, syncTaskPluginsOnce } from "./task-plugin-sync.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { rpFromRequest } from "./passkey.js";
@@ -1163,6 +1166,13 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { version?: string };
     if (!body.version) return apiFail("Key: 'taskPluginActivateRequest.Version' Error:Field validation for 'Version' failed on the 'required' tag");
+    const versions = await s.listTaskPluginVersions(c.params.key);
+    const target = versions.find((row) => String(row.version) === body.version);
+    if (!target) return apiFail("plugin version not found");
+    const compileErr = taskPluginCompileError(c, () =>
+      compilePlugin(String(target.source || ""), { key: String(target.key || c.params.key), version: String(target.version || body.version) }),
+    );
+    if (compileErr) return compileErr;
     const ok = await s.activateTaskPluginVersion(c.params.key, body.version);
     if (!ok) return apiFail("plugin version not found");
     const syncErr = await syncTaskPluginsAfterMutation(s);
@@ -1962,22 +1972,68 @@ async function syncTaskPluginsAfterMutation(s: Store): Promise<Response | undefi
   }
 }
 
+function taskPluginCompileError(c: C, run: () => unknown): Response | undefined {
+  try {
+    run();
+    return undefined;
+  } catch (err) {
+    if (err instanceof UnknownMetaFieldError) return apiFail(taskPluginUnknownMetaFieldMessage(c.req, err.field));
+    return apiFail(err instanceof Error ? err.message : String(err));
+  }
+}
+
 async function upsertPlugin(c: C): Promise<Response> {
   const s = store(c);
   const u = await requireRoot(c, s);
   if (isResponse(u)) return u;
-  const body = (await readJson(c.req)) as Record<string, unknown> & { source?: string; sourceSha256?: string; enabled?: boolean; remark?: string; icon?: string };
+  const body = (await readJson(c.req)) as Record<string, unknown> & {
+    source?: string;
+    sourceSha256?: string;
+    enabled?: boolean;
+    remark?: string;
+    icon?: string;
+    force?: boolean;
+  };
   const source = String(body.source || "");
   if (!source) return apiFail("Key: 'taskPluginUploadRequest.Source' Error:Field validation for 'Source' failed on the 'required' tag");
   if (new TextEncoder().encode(source).length > 1024 * 1024) return apiFail("plugin source exceeds 1 MiB");
   const sourceHash = bytesToHex(await sha256Bytes(source));
   const expected = String(body.sourceSha256 || "").trim();
   if (expected && expected.toLowerCase() !== sourceHash.toLowerCase()) return apiFail("plugin source sha256 mismatch");
-  const extracted = extractPluginMeta(source);
-  const meta = taskPluginMetaView(extracted, { key: String(body.key || extracted.key || ""), version: String(extracted.version || body.version || "1.0.0"), name: String(extracted.name || "") });
-  const key = String(meta.key || "");
-  if (!key) return apiFail("plugin meta key must match ^[a-z][a-z0-9_-]{0,29}$");
+  let loaded!: ReturnType<typeof compilePlugin>;
+  const compileErr = taskPluginCompileError(c, () => {
+    loaded = compilePlugin(source);
+  });
+  if (compileErr) return compileErr;
+  try {
+    validateV1Meta(loaded.meta);
+  } catch (err) {
+    return apiFail(err instanceof Error ? err.message : String(err));
+  }
+  const icon = String(body.icon || "").trim();
+  if (icon) {
+    try {
+      decodeIconDataURI(icon);
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+  }
   const enabled = body.enabled == null ? true : Boolean(body.enabled);
+  const force = Boolean(body.force);
+  if (enabled && !force) {
+    try {
+      const current = await currentRoutingGeneration(s);
+      preflightRoutingConflict(current, routingMetaFromRecord(loaded.meta));
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+  }
+  const meta = taskPluginMetaView(loaded.meta, {
+    key: String(loaded.meta.key || ""),
+    version: String(loaded.meta.version || ""),
+    name: String(loaded.meta.name || ""),
+  });
+  const key = String(meta.key || "");
   try {
     const saved = await s.saveTaskPluginVersion({
       key,
@@ -1985,7 +2041,7 @@ async function upsertPlugin(c: C): Promise<Response> {
       api_version: Number(meta.apiVersion || 1),
       source,
       source_hash: sourceHash,
-      icon: String(body.icon || ""),
+      icon,
       enabled: enabled ? 1 : 0,
       remark: String(body.remark || ""),
       name: String(meta.name),
@@ -1998,7 +2054,7 @@ async function upsertPlugin(c: C): Promise<Response> {
       version: meta.version,
       status: enabled ? "active" : "inactive",
       active_version: saved.active ? meta.version : String(existing?.active_version || existing?.version || meta.version),
-      icon: body.icon || "",
+      icon,
       manifest: meta,
       routes: meta.routes,
       source,
@@ -2011,11 +2067,11 @@ async function upsertPlugin(c: C): Promise<Response> {
     const syncErr = await syncTaskPluginsAfterMutation(s);
     if (syncErr) return syncErr;
     return apiOk({
-      plugin: publicTaskPluginRecord({ ...saved, icon: undefined }),
+      plugin: publicTaskPluginRecord(saved),
       meta,
       source,
       layer: "override",
-      has_icon: Boolean(body.icon),
+      has_icon: Boolean(icon),
     });
   } catch (e) {
     return apiFail(e instanceof Error ? e.message : String(e));

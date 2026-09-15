@@ -341,7 +341,7 @@ test("original native RelayTask LogTaskConsumption consume-log JSON", async () =
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source: httpUsagePlugin }),
+      body: JSON.stringify({ source: httpUsagePlugin, force: true }),
     }),
     e,
   );
@@ -475,7 +475,7 @@ test("original native RelayTask immediate FAILURE LogTaskConsumption zero quota 
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source }),
+      body: JSON.stringify({ source, force: true }),
     }),
     e,
   );
@@ -550,7 +550,7 @@ async function registerHttpUsage(
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source }),
+      body: JSON.stringify({ source, force: true }),
     }),
     e,
   );

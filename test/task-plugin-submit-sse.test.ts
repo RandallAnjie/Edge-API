@@ -406,7 +406,7 @@ test("original native SSE RelayTask submit JSON fields", async () => {
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source: httpStreamPlugin }),
+      body: JSON.stringify({ source: httpStreamPlugin, force: true }),
     }),
     e,
   );
@@ -480,7 +480,7 @@ test("original undeclared SSE submit is local 502 JSON", async () => {
     new Request("http://local/api/plugin/task", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ source: httpStreamPlugin }),
+      body: JSON.stringify({ source: httpStreamPlugin, force: true }),
     }),
     e,
   );
