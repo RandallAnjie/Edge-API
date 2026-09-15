@@ -415,6 +415,48 @@ export class Store {
     return "ok";
   }
 
+  /**
+   * Original `model.UpdateUserBindColumnForSessionWithTx`.
+   * Overwrites this user's column; competing owners return `already_claimed`.
+   */
+  async bindUserColumnForSession(
+    identity: { userId: number; sessionId: string; userAuthVersion: number; sessionVersion: number },
+    column: "github_id" | "discord_id" | "linuxdo_id" | "oidc_id" | "wechat_id",
+    value: string,
+  ): Promise<"ok" | "already_claimed" | "session_invalid" | "binding_changed"> {
+    const allowed = new Set(["github_id", "discord_id", "linuxdo_id", "oidc_id", "wechat_id"]);
+    const next = value.trim();
+    if (!allowed.has(column) || !next) return "binding_changed";
+    if (!(await this.validateAuthSession(identity))) return "session_invalid";
+    const other = await this.db
+      .prepare(`SELECT id FROM users WHERE ${column} = ? AND id <> ? AND deleted_at = 0`)
+      .bind(next, identity.userId)
+      .first<{ id: number }>();
+    if (other) return "already_claimed";
+    await this.db
+      .prepare(`UPDATE users SET ${column} = ? WHERE id = ? AND deleted_at = 0`)
+      .bind(next, identity.userId)
+      .run();
+    return "ok";
+  }
+
+  /** Original `model.UpdateUserOAuthBindingForSessionWithTx`. */
+  async bindCustomOAuthForSession(
+    identity: { userId: number; sessionId: string; userAuthVersion: number; sessionVersion: number },
+    providerId: number,
+    subject: string,
+  ): Promise<"ok" | "already_claimed" | "session_invalid" | "binding_changed"> {
+    const next = subject.trim();
+    if (providerId <= 0 || !next || next.length > 256) return "binding_changed";
+    if (!(await this.validateAuthSession(identity))) return "session_invalid";
+    try {
+      await this.upsertUserOAuthBinding(identity.userId, providerId, next);
+      return "ok";
+    } catch {
+      return "already_claimed";
+    }
+  }
+
   /** Original `model.User.Delete` / `DeleteUserForSession` (GORM soft delete). */
   async softDeleteUser(id: number): Promise<void> {
     await this.db.prepare("UPDATE users SET deleted_at = ? WHERE id = ? AND deleted_at = 0").bind(nowSec(), id).run();

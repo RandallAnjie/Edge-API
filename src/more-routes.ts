@@ -26,7 +26,9 @@ import {
   getBoundOAuthUserId,
   loginOrBindOAuth,
   newAccessToken,
+  oauthProviderDisplayName,
   oauthProviderKnown,
+  type OAuthProfile,
 } from "./oauth.js";
 import { generateTokenKey, accessTokenFingerprint } from "./crypto.js";
 import {
@@ -84,7 +86,6 @@ import {
   dashboardIdentity,
   issueSessionSafe,
   isResponse,
-  readSession,
   requireAdmin,
   requireBrowserSession,
   requireChannel,
@@ -987,8 +988,6 @@ export function registerMore(r: Router<Env>): void {
     const code = c.url.searchParams.get("code") || "";
     const state = c.url.searchParams.get("state") || "";
     const errorCode = c.url.searchParams.get("error");
-    const session = await readSession(c, s);
-    const existing = session ? await s.getUserById(session.id) : null;
     const identity = await dashboardIdentity(c, s);
 
     const flow = state ? await s.getAuthFlow(state) : null;
@@ -1026,17 +1025,84 @@ export function registerMore(r: Router<Env>): void {
           return json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized" });
         }
       }
-    } else {
-      await s.deleteAuthFlow(state);
     }
-    const bindUser = intent === "bind" ? existing : null;
+    const consumeMatch = {
+      type: "oauth" as const,
+      user_id: Number(flow.user_id || 0),
+      ...(intent === "login" ? {} : { session_id: identity?.sessionId || String(flow.session_id || "") }),
+    };
+    const stateInvalid = () =>
+      json(403, { success: false, message: i18nPair(c.req, "state 参数为空或不匹配", "State parameter is empty or mismatched") });
+    const consumeOrForbidden = async (): Promise<Response | null> => {
+      const consumed = await s.consumeAuthFlow(state, consumeMatch);
+      return consumed === "ok" ? null : stateInvalid();
+    };
 
     if (errorCode) {
-      if (provider === "telegram") await s.deleteAuthFlow(state);
+      const forbidden = await consumeOrForbidden();
+      if (forbidden) return forbidden;
       return apiFail(c.url.searchParams.get("error_description") || errorCode);
     }
 
-    const finish = async (profile: Awaited<ReturnType<typeof exchangeGithub>>) => {
+    const finishBind = async (profile: OAuthProfile): Promise<Response> => {
+      if (!identity) return json(401, { success: false, message: "绑定操作需要登录" });
+      const displayName = await oauthProviderDisplayName(s, provider);
+      const alreadyBound = i18nPair(
+        c.req,
+        `该 ${displayName} 账户已被绑定`,
+        `This ${displayName} account has already been bound`,
+      );
+      if (profile.field === "telegram_id") {
+        const taken = await s.getUserByField("telegram_id", profile.id, { includeDeleted: true });
+        if (taken) return apiFail(alreadyBound);
+        const bound = await s.bindTelegramForSession(identity, profile.id);
+        if (bound === "already_claimed") {
+          return apiFailCode(ERR_TELEGRAM_BIND_ALREADY_BOUND, "TELEGRAM_BIND_ALREADY_BOUND");
+        }
+        if (bound === "session_invalid") {
+          return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+        }
+      } else {
+        const includeDeleted = profile.field !== "oidc_id";
+        const taken = profile.provider_id
+          ? await s.oauthBindingTaken(profile.provider_id, profile.id)
+          : await s.getUserByField(profile.field, profile.id, { includeDeleted });
+        const legacy = profile.extra?.legacy_id || "";
+        const legacyTaken =
+          legacy && !profile.provider_id ? await s.getUserByField(profile.field, legacy, { includeDeleted: true }) : null;
+        if (taken || legacyTaken) return apiFail(alreadyBound);
+        const bound = profile.provider_id
+          ? await s.bindCustomOAuthForSession(identity, profile.provider_id, profile.id)
+          : await s.bindUserColumnForSession(identity, profile.field, profile.id);
+        if (bound === "already_claimed") {
+          return apiFailCode("This external account is already bound.", "ACCOUNT_ALREADY_BOUND");
+        }
+        if (bound === "session_invalid") {
+          return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+        }
+        if (bound === "binding_changed") {
+          return json(409, {
+            success: false,
+            code: "ACCOUNT_SECURITY_STATE_CHANGED",
+            message: "Account bindings have changed. Start this operation again.",
+          });
+        }
+      }
+      const consumed = await s.consumeAuthFlow(state, consumeMatch);
+      if (consumed !== "ok") await s.deleteAuthFlow(state);
+      const user = await s.getUserById(identity.userId);
+      const notification_warning = await notifyAccountSecurityChange(
+        s,
+        user?.email || "",
+        "Login account linked: " + displayName,
+      );
+      return apiOk({ action: "bind", notification_warning }, i18nPair(c.req, "绑定成功", "Binding successful"));
+    };
+
+    const finish = async (profile: OAuthProfile) => {
+      if (intent === "bind") return finishBind(profile);
+      const forbidden = await consumeOrForbidden();
+      if (forbidden) return forbidden;
       if (intent === "verify") {
         if (!identity) return json(401, { success: false, message: "绑定操作需要登录" });
         const expected = payload.verification?.provider_user_id || "";
@@ -1050,7 +1116,7 @@ export function registerMore(r: Router<Env>): void {
         });
         return apiOk(proof);
       }
-      return loginOrBindOAuth(s, c.env, c.req, profile, bindUser, intent);
+      return loginOrBindOAuth(s, c.env, c.req, profile, null, "login");
     };
 
     try {
@@ -1086,37 +1152,6 @@ export function registerMore(r: Router<Env>): void {
       if (provider === "telegram") {
         try {
           const telegramUser = await exchangeTelegramOAuth(s, code, payload.telegram!);
-          if (intent === "bind") {
-            if (!identity) return json(401, { success: false, message: "绑定操作需要登录" });
-            const taken = await s.getUserByField("telegram_id", telegramUser.id, { includeDeleted: true });
-            if (taken) {
-              return apiFail(i18nPair(c.req, "该 Telegram 账户已被绑定", "This Telegram account has already been bound"));
-            }
-            const bound = await s.bindTelegramForSession(identity, telegramUser.id);
-            if (bound === "already_claimed") {
-              return apiFailCode(ERR_TELEGRAM_BIND_ALREADY_BOUND, "TELEGRAM_BIND_ALREADY_BOUND");
-            }
-            if (bound === "session_invalid") {
-              return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
-            }
-            const consumed = await s.consumeAuthFlow(state, {
-              type: "oauth",
-              user_id: identity.userId,
-              session_id: identity.sessionId,
-            });
-            if (consumed !== "ok") await s.deleteAuthFlow(state);
-            const user = await s.getUserById(identity.userId);
-            const notification_warning = await notifyAccountSecurityChange(
-              s,
-              user?.email || "",
-              "Login account linked: Telegram",
-            );
-            return apiOk(
-              { action: "bind", notification_warning },
-              i18nPair(c.req, "绑定成功", "Binding successful"),
-            );
-          }
-          await s.deleteAuthFlow(state);
           return finish({
             id: telegramUser.id,
             username: telegramUser.username,

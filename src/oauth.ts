@@ -18,6 +18,19 @@ export interface OAuthProfile {
   field: "github_id" | "discord_id" | "linuxdo_id" | "oidc_id" | "wechat_id" | "telegram_id";
   slug?: string;
   provider_id?: number;
+  extra?: { legacy_id?: string };
+}
+
+/** Original `oauth.Provider.GetName`. */
+export async function oauthProviderDisplayName(store: Store, provider: string): Promise<string> {
+  if (provider === "github") return "GitHub";
+  if (provider === "discord") return "Discord";
+  if (provider === "linuxdo") return "Linux DO";
+  if (provider === "telegram") return "Telegram";
+  if (provider === "oidc") return (await store.option("oidc.display_name")).trim() || "OIDC";
+  const custom = await store.getOAuthProvider(provider);
+  const name = String((custom as { name?: unknown } | null)?.name || "").trim();
+  return name || provider;
 }
 
 export const BUILTIN_OAUTH = new Set(["github", "discord", "linuxdo", "oidc", "telegram"]);
@@ -54,7 +67,13 @@ export async function exchangeGithub(clientId: string, secret: string, code: str
   });
   const gh = (await userRes.json()) as { id?: number; login?: string };
   if (!gh.id) throw new Error("无法读取 GitHub 用户");
-  return { id: String(gh.id), username: gh.login || `gh_${gh.id}`, display_name: gh.login || `gh_${gh.id}`, field: "github_id" };
+  return {
+    id: String(gh.id),
+    username: gh.login || `gh_${gh.id}`,
+    display_name: gh.login || `gh_${gh.id}`,
+    field: "github_id",
+    extra: gh.login ? { legacy_id: gh.login } : undefined,
+  };
 }
 
 export async function exchangeDiscord(clientId: string, secret: string, code: string, redirect: string): Promise<OAuthProfile> {
