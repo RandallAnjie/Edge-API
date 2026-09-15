@@ -679,8 +679,9 @@ test("original JSON fields for status, models, deployments, performance, data, u
 
   const statusType = await json(new Request("http://local/api/status"), e);
   assert.equal((statusType.body.data as { quota_display_type: string }).quota_display_type, "USD");
-  assert.equal(typeof (statusType.body.data as { display_token_stat_enabled: boolean }).display_token_stat_enabled, "boolean");
-  assert.equal(typeof (statusType.body.data as { oauth_register_enabled: boolean }).oauth_register_enabled, "boolean");
+  assert.equal((statusType.body.data as { theme: string }).theme, "default");
+  assert.equal("display_token_stat_enabled" in (statusType.body.data as object), false);
+  assert.equal("oauth_register_enabled" in (statusType.body.data as object), false);
 
   const setupDone = await json(new Request("http://local/api/setup"), e);
   const setupData = setupDone.body.data as { status: boolean; root_init: boolean; database_type: string };
