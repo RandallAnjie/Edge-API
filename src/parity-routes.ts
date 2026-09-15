@@ -1,5 +1,5 @@
 import { billingCopies } from "./billing-setting.js";
-import { CHANNEL_MANUAL_DISABLED, ROLE_ROOT, ROLE_USER, USER_ENABLED, nowSec, parseJson, randomHex } from "./constants.js";
+import { CHANNEL_MANUAL_DISABLED, CHANNEL_TYPE_OLLAMA, ROLE_ROOT, ROLE_USER, USER_ENABLED, nowSec, parseJson, randomHex } from "./constants.js";
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { loadPerformanceSetting, performanceStats, resetMetrics } from "./metrics.js";
 import {
@@ -108,12 +108,15 @@ import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { rpFromRequest } from "./passkey.js";
 import { passkeyDomainHttpError, passkeySettingsSnapshot, selectPasskeyBeginRpIDs } from "./passkey-domains.js";
 import { calcNextResetTime, publicPlan } from "./subscription.js";
+import { parseCodexOAuthKeyStrict, persistCodexOAuthKey, refreshCodexChannelCredential, refreshCodexOAuthToken } from "./codex-models.js";
 import {
-  parseCodexOAuthKeyStrict,
-  persistCodexOAuthKey,
-  refreshCodexChannelCredential,
-  refreshCodexOAuthToken,
-} from "./codex-models.js";
+  deleteOllamaModel,
+  fetchOllamaVersion,
+  ollamaChannelBaseURL,
+  ollamaFirstKey,
+  pullOllamaModel,
+  pullOllamaModelStream,
+} from "./ollama-admin.js";
 import {
   computeStatusCounts,
   ionetApiKey,
@@ -804,7 +807,7 @@ export function registerParity(r: Router<Env>): void {
   r.post("/api/channel/:id/codex/usage/reset", async (c) => fetchCodexWham(c, "reset"));
 
   r.post("/api/channel/ollama/pull", async (c) => ollamaOp(c, "pull"));
-  r.post("/api/channel/ollama/pull/stream", async (c) => ollamaOp(c, "pull"));
+  r.post("/api/channel/ollama/pull/stream", async (c) => ollamaOp(c, "stream"));
   r.delete("/api/channel/ollama/delete", async (c) => ollamaOp(c, "delete"));
   r.get("/api/channel/ollama/version/:id", async (c) => {
     const s = store(c);
@@ -814,18 +817,12 @@ export function registerParity(r: Router<Env>): void {
     if (!id.ok) return json(400, { success: false, message: "Invalid channel id" });
     const ch = await s.getChannel(id.n);
     if (!ch) return json(404, { success: false, message: "Channel not found" });
-    if (ch.type !== 4) return json(400, { success: false, message: "This operation is only supported for Ollama channels" });
-    const base = (ch.base_url || "http://localhost:11434").replace(/\/$/, "");
-    const key = ch.key.split(/[\n,]/)[0] || "";
-    const headers: Record<string, string> = {};
-    if (key) headers.authorization = "Bearer " + key;
+    if (ch.type !== CHANNEL_TYPE_OLLAMA) {
+      return json(400, { success: false, message: "This operation is only supported for Ollama channels" });
+    }
     try {
-      const res = await fetch(base + "/api/version", { headers });
-      const payload = (await res.json().catch(() => ({}))) as { version?: string };
-      if (!res.ok || !payload.version) {
-        return apiFail(`获取Ollama版本失败: ${res.status} ${res.statusText}`.trim());
-      }
-      return apiOk({ version: String(payload.version) });
+      const version = await fetchOllamaVersion(ollamaChannelBaseURL(ch), ollamaFirstKey(ch));
+      return apiOk({ version });
     } catch (err) {
       return apiFail(`获取Ollama版本失败: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2069,11 +2066,11 @@ async function fetchUptimeGroup(
   return result;
 }
 
-async function ollamaOp(c: C, action: "pull" | "delete"): Promise<Response> {
+async function ollamaOp(c: C, action: "pull" | "stream" | "delete"): Promise<Response> {
   const s = store(c);
   const u = await requireChannel(c, s, "sensitive_write");
   if (isResponse(u)) return u;
-  let body: { channel_id?: number; model_name?: string };
+  let body: { channel_id?: unknown; model_name?: unknown };
   try {
     const text = await c.req.text();
     if (!text) return json(400, { success: false, message: "Invalid request parameters" });
@@ -2081,37 +2078,33 @@ async function ollamaOp(c: C, action: "pull" | "delete"): Promise<Response> {
   } catch {
     return json(400, { success: false, message: "Invalid request parameters" });
   }
-  const channelId = Number(body.channel_id);
-  const modelName = String(body.model_name || "");
+  if (
+    (body.channel_id != null && (typeof body.channel_id !== "number" || !Number.isInteger(body.channel_id))) ||
+    (body.model_name != null && typeof body.model_name !== "string")
+  ) {
+    return json(400, { success: false, message: "Invalid request parameters" });
+  }
+  const channelId = typeof body.channel_id === "number" ? body.channel_id : 0;
+  const modelName = typeof body.model_name === "string" ? body.model_name : "";
   if (!channelId || !modelName) return json(400, { success: false, message: "Channel ID and model name are required" });
   const ch = await s.getChannel(channelId);
   if (!ch) return json(404, { success: false, message: "Channel not found" });
-  if (ch.type !== 4) return json(400, { success: false, message: "This operation is only supported for Ollama channels" });
-  const base = (ch.base_url || "http://localhost:11434").replace(/\/$/, "");
-  const key = ch.key.split(/[\n,]/)[0] || "";
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (key) headers.authorization = "Bearer " + key;
-  const path = action === "pull" ? "/api/pull" : "/api/delete";
-  const stream = c.url.pathname.endsWith("/stream");
+  if (ch.type !== CHANNEL_TYPE_OLLAMA) {
+    return json(400, { success: false, message: "This operation is only supported for Ollama channels" });
+  }
+  const base = ollamaChannelBaseURL(ch);
+  const key = ollamaFirstKey(ch);
+  if (action === "stream") return ollamaPullStreamResponse(base, key, modelName);
   try {
-    const res = await fetch(base + path, {
-      method: action === "delete" ? "DELETE" : "POST",
-      headers,
-      body: JSON.stringify({ name: modelName, model: modelName, stream }),
+    if (action === "pull") await pullOllamaModel(base, key, modelName);
+    else await deleteOllamaModel(base, key, modelName);
+    return json(200, {
+      success: true,
+      message: action === "pull" ? `Model ${modelName} pulled successfully` : `Model ${modelName} deleted successfully`,
     });
-    if (stream) {
-      return ollamaPullStream(res, modelName);
-    }
-    if (!res.ok) {
-      return json(res.status >= 400 ? res.status : 500, {
-        success: false,
-        message: `Failed to ${action} model: ${(await res.text()).slice(0, 300)}`,
-      });
-    }
-    return apiOk(null, action === "pull" ? `Model ${modelName} pulled successfully` : `Model ${modelName} deleted successfully`);
   } catch (err) {
-    if (stream) return ollamaPullStreamError(err instanceof Error ? err.message : String(err));
-    return json(500, { success: false, message: `Failed to ${action} model: ${err instanceof Error ? err.message : String(err)}` });
+    const wrapped = action === "pull" ? "Failed to pull model" : "Failed to delete model";
+    return json(500, { success: false, message: `${wrapped}: ${err instanceof Error ? err.message : String(err)}` });
   }
 }
 
@@ -2124,45 +2117,21 @@ function ollamaSseHeaders(): HeadersInit {
   };
 }
 
-function ollamaPullStreamError(message: string): Response {
-  return new Response(`data: ${JSON.stringify({ error: message })}\n\ndata: [DONE]\n\n`, {
-    status: 200,
-    headers: ollamaSseHeaders(),
-  });
-}
-
-function ollamaPullStream(res: Response, modelName: string): Response {
+function ollamaPullStreamResponse(base: string, key: string, modelName: string): Response {
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-  const body = res.body;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const enqueue = (payload: unknown) => {
-        controller.enqueue(encoder.encode(`data: ${typeof payload === "string" ? payload : JSON.stringify(payload)}\n\n`));
+      const send = (payload: unknown) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
       };
       try {
-        if (!body) {
-          enqueue({ error: await res.text().catch(() => res.statusText) });
-        } else {
-          const reader = body.getReader();
-          let buffer = "";
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-            for (const line of lines) {
-              const trimmed = line.trim().replace(/^data:\s*/, "");
-              if (!trimmed || trimmed === "[DONE]") continue;
-              enqueue(trimmed);
-            }
-          }
-          if (buffer.trim()) enqueue(buffer.trim().replace(/^data:\s*/, ""));
+        for await (const event of pullOllamaModelStream(base, key, modelName)) {
+          if (event.type === "progress") send(event.progress);
+          else if (event.type === "error") send({ error: event.error });
+          else send({ message: `Model ${modelName} pulled successfully` });
         }
-        if (res.ok) enqueue({ message: `Model ${modelName} pulled successfully` });
       } catch (err) {
-        enqueue({ error: err instanceof Error ? err.message : String(err) });
+        send({ error: err instanceof Error ? err.message : String(err) });
       }
       controller.enqueue(encoder.encode("data: [DONE]\n\n"));
       controller.close();
