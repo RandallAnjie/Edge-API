@@ -208,7 +208,7 @@ test("original SubscriptionRequestEpay pay/notify/return JSON", async () => {
   assert.equal(emptyReturn.res.status, 302);
   assert.equal(emptyReturn.res.headers.get("location"), "http://local/wallet?pay=fail");
 
-  const pendingParams = { ...params, trade_status: "WAIT_BUYER_PAY" };
+  const pendingParams: Record<string, string> = { ...params, trade_status: "WAIT_BUYER_PAY" };
   pendingParams.sign = await epaySign(pendingParams, "epay-secret");
   const pendingQs = new URLSearchParams(pendingParams).toString();
   const pendingReturn = await json(new Request("http://local/api/subscription/epay/return?" + pendingQs), e);
@@ -225,7 +225,7 @@ test("original SubscriptionRequestEpay pay/notify/return JSON", async () => {
   assert.equal((await store.getSubscriptionOrderByTrade(params.out_trade_no))?.status, "pending");
   assert.equal(await selfGroup(e, auth), "default");
 
-  const okParams = { ...params, trade_status: "TRADE_SUCCESS" };
+  const okParams: Record<string, string> = { ...params, trade_status: "TRADE_SUCCESS" };
   okParams.sign = await epaySign(okParams, "epay-secret");
   const notify = await json(new Request("http://local/api/subscription/epay/notify?" + new URLSearchParams(okParams)), e);
   assert.equal(notify.text, "success");
