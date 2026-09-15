@@ -61,8 +61,8 @@ Material changes from upstream:
   Gemini `inlineData` via original `MediaContent.ToFileSource` + GetBase64Data
   (`get file data failed: …` / `get file data from '…' failed: …`). Extra-OK:
   ConvertOpenAIRequest stays sync; URL fetch runs in convertOutbound before
-  ConvertRequest. Zhipu v4, Volcengine, Perplexity, Ali, NewAPI, and Sub2API
-  ConvertOpenAIResponsesRequest return the request JSON as-is (no openai.Adaptor
+  ConvertRequest. Zhipu v4, Volcengine, Perplexity, Ali, NewAPI, Sub2API, and
+  Cloudflare ConvertOpenAIResponsesRequest return the request JSON as-is (no openai.Adaptor
   reasoning-suffix rewrite). Baidu v2 ConvertImageRequest / ConvertAudioRequest /
   ConvertEmbeddingRequest / ConvertRerankRequest / ConvertOpenAIResponsesRequest
   are original `not implemented`. xAI ConvertOpenAIResponsesRequest fills empty `model` from

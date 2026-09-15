@@ -2551,6 +2551,7 @@ test("original ConvertOpenAIResponsesRequest pass-through adaptors skip openai s
     CHANNEL_TYPE_ALI,
     CHANNEL_TYPE_NEW_API,
     CHANNEL_TYPE_SUB2API,
+    CHANNEL_TYPE_CLOUDFLARE,
   ]) {
     const out = convertOpenAIResponsesRequest(
       { model: "gpt-5.1-high", input: "hi" },

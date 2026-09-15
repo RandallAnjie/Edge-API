@@ -1169,7 +1169,8 @@ export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opt
     opts.channelType === CHANNEL_TYPE_ZHIPU_V4 ||
     opts.channelType === CHANNEL_TYPE_VOLC ||
     opts.channelType === CHANNEL_TYPE_PERPLEXITY ||
-    opts.channelType === CHANNEL_TYPE_ALI
+    opts.channelType === CHANNEL_TYPE_ALI ||
+    opts.channelType === CHANNEL_TYPE_CLOUDFLARE
   ) {
     return { ...suffixed.body };
   }
