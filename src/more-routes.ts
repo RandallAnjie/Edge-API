@@ -113,7 +113,6 @@ import {
 } from "./auth.js";
 import { httpStats } from "./metrics.js";
 import { Store, publicUser } from "./store.js";
-import { updateOneChannelBalance } from "./channel-balance.js";
 import type { Env, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -1340,17 +1339,6 @@ export function registerMore(r: Router<Env>): void {
     if (!body.tag) return apiFail("参数错误");
     await s.setChannelsByTag(body.tag, CHANNEL_ENABLED);
     return apiOk(null);
-  });
-
-  r.post("/api/channel/:id/update_balance", async (c) => {
-    const s = store(c);
-    const u = await requireChannel(c, s, "operate");
-    if (isResponse(u)) return u;
-    const id = strconvAtoi(c.params.id);
-    if (!id.ok) return apiFail(id.message);
-    const ch = await s.getChannel(id.n);
-    if (!ch) return apiFail("record not found");
-    return updateOneChannelBalance(s, ch);
   });
 
   r.get("/api/redemption/search", async (c) => {

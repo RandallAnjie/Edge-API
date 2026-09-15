@@ -2962,6 +2962,18 @@ test("original AddChannel, FetchModels, channel status, and RelayNotFound JSON",
   const extraConversations = await json(new Request("http://local/api/conversations", { headers: auth }), e);
   assert.equal(extraConversations.res.status, 404);
   assert.equal((extraConversations.body.error as { message: string }).message, "Invalid URL (GET /api/conversations)");
+  const extraChannelTypes = await json(new Request("http://local/api/channel/types", { headers: auth }), e);
+  assert.equal(extraChannelTypes.res.status, 404);
+  assert.equal((extraChannelTypes.body.error as { message: string }).message, "Invalid URL (GET /api/channel/types)");
+  const extraPostBalance = await json(
+    new Request("http://local/api/channel/1/update_balance", { method: "POST", headers: auth }),
+    e,
+  );
+  assert.equal(extraPostBalance.res.status, 404);
+  assert.equal((extraPostBalance.body.error as { message: string }).message, "Invalid URL (POST /api/channel/1/update_balance)");
+  const extraHealth = await json(new Request("http://local/health"), e);
+  assert.equal(extraHealth.res.status, 404);
+  assert.equal(extraHealth.text, "Not Found");
   const extraModelsMeta = await json(new Request("http://local/api/models/meta", { headers: auth }), e);
   assert.equal(extraModelsMeta.res.status, 200);
   assert.equal(extraModelsMeta.body.success, false);

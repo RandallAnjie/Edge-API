@@ -4,13 +4,11 @@ import {
   ROLE_ROOT,
   ROLE_USER,
   ROOT_QUOTA,
-  START_TIME,
   TOKEN_ENABLED,
   TOKEN_EXPIRED,
   TOKEN_EXHAUSTED,
   USER_DISABLED,
   USER_ENABLED,
-  VERSION,
   DEFAULT_GROUP_RATIO,
   DEFAULT_TOKEN_QUOTA,
   MAX_WALLET_QUOTA,
@@ -24,7 +22,7 @@ import {
   parseJson,
 } from "./constants.js";
 import { canWithPolicies, permissionDeltas, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
-import { CHANNEL_TYPES, channelDefaultBaseURLs, defaultBaseUrl } from "./catalog.js";
+import { channelDefaultBaseURLs, defaultBaseUrl } from "./catalog.js";
 import {
   appendChannelKeys,
   channelHasSensitiveChanges,
@@ -225,8 +223,6 @@ function auditListFilter(c: C): Response | {
 export function adminRouter(): Router<Env> {
   const r = new Router<Env>();
 
-  r.get("/health", () => apiOk({ ok: true, version: VERSION, start_time: START_TIME }));
-
   r.get("/api/setup", async (c) => {
     const s = store(c);
     const done = await s.setupDone();
@@ -289,8 +285,6 @@ export function adminRouter(): Router<Env> {
       pricing_version: pricing.pricing_version,
     });
   });
-
-  r.get("/api/channel/types", () => apiOk(CHANNEL_TYPES.filter((t) => t.id > 0)));
 
   r.post("/api/user/login", async (c) => {
     const s = store(c);

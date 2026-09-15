@@ -2,7 +2,7 @@ import { runPendingChannelTestSystemTask } from "./channel-test.js";
 import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
 import { runPendingMidjourneyPoll } from "./midjourney-poll.js";
 import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
-import { START_TIME, VERSION, nowSec } from "./constants.js";
+import { nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, rateLimit, sessionSecret } from "./auth.js";
 import { apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { adminRouter } from "./routes.js";
@@ -570,21 +570,6 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
 
   if (req.method === "OPTIONS") {
     return withCors(req, new Response(null, { status: 204 }));
-  }
-
-  if (path === "/health") {
-    return withCors(
-      req,
-      new Response(
-        JSON.stringify({
-          ok: true,
-          version: VERSION,
-          uptime_ms: Date.now() - START_TIME,
-          d1: Boolean(env.DB),
-        }),
-        { headers: { "content-type": "application/json" } },
-      ),
-    );
   }
 
   const needsDb =

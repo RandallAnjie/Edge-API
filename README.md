@@ -103,7 +103,7 @@ npm run dev          # rrangler dev --port 8787，需本机 workerd
 
 `npm test` 用 Node 内置 SQLite 模拟 D1，覆盖初始化、登录、2FA、渠道、令牌批量、中继、multipart 音频、兑换码、订阅、排行榜。
 
-`rrangler` 0.4.8 的 `dev` **不会**注入 D1/KV 绑定（生产 `deploy` 会创建并绑定）。没有 D1 时 Worker 仍提供静态控制台与 `/health`；`/api/*` 与 `/v1/*` 需要部署后的 `env.DB`。
+`rrangler` 0.4.8 的 `dev` **不会**注入 D1/KV 绑定（生产 `deploy` 会创建并绑定）。没有 D1 时 Worker 仍提供静态控制台；`/api/*` 与 `/v1/*` 需要部署后的 `env.DB`。
 
 公开部署后打开 Worker URL，走一次「初始化」创建 root 账号。
 
