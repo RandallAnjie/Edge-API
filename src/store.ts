@@ -16,6 +16,8 @@ import {
   ROLE_USER,
   SYSTEM_TASK_LOCK_TTL_SEC,
   TOKEN_ENABLED,
+  TOTP_LOCKOUT_DURATION_SEC,
+  TOTP_MAX_FAIL_ATTEMPTS,
   USER_ENABLED,
   USER_SESSION_LIST_LIMIT,
   VERSION,
@@ -352,6 +354,40 @@ export class Store {
     if (!cols.length) return;
     vals.push(id);
     await this.db.prepare(`UPDATE users SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  /**
+   * Original `model.TwoFA.IncrementFailedAttempts`.
+   * An already-locked row is a no-op. The fifth failure sets `locked_until = now + 300`.
+   */
+  async incrementTotpFailures(userId: number): Promise<void> {
+    const maxUpdateRetries = 5;
+    for (let i = 0; i < maxUpdateRetries; i++) {
+      const now = nowSec();
+      const row = await this.db
+        .prepare("SELECT totp_failed_attempts, totp_locked_until FROM users WHERE id = ?")
+        .bind(userId)
+        .first<{ totp_failed_attempts: number; totp_locked_until: number }>();
+      if (!row) return;
+      const attempts = Number(row.totp_failed_attempts || 0);
+      const lockedUntil = Number(row.totp_locked_until || 0);
+      if (lockedUntil > now) return;
+      const nextAttempts = attempts + 1;
+      const nextLocked = nextAttempts >= TOTP_MAX_FAIL_ATTEMPTS ? now + TOTP_LOCKOUT_DURATION_SEC : lockedUntil;
+      const updated = await this.db
+        .prepare(
+          `UPDATE users SET totp_failed_attempts = ?, totp_locked_until = ?
+           WHERE id = ? AND totp_failed_attempts = ? AND (totp_locked_until = 0 OR totp_locked_until <= ?)`,
+        )
+        .bind(nextAttempts, nextLocked, userId, attempts, now)
+        .run();
+      if (Number(updated.meta.changes || 0) === 1) return;
+    }
+  }
+
+  /** Original `model.TwoFA.ResetFailedAttempts`. */
+  async resetTotpFailures(userId: number): Promise<void> {
+    await this.updateUser(userId, { totp_failed_attempts: 0, totp_locked_until: 0 });
   }
 
   /**

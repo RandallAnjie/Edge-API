@@ -13,8 +13,11 @@ import {
   generateTotpSecret,
   otpauthUrl,
   totpCode,
-  verifyBackupCode,
+  twoFALocked,
+  validateNumericCode,
   verifyTotp,
+  verifyTwoFactorCode,
+  ERR_VERIFICATION_FAILED,
 } from "./totp.js";
 import { notifyAccountSecurityChange, sendMail, sixDigitCode, validateAccountEmail, normalizeEmail } from "./mail.js";
 import { newChallenge, rpFromRequest, verifyAssertion } from "./passkey.js";
@@ -324,7 +327,7 @@ export function registerMore(r: Router<Env>): void {
       .split(",")
       .map((x) => x.trim())
       .filter(Boolean);
-    const data: Record<string, unknown> = { enabled, locked: false };
+    const data: Record<string, unknown> = { enabled, locked: enabled && twoFALocked(user || {}) };
     if (enabled) data.backup_codes_remaining = backup.length;
     return apiOk(data);
   });
@@ -377,7 +380,13 @@ export function registerMore(r: Router<Env>): void {
     if (!secret) return apiFailCode("The two-factor setup has expired or changed. Start setup again.", "TWOFA_SETUP_INVALID");
     if (!(await verifyTotp(secret, body.code || ""))) return apiFail("验证码错误");
     const backup = codes || generateBackupCodes();
-    await s.updateUser(u.id, { totp_secret: secret, totp_enabled: 1, totp_backup: backup.join(",") });
+    await s.updateUser(u.id, {
+      totp_secret: secret,
+      totp_enabled: 1,
+      totp_backup: backup.join(","),
+      totp_failed_attempts: 0,
+      totp_locked_until: 0,
+    });
     const fresh = await s.getUserById(u.id);
     const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "twofa_enabled", u.sid);
     if (issued instanceof Response) return issued;
@@ -393,7 +402,13 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
     if (!user) return apiFail("用户不存在");
-    await s.updateUser(u.id, { totp_enabled: 0, totp_secret: "", totp_backup: "" });
+    await s.updateUser(u.id, {
+      totp_enabled: 0,
+      totp_secret: "",
+      totp_backup: "",
+      totp_failed_attempts: 0,
+      totp_locked_until: 0,
+    });
     const fresh = await s.getUserById(u.id);
     const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "twofa_disabled", u.sid);
     if (issued instanceof Response) return issued;
@@ -427,7 +442,13 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.updateUser(Number(c.params.id), { totp_enabled: 0, totp_secret: "", totp_backup: "" });
+    await s.updateUser(Number(c.params.id), {
+      totp_enabled: 0,
+      totp_secret: "",
+      totp_backup: "",
+      totp_failed_attempts: 0,
+      totp_locked_until: 0,
+    });
     return apiOk(null);
   });
 
@@ -2049,18 +2070,23 @@ export function registerMore(r: Router<Env>): void {
     const reqs = await verificationRequirements(s, user, scope);
     if (!reqs.ok) return apiFailCode(reqs.message, reqs.code, reqs.status);
     const methods = (reqs.data.methods as { method: string; available: boolean }[]) || [];
-    if (!methods.some((m) => m.method === method && m.available)) {
+    const option = methods.find((m) => m.method === method);
+    if (!option) {
       return apiFailCode("This verification method is not allowed for this action.", "SECURITY_PROOF_METHOD_MISMATCH");
     }
+    if (!option.available) {
+      return apiFailCode("This verification method is currently unavailable.", "SECURITY_METHOD_UNAVAILABLE");
+    }
     if (method === "2fa") {
-      const totpOk = await verifyTotp(user.totp_secret || "", body.code || "");
-      const backup = totpOk ? { ok: false, rest: user.totp_backup || "" } : verifyBackupCode(user.totp_backup || "", body.code || "");
-      if (!totpOk && !backup.ok) return apiFailCode("Verification failed.", "SECURITY_VERIFICATION_FAILED");
-      if (backup.ok) await s.updateUser(user.id, { totp_backup: backup.rest });
+      if (scope === "2fa.backup_codes.regenerate" && validateNumericCode(body.code || "") === null) {
+        return apiFailCode(ERR_VERIFICATION_FAILED, "SECURITY_VERIFICATION_FAILED");
+      }
+      const result = await verifyTwoFactorCode(s, user, body.code || "");
+      if (!result.ok) return apiFailCode(result.message, result.code);
     } else if (method === "password") {
       const { verifyPassword } = await import("./crypto.js");
       if (!(await verifyPassword(body.password || "", user.password))) {
-        return apiFailCode("Verification failed.", "SECURITY_VERIFICATION_FAILED");
+        return apiFailCode(ERR_VERIFICATION_FAILED, "SECURITY_VERIFICATION_FAILED");
       }
     } else if (method === "passkey" || method === "oauth") {
       return apiFailCode("This verification method requires its dedicated verification flow.", "SECURITY_VERIFICATION_FLOW_REQUIRED", 400);

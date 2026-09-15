@@ -20,6 +20,7 @@ import {
   parseJson,
 } from "./constants.js";
 import { hmacSha256Raw, maskKey } from "./crypto.js";
+import { ERR_VERIFICATION_LOCKED, twoFALocked } from "./totp.js";
 import { bytesToHex, sha256BytesSync, utf8Bytes } from "./jsplugin-sha256.js";
 import { advancedCustomConfigFromSettings, supportedEndpointTypesForModel } from "./channel-validate.js";
 import {
@@ -716,6 +717,10 @@ export async function verificationRequirements(
 
   const options: VerificationMethodOption[] = methods.map((method) => {
     const option: VerificationMethodOption = { method, available: true };
+    if (method === "2fa" && twoFALocked(user)) {
+      option.available = false;
+      option.reason = ERR_VERIFICATION_LOCKED;
+    }
     if (!passkeyEnabled && (method === "passkey" || scope === "passkey.register")) {
       option.available = false;
       option.reason = "Passkey authentication is disabled.";

@@ -140,6 +140,11 @@ export const USER_SESSION_ISSUANCE_LIMIT = 100;
 export const USER_SESSION_ISSUANCE_WINDOW_SEC = 24 * 60 * 60;
 export const RATE_LIMIT_PER_MIN = 120;
 
+/** Original `common.MaxFailAttempts`. */
+export const TOTP_MAX_FAIL_ATTEMPTS = 5;
+/** Original `common.LockoutDuration` seconds. */
+export const TOTP_LOCKOUT_DURATION_SEC = 300;
+
 /** Original `setting/ratio_setting.defaultGroupRatio`. */
 export const DEFAULT_GROUP_RATIO: Record<string, number> = { default: 1, vip: 1, svip: 1 };
 

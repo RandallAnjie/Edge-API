@@ -43,7 +43,7 @@ import {
   invalidChannelIdMessage,
   SPECIFIC_CHANNEL_VERSION,
 } from "./http.js";
-import { verifyBackupCode, verifyTotp } from "./totp.js";
+import { twoFAVerificationOption, verifyTwoFactorCode } from "./totp.js";
 import { ipAllowed } from "./select.js";
 import { Store, permissionsFor, publicUser } from "./store.js";
 import { containsGroupRatio, userUsableGroups } from "./dto.js";
@@ -263,10 +263,6 @@ export async function authLogout(store: Store, env: Env, req: Request): Promise<
   if (expectedSID && expectedSID !== cookieSID) return authSessionMismatch();
   if (parsed) await store.revokeSession(parsed.sid);
   return withSetCookies(json(200, { success: true, message: "" }), cleared);
-}
-
-export function refreshAuthUnauthorized(req: Request): Response {
-  return withSetCookies(authUnauthorized(), clearAuthCookies(isSecureRequest(req)));
 }
 
 export function maybeClearRefreshCookie(req: Request, res: Response): Response {
@@ -689,10 +685,6 @@ export const VERIFICATION_METHOD_TWO_FA = "2fa";
 
 /** Original `service.ErrProofMethod` via `writeSecurityOperationError`. */
 const ERR_PROOF_METHOD = "This verification method is not allowed for this action.";
-/** Original `service.ErrVerificationFailed`. */
-const ERR_VERIFICATION_FAILED = "Verification failed. Please try again.";
-/** Original `model.ErrTwoFANotEnabled` via `writeSecurityOperationError`. */
-const ERR_TWOFA_NOT_ENABLED = "Two-factor authentication is not enabled.";
 /** Original `writeSecurityOperationError` for `ErrAuthFlowInvalid` / Expired / Consumed. */
 const ERR_AUTH_FLOW_INVALID = "Verification flow expired";
 /** Original `service.ErrVerificationUnavailable`. */
@@ -715,7 +707,7 @@ export function isLoginVerificationFlow(type: string): boolean {
 
 async function loginVerificationMethods(store: Store, user: UserRow): Promise<LoginChallenge["methods"]> {
   const methods: LoginChallenge["methods"] = [];
-  if (Number(user.totp_enabled) === 1) methods.push({ method: VERIFICATION_METHOD_TWO_FA, available: true });
+  if (Number(user.totp_enabled) === 1) methods.push(twoFAVerificationOption(user));
   const hasPasskey = (await store.listPasskeys(user.id)).length > 0;
   if (hasPasskey) {
     if (await store.optionBool("PasskeyEnabled", true)) methods.push({ method: "passkey", available: true });
@@ -811,11 +803,8 @@ async function requireLoginVerification(
 
 /** Original `service.VerifyTwoFactorCode` for login (TOTP or backup code). */
 async function verifyLoginTwoFactor(store: Store, user: UserRow, code: string): Promise<Response | null> {
-  if (Number(user.totp_enabled) !== 1) return apiFailCode(ERR_TWOFA_NOT_ENABLED, "TWOFA_NOT_ENABLED");
-  const totpOk = await verifyTotp(user.totp_secret || "", code);
-  const backup = totpOk ? { ok: false, rest: user.totp_backup || "" } : verifyBackupCode(user.totp_backup || "", code);
-  if (!totpOk && !backup.ok) return apiFailCode(ERR_VERIFICATION_FAILED, "SECURITY_VERIFICATION_FAILED");
-  if (backup.ok) await store.updateUser(user.id, { totp_backup: backup.rest });
+  const result = await verifyTwoFactorCode(store, user, code);
+  if (!result.ok) return apiFailCode(result.message, result.code);
   return null;
 }
 

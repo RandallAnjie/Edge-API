@@ -1,4 +1,16 @@
+import { nowSec } from "./constants.js";
+import type { UserRow } from "./types.js";
+
 const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/** Original `service.ErrVerificationLocked`. */
+export const ERR_VERIFICATION_LOCKED = "Two-factor authentication is temporarily locked.";
+/** Original `service.ErrVerificationFailed`. */
+export const ERR_VERIFICATION_FAILED = "Verification failed. Please try again.";
+/** Original `model.ErrTwoFANotEnabled` via `writeSecurityOperationError`. */
+export const ERR_TWOFA_NOT_ENABLED = "Two-factor authentication is not enabled.";
+/** Original `common.BackupCodeLength`. */
+const BACKUP_CODE_LENGTH = 8;
 
 export function generateTotpSecret(): string {
   return base32Encode(crypto.getRandomValues(new Uint8Array(20)));
@@ -84,13 +96,99 @@ export function generateBackupCodes(n = 8): string[] {
 }
 
 export function verifyBackupCode(stored: string, code: string): { ok: boolean; rest: string } {
-  const want = code.trim().toLowerCase();
+  const want = normalizeBackupCode(code);
   const codes = stored
     .split(/[,\s]+/)
-    .map((s) => s.trim().toLowerCase())
+    .map((s) => s.trim())
     .filter(Boolean);
-  const idx = codes.indexOf(want);
+  const idx = codes.findIndex((s) => normalizeBackupCode(s) === want);
   if (idx < 0) return { ok: false, rest: stored };
   codes.splice(idx, 1);
   return { ok: true, rest: codes.join(",") };
+}
+
+/** Original `model.TwoFA.IsLocked`. */
+export function twoFALocked(user: Pick<UserRow, "totp_locked_until">, now = nowSec()): boolean {
+  return Number(user.totp_locked_until || 0) > now;
+}
+
+/** Original `service.VerificationMethodOption` for an enrolled 2FA factor. */
+export function twoFAVerificationOption(user: Pick<UserRow, "totp_locked_until">): {
+  method: "2fa";
+  available: boolean;
+  reason?: string;
+} {
+  if (twoFALocked(user)) {
+    return { method: "2fa", available: false, reason: ERR_VERIFICATION_LOCKED };
+  }
+  return { method: "2fa", available: true };
+}
+
+/** Original `common.ValidateNumericCode`. */
+export function validateNumericCode(code: string): string | null {
+  const clean = code.replace(/ /g, "");
+  if (clean.length !== 6 || !/^\d{6}$/.test(clean)) return null;
+  return clean;
+}
+
+/** Original `common.ValidateBackupCode` format check. */
+export function validateBackupCodeFormat(code: string): boolean {
+  const clean = code.replace(/-/g, "").toUpperCase();
+  if (clean.length !== BACKUP_CODE_LENGTH) return false;
+  return /^[A-Z0-9]+$/.test(clean);
+}
+
+/** Original `common.NormalizeBackupCode` without re-inserting dashes. */
+function normalizeBackupCode(code: string): string {
+  return code.replace(/-/g, "").trim().toLowerCase();
+}
+
+export type TwoFactorVerifyResult =
+  | { ok: true }
+  | { ok: false; code: "TWOFA_NOT_ENABLED" | "SECURITY_VERIFICATION_LOCKED" | "SECURITY_VERIFICATION_FAILED"; message: string };
+
+type TwoFactorStore = {
+  getUserById(id: number): Promise<UserRow | null>;
+  incrementTotpFailures(userId: number): Promise<void>;
+  resetTotpFailures(userId: number): Promise<void>;
+  updateUser(id: number, patch: Record<string, unknown>): Promise<void>;
+};
+
+/**
+ * Original `service.VerifyTwoFactorCode`.
+ * Classifies numeric TOTP vs backup format so one submission cannot increment both counters.
+ */
+export async function verifyTwoFactorCode(store: TwoFactorStore, user: UserRow, code: string): Promise<TwoFactorVerifyResult> {
+  const current = (await store.getUserById(user.id)) || user;
+  if (Number(current.totp_enabled) !== 1) {
+    return { ok: false, code: "TWOFA_NOT_ENABLED", message: ERR_TWOFA_NOT_ENABLED };
+  }
+  if (twoFALocked(current)) {
+    return { ok: false, code: "SECURITY_VERIFICATION_LOCKED", message: ERR_VERIFICATION_LOCKED };
+  }
+  const trimmed = code.trim();
+  const numeric = validateNumericCode(trimmed);
+  if (numeric !== null) {
+    if (!(await verifyTotp(current.totp_secret || "", numeric))) {
+      await store.incrementTotpFailures(current.id);
+      return { ok: false, code: "SECURITY_VERIFICATION_FAILED", message: ERR_VERIFICATION_FAILED };
+    }
+    await store.resetTotpFailures(current.id);
+    return { ok: true };
+  }
+  if (validateBackupCodeFormat(trimmed)) {
+    const backup = verifyBackupCode(current.totp_backup || "", trimmed);
+    if (!backup.ok) {
+      await store.incrementTotpFailures(current.id);
+      return { ok: false, code: "SECURITY_VERIFICATION_FAILED", message: ERR_VERIFICATION_FAILED };
+    }
+    await store.updateUser(current.id, {
+      totp_backup: backup.rest,
+      totp_failed_attempts: 0,
+      totp_locked_until: 0,
+    });
+    return { ok: true };
+  }
+  await store.incrementTotpFailures(current.id);
+  return { ok: false, code: "SECURITY_VERIFICATION_FAILED", message: ERR_VERIFICATION_FAILED };
 }

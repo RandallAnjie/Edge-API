@@ -97,6 +97,10 @@ export interface UserRow {
   totp_secret?: string;
   totp_enabled?: number;
   totp_backup?: string;
+  /** Original `model.TwoFA.FailedAttempts`. */
+  totp_failed_attempts?: number;
+  /** Original `model.TwoFA.LockedUntil` unix seconds; 0 means unlocked. */
+  totp_locked_until?: number;
   access_token?: string;
   discord_id?: string;
   oidc_id?: string;
