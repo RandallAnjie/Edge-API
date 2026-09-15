@@ -425,7 +425,7 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const sess = await requireBrowserSession(c, s);
     if (isResponse(sess)) return sess;
-    return apiOk(sessionViews(await s.listSessions(sess.user.id), sess.identity.sessionId));
+    return apiOk(sessionViews(await s.listActiveUserSessions(sess.user.id, sess.identity.sessionId), sess.identity.sessionId));
   });
 
   r.delete("/api/user/sessions/:sid", async (c) => {

@@ -134,6 +134,8 @@ export const SECURITY_PROOF_TTL_SEC = 60;
 export const SESSION_TTL_SEC = 30 * 24 * 3600;
 export const REFRESH_REPLAY_WINDOW_SEC = 30;
 export const USER_SESSION_ACTIVE_LIMIT = 50;
+/** Original `model.userSessionListLimit`. */
+export const USER_SESSION_LIST_LIMIT = 100;
 export const USER_SESSION_ISSUANCE_LIMIT = 100;
 export const USER_SESSION_ISSUANCE_WINDOW_SEC = 24 * 60 * 60;
 export const RATE_LIMIT_PER_MIN = 120;

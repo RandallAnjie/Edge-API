@@ -17,6 +17,7 @@ import {
   SYSTEM_TASK_LOCK_TTL_SEC,
   TOKEN_ENABLED,
   USER_ENABLED,
+  USER_SESSION_LIST_LIMIT,
   VERSION,
   csv,
   hourStartSec,
@@ -2038,7 +2039,15 @@ export class Store {
     return Number(r.meta.changes || 0);
   }
 
-  async listSessions(userId: number): Promise<
+  /**
+   * Original `model.ListActiveUserSessions`: current SID first, then others by
+   * last_active_at/created_at, matching user_auth_version, unexpired, unrevoked, cap 100.
+   */
+  async listActiveUserSessions(
+    userId: number,
+    currentSid = "",
+    now = nowSec(),
+  ): Promise<
     {
       sid: string;
       created_at: number;
@@ -2050,13 +2059,14 @@ export class Store {
       login_method?: string;
     }[]
   > {
-    const { results } = await this.db
-      .prepare(
-        "SELECT sid, created_at, last_seen, ip, ua, revoked, expires_at, login_method FROM login_sessions WHERE user_id = ? ORDER BY last_seen DESC",
-      )
-      .bind(userId)
-      .all();
-    return results as {
+    if (userId <= 0) return [];
+    const user = await this.getUserById(userId);
+    const authVersion = Number(user?.auth_version || 0);
+    if (authVersion <= 0) return [];
+    const current = String(currentSid || "").trim();
+    const select =
+      `SELECT sid, created_at, last_seen, ip, ua, revoked, expires_at, login_method FROM login_sessions`;
+    const out: {
       sid: string;
       created_at: number;
       last_seen: number;
@@ -2065,7 +2075,37 @@ export class Store {
       revoked: number;
       expires_at: number;
       login_method?: string;
-    }[];
+    }[] = [];
+    if (current) {
+      const row = await this.db
+        .prepare(
+          `${select} WHERE user_id = ? AND user_auth_version = ? AND revoked = 0 AND expires_at > ? AND sid = ? LIMIT 1`,
+        )
+        .bind(userId, authVersion, now, current)
+        .first<(typeof out)[number]>();
+      if (row) out.push(row);
+    }
+    const remaining = USER_SESSION_LIST_LIMIT - out.length;
+    if (remaining <= 0) return out;
+    const others = current
+      ? await this.db
+          .prepare(
+            `${select} WHERE user_id = ? AND user_auth_version = ? AND revoked = 0 AND expires_at > ? AND sid <> ? ORDER BY last_seen DESC, created_at DESC LIMIT ?`,
+          )
+          .bind(userId, authVersion, now, current, remaining)
+          .all<(typeof out)[number]>()
+      : await this.db
+          .prepare(
+            `${select} WHERE user_id = ? AND user_auth_version = ? AND revoked = 0 AND expires_at > ? ORDER BY last_seen DESC, created_at DESC LIMIT ?`,
+          )
+          .bind(userId, authVersion, now, remaining)
+          .all<(typeof out)[number]>();
+    out.push(...(others.results ?? []));
+    return out;
+  }
+
+  async listSessions(userId: number, currentSid = "", now = nowSec()) {
+    return this.listActiveUserSessions(userId, currentSid, now);
   }
 
   async insertAuthFlow(row: {
