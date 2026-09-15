@@ -311,25 +311,6 @@ function sessionViews(
     }));
 }
 
-async function authzCheck(c: C): Promise<Response> {
-  const s = store(c);
-  const u = await requireUser(c, s);
-  if (isResponse(u)) return u;
-  const body =
-    c.req.method === "GET"
-      ? { resource: c.url.searchParams.get("resource") || "", action: c.url.searchParams.get("action") || "" }
-      : ((await readJson(c.req)) as { resource?: string; action?: string });
-  const resource = (body.resource || "").trim();
-  const action = (body.action || "").trim();
-  if (!resource || !action) return apiFail("resource and action are required");
-  const user = await s.getUserById(u.id);
-  if (!user) return apiFail("用户不存在");
-  const roleKey = roleKeyForSystemRole(user.role);
-  const userPolicies = await s.casbinPolicies(userSubject(user.id));
-  const rolePolicies = roleKey ? await s.casbinPolicies(roleSubject(roleKey)) : [];
-  return apiOk({ allowed: canWithPolicies(user, resource, action, userPolicies, rolePolicies), resource, action });
-}
-
 export function registerParity(r: Router<Env>): void {
   r.get("/api/authz/catalog", async (c) => {
     const s = store(c);
@@ -337,9 +318,6 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     return apiOk(permissionCatalog());
   });
-
-  r.get("/api/authz/check", async (c) => authzCheck(c));
-  r.post("/api/authz/check", async (c) => authzCheck(c));
 
   r.post("/api/oauth/email/bind/start", async (c) => {
     const s = store(c);

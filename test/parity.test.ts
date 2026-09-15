@@ -172,23 +172,11 @@ test("authz catalog + channel GET update_balance + email bind without mail", asy
   const cat = await json(new Request("http://local/api/authz/catalog", { headers: auth }), e);
   assert.equal(cat.body.success, true);
   assert.ok(Array.isArray(cat.body.data.resources));
-  assert.ok(cat.body.data.resources.some((r: { resource: string }) => r.resource === "channel"));
-  assert.ok(cat.body.data.roles.some((r: { key: string; superuser: boolean }) => r.key === "root" && r.superuser));
-
-  const chk = await json(
-    new Request("http://local/api/authz/check", {
-      method: "POST",
-      headers: auth,
-      body: JSON.stringify({ resource: "channel", action: "read" }),
-    }),
-    e,
+  assert.deepEqual(
+    cat.body.data.resources.map((r: { resource: string }) => r.resource),
+    ["audit", "channel", "task_plugin"],
   );
-  assert.equal(chk.body.success, true);
-  assert.equal(chk.body.data.allowed, true);
-  assert.equal(chk.body.data.resource, "channel");
-  assert.equal(chk.body.data.action, "read");
-  const chkGet = await json(new Request("http://local/api/authz/check?resource=channel&action=sensitive_write", { headers: auth }), e);
-  assert.equal(chkGet.body.data.allowed, true);
+  assert.ok(cat.body.data.roles.some((r: { key: string; superuser: boolean }) => r.key === "root" && r.superuser));
 
   const ch = await json(
     new Request("http://local/api/channel/", {

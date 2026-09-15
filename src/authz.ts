@@ -17,6 +17,18 @@ const RESOURCES: {
   actions: PermissionActionDef[];
 }[] = [
   {
+    resource: "audit",
+    label_key: "Audit Logs",
+    actions: [
+      {
+        action: "read",
+        label_key: "View other accounts' audit logs",
+        description_key: "View audit records from user and admin roles. Root records are always excluded.",
+        default_roles: [],
+      },
+    ],
+  },
+  {
     resource: "channel",
     label_key: "Channel Management",
     actions: [
@@ -48,18 +60,6 @@ const RESOURCES: {
         action: "secret_view",
         label_key: "View channel secrets",
         description_key: "Reserved for viewing complete channel keys after secure verification.",
-        default_roles: [],
-      },
-    ],
-  },
-  {
-    resource: "audit",
-    label_key: "Audit Logs",
-    actions: [
-      {
-        action: "read",
-        label_key: "View other accounts' audit logs",
-        description_key: "View audit records from user and admin roles. Root records are always excluded.",
         default_roles: [],
       },
     ],

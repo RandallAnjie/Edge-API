@@ -127,7 +127,6 @@ const ORIGINAL_API: { method: string; path: string }[] = [
   { method: "GET", path: "/api/plugin/task/runtime/status" },
   { method: "GET", path: "/api/task_plugin_options" },
   { method: "GET", path: "/api/authz/catalog" },
-  { method: "GET", path: "/api/authz/check?resource=channel&action=read" },
   { method: "GET", path: "/api/channel/" },
   { method: "GET", path: "/api/channel/models" },
   { method: "GET", path: "/api/channel/models_enabled" },
