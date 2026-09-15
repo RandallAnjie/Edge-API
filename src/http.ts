@@ -423,6 +423,12 @@ export function corsHeaders(req: Request): Headers {
 }
 
 export function withCors(req: Request, res: Response): Response {
+  const ws = (res as Response & { webSocket?: unknown }).webSocket;
+  if (res.status === 101 || ws) {
+    const c = corsHeaders(req);
+    c.forEach((v, k) => res.headers.set(k, v));
+    return res;
+  }
   const headers = new Headers(res.headers);
   const c = corsHeaders(req);
   c.forEach((v, k) => headers.set(k, v));

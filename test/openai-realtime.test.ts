@@ -132,7 +132,7 @@ test("original OpenAI Realtime GetRequestURL JSON fields", () => {
         type: CHANNEL_TYPE_AZURE,
         key: "az",
         base_url: "https://east.openai.azure.com",
-        created_time: AZURE_NO_REMOVE_DOT_TIME - 1,
+        created_time: 1,
       }),
       { requestUrlPath: "/v1/realtime", upstreamModel: "gpt-4o-realtime-preview" },
     ),
