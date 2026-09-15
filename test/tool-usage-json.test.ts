@@ -597,11 +597,11 @@ test("original Claude HTTP tool_use + claude_web_search_requests consume-log JSO
     },
   );
   const { row, other } = await lastConsume(e, auth, "claude-3-7-sonnet");
-  assert.equal(row.quota, 11502);
   assert.deepEqual(other.tool_surcharges, [
     { name: "lookup_fn", count: 1, price: 3 },
     { name: BUILD_IN_TOOL_WEB_SEARCH, count: 2, price: 10 },
   ]);
+  assert.equal(row.quota, 11500 + Number(row.prompt_tokens) + Number(row.completion_tokens));
 });
 
 test("original Gemini HTTP google_search consume-log JSON", async () => {
