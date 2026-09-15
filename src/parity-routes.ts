@@ -1,7 +1,7 @@
 import { billingCopies } from "./billing-setting.js";
 import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, ROLE_ROOT, ROLE_USER, csv, nowSec, parseJson, randomHex } from "./constants.js";
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
-import { performanceStats, resetMetrics } from "./metrics.js";
+import { loadPerformanceSetting, performanceStats, resetMetrics } from "./metrics.js";
 import {
   completePendingTopup,
   handleCreemWebhook,
@@ -982,7 +982,7 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const counts = await s.counts();
-    return apiOk({ ...performanceStats(), counts });
+    return apiOk({ ...performanceStats(await loadPerformanceSetting(s)), counts });
   });
   r.delete("/api/performance/disk_cache", async (c) => {
     const s = store(c);
