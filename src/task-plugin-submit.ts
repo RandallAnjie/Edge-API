@@ -28,7 +28,6 @@ import {
   json,
   noAvailableChannelMessage,
   noAvailableChannelRetryMessage,
-  openaiError,
   pluginProtocolSubmissionError,
   taskErrorJson,
   tokenModelForbiddenMessage,
@@ -1301,10 +1300,14 @@ export async function executeNativeTaskSubmission(
   }
   const model = prepared.model;
   if (!tokenAllowsModel(auth.token, model)) {
-    if (prepared.protocol === "openai_responses") {
-      return { error: pluginProtocolSubmissionError({ statusCode: 403, code: "model_not_allowed", message: tokenModelForbiddenMessage(req, model) }) };
-    }
-    return { error: openaiError(403, tokenModelForbiddenMessage(req, model), "model_not_allowed") };
+    return {
+      error: distributorAbortChannelError(
+        prepared,
+        engine,
+        { status: 403, code: "", message: tokenModelForbiddenMessage(req, model) },
+        requestId,
+      ),
+    };
   }
 
   const selected = await selectDistributedChannel({

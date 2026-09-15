@@ -590,3 +590,79 @@ test("original openai_video RelayTask retry get_channel_failed JSON fields", asy
   }
 });
 
+test("original native plugin token model forbidden is sanitized TaskError JSON", async () => {
+  const { e, auth } = await boot();
+  await registerTaskPlugin(e, auth, emptyChannelPlugin);
+  const limited = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "native-limits",
+        unlimited_quota: true,
+        model_limits_enabled: true,
+        model_limits: "other-model",
+      }),
+    }),
+    e,
+  );
+  const sk = (limited.body.data as { key: string }).key;
+  const hit = await json(
+    new Request("http://local/vendor/empty", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + sk,
+        "content-type": "application/json",
+        "x-oneapi-request-id": "native-limit-req",
+      },
+      body: JSON.stringify({ model: "empty-v1" }),
+    }),
+    e,
+  );
+  assert.equal(hit.res.status, 403, hit.text);
+  assert.deepEqual(Object.keys(hit.body).sort(), ["code", "data", "message"]);
+  assert.equal(hit.body.code, "permission_denied");
+  assert.equal(hit.body.message, "This token has no access to model empty-v1 (request id: native-limit-req)");
+  assert.equal(hit.body.data, null);
+  assert.equal(hit.body.error, undefined);
+});
+
+test("original openai_video token model forbidden is distributor abort JSON", async () => {
+  const { e, auth } = await boot();
+  await registerTaskPlugin(e, auth, retryVideoPlugin);
+  const limited = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "video-limits",
+        unlimited_quota: true,
+        model_limits_enabled: true,
+        model_limits: "other-model",
+      }),
+    }),
+    e,
+  );
+  const sk = (limited.body.data as { key: string }).key;
+  const hit = await json(
+    new Request("http://local/v1/videos", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + sk,
+        "content-type": "application/json",
+        "x-oneapi-request-id": "video-limit-req",
+      },
+      body: JSON.stringify({ model: "retry-video-v1", prompt: "hi" }),
+    }),
+    e,
+  );
+  assert.equal(hit.res.status, 403, hit.text);
+  const err = hit.body.error as { message?: string; type?: string; code?: string; param?: unknown };
+  assert.ok(err, hit.text);
+  assert.deepEqual(Object.keys(err).sort(), ["code", "message", "type"]);
+  assert.equal(err.type, "new_api_error");
+  assert.equal(err.code, "");
+  assert.equal(err.message, "This token has no access to model retry-video-v1 (request id: video-limit-req)");
+  assert.equal(hit.body.code, undefined);
+});
+

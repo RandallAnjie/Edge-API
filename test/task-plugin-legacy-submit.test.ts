@@ -140,3 +140,51 @@ test("original POST /v1/tasks/:key empty-channel is distributor model_not_found 
   assert.match(String(err.message), /request id: legacy-empty-req/);
   assert.equal(hit.body.code, undefined);
 });
+
+test("original POST /v1/tasks/:key token model forbidden is distributor abort JSON", async () => {
+  const { e, auth } = await boot();
+  const registered = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ source: legacyPlugin, force: true }),
+    }),
+    e,
+  );
+  assert.equal(registered.body.success, true, String(registered.body.message));
+  const limited = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "legacy-limits",
+        unlimited_quota: true,
+        model_limits_enabled: true,
+        model_limits: "other-model",
+      }),
+    }),
+    e,
+  );
+  const sk = (limited.body.data as { key: string }).key;
+  const hit = await json(
+    new Request("http://local/v1/tasks/legacy-entry-test", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + sk,
+        "content-type": "application/json",
+        "x-oneapi-request-id": "legacy-limit-req",
+      },
+      body: JSON.stringify({ model: "legacy-v1" }),
+    }),
+    e,
+  );
+  assert.equal(hit.res.status, 403, hit.text);
+  const err = hit.body.error as { message?: string; type?: string; code?: string; param?: unknown };
+  assert.ok(err, hit.text);
+  assert.deepEqual(Object.keys(err).sort(), ["code", "message", "type"]);
+  assert.equal(err.type, "new_api_error");
+  assert.equal(err.code, "");
+  assert.equal(err.message, "This token has no access to model legacy-v1 (request id: legacy-limit-req)");
+  assert.equal(hit.body.code, undefined);
+});
+
