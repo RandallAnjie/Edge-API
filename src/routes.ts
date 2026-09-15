@@ -873,7 +873,6 @@ export function adminRouter(): Router<Env> {
     const { items, total, type_counts } = await s.listChannels({
       offset: q.offset,
       limit: q.page_size,
-      keyword: c.url.searchParams.get("keyword") || undefined,
       group: c.url.searchParams.get("group") || undefined,
       status: statusFilter < 0 ? undefined : statusFilter,
       type: typeFilter,

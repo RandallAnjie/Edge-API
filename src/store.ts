@@ -811,7 +811,6 @@ export class Store {
   async listChannels(opts: {
     offset: number;
     limit: number;
-    keyword?: string;
     group?: string;
     status?: number;
     type?: number;
@@ -822,11 +821,6 @@ export class Store {
   }): Promise<{ items: ChannelRow[]; total: number; type_counts: Record<string, number> }> {
     const where: string[] = ["1=1"];
     const binds: unknown[] = [];
-    if (opts.keyword) {
-      where.push("(name LIKE ? OR models LIKE ? OR remark LIKE ?)");
-      const q = `%${opts.keyword}%`;
-      binds.push(q, q, q);
-    }
     const group = normalizeChannelGroupFilter(opts.group || "");
     if (group) {
       where.push(channelGroupLikeSql());

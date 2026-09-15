@@ -281,3 +281,69 @@ test("original SearchChannels JSON matches Channel tags, type_counts, and filter
   assert.equal((page1.body.data as { total: number }).total, (page2.body.data as { total: number }).total);
   void claude;
 });
+
+test("original GetAllChannels JSON ignores keyword and keeps Channel list fields", async () => {
+  const { e, auth } = await boot();
+  await addChannel(e, auth, {
+    name: "list-alpha-unique",
+    type: 1,
+    key: "sk-list-alpha",
+    models: "gpt-4o",
+    group: "default",
+    remark: "list-alpha-remark",
+  });
+  await addChannel(e, auth, {
+    name: "list-beta-other",
+    type: 14,
+    key: "sk-list-beta",
+    models: "claude-3-opus",
+    group: "default",
+    remark: "list-beta-remark",
+  });
+
+  const listed = await json(
+    new Request("http://local/api/channel/?keyword=list-alpha-unique&page_size=100", { headers: auth }),
+    e,
+  );
+  assert.equal(listed.body.success, true, String(listed.body.message));
+  assert.equal(listed.body.message, "");
+  const data = listed.body.data as {
+    items: Record<string, unknown>[];
+    total: number;
+    page: number;
+    page_size: number;
+    type_counts: Record<string, number>;
+  };
+  assert.ok(Array.isArray(data.items));
+  assert.equal(typeof data.total, "number");
+  assert.equal(data.page, 1);
+  assert.equal(data.page_size, 100);
+  assert.equal(typeof data.type_counts, "object");
+  const names = data.items.map((c) => String(c.name));
+  assert.ok(names.includes("list-alpha-unique"));
+  assert.ok(names.includes("list-beta-other"), "GetAllChannels must not apply keyword LIKE");
+  assert.ok((data.type_counts["1"] || 0) >= 1);
+  assert.ok((data.type_counts["14"] || 0) >= 1);
+
+  const row = data.items.find((c) => c.name === "list-alpha-unique") as Record<string, unknown>;
+  for (const k of ORIGINAL_CHANNEL_JSON_FIELDS) {
+    assert.ok(k in row, "missing GetAllChannels Channel field " + k);
+  }
+  assert.equal(row.key, "");
+  assert.equal(typeof row.channel_info, "object");
+
+  const typed = await json(new Request("http://local/api/channel/?type=14&page_size=100", { headers: auth }), e);
+  const typedData = typed.body.data as { items: { name: string; type: number }[]; type_counts: Record<string, number> };
+  assert.ok(typedData.items.some((c) => c.name === "list-beta-other"));
+  assert.equal(typedData.items.some((c) => c.name === "list-alpha-unique"), false);
+  assert.ok(typedData.items.every((c) => c.type === 14));
+  assert.ok((typedData.type_counts["1"] || 0) >= 1, "type_counts ignores the type filter");
+  assert.ok((typedData.type_counts["14"] || 0) >= 1);
+
+  const searched = await json(
+    new Request("http://local/api/channel/search?keyword=list-alpha-unique", { headers: auth }),
+    e,
+  );
+  const searchNames = ((searched.body.data as { items: { name: string }[] }).items || []).map((c) => c.name);
+  assert.deepEqual(searchNames, ["list-alpha-unique"]);
+});
