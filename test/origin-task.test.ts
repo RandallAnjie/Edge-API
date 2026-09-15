@@ -5,10 +5,7 @@ import {
   CHANNEL_TYPE_DOUBAO_VIDEO,
   CHANNEL_TYPE_OPENAI,
 } from "../src/constants.js";
-import {
-  FILTER_TASK_PLUGIN_IDENTITY,
-  PIN_RETRY_SAME_CHANNEL,
-} from "../src/channel-constraint.js";
+import { PIN_RETRY_SAME_CHANNEL } from "../src/channel-constraint.js";
 import { applyOriginTaskIntent, taskPluginLegacyPlatforms } from "../src/origin-task.js";
 import {
   isAlwaysSkipRetryStatusCode,
@@ -554,7 +551,7 @@ test("original PrepareTaskPluginEndpoint origin pin JSON fields", async () => {
   assert.equal((disabled.body.error as { code?: string }).code, "origin_task_channel_disabled");
 });
 
-test("original Distribute pin violating identity filter returns task_plugin_identity", async () => {
+test("original native pin identity miss is sanitized invalid_request JSON", async () => {
   const { e, auth, store, rootId } = await boot();
   const originId = await addChannel(e, auth, "ident-origin", { base_url: "https://ident.example.test" });
   await insertOwnedTask(store, { taskId: "task-ident", userId: rootId, channelId: originId, platform: "origin-ident" });
@@ -587,5 +584,8 @@ test("original Distribute pin violating identity filter returns task_plugin_iden
     e,
   );
   assert.equal(hit.res.status, 400);
-  assert.equal((hit.body.error as { code?: string }).code, FILTER_TASK_PLUGIN_IDENTITY);
+  assert.deepEqual(Object.keys(hit.body).sort(), ["code", "data", "message"]);
+  assert.equal(hit.body.code, "invalid_request");
+  assert.match(String(hit.body.message), /No available channel for model resolved-model under group default \(distributor\)/);
+  assert.equal(hit.body.data, null);
 });

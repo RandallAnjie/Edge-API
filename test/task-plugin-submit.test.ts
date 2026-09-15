@@ -427,11 +427,14 @@ export function buildSubmitRequest(){return {url:"https://retry-video.example.te
 export function parseSubmitResponse(){return {taskId:"upstream"}}
 export function buildQueryRequest(){return {url:"https://retry-video.example.test/query"}}
 export function parseTaskResult(){return {status:"SUCCESS"}}
+export function listArtifacts(){return [];}
+export function buildContentRequest(){ throw new Error("artifact_not_found"); }
 export const protocols = {openai_video: {
   decodeRequest: function(ctx) {
     var value = ctx.body && ctx.body.value && typeof ctx.body.value === "object" ? ctx.body.value : {};
     return {kind:"submit", model: ctx.model, requestBody: value};
-  }
+  },
+  render: function(){ return {id: "plugin"}; }
 }};
 `;
 
