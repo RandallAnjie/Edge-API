@@ -29,7 +29,10 @@ import {
   convertAdvancedCustomGeminiRequest,
   convertOpenAIRequest,
   convertOpenAIResponsesRequest,
+  emptyOpenAIUsageCounts,
   isOpenAIReasoningOModel,
+  usageFromOpenAI,
+  type OpenAIUsageCounts,
 } from "./convert.js";
 import { applyBaiduAccessToken, convertBaiduEmbeddingRequest } from "./baidu-convert.js";
 import { applyVertexAdcAuth } from "./vertex-auth.js";
@@ -42,9 +45,10 @@ import { parseVolcengineAuth, runVolcTtsWebSocket, volcTtsEncodingFromRequest, v
 import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
-import { computeQuota, quotaRatios } from "./quota.js";
-import { billingUsageFromOpenAICounts, injectTieredBillingInfo, resolveRelayTieredQuota } from "./tiered-settle.js";
+import { computeQuota, textConsumePriceData } from "./quota.js";
+import { billingUsageFromOpenAICounts, cacheCreationTokensTotal, injectTieredBillingInfo, resolveRelayTieredQuota } from "./tiered-settle.js";
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
+import { relayFormatForClient, requestConversionChain } from "./log-info-generate.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
 import { buildAdvancedCustomRelayTarget, shouldApplyAdvancedCustomClaudeHeaders } from "./channel-validate.js";
 import { buildCodexRelayTarget } from "./codex-models.js";
@@ -387,7 +391,7 @@ function findUsage(parsed: unknown): { prompt: number; completion: number } | nu
   return null;
 }
 
-function extractUsageFromBody(text: string, isStream: boolean, estimate: number): { prompt: number; completion: number } | Error {
+function extractUsageFromBody(text: string, isStream: boolean, estimate: number): OpenAIUsageCounts | Error {
   if (isStream) {
     for (const line of text.split("\n")) {
       const t = line.trim();
@@ -395,17 +399,17 @@ function extractUsageFromBody(text: string, isStream: boolean, estimate: number)
       const payload = t.slice(5).trim();
       if (!payload || payload === "[DONE]") continue;
       try {
-        const usage = findUsage(JSON.parse(payload));
-        if (usage) return usage;
+        const parsed = JSON.parse(payload) as Record<string, unknown>;
+        if (findUsage(parsed)) return usageFromOpenAI(parsed);
       } catch {
         /* ignore */
       }
     }
-    return { prompt: estimate, completion: 0 };
+    return { ...emptyOpenAIUsageCounts(), prompt: estimate };
   }
   try {
-    const usage = findUsage(JSON.parse(text));
-    if (usage) return usage;
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (findUsage(parsed)) return usageFromOpenAI(parsed);
   } catch {
     /* ignore */
   }
@@ -730,11 +734,22 @@ export async function testChannel(
   if (!user) user = await store.getRootUser();
   if (user && (await store.optionBool("LogConsumeEnabled", true))) {
     const group = opts.group || user.group || "default";
-    const billingUsage = billingUsageFromOpenAICounts({ prompt: usage.prompt, completion: usage.completion });
-    const tiered = await resolveRelayTieredQuota(store, originModel, group, billingUsage, false);
+    const billingUsage = billingUsageFromOpenAICounts(usage);
+    const isClaude = built.kind === "anthropic" || billingUsage.usage_semantic === "anthropic";
+    const tiered = await resolveRelayTieredQuota(store, originModel, group, billingUsage, isClaude);
     const quota = tiered ? tiered.quota : await computeQuota(store, originModel, group, usage.prompt, usage.completion);
-    const ratios = await quotaRatios(store, originModel, group);
+    const price = await textConsumePriceData(store, originModel, group, user.group);
     const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
+    const details = billingUsage.prompt_tokens_details || {};
+    const clientFormat = built.kind === "anthropic" ? "anthropic" : built.kind === "gemini" ? "gemini" : "openai";
+    const destinationFormat =
+      built.kind === "anthropic"
+        ? "claude"
+        : built.kind === "gemini"
+          ? "gemini"
+          : built.kind === "responses" || built.kind === "responses-compact"
+            ? "openai_responses"
+            : relayFormatForClient(clientFormat, mode);
     await store.insertLog({
       user_id: user.id,
       type: LOG_CONSUME,
@@ -753,14 +768,32 @@ export async function testChannel(
       other: consumeLogOther({
         model: originModel,
         group,
-        groupRatio: ratios.groupRatio,
-        modelRatio: ratios.modelRatio,
-        completionRatio: ratios.completionRatio,
+        groupRatio: price.groupRatio,
+        modelRatio: price.modelRatio,
+        completionRatio: price.completionRatio,
+        cacheTokens: usage.cachedTokens,
+        cacheRatio: price.cacheRatio,
+        modelPrice: price.modelPrice,
+        userGroupRatio: price.userGroupRatio,
+        frt: milliseconds,
+        isModelMapped: mappedModel !== originModel,
+        upstreamModelName: mappedModel,
         channelId: channel.id,
         channelName: channel.name,
         channelType: channel.type,
         ok: true,
         requestPath,
+        requestConversion: requestConversionChain({
+          clientFormat,
+          mode,
+          destinationFormat,
+        }),
+        isClaudeUsageSemantic: isClaude,
+        finalRequestFormat: destinationFormat,
+        cacheCreationTokens: cacheCreationTokensTotal(details),
+        cacheCreationRatio: price.cacheCreationRatio,
+        imageTokens: details.image_tokens,
+        imageRatio: price.imageRatio,
         billingSource: "wallet",
         publicExtra,
       }),

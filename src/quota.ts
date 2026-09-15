@@ -1,6 +1,122 @@
+import { BILLING_MODE_TIERED_EXPR, getBillingExpr, getBillingMode } from "./billing-setting.js";
 import { DEFAULT_GROUP_RATIO, parseJson } from "./constants.js";
-import { getCompletionRatio, getModelRatioFromMap } from "./ratio-setting.js";
+import {
+  getCacheRatioFromMap,
+  getCompletionRatio,
+  getCreateCacheRatioFromMap,
+  getImageRatioFromMap,
+  getModelPriceFromMap,
+  getModelRatioFromMap,
+} from "./ratio-setting.js";
 import type { Store } from "./store.js";
+
+/** Original `helper.claudeCacheCreation1hMultiplier` (`6 / 3.75`). */
+const CLAUDE_CACHE_CREATION_1H_MULTIPLIER = 6 / 3.75;
+
+/** Original `helper.HandleGroupRatio`. */
+export async function handleGroupRatio(
+  store: Store,
+  group: string,
+  userGroup = "",
+): Promise<{ groupRatio: number; groupSpecialRatio: number; hasSpecialRatio: boolean }> {
+  const overlay = parseJson<Record<string, Record<string, number>>>(await store.option("GroupGroupRatio"), {});
+  const nested = userGroup ? overlay[userGroup] : undefined;
+  if (nested && nested[group] != null) {
+    const groupRatio = Number(nested[group]);
+    return { groupRatio, groupSpecialRatio: groupRatio, hasSpecialRatio: true };
+  }
+  const groupRatioMap = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
+  const groupRatio = groupRatioMap[group] ?? groupRatioMap.default ?? 1;
+  return { groupRatio, groupSpecialRatio: -1, hasSpecialRatio: false };
+}
+
+/** Original `helper.ModelPriceHelper` fields copied into `GenerateTextOtherInfo`. */
+export type TextConsumePriceData = {
+  modelRatio: number;
+  completionRatio: number;
+  groupRatio: number;
+  cacheRatio: number;
+  cacheCreationRatio: number;
+  cacheCreationRatio5m: number;
+  cacheCreationRatio1h: number;
+  imageRatio: number;
+  modelPrice: number;
+  userGroupRatio: number;
+  hasSpecialRatio: boolean;
+  usePrice: boolean;
+  tiered: boolean;
+};
+
+export async function textConsumePriceData(
+  store: Store,
+  model: string,
+  group: string,
+  userGroup = "",
+): Promise<TextConsumePriceData> {
+  const groupInfo = await handleGroupRatio(store, group, userGroup);
+  const modelRatioMap = parseJson<Record<string, unknown>>(await store.option("ModelRatio"), {});
+  const modelPriceMap = parseJson<Record<string, unknown>>(await store.option("ModelPrice"), {});
+  const modes = parseJson<Record<string, string>>(await store.option("billing_setting.billing_mode"), {});
+  const exprs = parseJson<Record<string, string>>(await store.option("billing_setting.billing_expr"), {});
+  if (
+    getBillingMode(model, modes, modelRatioMap, modelPriceMap) === BILLING_MODE_TIERED_EXPR &&
+    getBillingExpr(model, modes, exprs, modelRatioMap, modelPriceMap)
+  ) {
+    return {
+      modelRatio: 0,
+      completionRatio: 0,
+      groupRatio: groupInfo.groupRatio,
+      cacheRatio: 0,
+      cacheCreationRatio: 0,
+      cacheCreationRatio5m: 0,
+      cacheCreationRatio1h: 0,
+      imageRatio: 0,
+      modelPrice: 0,
+      userGroupRatio: groupInfo.groupSpecialRatio,
+      hasSpecialRatio: groupInfo.hasSpecialRatio,
+      usePrice: false,
+      tiered: true,
+    };
+  }
+  const priced = getModelPriceFromMap(model, modelPriceMap);
+  if (priced.configured) {
+    return {
+      modelRatio: 0,
+      completionRatio: 0,
+      groupRatio: groupInfo.groupRatio,
+      cacheRatio: 0,
+      cacheCreationRatio: 0,
+      cacheCreationRatio5m: 0,
+      cacheCreationRatio1h: 0,
+      imageRatio: 0,
+      modelPrice: priced.price,
+      userGroupRatio: groupInfo.groupSpecialRatio,
+      hasSpecialRatio: groupInfo.hasSpecialRatio,
+      usePrice: true,
+      tiered: false,
+    };
+  }
+  const { modelRatio, completionRatio } = await quotaRatios(store, model, group);
+  const cacheRatioMap = parseJson<Record<string, number>>(await store.option("CacheRatio"), {});
+  const createCacheRatioMap = parseJson<Record<string, number>>(await store.option("CreateCacheRatio"), {});
+  const imageRatioMap = parseJson<Record<string, number>>(await store.option("ImageRatio"), {});
+  const cacheCreation = getCreateCacheRatioFromMap(model, createCacheRatioMap).ratio;
+  return {
+    modelRatio,
+    completionRatio,
+    groupRatio: groupInfo.groupRatio,
+    cacheRatio: getCacheRatioFromMap(model, cacheRatioMap).ratio,
+    cacheCreationRatio: cacheCreation,
+    cacheCreationRatio5m: cacheCreation,
+    cacheCreationRatio1h: cacheCreation * CLAUDE_CACHE_CREATION_1H_MULTIPLIER,
+    imageRatio: getImageRatioFromMap(model, imageRatioMap).ratio,
+    modelPrice: -1,
+    userGroupRatio: groupInfo.groupSpecialRatio,
+    hasSpecialRatio: groupInfo.hasSpecialRatio,
+    usePrice: false,
+    tiered: false,
+  };
+}
 
 export async function quotaRatios(
   store: Store,

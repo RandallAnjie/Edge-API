@@ -235,9 +235,12 @@ test("original calculateAudioQuota and GenerateWssOtherInfo JSON fields", () => 
   assert.equal(other.completion_ratio, 4);
   assert.equal(other.cache_tokens, 0);
   assert.equal(other.cache_ratio, 0);
+  assert.equal(other.model_price, -1);
+  assert.equal(other.user_group_ratio, -1);
   assert.equal(other.request_path, "/v1/realtime");
   assert.equal(other.billing_source, "wallet");
   assert.equal(other.frt, 12);
+  assert.deepEqual(other.request_conversion, ["openai_realtime"]);
   assert.equal("is_model_mapped" in other, false);
 
   const state = emptyOpenaiRealtimeHandlerState();

@@ -53,6 +53,7 @@ import type { Store } from "./store.js";
 import type { ChannelRow, LogRow, RedemptionRow, TokenRow, UserRow } from "./types.js";
 
 export { extractPluginMeta, taskPluginMetaView } from "./plugin-meta.js";
+export { consumeLogOther, generateClaudeOtherInfo, generateTextOtherInfo } from "./log-info-generate.js";
 
 export const DEFAULT_USABLE_GROUPS: Record<string, string> = {
   default: "默认分组",
@@ -1288,48 +1289,6 @@ export async function listAdminModels(
   const start = Math.max(0, (opts.page - 1) * opts.pageSize);
   const items = opts.pageSize < 0 ? enriched : enriched.slice(start, start + opts.pageSize);
   return { items, total, vendor_counts: await store.vendorModelCounts() };
-}
-
-export function consumeLogOther(opts: {
-  model: string;
-  group: string;
-  groupRatio: number;
-  modelRatio: number;
-  completionRatio: number;
-  channelId: number;
-  channelName: string;
-  channelType: number;
-  ok: boolean;
-  requestPath?: string;
-  isMultiKey?: boolean;
-  multiKeyIndex?: number;
-  billingSource?: string;
-  channelAffinity?: Record<string, unknown>;
-  publicExtra?: Record<string, unknown>;
-}): string {
-  const other: Record<string, unknown> = {
-    group_ratio: opts.groupRatio,
-    model_ratio: opts.modelRatio,
-    completion_ratio: opts.completionRatio,
-    group: opts.group,
-    billing_source: opts.billingSource || "wallet",
-  };
-  if (opts.requestPath) other.request_path = opts.requestPath;
-  if (opts.publicExtra) Object.assign(other, opts.publicExtra);
-  const admin: Record<string, unknown> = {
-    use_channel: [String(opts.channelId)],
-    channel_id: opts.channelId,
-    channel_name: opts.channelName,
-    channel_type: opts.channelType,
-  };
-  if (opts.isMultiKey) {
-    admin.is_multi_key = true;
-    if (opts.multiKeyIndex != null) admin.multi_key_index = opts.multiKeyIndex;
-  }
-  if (opts.channelAffinity) admin.channel_affinity = opts.channelAffinity;
-  if (!opts.ok) admin.reject_reason = "upstream_error";
-  other.admin_info = admin;
-  return JSON.stringify(other);
 }
 
 /** Original `model.Redemption` JSON. */

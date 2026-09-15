@@ -11,7 +11,7 @@ import {
 } from "./channel-select.js";
 import { channelAttemptFromTaskRelay, processChannelError } from "./channel-error.js";
 import { PIN_RETRY_SINGLE_ATTEMPT } from "./channel-constraint.js";
-import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_VERTEX, DEFAULT_GROUP_RATIO, parseJson, ROLE_ADMIN } from "./constants.js";
+import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_VERTEX, parseJson, ROLE_ADMIN } from "./constants.js";
 import {
   billingSnapshotJSON,
   evaluateTaskCompletionUsage,
@@ -41,7 +41,7 @@ import {
 import { type PluginEngine, validateRequestURL } from "./jsplugin.js";
 import { requestHeadersFrom } from "./param-override.js";
 import type { MatchedPlugin } from "./plugin-dispatch.js";
-import { formatQuotaOriginal, insufficientTokenQuotaMessage, insufficientWalletQuotaMessage } from "./quota.js";
+import { formatQuotaOriginal, handleGroupRatio, insufficientTokenQuotaMessage, insufficientWalletQuotaMessage } from "./quota.js";
 import { defaultModelPrice } from "./ratio-defaults.js";
 import { getModelPriceFromMap, getModelRatioFromMap } from "./ratio-setting.js";
 import { mapModel, pickChannelKey } from "./select.js";
@@ -535,23 +535,6 @@ function modelPriceNotConfigured(modelName: string, userRole: number): string {
     `模型 ${modelName} 的价格尚未由管理员配置，暂时无法使用，请联系站点管理员开启该模型；` +
     `Model ${modelName} has not been priced by the administrator yet. Please contact the site administrator to enable this model.`
   );
-}
-
-/** Original `helper.HandleGroupRatio`. */
-export async function handleGroupRatio(
-  store: Store,
-  group: string,
-  userGroup = "",
-): Promise<{ groupRatio: number; groupSpecialRatio: number; hasSpecialRatio: boolean }> {
-  const overlay = parseJson<Record<string, Record<string, number>>>(await store.option("GroupGroupRatio"), {});
-  const nested = userGroup ? overlay[userGroup] : undefined;
-  if (nested && nested[group] != null) {
-    const groupRatio = Number(nested[group]);
-    return { groupRatio, groupSpecialRatio: groupRatio, hasSpecialRatio: true };
-  }
-  const groupRatioMap = parseJson<Record<string, number>>(await store.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
-  const groupRatio = groupRatioMap[group] ?? groupRatioMap.default ?? 1;
-  return { groupRatio, groupSpecialRatio: -1, hasSpecialRatio: false };
 }
 
 /** Original `helper.HandleGroupRatio` + `helper.ModelPriceHelperPerCall` (task submit). */

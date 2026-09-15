@@ -143,7 +143,7 @@ import {
   type ChannelAttemptError,
 } from "./channel-error.js";
 import type { OriginTaskRef } from "./origin-task.js";
-import { computeQuota, remainingOk, quotaRatios } from "./quota.js";
+import { computeQuota, remainingOk, textConsumePriceData } from "./quota.js";
 import { mapModel, pickChannelKey } from "./select.js";
 import { parseChannelInfo } from "./channel-info.js";
 import {
@@ -196,10 +196,15 @@ import { factoryPluginMeta, listRoutingPlugins } from "./task-plugin-factory.js"
 import { hasModelBillingConfig } from "./billing-setting.js";
 import {
   billingUsageFromOpenAICounts,
+  cacheCreationTokensTotal,
   injectTieredBillingInfo,
   resolveRelayTieredQuota,
   type BillingUsage,
 } from "./tiered-settle.js";
+import {
+  DEFAULT_RELAY_FRT_MS,
+  requestConversionChain,
+} from "./log-info-generate.js";
 import { getModelSupportEndpointTypes } from "./pricing-cache.js";
 import { listModelsTokenLimitAllows } from "./ratio-setting.js";
 
@@ -1350,6 +1355,41 @@ function attachSettleUsage(
   extra.billingUsage = billingUsageFromOpenAICounts(usage);
 }
 
+function destinationRelayFormat(channelType: number, mode: string, viaResponses: boolean): string {
+  if (viaResponses) return "openai_responses";
+  if (mode === "messages" || channelType === CHANNEL_TYPE_ANTHROPIC) return "claude";
+  if (mode === "gemini" || channelType === CHANNEL_TYPE_GEMINI) return "gemini";
+  if (mode === "responses") return "openai_responses";
+  if (mode === "embeddings" || mode === "engines_embeddings") return "embedding";
+  if (mode === "rerank") return "rerank";
+  if (mode === "images") return "openai_image";
+  if (mode === "audio_speech" || mode === "audio_transcription" || mode === "audio_translation") return "openai_audio";
+  if (mode === "realtime") return "openai_realtime";
+  if (mode === "alpha_search") return "openai_alpha_search";
+  return "openai";
+}
+
+type SettleLogExtra = {
+  upstreamRequestId?: string;
+  requestPath?: string;
+  channelAffinity?: Record<string, unknown>;
+  env?: Env;
+  affinity?: ChannelAffinityResolution;
+  clientFormat?: string;
+  cachedTokens?: number;
+  promptCacheHitTokens?: number;
+  billingUsage?: BillingUsage;
+  startMs?: number;
+  firstResponseMs?: number;
+  useChannel?: string[];
+  isModelMapped?: boolean;
+  upstreamModelName?: string;
+  reasoningEffort?: string;
+  isSystemPromptOverwritten?: boolean;
+  requestConversion?: string[];
+  billingSource?: string;
+};
+
 async function settle(
   store: Store,
   auth: AuthToken,
@@ -1363,17 +1403,7 @@ async function settle(
   requestId: string,
   ok: boolean,
   content: string,
-  extra: {
-    upstreamRequestId?: string;
-    requestPath?: string;
-    channelAffinity?: Record<string, unknown>;
-    env?: Env;
-    affinity?: ChannelAffinityResolution;
-    clientFormat?: string;
-    cachedTokens?: number;
-    promptCacheHitTokens?: number;
-    billingUsage?: BillingUsage;
-  } = {},
+  extra: SettleLogExtra = {},
 ): Promise<void> {
   const billingUsage =
     extra.billingUsage ||
@@ -1395,7 +1425,13 @@ async function settle(
       channelId: channel.id,
     });
   }
-  const ratios = await quotaRatios(store, model, auth.usingGroup);
+  const price = await textConsumePriceData(store, model, auth.usingGroup, auth.user.group);
+  const details = billingUsage.prompt_tokens_details || {};
+  const cacheCreationTokens = cacheCreationTokensTotal(details);
+  const frt =
+    extra.firstResponseMs != null && extra.startMs != null
+      ? extra.firstResponseMs - extra.startMs
+      : DEFAULT_RELAY_FRT_MS;
   await store.insertLog({
     user_id: auth.user.id,
     type: ok ? LOG_CONSUME : LOG_ERROR,
@@ -1417,16 +1453,38 @@ async function settle(
     other: consumeLogOther({
       model,
       group: auth.usingGroup,
-      groupRatio: ratios.groupRatio,
-      modelRatio: ratios.modelRatio,
-      completionRatio: ratios.completionRatio,
+      groupRatio: price.groupRatio,
+      modelRatio: price.modelRatio,
+      completionRatio: price.completionRatio,
+      cacheTokens: Number(details.cached_tokens || 0),
+      cacheRatio: price.cacheRatio,
+      modelPrice: price.modelPrice,
+      userGroupRatio: price.userGroupRatio,
+      frt,
+      reasoningEffort: extra.reasoningEffort,
+      isModelMapped: extra.isModelMapped,
+      upstreamModelName: extra.upstreamModelName,
+      isSystemPromptOverwritten: extra.isSystemPromptOverwritten,
       channelId: channel.id,
       channelName: channel.name,
       channelType: channel.type,
       ok,
       requestPath: extra.requestPath,
+      requestConversion: extra.requestConversion,
+      isClaudeUsageSemantic: isClaude,
+      finalRequestFormat: (extra.requestConversion || [])[(extra.requestConversion || []).length - 1],
+      cacheCreationTokens,
+      cacheCreationRatio: price.cacheCreationRatio,
+      cacheCreationTokens5m: billingUsage.claude_cache_creation_5_m_tokens,
+      cacheCreationRatio5m: price.cacheCreationRatio5m,
+      cacheCreationTokens1h: billingUsage.claude_cache_creation_1_h_tokens,
+      cacheCreationRatio1h: price.cacheCreationRatio1h,
+      imageTokens: details.image_tokens,
+      imageRatio: price.imageRatio,
       isMultiKey: parseChannelInfo(String(channel.channel_info || "")).is_multi_key,
+      useChannel: extra.useChannel,
       channelAffinity: extra.channelAffinity,
+      billingSource: extra.billingSource || "wallet",
       publicExtra,
     }),
   });
@@ -1904,7 +1962,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       continue;
     }
     const useTime = Math.max(0, Math.round((Date.now() - started) / 1000));
-    const extra = {
+    const channelSetting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
+    const extra: SettleLogExtra = {
       upstreamRequestId: res.headers.get("x-oneapi-request-id") || res.headers.get("x-request-id") || "",
       requestPath,
       channelAffinity: affinityLog,
@@ -1913,6 +1972,20 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       clientFormat,
       cachedTokens: 0,
       promptCacheHitTokens: 0,
+      startMs: requestStarted,
+      firstResponseMs: Date.now(),
+      useChannel: [...usedChannel],
+      isModelMapped: mapped !== model,
+      upstreamModelName: mapped,
+      reasoningEffort: String(asObj(opts.body).reasoning_effort || ""),
+      isSystemPromptOverwritten: Boolean(channelSetting.system_prompt && channelSetting.system_prompt_override),
+      requestConversion: requestConversionChain({
+        clientFormat,
+        mode,
+        viaResponses,
+        destinationFormat: destinationRelayFormat(channel.type, mode, viaResponses),
+      }),
+      billingSource: "wallet",
     };
 
     if (!res.ok) {
@@ -2399,7 +2472,7 @@ async function parseStreamAndSettle(
   ip: string,
   rid: string,
   body: ReadableStream<Uint8Array>,
-  extra: { upstreamRequestId?: string; requestPath?: string; cachedTokens?: number; promptCacheHitTokens?: number; billingUsage?: BillingUsage } = {},
+  extra: SettleLogExtra = {},
 ): Promise<void> {
   const reader = body.getReader();
   const dec = new TextDecoder();

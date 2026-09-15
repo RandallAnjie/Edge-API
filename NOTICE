@@ -158,6 +158,14 @@ Material changes from upstream:
   gpt-6-astra standard `7500` / boundary `510000` / long-context `1007510`)
   and `InjectTieredBillingInfo` public log JSON (`billing_mode`, `expr_b64`,
   `billing_tokens`, `image_cache_tokens`, `matched_tier`, `billing_unit`).
+  Original `service.GenerateTextOtherInfo` text-relay consume-log JSON always
+  includes `model_ratio`, `group_ratio`, `completion_ratio`, `cache_tokens`
+  (including `0`), `cache_ratio`, `model_price` (`-1` when ratio-billed),
+  `user_group_ratio` (`-1` without GroupGroupRatio overlay), and `frt`
+  (`-1000` until first response, matching `GenRelayInfo`). Optional public
+  fields match original (`reasoning_effort`, `is_model_mapped`,
+  `upstream_model_name`, `request_path`, `request_conversion`, `claude`,
+  `cache_creation_*`, `usage_semantic`).
 - Passkey RP IDs use original `idna.Lookup.ToASCII` then
   `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
   v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented

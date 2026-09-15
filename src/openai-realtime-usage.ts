@@ -7,6 +7,7 @@
  */
 
 import { quotaFromDecimalChecked, quotaFromFloat } from "./task-plugin-usage.js";
+import { generateTextOtherInfo, RELAY_FORMAT_OPENAI_REALTIME } from "./log-info-generate.js";
 
 /** Original `dto.RealtimeEventType*` client events. */
 export const REALTIME_EVENT_SESSION_UPDATE = "session.update";
@@ -622,29 +623,28 @@ export function generateWssOtherInfo(opts: {
   upstreamModelName: string;
   billingSource?: string;
 }): Record<string, unknown> {
-  const other: Record<string, unknown> = {
-    model_ratio: opts.modelRatio,
-    group_ratio: opts.groupRatio,
-    completion_ratio: opts.completionRatio,
-    cache_tokens: 0,
-    cache_ratio: 0,
-    model_price: opts.modelPrice,
-    user_group_ratio: opts.userGroupRatio,
+  const other = generateTextOtherInfo({
+    modelRatio: opts.modelRatio,
+    groupRatio: opts.groupRatio,
+    completionRatio: opts.completionRatio,
+    cacheTokens: 0,
+    cacheRatio: 0,
+    modelPrice: opts.modelPrice,
+    userGroupRatio: opts.userGroupRatio,
     frt: opts.frtMs,
-    request_path: opts.requestPath,
-    billing_source: opts.billingSource || "wallet",
-    ws: true,
-    audio_input: opts.usage.input_token_details.audio_tokens,
-    audio_output: opts.usage.output_token_details.audio_tokens,
-    text_input: opts.usage.input_token_details.text_tokens,
-    text_output: opts.usage.output_token_details.text_tokens,
-    audio_ratio: opts.audioRatio,
-    audio_completion_ratio: opts.audioCompletionRatio,
-  };
-  if (opts.isModelMapped) {
-    other.is_model_mapped = true;
-    other.upstream_model_name = opts.upstreamModelName;
-  }
+    requestPath: opts.requestPath,
+    isModelMapped: opts.isModelMapped,
+    upstreamModelName: opts.upstreamModelName,
+    billingSource: opts.billingSource || "wallet",
+    requestConversion: [RELAY_FORMAT_OPENAI_REALTIME],
+  });
+  other.ws = true;
+  other.audio_input = opts.usage.input_token_details.audio_tokens;
+  other.audio_output = opts.usage.output_token_details.audio_tokens;
+  other.text_input = opts.usage.input_token_details.text_tokens;
+  other.text_output = opts.usage.output_token_details.text_tokens;
+  other.audio_ratio = opts.audioRatio;
+  other.audio_completion_ratio = opts.audioCompletionRatio;
   return other;
 }
 
