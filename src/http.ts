@@ -1,0 +1,691 @@
+import { bytesToHex, sha256Bytes } from "./crypto.js";
+import type { PageQuery } from "./types.js";
+
+export function json(status: number, body: unknown, extra?: HeadersInit): Response {
+  const headers = new Headers(extra);
+  headers.set("content-type", "application/json; charset=utf-8");
+  if (!headers.has("cache-control")) headers.set("cache-control", "no-store");
+  return new Response(JSON.stringify(body), { status, headers });
+}
+
+export function apiOk(data: unknown = null, message = ""): Response {
+  return json(200, { success: true, message, data });
+}
+
+export function apiOkExtra(data: unknown, extra: Record<string, unknown>, message = ""): Response {
+  return json(200, { success: true, message, data, ...extra });
+}
+
+export function apiFail(message: string, data: unknown = null, status = 200): Response {
+  return json(status, { success: false, message, data });
+}
+
+/** Original `oauth.OAuthError` / `handleOAuthError` i18n pair. */
+export class OAuthI18nError extends Error {
+  constructor(
+    readonly zh: string,
+    readonly en: string,
+  ) {
+    super(en);
+    this.name = "OAuthI18nError";
+  }
+}
+
+/** Original `oauth.AccessDeniedError`. */
+export class OAuthAccessDeniedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OAuthAccessDeniedError";
+  }
+}
+
+/** Original `strconv.Atoi` error string from `common.ApiError`. */
+export function strconvAtoi(raw: string): { ok: true; n: number } | { ok: false; message: string } {
+  if (/^-?\d+$/.test(raw)) return { ok: true, n: Number(raw) };
+  return { ok: false, message: `strconv.Atoi: parsing "${raw}": invalid syntax` };
+}
+
+/** Original `strconv.ParseBool` error string from `common.ApiError`. */
+export function strconvParseBool(raw: string): { ok: true; v: boolean } | { ok: false; message: string } {
+  switch (raw) {
+    case "1":
+    case "t":
+    case "T":
+    case "TRUE":
+    case "true":
+    case "True":
+      return { ok: true, v: true };
+    case "0":
+    case "f":
+    case "F":
+    case "FALSE":
+    case "false":
+    case "False":
+      return { ok: true, v: false };
+    default:
+      return { ok: false, message: `strconv.ParseBool: parsing "${raw}": invalid syntax` };
+  }
+}
+
+/** Original `i18n.normalizeLang` / `ParseAcceptLanguage`. */
+export function i18nLang(req: Request): "zh-CN" | "zh-TW" | "en" {
+  const header = req.headers.get("accept-language") || "";
+  const first = header.split(",")[0]?.trim().split(";")[0] || "";
+  const lang = first.toLowerCase().trim();
+  if (lang.startsWith("zh-tw")) return "zh-TW";
+  if (lang.startsWith("zh")) return "zh-CN";
+  return "en";
+}
+
+/** Original `i18n.T` with DefaultLang English. */
+export function i18nPair(req: Request, zh: string, en: string): string {
+  if (i18nLang(req) !== "en") return zh;
+  return en;
+}
+
+/** Original `i18n.MsgTaskPluginUnknownMetaField`. */
+export function taskPluginUnknownMetaFieldMessage(req: Request, field: string): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return `外掛中繼資料包含未知欄位「${field}」。如果外掛來自官方市集，可能需要較新版本的 new-api。請嘗試更新 new-api 後重新安裝外掛。`;
+    case "zh-CN":
+      return `插件元数据包含未知字段“${field}”。如果插件来自官方市场，可能需要更高版本的 new-api。请尝试更新 new-api 后重新安装插件。`;
+    default:
+      return `Plugin metadata contains an unknown field "${field}". If this plugin was downloaded from the official marketplace, it may require a newer version of new-api. Try updating new-api and installing the plugin again.`;
+  }
+}
+
+/** Original `i18n.MsgDistributorNoAvailableChannel`. */
+export function noAvailableChannelMessage(req: Request, group: string, model: string): string {
+  return i18nPair(
+    req,
+    `分组 ${group} 下模型 ${model} 无可用渠道（distributor）`,
+    `No available channel for model ${model} under group ${group} (distributor)`,
+  );
+}
+
+/** Original `i18n.MsgDistributorGetChannelFailed`. */
+export function getChannelFailedMessage(req: Request, group: string, model: string, error: string): string {
+  return i18nPair(
+    req,
+    `获取分组 ${group} 下模型 ${model} 的可用渠道失败（distributor）：${error}`,
+    `Failed to get available channel for model ${model} under group ${group} (distributor): ${error}`,
+  );
+}
+
+/** Original `controller.getChannel` retry error when `CacheGetRandomSatisfiedChannel` returns err. */
+export function getChannelRetryFailedMessage(group: string, model: string, error: string): string {
+  return `获取分组 ${group} 下模型 ${model} 的可用渠道失败（retry）: ${error}`;
+}
+
+/** Original `controller.getChannel` retry error when the selected channel is nil. */
+export function noAvailableChannelRetryMessage(group: string, model: string): string {
+  return `分组 ${group} 下模型 ${model} 的可用渠道不存在（retry）`;
+}
+
+/** Original `i18n.MsgDistributorGroupAccessDenied`. */
+export function groupAccessDeniedMessage(req: Request): string {
+  return i18nPair(req, "无权访问该分组", "No permission to access this group");
+}
+
+/** Original `i18n.MsgDistributorTokenNoModelAccess`. */
+export function tokenNoModelAccessMessage(req: Request): string {
+  return i18nPair(req, "该令牌无权访问任何模型", "This token has no access to any models");
+}
+
+/** Original `i18n.MsgDistributorTokenModelForbidden`. */
+export function tokenModelForbiddenMessage(req: Request, model: string): string {
+  return i18nPair(req, `该令牌无权访问模型 ${model}`, `This token has no access to model ${model}`);
+}
+
+/** Original `i18n.MsgDistributorInvalidChannelId`. */
+export function invalidChannelIdMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "無效的管道 Id";
+    case "zh-CN":
+      return "无效的渠道 Id";
+    default:
+      return "Invalid channel ID";
+  }
+}
+
+/** Original `i18n.MsgTokenNotProvided`. */
+export function tokenNotProvidedMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "未提供令牌";
+    case "zh-CN":
+      return "未提供令牌";
+    default:
+      return "Token not provided";
+  }
+}
+
+/** Original `i18n.MsgTokenStatusUnavailable`. */
+export function tokenStatusUnavailableMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "該令牌狀態不可用";
+    case "zh-CN":
+      return "该令牌状态不可用";
+    default:
+      return "This token status is unavailable";
+  }
+}
+
+/** Original `i18n.MsgTokenInvalid`. */
+export function tokenInvalidMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "無效的令牌";
+    case "zh-CN":
+      return "无效的令牌";
+    default:
+      return "Invalid token";
+  }
+}
+
+/** Original `i18n.MsgAuthUserBanned`. */
+export function userBannedMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "使用者已被封禁";
+    case "zh-CN":
+      return "用户已被封禁";
+    default:
+      return "User has been banned";
+  }
+}
+
+/** Original `i18n.MsgDatabaseError`. */
+export function databaseErrorMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "資料庫出錯，請聯繫管理員";
+    case "zh-CN":
+      return "数据库出错，请联系管理员";
+    default:
+      return "Database error, please contact the administrator";
+  }
+}
+
+/** Original `i18n.MsgDistributorModelNameRequired`. */
+export function modelNameRequiredMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "未指定模型名稱，模型名稱不能為空";
+    case "zh-CN":
+      return "未指定模型名称，模型名称不能为空";
+    default:
+      return "Model name not specified, model name cannot be empty";
+  }
+}
+
+/** Original `i18n.MsgDistributorInvalidRequest`. */
+export function distributorInvalidRequestMessage(req: Request, error: string): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return `無效的請求，${error}`;
+    case "zh-CN":
+      return `无效的请求，${error}`;
+    default:
+      return `Invalid request: ${error}`;
+  }
+}
+
+/** Original `i18n.MsgDistributorInvalidMidjourney`. */
+export function invalidMidjourneyRequestMessage(req: Request, error: string): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return `無效的midjourney請求，${error}`;
+    case "zh-CN":
+      return `无效的midjourney请求，${error}`;
+    default:
+      return `Invalid Midjourney request: ${error}`;
+  }
+}
+
+/** Original `i18n.MsgDistributorChannelDisabled`. */
+export function channelDisabledMessage(req: Request): string {
+  return i18nPair(req, "该渠道已被禁用", "This channel has been disabled");
+}
+
+/** Original TokenAuth `specific_channel_version` header when a non-admin pins a channel. */
+export const SPECIFIC_CHANNEL_VERSION = "701e3ae1dc3f7975556d354e0675168d004891c8";
+
+/** Original `controller.paymentReturnPath`. */
+export function paymentReturnPath(serverAddress: string, suffix: string): string {
+  return serverAddress.replace(/\/+$/, "") + suffix;
+}
+
+export function apiFailCode(message: string, code: string, status = 200, data: unknown = null): Response {
+  return json(status, { success: false, message, code, data });
+}
+
+/** Original Stripe/Epay/Creem/Waffo checkout envelope: `{message, data}` plus extra `success`. */
+export function payOk(data: unknown): Response {
+  return json(200, { message: "success", data, success: true });
+}
+
+export function payErr(data: unknown): Response {
+  return json(200, { message: "error", data, success: false });
+}
+
+const PUBLIC_CONTENT_ETAG_NS = "public-content:v1";
+
+function etagMatches(ifNoneMatch: string, etag: string): boolean {
+  const raw = ifNoneMatch.trim();
+  if (!raw) return false;
+  if (raw === "*") return true;
+  const want = etag.replace(/^W\//, "");
+  for (const part of raw.split(",")) {
+    const candidate = part.trim().replace(/^W\//, "");
+    if (candidate === want) return true;
+  }
+  return false;
+}
+
+/** Original GetNotice/GetAbout/GetHomePageContent/GetUserAgreement/GetPrivacyPolicy. */
+export async function serveRevalidatedJSON(req: Request, content: string): Promise<Response> {
+  const data = content ?? "";
+  const digest = await sha256Bytes(new TextEncoder().encode(`${PUBLIC_CONTENT_ETAG_NS}\0${data}`));
+  const etag = `W/"${bytesToHex(digest)}"`;
+  const headers: Record<string, string> = {
+    "content-type": "application/json; charset=utf-8",
+    etag,
+    "cache-control": "no-cache",
+    vary: "Accept-Encoding",
+  };
+  if (etagMatches(req.headers.get("if-none-match") || "", etag)) {
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(JSON.stringify({ success: true, message: "", data }), { status: 200, headers });
+}
+
+/** Original `controller.videoProxyError`. */
+export function videoProxyError(status: number, type: string, message: string): Response {
+  return json(status, { error: { message, type } }, { "cache-control": "private, no-store" });
+}
+
+/** Original `controller.writeTaskArtifactError`. */
+export function taskArtifactError(status: number, code: string, message: string, apiPath = false): Response {
+  const extra = { "cache-control": "private, no-store" };
+  if (apiPath) return json(status, { success: false, code, message }, extra);
+  return json(status, { error: { message, type: code, code } }, extra);
+}
+
+export function openaiError(
+  status: number,
+  message: string,
+  code = "new_api_error",
+  type = "new_api_error",
+  extra?: HeadersInit,
+): Response {
+  return json(
+    status,
+    {
+      error: { message, type, param: "", code },
+    },
+    extra,
+  );
+}
+
+/** Original `service.RelayErrorHandler` + `ResetStatusCode`. */
+export function relayErrorHandler(status: number, bodyText: string, statusCodeMapping = ""): Response {
+  let message = `bad response status code ${status}`;
+  let type = "bad_response_status_code";
+  let code: unknown = "bad_response_status_code";
+  let param = "";
+  try {
+    const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+    const errField = parsed.error;
+    if (errField && typeof errField === "object") {
+      const err = errField as Record<string, unknown>;
+      if (typeof err.message === "string" && err.message) {
+        message = err.message;
+        if (typeof err.type === "string" && err.type) type = err.type;
+        if (err.code != null && err.code !== "") code = err.code;
+        if (typeof err.param === "string") param = err.param;
+      }
+    } else {
+      if (typeof errField === "string" && errField) message = errField;
+      else {
+        const extracted = [parsed.message, parsed.msg, parsed.err, parsed.error_msg, parsed.detail].find(
+          (v) => typeof v === "string" && v,
+        ) as string | undefined;
+        if (extracted) message = extracted;
+      }
+    }
+  } catch {
+    /* non-JSON body: original InitOpenAIError + "bad response status code N" */
+  }
+  let mapped = status;
+  if (statusCodeMapping && statusCodeMapping !== "{}") {
+    try {
+      const mapping = JSON.parse(statusCodeMapping) as Record<string, unknown>;
+      const mappedVal = mapping[String(status)];
+      if (mappedVal != null) {
+        const n = typeof mappedVal === "number" ? mappedVal : Number(mappedVal);
+        if (Number.isInteger(n) && n >= 100 && n <= 599) mapped = n;
+      }
+    } catch {
+      /* invalid mapping */
+    }
+  }
+  return json(mapped, { error: { message, type, param, code } });
+}
+
+/** Original `controller.respondPluginProtocolError`. */
+export function pluginProtocolError(status: number, code: string, message: string): Response {
+  return json(status, { error: { message, type: "new_api_error", code } });
+}
+
+/** Original `controller.respondPluginProtocolSubmissionError`. */
+export function pluginProtocolSubmissionError(err: { statusCode: number; code: string; message: string }): Response {
+  let status = err.statusCode >= 400 && err.statusCode <= 599 ? err.statusCode : 500;
+  switch (status) {
+    case 400: {
+      let message = "Invalid task protocol request";
+      if (err.message && (err.code === "invalid_request" || err.code.startsWith("invalid_request"))) {
+        message = err.message;
+      }
+      return pluginProtocolError(status, "invalid_request_error", message);
+    }
+    case 401:
+      return pluginProtocolError(status, "authentication_error", "Authentication failed");
+    case 403:
+      return pluginProtocolError(status, "permission_denied", "Task protocol request was denied");
+    case 429:
+      return pluginProtocolError(status, "rate_limit_exceeded", "Too many requests");
+    default:
+      return pluginProtocolError(status, "task_protocol_error", "Task protocol request failed");
+  }
+}
+
+/** Original `dto.TaskError` JSON (`code`, `message`, `data`). */
+export function taskErrorJson(status: number, code: string, message: string): Response {
+  return json(status, { code, message, data: null });
+}
+
+/** Original `middleware.sanitizedTaskPluginError`. */
+export function sanitizedTaskPluginError(
+  status: number,
+  detail = "",
+): { code: string; message: string; httpStatus: number; retryable: boolean } {
+  let httpStatus = status;
+  let code = "server_error";
+  let message = "Task request failed";
+  let retryable = false;
+  switch (status) {
+    case 400:
+      code = "invalid_request";
+      message = "Invalid request";
+      httpStatus = 400;
+      break;
+    case 401:
+      code = "authentication_error";
+      message = "Authentication failed";
+      httpStatus = 401;
+      break;
+    case 403:
+      code = "permission_denied";
+      message = "Access denied";
+      httpStatus = 403;
+      break;
+    case 404:
+      code = "task_not_found";
+      message = "Task not found";
+      httpStatus = 404;
+      break;
+    case 409:
+      code = "request_conflict";
+      message = "Request conflict";
+      httpStatus = 409;
+      break;
+    case 429:
+      code = "rate_limit_exceeded";
+      message = "Too many requests";
+      httpStatus = 429;
+      retryable = true;
+      break;
+    default:
+      if (httpStatus < 400 || httpStatus > 599) httpStatus = 500;
+      if (httpStatus < 500) {
+        code = "invalid_request";
+        message = "Invalid request";
+      } else {
+        code = "server_error";
+        message = "Task request failed";
+        retryable = httpStatus >= 500;
+      }
+  }
+  if (detail && httpStatus < 500) message = detail;
+  return { code, message, httpStatus, retryable };
+}
+
+/** Original `common.MessageWithRequestId`. */
+export function messageWithRequestId(message: string, requestId: string): string {
+  if (!requestId) return message;
+  return `${message} (request id: ${requestId})`;
+}
+
+/** Original `middleware.abortWithOpenAiMessage` OpenAI envelope (no `param`). */
+export function abortWithOpenAiMessage(
+  status: number,
+  message: string,
+  code = "",
+  requestId = "",
+  extra?: HeadersInit,
+): Response {
+  const headers = new Headers(extra);
+  if (requestId) headers.set("X-Oneapi-Request-Id", requestId);
+  return json(
+    status,
+    {
+      error: {
+        message: messageWithRequestId(message, requestId),
+        type: "new_api_error",
+        code,
+      },
+    },
+    headers,
+  );
+}
+
+/** Original `middleware.abortTaskPluginRouteErrorDetail` host fallback JSON. */
+export function taskPluginRouteError(status: number, detail = "", requestId = ""): Response {
+  const taskErr = sanitizedTaskPluginError(status, detail);
+  const message = messageWithRequestId(taskErr.message, requestId);
+  const extra: HeadersInit = {};
+  if (requestId) extra["X-Oneapi-Request-Id"] = requestId;
+  return json(taskErr.httpStatus, { code: taskErr.code, message, data: null }, extra);
+}
+
+/** Original plugin inner Gin `NoMethod` `AbortWithStatus(405)` empty body. */
+export function pluginMethodNotAllowed(): Response {
+  return new Response(null, { status: 405 });
+}
+
+/** Original `pluginRouteRecovery` panic JSON. */
+export function pluginRoutePanicError(): Response {
+  return json(500, { error: { message: "internal plugin route error", type: "plugin_route_error" } });
+}
+
+/** Original `PrepareTaskPluginSubmit` `AbortWithStatusJSON` invalid_request_error (no `code`). */
+export function invalidTaskPluginRequestError(message: string): Response {
+  return json(400, { error: { message, type: "invalid_request_error" } });
+}
+
+/** Original `controller.RelayNotImplemented`. */
+export function relayNotImplemented(): Response {
+  return json(501, {
+    error: { message: "API not implemented", type: "new_api_error", param: "", code: "api_not_implemented" },
+  });
+}
+
+/** Original `controller.RelayNotFound`. */
+export function relayNotFound(method: string, path: string): Response {
+  return json(
+    404,
+    {
+      error: {
+        message: `Invalid URL (${method} ${path})`,
+        type: "invalid_request_error",
+        param: "",
+        code: "",
+      },
+    },
+    {
+      "cache-control": "no-store, no-cache, must-revalidate, private, max-age=0",
+      pragma: "no-cache",
+      expires: "0",
+    },
+  );
+}
+
+/** Original `common.ApiErrorI18n(c, i18n.MsgInvalidParams)`. */
+export function apiFailInvalidParams(req: Request): Response {
+  return apiFail(i18nPair(req, "无效的参数", "Invalid parameters"));
+}
+
+export function corsHeaders(req: Request): Headers {
+  const h = new Headers();
+  h.set("access-control-allow-origin", req.headers.get("origin") || "*");
+  h.set("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  h.set(
+    "access-control-allow-headers",
+    req.headers.get("access-control-request-headers") ||
+      "authorization,content-type,x-api-key,x-goog-api-key,anthropic-version,openai-organization,mj-api-secret,x-security-proof",
+  );
+  h.set("access-control-allow-credentials", "true");
+  h.set("access-control-max-age", "86400");
+  return h;
+}
+
+export function withCors(req: Request, res: Response): Response {
+  const ws = (res as Response & { webSocket?: unknown }).webSocket;
+  if (res.status === 101 || ws) {
+    const c = corsHeaders(req);
+    c.forEach((v, k) => res.headers.set(k, v));
+    return res;
+  }
+  const headers = new Headers(res.headers);
+  const c = corsHeaders(req);
+  c.forEach((v, k) => headers.set(k, v));
+  return new Response(res.body, { status: res.status, headers });
+}
+
+/** Original `strconv.ParseInt(c.Query(name), 10, 64)`: missing/invalid → 0. */
+export function parseUnixQuery(url: URL, name: string): number {
+  const raw = url.searchParams.get(name);
+  if (!raw) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+
+export function pageQuery(url: URL): PageQuery {
+  const page = Math.max(1, Number(url.searchParams.get("p") || url.searchParams.get("page") || "1") || 1);
+  const page_size = Math.min(
+    100,
+    Math.max(
+      1,
+      Number(
+        url.searchParams.get("page_size") ||
+          url.searchParams.get("ps") ||
+          url.searchParams.get("size") ||
+          "10",
+      ) || 10,
+    ),
+  );
+  return { page, page_size, offset: (page - 1) * page_size };
+}
+
+/** Original SearchChannels `DefaultQuery("p","1")` / `page_size` (default 20, no max 100). */
+export function searchChannelPageQuery(url: URL): PageQuery {
+  const pageRaw = Number.parseInt(url.searchParams.get("p") || "1", 10);
+  const page = Number.isFinite(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
+  const sizeRaw = Number.parseInt(url.searchParams.get("page_size") || "20", 10);
+  const page_size = Number.isFinite(sizeRaw) && sizeRaw > 0 ? sizeRaw : 20;
+  return { page, page_size, offset: (page - 1) * page_size };
+}
+
+export function pageData(items: unknown, total: number, q: PageQuery, extra: Record<string, unknown> = {}) {
+  return { items, total, page: q.page, page_size: q.page_size, ...extra };
+}
+
+export async function readJson(req: Request): Promise<unknown> {
+  const text = await req.text();
+  if (!text) return {};
+  return JSON.parse(text);
+}
+
+export function clientIp(req: Request): string {
+  return (
+    req.headers.get("cf-connecting-ip") ||
+    req.headers.get("x-real-ip") ||
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    ""
+  );
+}
+
+export function cookieGet(req: Request, name: string): string | null {
+  const raw = req.headers.get("cookie") || "";
+  for (const part of raw.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === name) return decodeURIComponent(rest.join("="));
+  }
+  return null;
+}
+
+export function sessionCookie(
+  token: string,
+  maxAge: number,
+  secure: boolean,
+  name = "session",
+  path = "/",
+  sameSite: "Lax" | "Strict" = "Strict",
+): string {
+  const parts = [
+    `${name}=${encodeURIComponent(token)}`,
+    `Path=${path}`,
+    "HttpOnly",
+    `SameSite=${sameSite}`,
+    `Max-Age=${maxAge}`,
+  ];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+export function sessionHintCookie(maxAge: number, secure: boolean): string {
+  const parts = ["new_api_has_session=1", "Path=/", "SameSite=Strict", `Max-Age=${maxAge}`];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+export function refreshCookie(token: string, maxAge: number, secure: boolean): string {
+  return sessionCookie(token, maxAge, secure, "new_api_refresh", "/api/user/auth", "Strict");
+}
+
+export function clearSessionCookie(secure: boolean): string {
+  return sessionCookie("", 0, secure);
+}
+
+/** Original `service.ClearRefreshCookie`: refresh + session-hint only. */
+export function clearAuthCookies(secure: boolean): string[] {
+  return [
+    sessionCookie("", 0, secure, "new_api_refresh", "/api/user/auth"),
+    "new_api_has_session=; Path=/; Max-Age=0; SameSite=Strict" + (secure ? "; Secure" : ""),
+  ];
+}
+
+export function withSetCookies(res: Response, cookies: string[]): Response {
+  const headers = new Headers(res.headers);
+  for (const cookie of cookies) headers.append("set-cookie", cookie);
+  return new Response(res.body, { status: res.status, headers });
+}
+
+export function isSecureRequest(req: Request): boolean {
+  const url = new URL(req.url);
+  return url.protocol === "https:" || req.headers.get("x-forwarded-proto") === "https";
+}

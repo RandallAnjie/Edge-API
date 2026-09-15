@@ -1,0 +1,272 @@
+new-api Notices
+
+new-api
+Copyright (c) QuantumNous and contributors.
+
+This project is licensed under the GNU Affero General Public License v3.0.
+See LICENSE for the full project license terms.
+
+==== Additional Terms under AGPLv3 Section 7 ====
+
+Pursuant to Section 7(b) of the GNU Affero General Public License version 3,
+the following reasonable legal notice and author attribution must be preserved
+by modified versions in the Appropriate Legal Notices and in any prominent
+about, legal, footer, or attribution location presented by the user interface:
+
+"Frontend design and development by New API contributors."
+
+Modified versions that present a user interface must also preserve a visible
+link to the original project in a prominent about, legal, footer, or
+attribution location:
+
+https://github.com/QuantumNous/new-api
+
+Modified versions must not misrepresent the origin of the software and must
+mark their changes in accordance with AGPLv3 Section 7(c).
+
+==== Modifications (Edge API / RandallFlare) ====
+
+This tree is a modified version of QuantumNous/new-api, rewritten to run as a
+Cloudflare Workers-compatible Worker on RandallFlare (workerd + D1 + KV +
+static assets via @bigrandall/rrangler).
+
+Material changes from upstream:
+
+- Runtime: Go/Gin + embedded React replaced by a TypeScript Worker on workerd.
+- Storage: MySQL/PostgreSQL/SQLite-via-GORM replaced by D1 (SQLite) + KV.
+- Password hashing: Argon2id/bcrypt replaced by Web Crypto PBKDF2-SHA256
+  (existing upstream password hashes are not portable). This is documented
+  PBKDF2-SHA256, not a fake Argon2 implementation.
+- Dashboard access tokens are original-shaped JWTs (HS256, iss=new-api,
+  aud=new-api-dashboard, 15-minute TTL). The HttpOnly refresh cookie
+  `new_api_refresh` is the original `sid.secret` value (Path=/api/user/auth,
+  SameSite=Strict) with rotation and AUTH_REFRESH_RACE. Security proofs are
+  original-shaped JWTs (`token_use=security_proof`, 1-minute TTL) sent as
+  `X-Security-Proof` and consumed once via hashed auth_flows rows.
+- The original QuantumNous/new-api TanStack + Rsbuild frontend is vendored
+  under web/ and served as ASSETS (public/ is the production build). It is
+  not a compact replacement SPA.
+- Channel types that require vendor SDKs or local plugins (in-process JS task
+  plugins) are exposed in the catalog and will relay when the channel is
+  OpenAI/Anthropic/Gemini compatible or uses HTTP pass-through; otherwise they
+  return a structured error. Vertex ADC uses the original HTTP path (RS256 JWT
+  + `https://www.googleapis.com/oauth2/v4/token`, no Google SDK). AWS AKSK uses
+  the original HTTP path (Bedrock `InvokeModel` / `InvokeModelWithResponseStream`
+  + SigV4 service `bedrock`, no AWS SDK). AWS ConvertClaudeRequest rewrites
+  `source.type=url` to base64 via original GetBase64Data JSON (`type`, `media_type`,
+  `data`, omit empty `url`). Extra-OK: skip gin file-source context cache, Worker
+  download proxy, ValidateSSRFProtectedFetchURL, and HEIF `decodeImageConfig`.
+  OpenAI chat/Responses ConvertRequest HTTP image, file, input_audio, and
+  video_url sources are rewritten to Claude `source.type=base64` /
+  Gemini `inlineData` via original `MediaContent.ToFileSource` + GetBase64Data
+  (`get file data failed: …` / `get file data from '…' failed: …`). Extra-OK:
+  ConvertOpenAIRequest stays sync; URL fetch runs in convertOutbound before
+  ConvertRequest. Zhipu v4, Volcengine, Perplexity, Ali, NewAPI, Sub2API, and
+  Cloudflare ConvertOpenAIResponsesRequest return the request JSON as-is (no openai.Adaptor
+  reasoning-suffix rewrite). Baidu v2 ConvertImageRequest / ConvertAudioRequest /
+  ConvertEmbeddingRequest / ConvertRerankRequest / ConvertOpenAIResponsesRequest
+  are original `not implemented`. xAI ConvertOpenAIResponsesRequest fills empty `model` from
+  UpstreamModelName and does not run openai.Adaptor reasoning-suffix stripping.
+  Volcengine TTS uses the original HTTP path
+  (`wss://openspeech.bytedance.com/api/v1/tts/ws_binary` binary frames, or
+  `{base}/v1/audio/speech` JSON `code` 3000, no Volc SDK). Xunfei SparkDesk uses the original HTTP path
+  (gorilla `Dial` handshake timeout 5s, HTTP 101 `Upgrade: websocket` to
+  `wss://spark-api.xf-yun.com/{version}/chat`, no gorilla SDK). OpenAI Realtime uses the original HTTP path
+  (gorilla `DefaultDialer` 45s, HTTP 101 `Upgrade: websocket`, `https`→`wss`, Azure
+  `/openai/realtime?deployment=` + `api-key`, preview-only `openai-beta`, Advanced Custom
+  route `https`→`wss` + route auth, OpenaiRealtimeHandler `RealtimeUsage` JSON +
+  CountTokenRealtime / PreWssConsumeQuota / PostWssConsumeQuota, no gorilla SDK).
+  Cloudflare Workers AI STT uses the original HTTP path (`ConvertAudioRequest` raw
+  `file` bytes, GetRequestURL `/client/v4/accounts/{ApiVersion}/ai/run/{model}`,
+  cfSTTHandler `{text}` from `{result.text}`, ResponseText2Usage completion tokens).
+  Extra-OK: STT prompt tokens skip original `GetAudioDuration`.
+  OpenAI-model realtime text tokens use original `EstimateToken` (tiktoken-go is not
+  bundled). Dial-first 101 then async usage is extra-OK vs original upgrade-first
+  then blocking handler. Stripe/Epay/Creem/Waffo checkout use HTTP APIs
+  (no vendor SDK). GetTopUpInfo data keys match original `controller.GetTopUpInfo`
+  gin.H (no extra `stripe`/`epay`/`creem`/`waffo`/`quota_per_unit`/`price` fields).
+  Distributor empty-channel OpenAI errors use original `ErrorCodeModelNotFound`
+  (`model_not_found`, HTTP 503, `type: new_api_error`). Extra-OK: task-plugin and
+  Midjourney fallbacks may still surface `no_available_channel`.
+  Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
+  When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
+  429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
+  Without KV the gin in-memory path returns empty HTTP 429. Extra-OK: KV get/put is not
+  Redis lua-atomic. Default `ModelRequestRateLimitSuccessCount` is original `1000`.
+  GET `/api/usage/token` runs original `middleware.TokenAuthReadOnly` then
+  `controller.GetTokenUsage`. Missing/invalid/disabled keys use gin JSON
+  (`success: false`) with original 3-way i18n (`Token not provided` /
+  `Invalid token` / `This token status is unavailable` /
+  `Database error, please contact the administrator`). GetTokenUsage
+  `{code:true,message:"ok",data:{object:"token_usage",...}}` has no `success`.
+  Extra-OK: TokenAuthReadOnly still looks up by hyphen-split key; GetTokenUsage
+  then re-reads the Bearer remainder without the channel-pin split.
+  io.net model deployments use the original HTTP API (no
+  vendor SDK). Original QuantumNous factory task plugins (`plugins/tasks/*/plugin.js`)
+  are embedded and listed/routed with original JSON (`source: "factory"`).
+  Task-plugin `plugin.js` hooks run through the original jsplugin contract
+  (forbidden syntax, host `utils`, Call/CallMember, HookError, dry-run JSON)
+  on workerd. This is not Goja/sobek; tight-loop Interrupt is the isolate CPU
+  limit.   Native plugin routes run original `PrepareTaskPluginRoute`
+  (`native.decode` / `native.render` / `native.error` JSON) before submit
+  channel distribution. Native submit uses original RelayTask
+  `buildSubmitRequest` / `parseSubmitResponse` / `native.render` JSON
+  (public `task_id`, no `clientResponse`, `X-New-Api-Other-Ratios`).
+  Native query uses original `buildQueryRequest` / `parseTaskResult` /
+  `updateVideoSingleTask` JSON (`queryContext` without `requestBody`, public
+  `task_id` in `native.render`, persisted `result_url` / `plugin_state`).
+  `/v1/videos/:task_id` retrieve uses original `ConvertToOpenAIVideo`
+  (`protocols.openai_video.render` + host-owned id/status/progress/model).
+  Original `controller.processChannelError` uses `service.ShouldDisableChannel`
+  (`channel:` codes, default disable range `401`, AutomaticDisableKeywords;
+  not status≥500). Failed attempts set `other_info.status_reason` /
+  `status_time` and `abilities.enabled=0`. `ERROR_LOG_ENABLED` RecordErrorLog
+  other JSON is public `request_path` / `error_type` / `error_code` /
+  `status_code` plus admin `use_channel` (no top-level `channel_id` /
+  `channel_name` / `channel_type`). Extra-OK: keyword match is lowercase
+  substring, not Aho-Corasick; error-log IP is empty unless RecordIpLog.
+  Original `controller.testChannelForHealthCheck` uses ShouldDisableChannel
+  plus response-time `channel:response_time_exceeded` (408) when
+  AutomaticDisableChannelEnabled and wall time exceeds ChannelDisableThreshold
+  (`0` means an impossible 10000000ms). ShouldEnableChannel requires
+  AutomaticEnableChannelEnabled (default false) and status auto-disabled.
+  Midjourney code 3 uses original UpdateChannelStatus status 2 and
+  `No available account instance`. Extra-OK: worker testChannel is a local
+  HTTP tester, not the full gin Relay helper; disable uses mapped attempt
+  errors; empty OpenAI `error.code` stays `bad_response_status_code`.
+  Original `controller.RetrieveModel` looks up only `openAIModelsMap`
+  (HTTP 200 `model_not_found` with `param:"model"` when missing, even if
+  the model is enabled on a channel) and returns the static catalog row
+  with `supported_endpoint_types: null`. Gemini `ListModels` uses original
+  `dto.GeminiModel` zero-value JSON (`baseModelId` / `supportedGenerationMethods`
+  / etc. null, `nextPageToken: null`). Extra-OK: OpenAI `ListModels` still
+  fills `supported_endpoint_types` from the pricing cache (`[]` until
+  GetPricing, not null).   Original `controller.ChannelListModels` returns the
+  static UniqBy-first catalog with `supported_endpoint_types: null` (not
+  pricing-cache or channel-type endpoint arrays). Original
+  `controller.GetSubscription` / `GetUsage` use token remain/used/expired and
+  unlimited `100000000` only when `DisplayTokenStatEnabled`; otherwise user
+  quota/`used_quota` and `access_until: 0`. Extra-OK: gin billing JSON has no
+  Cache-Control; worker `json()` still sends `no-store`. Original `model.Channel`
+  JSON omits commented-out `MaxInputTokens` (`max_input_tokens` is not a
+  Channel field). Original `billing_setting.builtinBillingExpr` includes
+  `gpt-image-2` / `gpt-image-2.5-sunburst` / `gpt-image-2.5-flare` /
+  `gpt-6-astra`; GetRatioConfig and GetOptions expose those via
+  GetBillingModeCopy / GetBillingExprCopy. Original
+  `service.BuildTieredTokenParams` + `billingexpr.ComputeTieredQuota` settle
+  those exprs (image quota `4113` with ImageTokens/CachedTokensDetails;
+  gpt-6-astra standard `7500` / boundary `510000` / long-context `1007510`)
+  and `InjectTieredBillingInfo` public log JSON (`billing_mode`, `expr_b64`,
+  `billing_tokens`, `image_cache_tokens`, `matched_tier`, `billing_unit`).
+  Original `service.GenerateTextOtherInfo` text-relay consume-log JSON always
+  includes `model_ratio`, `group_ratio`, `completion_ratio`, `cache_tokens`
+  (including `0`), `cache_ratio`, `model_price` (`-1` when ratio-billed),
+  `user_group_ratio` (`-1` without GroupGroupRatio overlay), and `frt`
+  (`-1000` until first response, matching `GenRelayInfo`). Optional public
+  fields match original (`reasoning_effort`, `is_model_mapped`,
+  `upstream_model_name`, `request_path`, `request_conversion`, `claude`,
+  `cache_creation_*`, `usage_semantic`).
+  Original `InjectTieredBillingInfo` public log JSON also includes
+  `image_count` / `fixed_price` / `request_rules` from
+  `billingexpr.ComputeTieredQuotaWithRequest` (and estimated_* fallback when
+  settlement result is nil). `tier("image", fixed(0.04)) * image_count` with
+  3 images is quota `60000` (`QuotaPerUnit` 500000). OpenAI image `n` is
+  original `ImageRequest.ImageCount` (Ali uses `parameters.n`); settlement
+  may replace it with `data.#` via `UpdateImageCount` without mutating the
+  frozen request. Extra-OK: `param()`/`header()` request-rule `_trace` uses a
+  Function-sandbox rewrite rather than expr-lang AST Patch; `hour`/`minute`
+  /`weekday`/`month`/`day` stay 0 instead of `time.Now()`.
+  Original `service.GenerateAudioOtherInfo` audio-relay consume-log JSON wraps
+  `GenerateTextOtherInfo` with `cache_tokens`/`cache_ratio` 0, then always-sets
+  `audio: true`, `audio_input`, `audio_output`, `text_input`, `text_output`,
+  `audio_ratio`, `audio_completion_ratio`. `PostAudioConsumeQuota` is used when
+  AudioHelper sees audio tokens, compatible/chat has audio tokens plus
+  `ContainsAudioRatio`/`ContainsAudioCompletionRatio`, or Responses
+  `gpt-4o-audio*` (even with zero audio tokens). Log ratios use
+  `GetAudioRatio`/`GetAudioCompletionRatio`/`GetCompletionRatio` even when
+  PriceData zeros them on usePrice/tiered_expr (`gpt-4o-mini-tts` `audio_ratio`
+  25, `completion_ratio` 20, `model_price` 0.3). WSS stays `ws: true` without
+  `audio: true`. Extra-OK: binary speech with no usage audio tokens still uses
+  `PostTextConsumeQuota` like original AudioHelper.
+  Original `helper.modelPriceHelperTiered` freezes `RelayInfo.TieredBillingSnapshot`
+  before upstream (`estimated_completion_tokens` defaults to `8192` when
+  `max_tokens` is omitted in a paid group). `TryTieredSettle` uses that
+  snapshot's `expr_string` / estimated_* even if `billing_setting.billing_expr`
+  changes mid-request. Missing tiered expressions are HTTP 400
+  `model_price_error`. Extra-OK: channel-test still builds a snapshot at settle
+  when it has no pre-consume RelayInfo.
+  Original `service.calculateTextQuotaSummary` / `PostTextConsumeQuota` bills
+  the ratio path with shopspring `QuotaFromDecimal` (half-away-from-zero,
+  documented as JS `Math.round` for non-negative quotas), OpenRouter Claude
+  prompt mutation (`prompt_tokens` logged after cache subtraction), split
+  Claude 5m/1h cache-creation ratios, OpenAI `cache_write_tokens`,
+  `tool_surcharges` (`name`/`count`/`price`, not legacy `web_search` keys),
+  and Gemini `audio_input_seperate_price`. Original
+  `RelayInfo.CountBillableToolCall` runs during Responses / OpenAI chat /
+  Claude / Gemini DoResponse (output calls, not request declarations;
+  `web_search_call` prefers declared `web_search`; custom `function_call` /
+  `tool_use` only when priced; reserved names skipped;
+  `ImageGenerationCallCounter` completed-output cap `MaxImageN`;
+  Claude `claude_web_search_requests`; Gemini grounding
+  `gemini_google_search_call`).   Extra-OK: search-preview still also bills
+  from the model-name suffix when `RelayMode` is not Responses (original
+  `calculateTextToolCallSurcharge`). Original
+  `GetAndValidOpenAIImageRequest` multipart `/v1/images/edits` parses `n` /
+  `stream` / `quality` / `parameters` into the ImageRequest body (gpt-image-1
+  quality default `standard`, default `n` 1, `strconv.ParseBool` stream).
+  Original `GetAndValidAudioRequest` requires `model` for speech and
+  transcription/translation (no whisper-1 default), defaults empty
+  `response_format` to `json` on non-speech, and `IsStream` is
+  `stream_format == "sse"`.   Original `GetAndValidateEmbeddingRequest`
+  rejects nil `input` (`input is empty`; `""` / `[]` pass) and drops
+  unknown JSON keys. Original `GetAndValidateRerankRequest` rejects
+  empty `query` / `documents`. Original `GetAndValidateGeminiRequest`
+  requires `contents` or `requests` and bounds `maxOutputTokens`.
+  Original `GetAndValidateTextRequest` requires chat `messages` unless
+  FIM `prefix`/`suffix`, defaults `web_search_options.search_context_size`
+  to `medium`, and rejects `max_tokens` above `MaxInt32/2`. Original
+  Responses `input` is required except `/v1/responses/compact`. Original
+  `GetTokenCountMeta` / `CountRequestToken` estimate pre-consume tokens
+  from Audio `Input` (rune count unless model contains `gpt`), embedding
+  `ParseInput` joined with newlines, rerank documents+query, Gemini
+  contents text, and OpenAI chat extras (`tools*8 + messages*3 + names*3 + 3`).
+  Extra-OK: OpenAI-text models use `len/4` instead of tiktoken; media
+  tokens are not fetched; transcription/translation duration is 0.
+  Extra-OK:
+  GetAndValid runs after distributor model check and before channel
+  select, so invalid bodies 400 even when no channel exists; `/v1/engines/:model/embeddings`
+  keeps Path2RelayMode embedding validation rather than original
+  RelayFormatGemini contents-required. Extra-OK: Ali `ImageCount(true)` still runs
+  after channel select.
+  HTTP PostAudio uses original
+  `calculateAudioQuota` (`QuotaFromDecimal`, details text/audio tokens,
+  map `GetCompletionRatio` / `GetAudioRatio` / `GetAudioCompletionRatio`,
+  zero `TotalTokens` unless fixed-price).
+  Original `service.attachQuotaSaturation` nests
+  `admin_info.quota_saturation` (`op`, `kind`, `original`, `clamped`) on
+  text/audio/WSS consume logs so `formatUserLogs` strips it. `TryTieredSettle`
+  `QuotaRound` overflow is `QuotaRound`/`overflow`; WSS `calculateAudioQuota`
+  uses `QuotaFromDecimal`.
+  Original consume-log `po` is `RelayInfo.ParamOverrideAudit` (`[]string`
+  lines such as `set reasoning.effort = max`), not the raw param_override
+  object. Audit follows original sensitive-path prefixes unless debug.
+  Original consume-log `stream_status` is emitted only when `IsStream`
+  (`status` ok/error, `end_reason` done|timeout|client_gone|scanner_error|
+  handler_stop|eof|panic|ping_fail, optional `end_error` / `error_count` /
+  `errors` capped at 20). Extra-OK: workerd has no StreamScanner
+  timeout/ping/client_gone goroutines; converted SSE uses the buffered
+  body to set done/eof.
+- Passkey RP IDs use original `idna.Lookup.ToASCII` then
+  `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
+  v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented
+  PBKDF2-SHA256, not a fake Argon2 implementation.
+
+==== Public Suffix List ====
+
+Passkey domain validation includes a snapshot of the Public Suffix List
+(https://publicsuffix.org/) as compiled by golang.org/x/net v0.55.0
+(list git revision d6c92f1bbb7433e5db7b8405c25d4035fb8ff376). The list is
+Mozilla Public License 2.0. golang.org/x/net is BSD-3-Clause (Copyright
+2009 The Go Authors).
+
+==== End of Notices ====

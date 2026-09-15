@@ -1,0 +1,884 @@
+import {
+  ACCESS_TOKEN_TTL_SEC,
+  ROLE_ADMIN,
+  ROLE_ROOT,
+  SESSION_TTL_SEC,
+  TOKEN_DISABLED,
+  TOKEN_ENABLED,
+  USER_ENABLED,
+  USER_SESSION_ACTIVE_LIMIT,
+  USER_SESSION_ISSUANCE_LIMIT,
+  USER_SESSION_ISSUANCE_WINDOW_SEC,
+  nowSec,
+  randomHex,
+  tokenModelLimitsMap,
+} from "./constants.js";
+import { canWithPolicies, capabilitiesFromStore, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
+import {
+  deriveNextRefreshSecret,
+  extractRequestApiKeyParts,
+  parseApiKey,
+  hashRefreshSecret,
+  randomCharsKey,
+  signAccessJwt,
+  splitRefreshToken,
+  verifyAccessJwt,
+  verifySession,
+} from "./crypto.js";
+import {
+  abortWithOpenAiMessage,
+  apiFail,
+  apiFailCode,
+  apiOk,
+  clearAuthCookies,
+  clientIp,
+  cookieGet,
+  databaseErrorMessage,
+  isSecureRequest,
+  json,
+  readJson,
+  refreshCookie,
+  sessionHintCookie,
+  withSetCookies,
+  invalidChannelIdMessage,
+  tokenInvalidMessage,
+  tokenNotProvidedMessage,
+  tokenStatusUnavailableMessage,
+  userBannedMessage,
+  SPECIFIC_CHANNEL_VERSION,
+} from "./http.js";
+import { twoFAVerificationOption, verifyTwoFactorCode } from "./totp.js";
+import { isIpInCIDRList, parseIP, tokenIpLimits } from "./select.js";
+import { Store, permissionsFor, publicUser } from "./store.js";
+import { containsGroupRatio, userUsableGroups } from "./dto.js";
+import { tokenModelLimitAllows } from "./ratio-setting.js";
+import type { AuthToken, Env, LoginSessionRow, SessionUser, TokenRow, UserRow } from "./types.js";
+import type { Context } from "./router.js";
+import { requireSecurityProof, type AuthIdentity, type VerificationOperation } from "./security.js";
+
+export async function sessionSecret(env: Env, store: Store): Promise<string> {
+  if (env.SESSION_SECRET) return env.SESSION_SECRET;
+  let s = await store.option("SessionSecret");
+  if (!s) {
+    const buf = new Uint8Array(32);
+    crypto.getRandomValues(buf);
+    s = [...buf].map((b) => b.toString(16).padStart(2, "0")).join("");
+    await store.setOption("SessionSecret", s);
+  }
+  return s;
+}
+
+function sessionView(
+  sess: {
+    sid: string;
+    login_method?: string;
+    ip: string;
+    ua: string;
+    created_at: number;
+    last_seen: number;
+    expires_at: number;
+  },
+  current: boolean,
+  fallback?: { ip: string; ua: string; method: string },
+) {
+  return {
+    sid: sess.sid,
+    current,
+    login_method: sess.login_method || fallback?.method || "password",
+    ip: sess.ip || fallback?.ip || "",
+    user_agent: sess.ua || fallback?.ua || "",
+    created_at: Number(sess.created_at),
+    last_active_at: Number(sess.last_seen) || nowSec(),
+    expires_at: Number(sess.expires_at),
+  };
+}
+
+async function bundleFor(
+  store: Store,
+  env: Env,
+  user: UserRow,
+  sess: LoginSessionRow,
+  refreshRaw: string,
+  req: Request,
+): Promise<{
+  token: string;
+  cookie: string;
+  cookies: string[];
+  data: Record<string, unknown>;
+  sid: string;
+}> {
+  const secret = await sessionSecret(env, store);
+  const now = nowSec();
+  const accessExp = now + ACCESS_TOKEN_TTL_SEC;
+  const token = await signAccessJwt(
+    secret,
+    {
+      userId: user.id,
+      sid: sess.sid,
+      userAuthVersion: Number(sess.user_auth_version || user.auth_version || 1),
+      sessionVersion: Number(sess.version || 1),
+    },
+    now,
+    accessExp,
+  );
+  const secure = isSecureRequest(req);
+  const maxAge = Math.max(Number(sess.expires_at) - now, 1);
+  const cookies: string[] = [];
+  if (refreshRaw) cookies.push(refreshCookie(refreshRaw, maxAge, secure));
+  cookies.push(sessionHintCookie(maxAge, secure));
+  const data = {
+    access_token: token,
+    token_type: "Bearer",
+    access_expires_at: accessExp,
+    session: sessionView(sess, true),
+    user: await publicSelf(store, user),
+  };
+  return { token, cookie: cookies[0] || "", cookies, data, sid: sess.sid };
+}
+
+export async function issueSession(
+  store: Store,
+  env: Env,
+  user: UserRow,
+  req: Request,
+  loginMethod = "password",
+  existingSid?: string,
+): Promise<{
+  token: string;
+  cookie: string;
+  cookies: string[];
+  data: Record<string, unknown>;
+  sid: string;
+}> {
+  const secret = await sessionSecret(env, store);
+  const existing = existingSid ? await store.getSession(existingSid) : null;
+  const ip = (req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || "").slice(0, 64);
+  const ua = (req.headers.get("user-agent") || "").slice(0, 512);
+  const exp = nowSec() + SESSION_TTL_SEC;
+  const authVersion = Number(user.auth_version || 1) || 1;
+
+  if (existing && !existing.revoked) {
+    await store.extendSession(existing.sid, exp, ip, ua);
+    const sess = (await store.getSession(existing.sid))!;
+    const keep = cookieGet(req, "new_api_refresh") || "";
+    const parsed = splitRefreshToken(keep);
+    const refreshValue = parsed?.sid === sess.sid ? keep : "";
+    return bundleFor(store, env, user, sess, refreshValue, req);
+  }
+
+  const active = await store.countActiveSessions(user.id);
+  if (active >= USER_SESSION_ACTIVE_LIMIT) {
+    throw Object.assign(new Error("AUTH_SESSION_LIMIT"), { code: "AUTH_SESSION_LIMIT" });
+  }
+  const issuedRecent = await store.countSessionsCreatedSince(user.id, nowSec() - USER_SESSION_ISSUANCE_WINDOW_SEC);
+  if (issuedRecent >= USER_SESSION_ISSUANCE_LIMIT) {
+    throw Object.assign(new Error("AUTH_SESSION_ISSUANCE_LIMIT"), { code: "AUTH_SESSION_ISSUANCE_LIMIT" });
+  }
+
+  const sid = crypto.randomUUID();
+  const refreshSecret = randomCharsKey(64);
+  const refreshHash = await hashRefreshSecret(secret, refreshSecret);
+  await store.insertSession({
+    sid,
+    user_id: user.id,
+    ip,
+    ua,
+    expires_at: exp,
+    login_method: loginMethod,
+    refresh_hash: refreshHash,
+    version: 1,
+    user_auth_version: authVersion,
+  });
+  await store.updateUser(user.id, { last_login_at: nowSec() });
+  const sess = (await store.getSession(sid))!;
+  return bundleFor(store, env, user, sess, `${sid}.${refreshSecret}`, req);
+}
+
+export function authUnauthorized(): Response {
+  return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized", data: null });
+}
+
+export function authSessionMismatch(): Response {
+  return json(409, { success: false, code: "AUTH_SESSION_MISMATCH", message: "Conflict", data: null });
+}
+
+export function authRefreshRace(): Response {
+  return json(409, { success: false, code: "AUTH_REFRESH_RACE", message: "Conflict", data: null });
+}
+
+export function authSessionLimit(): Response {
+  return json(409, { success: false, code: "AUTH_SESSION_LIMIT", message: "Conflict", data: null });
+}
+
+export function authSessionIssuanceLimit(): Response {
+  return json(429, { success: false, code: "AUTH_SESSION_ISSUANCE_LIMIT", message: "Too Many Requests", data: null });
+}
+
+/** Original `controller.dashboardBearer`. */
+function dashboardBearer(req: Request): string {
+  const parts = (req.headers.get("authorization") || "").trim().split(/\s+/);
+  if (parts.length !== 2 || parts[0].toLowerCase() !== "bearer" || !parts[1]) return "";
+  return parts[1];
+}
+
+/** Original `controller.AuthLogout` JSON + ClearRefreshCookie. */
+export async function authLogout(store: Store, env: Env, req: Request): Promise<Response> {
+  const expectedSID = (req.headers.get("X-Auth-Session") || "").trim();
+  const rawRefresh = cookieGet(req, "new_api_refresh") || "";
+  const parsed = splitRefreshToken(rawRefresh);
+  const cookieSID = parsed?.sid || "";
+  const hasCookieSID = Boolean(cookieSID);
+  const secure = isSecureRequest(req);
+  const cleared = clearAuthCookies(secure);
+
+  if (expectedSID && rawRefresh && hasCookieSID && cookieSID !== expectedSID) {
+    return authSessionMismatch();
+  }
+
+  const bearer = dashboardBearer(req);
+  if (bearer) {
+    const jwt = await verifyAccessJwt(bearer, await sessionSecret(env, store));
+    if (jwt) {
+      const sessionId = jwt.sid;
+      const userId = Number(jwt.sub);
+      if (expectedSID && expectedSID !== sessionId) return authSessionMismatch();
+      await store.revokeSession(sessionId, userId);
+      let cookieCleared = false;
+      let cookies: string[] = [];
+      if (rawRefresh && hasCookieSID && cookieSID === sessionId) {
+        await store.revokeSession(cookieSID, userId);
+        cookieCleared = true;
+        cookies = cleared;
+      }
+      return withSetCookies(
+        json(200, {
+          success: true,
+          message: "",
+          data: { revoked_sid: sessionId, cookie_cleared: cookieCleared },
+        }),
+        cookies,
+      );
+    }
+  }
+
+  if (!rawRefresh) {
+    return withSetCookies(json(200, { success: true, message: "" }), cleared);
+  }
+  if (expectedSID && expectedSID !== cookieSID) return authSessionMismatch();
+  if (parsed) await store.revokeSession(parsed.sid);
+  return withSetCookies(json(200, { success: true, message: "" }), cleared);
+}
+
+export function maybeClearRefreshCookie(req: Request, res: Response): Response {
+  if (res.status !== 401) return res;
+  return withSetCookies(res, clearAuthCookies(isSecureRequest(req)));
+}
+
+export function sessionResponse(issued: { data: Record<string, unknown>; cookies: string[] }, status = 200, message = ""): Response {
+  return withSetCookies(apiOk(issued.data, message), issued.cookies);
+}
+
+export async function refreshLoginSession(
+  store: Store,
+  env: Env,
+  req: Request,
+  expectedSid: string,
+): Promise<
+  | { ok: true; issued: Awaited<ReturnType<typeof issueSession>> }
+  | { ok: false; response: Response }
+> {
+  const raw = cookieGet(req, "new_api_refresh") || "";
+  const parsed = splitRefreshToken(raw);
+  if (!parsed) return { ok: false, response: authUnauthorized() };
+  if (expectedSid && expectedSid !== parsed.sid) return { ok: false, response: authSessionMismatch() };
+
+  const secret = await sessionSecret(env, store);
+  const sess = await store.getSession(parsed.sid);
+  if (!sess || sess.revoked || (sess.expires_at > 0 && sess.expires_at < nowSec())) {
+    return { ok: false, response: json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized", data: null }) };
+  }
+  const user = await store.getUserById(sess.user_id);
+  if (!user || user.status !== USER_ENABLED) return { ok: false, response: authUnauthorized() };
+  const authVersion = Number(user.auth_version || 1) || 1;
+  if (Number(sess.user_auth_version || 1) !== authVersion) {
+    await store.revokeSession(sess.sid, user.id);
+    return { ok: false, response: json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized", data: null }) };
+  }
+
+  const currentHash = await hashRefreshSecret(secret, parsed.secret);
+  const nextSecret = await deriveNextRefreshSecret(secret, parsed.sid, parsed.secret);
+  const nextHash = await hashRefreshSecret(secret, nextSecret);
+  const now = nowSec();
+  const ip = (req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || "").slice(0, 64);
+  const ua = (req.headers.get("user-agent") || "").slice(0, 512);
+
+  if (sess.refresh_hash && sess.refresh_hash === nextHash) {
+    const age = now - Number(sess.last_rotated_at || 0);
+    if (age <= 30) {
+      const rotated = (await store.getSession(sess.sid))!;
+      return { ok: true, issued: await bundleFor(store, env, user, rotated, `${parsed.sid}.${nextSecret}`, req) };
+    }
+    return { ok: false, response: authRefreshRace() };
+  }
+  if (sess.refresh_hash && sess.refresh_hash !== currentHash) {
+    if (sess.last_refresh_hash === currentHash) {
+      await store.revokeSession(sess.sid, user.id);
+      return { ok: false, response: json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized", data: null }) };
+    }
+    return { ok: false, response: authUnauthorized() };
+  }
+
+  const rotated = await store.rotateSessionRefresh(sess.sid, currentHash, nextHash, now, ip, ua);
+  if (!rotated) return { ok: false, response: authRefreshRace() };
+  return { ok: true, issued: await bundleFor(store, env, user, rotated, `${parsed.sid}.${nextSecret}`, req) };
+}
+
+async function sessionUserFromAccess(store: Store, secret: string, raw: string, req?: Request): Promise<SessionUser | null> {
+  const jwt = await verifyAccessJwt(raw, secret);
+  if (jwt) {
+    const sess = await store.getSession(jwt.sid);
+    if (!sess || sess.revoked || (sess.expires_at > 0 && sess.expires_at < nowSec())) return null;
+    if (Number(sess.version || 1) !== jwt.sv) return null;
+    const user = await store.getUserById(Number(jwt.sub));
+    if (!user || user.status !== USER_ENABLED) return null;
+    if (Number(user.auth_version || 1) !== jwt.uv) return null;
+    await store.touchSession(jwt.sid);
+    return toSessionUser(user, jwt.sid, jwt.uv, jwt.sv);
+  }
+  if (splitRefreshToken(raw)) return null;
+  if (raw.split(".").length === 2) {
+    const payload = await verifySession(raw, secret);
+    if (!payload) return null;
+    const sess = payload.sid ? await store.getSession(payload.sid) : null;
+    if (payload.sid && (!sess || sess.revoked || (sess.expires_at > 0 && sess.expires_at < nowSec()))) return null;
+    const user = await store.getUserById(payload.uid);
+    if (!user || user.status !== USER_ENABLED) return null;
+    if (payload.sid) await store.touchSession(payload.sid);
+    return toSessionUser(user, payload.sid || "", Number(user.auth_version || 1) || 1, Number(sess?.version || 1) || 1);
+  }
+  const user = await store.getUserByField("access_token", raw);
+  if (!user || user.status !== USER_ENABLED) return null;
+  if (req) await beginAccessTokenAudit(store, req, user, raw);
+  return toSessionUser(user, "");
+}
+
+function toSessionUser(user: UserRow, sid: string, uv = 0, sv = 0): SessionUser {
+  return {
+    id: user.id,
+    username: user.username,
+    display_name: user.display_name,
+    role: user.role,
+    status: user.status,
+    group: user.group,
+    quota: user.quota,
+    used_quota: user.used_quota,
+    request_count: user.request_count,
+    email: user.email,
+    sid,
+    userAuthVersion: uv || Number(user.auth_version || 1) || 1,
+    sessionVersion: sv || 1,
+  };
+}
+
+function bearerCredential(req: Request): string {
+  const auth = req.headers.get("authorization") || "";
+  if (auth.toLowerCase().startsWith("bearer ")) {
+    const raw = auth.slice(7).trim();
+    if (raw && !raw.toLowerCase().startsWith("sk-")) return raw;
+  }
+  return "";
+}
+
+export async function readSession(c: Context<Env>, store: Store): Promise<SessionUser | null> {
+  const secret = await sessionSecret(c.env, store);
+  const bearer = bearerCredential(c.req);
+  const cookieTok = cookieGet(c.req, "session") || "";
+  const raw = bearer || cookieTok;
+  if (!raw) return null;
+  return sessionUserFromAccess(store, secret, raw, c.req);
+}
+
+export async function requireUser(c: Context<Env>, store: Store): Promise<SessionUser | Response> {
+  const u = await readSession(c, store);
+  if (!u) return apiFail("未登录", null, 401);
+  return u;
+}
+
+export async function requireAdmin(c: Context<Env>, store: Store): Promise<SessionUser | Response> {
+  const u = await requireUser(c, store);
+  if (u instanceof Response) return u;
+  if (u.role < ROLE_ADMIN) return apiFail("无权访问", null, 403);
+  return u;
+}
+
+export async function requireRoot(c: Context<Env>, store: Store): Promise<SessionUser | Response> {
+  const u = await requireUser(c, store);
+  if (u instanceof Response) return u;
+  if (u.role < ROLE_ROOT) return apiFail("需要超级管理员", null, 403);
+  return u;
+}
+
+export async function publicSelf(store: Store, user: UserRow): Promise<Record<string, unknown>> {
+  const permissions = permissionsFor(user);
+  permissions.admin_permissions = await capabilitiesFromStore(store, user);
+  return { ...publicUser(user), permissions };
+}
+
+type PendingAccessAudit = {
+  userId: number;
+  username: string;
+  actorRole: number;
+  tokenRef: string;
+  ip: string;
+  userAgent: string;
+  method: string;
+  route: string;
+};
+
+const pendingAccessAudits = new WeakMap<Request, PendingAccessAudit>();
+
+export async function beginAccessTokenAudit(store: Store, req: Request, user: UserRow, token: string): Promise<void> {
+  if (pendingAccessAudits.has(req)) return;
+  const { accessTokenFingerprint } = await import("./crypto.js");
+  const url = new URL(req.url);
+  pendingAccessAudits.set(req, {
+    userId: user.id,
+    username: user.username,
+    actorRole: user.role,
+    tokenRef: await accessTokenFingerprint(token),
+    ip: clientIp(req),
+    userAgent: req.headers.get("user-agent") || "",
+    method: req.method,
+    route: url.pathname,
+  });
+}
+
+export async function maybeBeginAccessTokenAudit(store: Store, req: Request, secret: string): Promise<void> {
+  const raw = bearerCredential(req);
+  if (!raw) return;
+  if (await verifyAccessJwt(raw, secret)) return;
+  if (splitRefreshToken(raw)) return;
+  if (raw.split(".").length === 2 && (await verifySession(raw, secret))) return;
+  const user = await store.getUserByField("access_token", raw);
+  if (!user || user.status !== USER_ENABLED) return;
+  await beginAccessTokenAudit(store, req, user, raw);
+}
+
+export async function finishAccessTokenAudit(store: Store, req: Request, res: Response): Promise<void> {
+  const pending = pendingAccessAudits.get(req);
+  if (!pending) return;
+  pendingAccessAudits.delete(req);
+  let success = res.status < 400;
+  const ct = res.headers.get("content-type") || "";
+  if (success && ct.includes("json")) {
+    try {
+      const body = (await res.clone().json()) as { success?: boolean };
+      if (typeof body.success === "boolean") success = body.success && res.status < 400;
+    } catch {
+      /* body was not JSON */
+    }
+  }
+  await store.audit(pending.userId, pending.username, "access_token", pending.route, pending.ip, {
+    actor_role: pending.actorRole,
+    category: "access_token",
+    action: pending.route,
+    token_ref: pending.tokenRef,
+    auth_method: "access_token",
+    user_agent: pending.userAgent,
+    method: pending.method,
+    route: pending.route,
+    status: res.status,
+    success,
+  });
+}
+
+export async function requirePermission(
+  c: Context<Env>,
+  store: Store,
+  resource: string,
+  action: string,
+): Promise<SessionUser | Response> {
+  const u = await requireAdmin(c, store);
+  if (u instanceof Response) return u;
+  const user = await store.getUserById(u.id);
+  if (!user) return json(403, { success: false, message: "无权进行此操作，权限不足" });
+  const roleKey = roleKeyForSystemRole(user.role);
+  const userPolicies = await store.casbinPolicies(userSubject(user.id));
+  const rolePolicies = roleKey ? await store.casbinPolicies(roleSubject(roleKey)) : [];
+  if (!canWithPolicies(user, resource, action, userPolicies, rolePolicies)) {
+    return json(403, { success: false, message: "无权进行此操作，权限不足" });
+  }
+  return u;
+}
+
+export async function requireChannel(
+  c: Context<Env>,
+  store: Store,
+  action: "read" | "operate" | "write" | "sensitive_write" | "secret_view",
+): Promise<SessionUser | Response> {
+  return requirePermission(c, store, "channel", action);
+}
+
+export function isResponse(v: unknown): v is Response {
+  return v instanceof Response;
+}
+
+/** Original `middleware.TokenAuthReadOnly` — gin JSON, not OpenAI errors. */
+export async function authenticateTokenReadOnly(
+  c: Context<Env>,
+  store: Store,
+): Promise<{ token: TokenRow; user: UserRow } | Response> {
+  const header = c.req.headers.get("authorization") || "";
+  if (!header) {
+    return json(401, { success: false, message: tokenNotProvidedMessage(c.req) });
+  }
+  const key = parseApiKey(header);
+  const token = await store.getTokenByKey(key);
+  if (!token) {
+    return json(401, { success: false, message: tokenInvalidMessage(c.req) });
+  }
+  if (token.status === TOKEN_DISABLED) {
+    return json(401, { success: false, message: tokenStatusUnavailableMessage(c.req) });
+  }
+  const user = await store.getUserById(token.user_id);
+  if (!user) {
+    return json(500, { success: false, message: databaseErrorMessage(c.req) });
+  }
+  if (user.status !== USER_ENABLED) {
+    return json(403, { success: false, message: userBannedMessage(c.req) });
+  }
+  return { token, user };
+}
+
+function tokenAuthAbort(
+  req: Request,
+  status: number,
+  message: string,
+  code = "",
+  extra?: HeadersInit,
+): Response {
+  return abortWithOpenAiMessage(status, message, code, req.headers.get("x-oneapi-request-id") || "", extra);
+}
+
+export async function authenticateApiToken(c: Context<Env>, store: Store): Promise<AuthToken | Response> {
+  const parsed = extractRequestApiKeyParts(c.req, c.url);
+  const key = parsed.key;
+  if (!key) return tokenAuthAbort(c.req, 401, tokenInvalidMessage(c.req));
+  const token = await store.getTokenByKey(key);
+  if (!token || token.status !== TOKEN_ENABLED) {
+    return tokenAuthAbort(c.req, 401, tokenInvalidMessage(c.req));
+  }
+  if (token.expired_time !== -1 && token.expired_time < nowSec()) {
+    return tokenAuthAbort(c.req, 401, tokenInvalidMessage(c.req));
+  }
+  if (!token.unlimited_quota && token.remain_quota <= 0) {
+    return tokenAuthAbort(c.req, 401, tokenInvalidMessage(c.req));
+  }
+  const allowIps = tokenIpLimits(token.allow_ips);
+  if (allowIps.length) {
+    const ip = clientIp(c.req);
+    if (!parseIP(ip)) {
+      return tokenAuthAbort(c.req, 403, "无法解析客户端 IP 地址");
+    }
+    if (!isIpInCIDRList(ip, allowIps)) {
+      return tokenAuthAbort(c.req, 403, "您的 IP 不在令牌允许访问的列表中", "access_denied");
+    }
+  }
+  const user = await store.getUserById(token.user_id);
+  if (!user) return tokenAuthAbort(c.req, 500, databaseErrorMessage(c.req));
+  if (user.status !== USER_ENABLED) return tokenAuthAbort(c.req, 403, userBannedMessage(c.req));
+  const userGroup = user.group || "default";
+  let usingGroup = userGroup;
+  const tokenGroup = String(token.group || "");
+  if (tokenGroup) {
+    const usable = await userUsableGroups(store, userGroup);
+    if (usable[tokenGroup] == null) {
+      return tokenAuthAbort(c.req, 403, `无权访问 ${tokenGroup} 分组`);
+    }
+    if (tokenGroup !== "auto" && !(await containsGroupRatio(store, tokenGroup))) {
+      return tokenAuthAbort(c.req, 403, `分组 ${tokenGroup} 已被弃用`);
+    }
+    usingGroup = tokenGroup;
+  }
+  let pinnedChannelId: number | undefined;
+  if (parsed.extra.length) {
+    if (user.role < ROLE_ADMIN) {
+      return tokenAuthAbort(c.req, 403, "普通用户不支持指定渠道", "", {
+        specific_channel_version: SPECIFIC_CHANNEL_VERSION,
+      });
+    }
+    const rawId = parsed.extra[0];
+    if (!/^-?\d+$/.test(rawId)) {
+      return tokenAuthAbort(c.req, 400, invalidChannelIdMessage(c.req));
+    }
+    pinnedChannelId = Number(rawId);
+  }
+  return { token, user, usingGroup, pinnedChannelId };
+}
+
+export function tokenAllowsModel(token: TokenRow, model: string): boolean {
+  if (!token.model_limits_enabled) return true;
+  return tokenModelLimitAllows(tokenModelLimitsMap(String(token.model_limits || "")), model);
+}
+
+export async function currentSid(c: Context<Env>, store: Store): Promise<string> {
+  const u = await readSession(c, store);
+  if (u?.sid) return u.sid;
+  const parsed = splitRefreshToken(cookieGet(c.req, "new_api_refresh") || "");
+  return parsed?.sid || "";
+}
+
+export async function dashboardIdentity(c: Context<Env>, store: Store): Promise<AuthIdentity | null> {
+  const u = await readSession(c, store);
+  if (!u?.sid || !u.userAuthVersion || !u.sessionVersion) return null;
+  return {
+    userId: u.id,
+    sessionId: u.sid,
+    userAuthVersion: u.userAuthVersion,
+    sessionVersion: u.sessionVersion,
+  };
+}
+
+/** Original `requireBrowserSession` — PAT identities have no sid. */
+export function authSessionRequired(): Response {
+  return json(403, {
+    success: false,
+    code: "AUTH_SESSION_REQUIRED",
+    message: "a dashboard login session is required",
+  });
+}
+
+export async function requireBrowserSession(
+  c: Context<Env>,
+  store: Store,
+): Promise<{ user: SessionUser; identity: AuthIdentity } | Response> {
+  const u = await requireUser(c, store);
+  if (u instanceof Response) return u;
+  const identity = await dashboardIdentity(c, store);
+  if (!identity) return authSessionRequired();
+  return { user: u, identity };
+}
+
+export async function requireProof(
+  c: Context<Env>,
+  store: Store,
+  operation: VerificationOperation,
+): Promise<(AuthIdentity & { method: string }) | Response> {
+  const identity = await dashboardIdentity(c, store);
+  const user = identity ? await store.getUserById(identity.userId) : null;
+  const secret = await sessionSecret(c.env, store);
+  return requireSecurityProof(c, store, secret, identity, user, operation);
+}
+
+export async function issueSessionSafe(
+  store: Store,
+  env: Env,
+  user: UserRow,
+  req: Request,
+  loginMethod = "password",
+  existingSid?: string,
+): Promise<Awaited<ReturnType<typeof issueSession>> | Response> {
+  try {
+    return await issueSession(store, env, user, req, loginMethod, existingSid);
+  } catch (e) {
+    const code = e instanceof Error ? (e as Error & { code?: string }).code : "";
+    if (code === "AUTH_SESSION_LIMIT") return authSessionLimit();
+    if (code === "AUTH_SESSION_ISSUANCE_LIMIT") return authSessionIssuanceLimit();
+    throw e;
+  }
+}
+
+/** Original `model.AuthFlowPurposeLoginVerification`. */
+export const AUTH_FLOW_PURPOSE_LOGIN_VERIFICATION = "login_verification";
+
+/** Original `service.VerificationMethodTwoFA`. */
+export const VERIFICATION_METHOD_TWO_FA = "2fa";
+
+/** Original `service.ErrProofMethod` via `writeSecurityOperationError`. */
+const ERR_PROOF_METHOD = "This verification method is not allowed for this action.";
+/** Original `writeSecurityOperationError` for `ErrAuthFlowInvalid` / Expired / Consumed. */
+const ERR_AUTH_FLOW_INVALID = "Verification flow expired";
+/** Original `service.ErrVerificationUnavailable`. */
+const ERR_VERIFICATION_UNAVAILABLE = "This verification method is currently unavailable.";
+
+/** Original `service.LoginVerificationTTL`. */
+export const LOGIN_VERIFICATION_TTL_SEC = 300;
+
+/** Original `service.LoginChallenge`. */
+export type LoginChallenge = {
+  require_verification: true;
+  flow_token: string;
+  expires_at: number;
+  methods: { method: string; available: boolean; reason?: string }[];
+};
+
+export function isLoginVerificationFlow(type: string): boolean {
+  return type === AUTH_FLOW_PURPOSE_LOGIN_VERIFICATION;
+}
+
+async function loginVerificationMethods(store: Store, user: UserRow): Promise<LoginChallenge["methods"]> {
+  const methods: LoginChallenge["methods"] = [];
+  if (Number(user.totp_enabled) === 1) methods.push(twoFAVerificationOption(user));
+  const hasPasskey = (await store.listPasskeys(user.id)).length > 0;
+  if (hasPasskey) {
+    if (await store.optionBool("PasskeyEnabled", true)) methods.push({ method: "passkey", available: true });
+    else methods.push({ method: "passkey", available: false, reason: "Passkey authentication is disabled." });
+  }
+  return methods;
+}
+
+/**
+ * Original `service.StartLoginVerification`.
+ * Password login keeps its extra `require_2fa` field; WeChat/OAuth use this envelope as-is.
+ */
+export async function startLoginVerification(
+  store: Store,
+  user: UserRow,
+  loginMethod: string,
+): Promise<{ challenge: LoginChallenge | null } | { error: Response }> {
+  const authVersion = Number(user.auth_version || 1) || 1;
+  if (!user.id || authVersion <= 0 || !loginMethod) {
+    return { error: apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID") };
+  }
+  if (user.status !== USER_ENABLED) {
+    return { error: authUnauthorized() };
+  }
+  const methods = await loginVerificationMethods(store, user);
+  if (!methods.length) return { challenge: null };
+  if (!methods.some((m) => m.available)) {
+    return { error: apiFailCode(ERR_VERIFICATION_UNAVAILABLE, "SECURITY_METHOD_UNAVAILABLE") };
+  }
+  const flow = randomHex(16);
+  const expires_at = nowSec() + LOGIN_VERIFICATION_TTL_SEC;
+  await store.insertAuthFlow({
+    token: flow,
+    type: AUTH_FLOW_PURPOSE_LOGIN_VERIFICATION,
+    user_id: user.id,
+    expires_at,
+    payload: JSON.stringify({ auth_version: authVersion, login_method: loginMethod }),
+  });
+  return { challenge: { require_verification: true, flow_token: flow, expires_at, methods } };
+}
+
+/** Original `controller.setupLogin`. */
+export async function setupLogin(
+  store: Store,
+  env: Env,
+  user: UserRow,
+  req: Request,
+  loginMethod: string,
+): Promise<Response> {
+  const started = await startLoginVerification(store, user, loginMethod);
+  if ("error" in started) return started.error;
+  if (started.challenge) return apiOk(started.challenge);
+  const issued = await issueSessionSafe(store, env, user, req, loginMethod);
+  if (issued instanceof Response) return issued;
+  await store.audit(user.id, user.username, "login", `Logged in successfully via ${loginMethod}`, clientIp(req));
+  return sessionResponse(issued);
+}
+
+type LoginFlowPayload = { auth_version: number; login_method: string };
+
+async function requireLoginVerification(
+  store: Store,
+  token: string,
+  method: string,
+): Promise<{ flow: { token: string; user_id: number }; user: UserRow; payload: LoginFlowPayload } | { error: Response }> {
+  const flow = await store.getAuthFlow(token);
+  if (!flow || !isLoginVerificationFlow(flow.type)) {
+    return { error: apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID") };
+  }
+  if (Number(flow.consumed_at || 0) > 0 || flow.expires_at < nowSec()) {
+    return { error: apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID") };
+  }
+  let payload: LoginFlowPayload | null = null;
+  try {
+    const parsed = JSON.parse(flow.payload || "{}") as { auth_version?: unknown; login_method?: unknown };
+    const authVersion = Number(parsed.auth_version || 0);
+    const loginMethod = typeof parsed.login_method === "string" ? parsed.login_method : "";
+    if (authVersion > 0 && loginMethod) payload = { auth_version: authVersion, login_method: loginMethod };
+  } catch {
+    payload = null;
+  }
+  if (!payload) return { error: apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID") };
+  const user = await store.getUserById(flow.user_id);
+  if (!user || user.status !== USER_ENABLED || Number(user.auth_version || 1) !== payload.auth_version) {
+    return { error: authUnauthorized() };
+  }
+  const methods = await loginVerificationMethods(store, user);
+  const option = methods.find((m) => m.method === method);
+  if (!option) return { error: apiFailCode(ERR_PROOF_METHOD, "SECURITY_PROOF_METHOD_MISMATCH") };
+  if (!option.available) return { error: apiFailCode(ERR_VERIFICATION_UNAVAILABLE, "SECURITY_METHOD_UNAVAILABLE") };
+  return { flow, user, payload };
+}
+
+/** Original `service.VerifyTwoFactorCode` for login (TOTP or backup code). */
+async function verifyLoginTwoFactor(store: Store, user: UserRow, code: string): Promise<Response | null> {
+  const result = await verifyTwoFactorCode(store, user, code);
+  if (!result.ok) return apiFailCode(result.message, result.code);
+  return null;
+}
+
+/**
+ * Original `service.CompleteLoginVerification` + `controller.completeVerifiedLoginResponse`.
+ * Session `login_method` is the primary method stored on the flow (`password`, `oauth:github`, …),
+ * not the factor used to complete the challenge.
+ */
+export async function completeLoginVerification(
+  store: Store,
+  env: Env,
+  req: Request,
+  token: string,
+  method: string,
+): Promise<Response> {
+  const loaded = await requireLoginVerification(store, token, method);
+  if ("error" in loaded) return loaded.error;
+  const consumed = await store.consumeAuthFlow(token, {
+    type: AUTH_FLOW_PURPOSE_LOGIN_VERIFICATION,
+    user_id: loaded.user.id,
+  });
+  if (consumed !== "ok") return apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID");
+  const issued = await issueSessionSafe(store, env, loaded.user, req, loaded.payload.login_method);
+  if (issued instanceof Response) return issued;
+  await store.audit(
+    loaded.user.id,
+    loaded.user.username,
+    "login",
+    `Logged in successfully via ${loaded.payload.login_method}`,
+    clientIp(req),
+    { method: loaded.payload.login_method, other: JSON.stringify({ verification_method: method }) },
+  );
+  return sessionResponse(issued);
+}
+
+/**
+ * Original `controller.VerifyLogin` / `controller.Verify2FALogin`.
+ * Empty `method` defaults to `2fa`; any other method is `SECURITY_PROOF_METHOD_MISMATCH`.
+ */
+export async function verifyLogin(store: Store, env: Env, req: Request, rawBody: unknown): Promise<Response> {
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) return apiFail("参数错误");
+  const body = rawBody as { flow_token?: unknown; method?: unknown; code?: unknown };
+  const flowToken = typeof body.flow_token === "string" ? body.flow_token : "";
+  const code = typeof body.code === "string" ? body.code : "";
+  if (!flowToken || !code) return apiFail("参数错误");
+  const method = typeof body.method === "string" && body.method ? body.method : VERIFICATION_METHOD_TWO_FA;
+  if (method !== VERIFICATION_METHOD_TWO_FA) {
+    return apiFailCode(ERR_PROOF_METHOD, "SECURITY_PROOF_METHOD_MISMATCH");
+  }
+  const loaded = await requireLoginVerification(store, flowToken, method);
+  if ("error" in loaded) return loaded.error;
+  const totpErr = await verifyLoginTwoFactor(store, loaded.user, code);
+  if (totpErr) return totpErr;
+  return completeLoginVerification(store, env, req, flowToken, method);
+}
+
+/** Original `controller.VerifyLogin` request decoding. */
+export async function verifyLoginFromRequest(store: Store, env: Env, req: Request): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await readJson(req);
+  } catch {
+    return apiFail("参数错误");
+  }
+  return verifyLogin(store, env, req, body);
+}

@@ -1,0 +1,5269 @@
+import {
+  CHANNEL_AUTO_DISABLED,
+  CHANNEL_ENABLED,
+  DEFAULT_GROUP_RATIO,
+  DEFAULT_OPTIONS,
+  ERR_SYSTEM_TASK_LOCK_LOST,
+  LOG_CONSUME,
+  LOG_TOPUP,
+  MAX_WALLET_QUOTA,
+  NAME_RULE_EXACT,
+  REDEMPTION_DISABLED,
+  REDEMPTION_ENABLED,
+  REDEMPTION_USED,
+  ROLE_ADMIN,
+  ROLE_ROOT,
+  ROLE_USER,
+  SYSTEM_TASK_LOCK_TTL_SEC,
+  TOKEN_ENABLED,
+  TOTP_LOCKOUT_DURATION_SEC,
+  TOTP_MAX_FAIL_ATTEMPTS,
+  USER_ENABLED,
+  USER_SESSION_LIST_LIMIT,
+  VERSION,
+  csv,
+  hourStartSec,
+  nowMs,
+  nowSec,
+  parseJson,
+} from "./constants.js";
+import { OPTION_ALIASES } from "./option-defaults.js";
+import { capabilities, parsePermissionOverrides } from "./authz.js";
+import { pickAbilityChannelId } from "./select.js";
+import { routingMatchModelName } from "./ratio-setting.js";
+import {
+  channelSatisfiesFilters,
+  identityFilterRequiresKey,
+  type ChannelFilter,
+} from "./channel-constraint.js";
+import { SCHEMA_SQL, ensureSchema } from "./schema.js";
+import { calcNextResetTime, calcPlanEndTime, normalizeBillingPreference, normalizeResetPeriod } from "./subscription.js";
+import { MODEL_PRICING_OPTION_KEYS } from "./model-pricing.js";
+import { generateSystemTaskId } from "./crypto.js";
+import { storeFormatQuota, storeLogQuota } from "./quota.js";
+import { taskPluginRowEnabled, taskPluginSyncRevisionFromRows } from "./dto.js";
+import type {
+  ChannelRow,
+  D1Database,
+  LogRow,
+  LoginSessionRow,
+  RedemptionRow,
+  TokenRow,
+  UserRow,
+} from "./types.js";
+
+export { SCHEMA_SQL, ensureSchema };
+
+/** Original `model.ErrSubscriptionOrderNotFound`. */
+export const ERR_SUBSCRIPTION_ORDER_NOT_FOUND = "subscription order not found";
+/** Original `model.ErrSubscriptionOrderStatusInvalid`. */
+export const ERR_SUBSCRIPTION_ORDER_STATUS_INVALID = "subscription order status invalid";
+/** Original `model.ErrPaymentMethodMismatch`. */
+export const ERR_PAYMENT_METHOD_MISMATCH = "payment method mismatch";
+/** Original `model.ErrTopUpNotFound`. */
+export const ERR_TOP_UP_NOT_FOUND = "topup not found";
+/** Original `model.ErrTopUpStatusInvalid`. */
+export const ERR_TOP_UP_STATUS_INVALID = "topup status invalid";
+/** Original `model.ErrInvalidTopUpQuota`. */
+export const ERR_INVALID_TOP_UP_QUOTA = "invalid top-up quota";
+/** Original `model.ErrTopUpQuotaLimitExceeded`. */
+export const ERR_TOP_UP_QUOTA_LIMIT_EXCEEDED = "top-up quota limit exceeded";
+/** Original `model.topUpQueryWindowSeconds`. */
+const TOP_UP_QUERY_WINDOW_SECONDS = 30 * 24 * 60 * 60;
+
+/** Original `common.WalletQuotaFromDecimalStrict` for top-up credits. */
+function walletQuotaFromDecimalStrict(value: number): number {
+  if (!Number.isFinite(value)) throw new Error(ERR_INVALID_TOP_UP_QUOTA);
+  const rounded = Math.round(value);
+  if (rounded <= 0 || rounded > MAX_WALLET_QUOTA) throw new Error(ERR_INVALID_TOP_UP_QUOTA);
+  return rounded;
+}
+
+function num(v: unknown, d = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+
+/** Original `model.marshalSystemTaskJSON` (`nil` → empty string, not `"null"`). */
+function marshalSystemTaskJSON(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  return JSON.stringify(v);
+}
+
+/** Original `model.ErrSystemTaskLockLost`. */
+export class SystemTaskLockLostError extends Error {
+  constructor() {
+    super(ERR_SYSTEM_TASK_LOCK_LOST);
+    this.name = "SystemTaskLockLostError";
+  }
+}
+
+/** Original `model.searchHardLimit` in `SearchUserTokens`. */
+const SEARCH_USER_TOKENS_HARD_LIMIT = 100;
+
+/**
+ * Original `model.sanitizeLikePattern`.
+ * Escapes `!` then `_` (ESCAPE '!'), then rejects `%%`, more than two `%`, or fuzzy keywords shorter than 2.
+ */
+function sanitizeLikePattern(input: string): string {
+  const pattern = input.replaceAll("!", "!!").replaceAll("_", "!_");
+  if (pattern.includes("%%")) throw new Error("搜索模式中不允许包含连续的 % 通配符");
+  const count = pattern.split("%").length - 1;
+  if (count > 2) throw new Error("搜索模式中最多允许包含 2 个 % 通配符");
+  if (count > 0 && pattern.replaceAll("%", "").length < 2) {
+    throw new Error("使用模糊搜索时，关键词长度至少为 2 个字符");
+  }
+  return pattern;
+}
+
+/** Original `model.applyExplicitLogTextFilter` + `sanitizeLikePattern`. */
+function applyExplicitLogTextFilter(column: string, value: string | undefined, where: string[], binds: unknown[]): void {
+  if (!value) return;
+  if (!value.includes("%")) {
+    where.push(`${column} = ?`);
+    binds.push(value);
+    return;
+  }
+  where.push(`${column} LIKE ? ESCAPE '!'`);
+  binds.push(sanitizeLikePattern(value));
+}
+
+function bool01(v: unknown): number {
+  if (v === true || v === 1 || v === "1" || v === "true") return 1;
+  return 0;
+}
+
+const CHANNEL_SORT_COLUMNS = new Set(["id", "name", "priority", "balance", "response_time", "test_time"]);
+
+function channelOrderSql(sortBy?: string, sortOrder?: string, idSort?: boolean): string {
+  const col = String(sortBy || "").toLowerCase().trim();
+  if (CHANNEL_SORT_COLUMNS.has(col)) {
+    const dir = String(sortOrder || "").toLowerCase() === "asc" ? "ASC" : "DESC";
+    return `${col} ${dir}`;
+  }
+  if (idSort) return "id DESC";
+  return "priority DESC";
+}
+
+/** Original `model.NormalizeChannelGroupFilter`. */
+export function normalizeChannelGroupFilter(group: string): string {
+  const g = String(group || "").trim();
+  if (!g || g.toLowerCase() === "all" || g.toLowerCase() === "null") return "";
+  return g;
+}
+
+/** Original `model.channelGroupFilterPattern` (`ESCAPE '!'`). */
+function channelGroupLikePattern(group: string): string {
+  return "%," + group.replace(/!/g, "!!").replace(/%/g, "!%").replace(/_/g, "!_") + ",%";
+}
+
+function channelGroupLikeSql(): string {
+  return `(',' || "group" || ',') LIKE ? ESCAPE '!'`;
+}
+
+/** Original `common.String2Int` (`strconv.Atoi`, invalid → 0). */
+function string2Int(str: string): number {
+  return /^-?\d+$/.test(str) ? Number(str) : 0;
+}
+
+/** Original `controller.parseStatusFilter`. */
+export function parseChannelStatusFilter(statusParam: string): number {
+  switch (String(statusParam || "").toLowerCase()) {
+    case "enabled":
+    case "1":
+      return CHANNEL_ENABLED;
+    case "disabled":
+    case "0":
+      return 0;
+    default:
+      return -1;
+  }
+}
+
+// Original model.FixAbility uses sync.Mutex.TryLock around truncate + chunked
+// AddAbilities. A second concurrent repair returns this exact string via ApiError.
+let channelFixRunning = false;
+
+export function tryLockChannelFix(): boolean {
+  if (channelFixRunning) return false;
+  channelFixRunning = true;
+  return true;
+}
+
+export function unlockChannelFix(): void {
+  channelFixRunning = false;
+}
+
+export class Store {
+  constructor(private db: D1Database) {}
+
+  async option(key: string): Promise<string> {
+    const keys = [key, ...(OPTION_ALIASES[key] || [])];
+    for (const k of keys) {
+      const row = await this.db.prepare("SELECT value FROM options WHERE key = ?").bind(k).first<{ value: string }>();
+      if (row?.value != null) return row.value;
+    }
+    for (const k of keys) {
+      if (Object.prototype.hasOwnProperty.call(DEFAULT_OPTIONS, k)) return DEFAULT_OPTIONS[k];
+    }
+    return "";
+  }
+
+  async optionBool(key: string, fallback = false): Promise<boolean> {
+    const v = await this.option(key);
+    if (!v) return fallback;
+    return v === "true" || v === "1";
+  }
+
+  async optionNum(key: string, fallback = 0): Promise<number> {
+    const v = await this.option(key);
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  async setOption(key: string, value: string): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO options(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .bind(key, value)
+      .run();
+  }
+
+  async allOptions(): Promise<{ key: string; value: string }[]> {
+    const { results } = await this.db.prepare("SELECT key, value FROM options").all<{ key: string; value: string }>();
+    const map = new Map(results.map((r) => [r.key, r.value]));
+    const out: { key: string; value: string }[] = [];
+    const keys = new Set([...Object.keys(DEFAULT_OPTIONS), ...map.keys()]);
+    for (const key of keys) {
+      const publicId = /ClientId$/i.test(key);
+      if (/token$|secret$|key$/i.test(key) && !publicId) continue;
+      out.push({ key, value: map.get(key) ?? DEFAULT_OPTIONS[key] ?? "" });
+    }
+    return out.sort((a, b) => a.key.localeCompare(b.key));
+  }
+
+  async setupDone(): Promise<boolean> {
+    const v = await this.option("Setup");
+    if (v === "true" || v === "1") return true;
+    const row = await this.db.prepare("SELECT id FROM users WHERE role = 100 LIMIT 1").first();
+    return !!row;
+  }
+
+  async rootExists(): Promise<boolean> {
+    const row = await this.db.prepare("SELECT id FROM users WHERE role = 100 LIMIT 1").first();
+    return !!row;
+  }
+
+  /** Original GORM default scope excludes soft-deleted users. Unscoped uniqueness uses `includeDeleted`. */
+  async getRootUser(): Promise<UserRow | null> {
+    return this.db.prepare("SELECT * FROM users WHERE role = 100 AND deleted_at = 0 LIMIT 1").first<UserRow>();
+  }
+
+  async getUserById(id: number, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
+    const sql = opts?.includeDeleted
+      ? "SELECT * FROM users WHERE id = ?"
+      : "SELECT * FROM users WHERE id = ? AND deleted_at = 0";
+    return this.db.prepare(sql).bind(id).first<UserRow>();
+  }
+
+  async getUserByUsername(username: string, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
+    const sql = opts?.includeDeleted
+      ? "SELECT * FROM users WHERE username = ?"
+      : "SELECT * FROM users WHERE username = ? AND deleted_at = 0";
+    return this.db.prepare(sql).bind(username).first<UserRow>();
+  }
+
+  async getUserByGithub(githubId: string, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
+    const sql = opts?.includeDeleted
+      ? "SELECT * FROM users WHERE github_id = ?"
+      : "SELECT * FROM users WHERE github_id = ? AND deleted_at = 0";
+    return this.db.prepare(sql).bind(githubId).first<UserRow>();
+  }
+
+  async getUserByEmail(email: string, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized) return null;
+    const sql = opts?.includeDeleted
+      ? "SELECT * FROM users WHERE LOWER(email) = ?"
+      : "SELECT * FROM users WHERE LOWER(email) = ? AND deleted_at = 0";
+    return this.db.prepare(sql).bind(normalized).first<UserRow>();
+  }
+
+  async getUserByField(field: string, value: string, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
+    const allowed = new Set([
+      "github_id",
+      "discord_id",
+      "oidc_id",
+      "linuxdo_id",
+      "wechat_id",
+      "telegram_id",
+      "access_token",
+      "email",
+    ]);
+    if (!allowed.has(field)) return null;
+    const sql = opts?.includeDeleted
+      ? `SELECT * FROM users WHERE ${field} = ?`
+      : `SELECT * FROM users WHERE ${field} = ? AND deleted_at = 0`;
+    return this.db.prepare(sql).bind(value).first<UserRow>();
+  }
+
+  async getUserByAff(code: string, opts?: { includeDeleted?: boolean }): Promise<UserRow | null> {
+    const sql = opts?.includeDeleted
+      ? "SELECT * FROM users WHERE aff_code = ?"
+      : "SELECT * FROM users WHERE aff_code = ? AND deleted_at = 0";
+    return this.db.prepare(sql).bind(code).first<UserRow>();
+  }
+
+  async insertUser(u: Partial<UserRow>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        `INSERT INTO users (username, password, display_name, role, status, email, github_id, discord_id, oidc_id, linuxdo_id, wechat_id, telegram_id, quota, used_quota, request_count, "group", aff_code, inviter_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)`,
+      )
+      .bind(
+        u.username,
+        u.password ?? "",
+        u.display_name ?? u.username,
+        u.role ?? 1,
+        u.status ?? USER_ENABLED,
+        u.email ?? "",
+        u.github_id ?? "",
+        u.discord_id ?? "",
+        u.oidc_id ?? "",
+        u.linuxdo_id ?? "",
+        u.wechat_id ?? "",
+        u.telegram_id ?? "",
+        u.quota ?? 0,
+        u.group ?? "default",
+        u.aff_code ?? "",
+        u.inviter_id ?? 0,
+        u.created_at ?? nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateUser(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      const col = k === "group" ? `"group"` : k;
+      cols.push(`${col} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(id);
+    await this.db.prepare(`UPDATE users SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  /**
+   * Original `model.TwoFA.IncrementFailedAttempts`.
+   * An already-locked row is a no-op. The fifth failure sets `locked_until = now + 300`.
+   */
+  async incrementTotpFailures(userId: number): Promise<void> {
+    const maxUpdateRetries = 5;
+    for (let i = 0; i < maxUpdateRetries; i++) {
+      const now = nowSec();
+      const row = await this.db
+        .prepare("SELECT totp_failed_attempts, totp_locked_until FROM users WHERE id = ?")
+        .bind(userId)
+        .first<{ totp_failed_attempts: number; totp_locked_until: number }>();
+      if (!row) return;
+      const attempts = Number(row.totp_failed_attempts || 0);
+      const lockedUntil = Number(row.totp_locked_until || 0);
+      if (lockedUntil > now) return;
+      const nextAttempts = attempts + 1;
+      const nextLocked = nextAttempts >= TOTP_MAX_FAIL_ATTEMPTS ? now + TOTP_LOCKOUT_DURATION_SEC : lockedUntil;
+      const updated = await this.db
+        .prepare(
+          `UPDATE users SET totp_failed_attempts = ?, totp_locked_until = ?
+           WHERE id = ? AND totp_failed_attempts = ? AND (totp_locked_until = 0 OR totp_locked_until <= ?)`,
+        )
+        .bind(nextAttempts, nextLocked, userId, attempts, now)
+        .run();
+      if (Number(updated.meta.changes || 0) === 1) return;
+    }
+  }
+
+  /** Original `model.TwoFA.ResetFailedAttempts`. */
+  async resetTotpFailures(userId: number): Promise<void> {
+    await this.updateUser(userId, { totp_failed_attempts: 0, totp_locked_until: 0 });
+  }
+
+  /**
+   * Original `service.ValidateLoginSession` / `model.ValidateAuthSessionWithTx`.
+   * Dashboard JWT identity must still match an enabled user and active session.
+   */
+  async validateAuthSession(identity: {
+    userId: number;
+    sessionId: string;
+    userAuthVersion: number;
+    sessionVersion: number;
+  }): Promise<boolean> {
+    if (identity.userId <= 0 || !identity.sessionId || identity.userAuthVersion <= 0 || identity.sessionVersion <= 0) {
+      return false;
+    }
+    const now = nowSec();
+    const sess = await this.getSession(identity.sessionId);
+    if (
+      !sess ||
+      sess.revoked ||
+      Number(sess.user_id) !== identity.userId ||
+      (Number(sess.expires_at) > 0 && Number(sess.expires_at) <= now) ||
+      Number(sess.version || 1) !== identity.sessionVersion ||
+      Number(sess.user_auth_version || 1) !== identity.userAuthVersion
+    ) {
+      return false;
+    }
+    const user = await this.getUserById(identity.userId);
+    return Boolean(user && user.status === USER_ENABLED && Number(user.auth_version || 1) === identity.userAuthVersion);
+  }
+
+  /**
+   * Original `model.BindTelegramForSessionWithTx` plus `ClaimExternalIdentityWithTx`.
+   * Caller must already have rejected `IsTelegramIdAlreadyTaken`.
+   */
+  async bindTelegramForSession(
+    identity: { userId: number; sessionId: string; userAuthVersion: number; sessionVersion: number },
+    telegramId: string,
+  ): Promise<"ok" | "already_claimed" | "session_invalid"> {
+    const telegramID = telegramId.trim();
+    if (!telegramID || !(await this.validateAuthSession(identity))) return "session_invalid";
+    const now = nowSec();
+    const user = await this.getUserById(identity.userId);
+    if (!user) return "session_invalid";
+    if (String(user.telegram_id || "") !== "") return "already_claimed";
+    try {
+      await this.db
+        .prepare(
+          "INSERT INTO external_identity_claims (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind("telegram", telegramID, identity.userId, now)
+        .run();
+    } catch {
+      const subjectOwner = await this.db
+        .prepare("SELECT user_id FROM external_identity_claims WHERE provider = ? AND subject = ?")
+        .bind("telegram", telegramID)
+        .first<{ user_id: number }>();
+      if (!subjectOwner || Number(subjectOwner.user_id) !== identity.userId) return "already_claimed";
+      const userClaim = await this.db
+        .prepare("SELECT subject FROM external_identity_claims WHERE provider = ? AND user_id = ?")
+        .bind("telegram", identity.userId)
+        .first<{ subject: string }>();
+      if (!userClaim || String(userClaim.subject) !== telegramID) return "already_claimed";
+    }
+    const userClaim = await this.db
+      .prepare("SELECT subject FROM external_identity_claims WHERE provider = ? AND user_id = ?")
+      .bind("telegram", identity.userId)
+      .first<{ subject: string }>();
+    if (!userClaim || String(userClaim.subject) !== telegramID) return "already_claimed";
+    const updated = await this.db
+      .prepare("UPDATE users SET telegram_id = ? WHERE id = ? AND telegram_id = '' AND deleted_at = 0")
+      .bind(telegramID, identity.userId)
+      .run();
+    if (Number(updated.meta.changes || 0) !== 1) return "already_claimed";
+    return "ok";
+  }
+
+  /**
+   * Original `model.UpdateUserBindColumnForSessionWithTx`.
+   * Overwrites this user's column; competing owners return `already_claimed`.
+   */
+  async bindUserColumnForSession(
+    identity: { userId: number; sessionId: string; userAuthVersion: number; sessionVersion: number },
+    column: "github_id" | "discord_id" | "linuxdo_id" | "oidc_id" | "wechat_id",
+    value: string,
+  ): Promise<"ok" | "already_claimed" | "session_invalid" | "binding_changed"> {
+    const allowed = new Set(["github_id", "discord_id", "linuxdo_id", "oidc_id", "wechat_id"]);
+    const next = value.trim();
+    if (!allowed.has(column) || !next) return "binding_changed";
+    if (!(await this.validateAuthSession(identity))) return "session_invalid";
+    const other = await this.db
+      .prepare(`SELECT id FROM users WHERE ${column} = ? AND id <> ? AND deleted_at = 0`)
+      .bind(next, identity.userId)
+      .first<{ id: number }>();
+    if (other) return "already_claimed";
+    await this.db
+      .prepare(`UPDATE users SET ${column} = ? WHERE id = ? AND deleted_at = 0`)
+      .bind(next, identity.userId)
+      .run();
+    return "ok";
+  }
+
+  /** Original `model.UpdateUserOAuthBindingForSessionWithTx`. */
+  async bindCustomOAuthForSession(
+    identity: { userId: number; sessionId: string; userAuthVersion: number; sessionVersion: number },
+    providerId: number,
+    subject: string,
+  ): Promise<"ok" | "already_claimed" | "session_invalid" | "binding_changed"> {
+    const next = subject.trim();
+    if (providerId <= 0 || !next || next.length > 256) return "binding_changed";
+    if (!(await this.validateAuthSession(identity))) return "session_invalid";
+    try {
+      await this.upsertUserOAuthBinding(identity.userId, providerId, next);
+      return "ok";
+    } catch {
+      return "already_claimed";
+    }
+  }
+
+  /** Original `model.User.Delete` / `DeleteUserForSession` (GORM soft delete). */
+  async softDeleteUser(id: number): Promise<void> {
+    await this.db.prepare("UPDATE users SET deleted_at = ? WHERE id = ? AND deleted_at = 0").bind(nowSec(), id).run();
+    await this.bumpAuthVersion(id);
+  }
+
+  /** Original `model.HardDeleteUserById`. */
+  async deleteUser(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM api_tokens WHERE user_id = ?").bind(id).run();
+    await this.db.prepare("DELETE FROM users WHERE id = ?").bind(id).run();
+  }
+
+  async maxUserId(): Promise<number> {
+    const row = await this.db.prepare("SELECT COALESCE(MAX(id), 0) as c FROM users").first<{ c: number }>();
+    return Number(row?.c || 0);
+  }
+
+  async listUsers(
+    offset: number,
+    limit: number,
+    keywordOrOpts:
+      | string
+      | {
+          keyword?: string;
+          group?: string;
+          role?: number;
+          status?: number;
+          sortBy?: string;
+          sortOrder?: string;
+        } = "",
+  ): Promise<{ items: UserRow[]; total: number }> {
+    const opts = typeof keywordOrOpts === "string" ? { keyword: keywordOrOpts } : keywordOrOpts;
+    const keyword = opts.keyword || "";
+    let where = "1=1";
+    const binds: unknown[] = [];
+    if (keyword) {
+      const like = `%${keyword}%`;
+      const id = Number(keyword);
+      if (Number.isInteger(id) && String(id) === keyword) {
+        where += " AND (id = ? OR username LIKE ? OR display_name LIKE ? OR email LIKE ?)";
+        binds.push(id, like, like, like);
+      } else {
+        where += " AND (username LIKE ? OR display_name LIKE ? OR email LIKE ?)";
+        binds.push(like, like, like);
+      }
+    }
+    if (opts.group) {
+      where += ` AND "group" = ?`;
+      binds.push(opts.group);
+    }
+    if (opts.role != null) {
+      where += " AND role = ?";
+      binds.push(opts.role);
+    }
+    if (opts.status === -1) {
+      where += " AND deleted_at != 0";
+    } else if (opts.status != null) {
+      where += " AND deleted_at = 0 AND status = ?";
+      binds.push(opts.status);
+    }
+    const sortCols: Record<string, string> = {
+      id: "id",
+      username: "username",
+      quota: "quota",
+      group: `"group"`,
+      created_at: "created_at",
+      last_login_at: "last_login_at",
+    };
+    const sortBy = sortCols[(opts.sortBy || "").toLowerCase()] || "id";
+    const sortOrder = (opts.sortOrder || "").toLowerCase() === "asc" ? "ASC" : "DESC";
+    const order = sortBy === "id" ? `${sortBy} ${sortOrder}` : `${sortBy} ${sortOrder}, id DESC`;
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM users WHERE ${where}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM users WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`)
+      .bind(...binds, limit, offset)
+      .all<UserRow>();
+    return { items: results, total: num(totalRow?.c) };
+  }
+
+  async addQuota(userId: number, delta: number): Promise<void> {
+    await this.db.prepare("UPDATE users SET quota = quota + ? WHERE id = ?").bind(delta, userId).run();
+  }
+
+  /** Original `model.inviteUser` (aff_count / aff_quota / aff_history only, not wallet quota). */
+  async inviteUser(inviterId: number): Promise<void> {
+    const bonus = await this.optionNum("QuotaForInviter", 0);
+    await this.db
+      .prepare("UPDATE users SET aff_count = aff_count + 1, aff_quota = aff_quota + ?, aff_history_quota = aff_history_quota + ? WHERE id = ?")
+      .bind(bonus, bonus, inviterId)
+      .run();
+  }
+
+  /** Original `model.TryReserveUserQuota` (wallet PreConsume). */
+  async tryHoldUserQuota(userId: number, quota: number): Promise<boolean> {
+    if (quota <= 0) return true;
+    const r = await this.db.prepare("UPDATE users SET quota = quota - ? WHERE id = ? AND quota >= ?").bind(quota, userId, quota).run();
+    return Number(r.meta.changes || 0) === 1;
+  }
+
+  /** Original `model.DecreaseUserQuota` (Reserve extra / Settle positive delta). */
+  async decreaseUserQuota(userId: number, quota: number): Promise<void> {
+    if (quota <= 0) return;
+    await this.db.prepare("UPDATE users SET quota = quota - ? WHERE id = ?").bind(quota, userId).run();
+  }
+
+  /** Original `model.IncreaseUserQuota` (Settle refund / BillingSession.Refund). */
+  async releaseUserQuota(userId: number, quota: number): Promise<void> {
+    if (quota <= 0) return;
+    await this.db.prepare("UPDATE users SET quota = quota + ? WHERE id = ?").bind(quota, userId).run();
+  }
+
+  /** Original `model.TryReserveTokenQuota` / `DecreaseTokenQuota`. */
+  async tryHoldTokenQuota(tokenId: number, quota: number, unlimited: boolean): Promise<boolean> {
+    if (quota <= 0) return true;
+    if (unlimited) {
+      await this.db
+        .prepare("UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ? AND deleted_at = 0")
+        .bind(quota, quota, nowSec(), tokenId)
+        .run();
+      return true;
+    }
+    const r = await this.db
+      .prepare(
+        "UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ? AND remain_quota >= ? AND deleted_at = 0",
+      )
+      .bind(quota, quota, nowSec(), tokenId, quota)
+      .run();
+    return Number(r.meta.changes || 0) === 1;
+  }
+
+  /** Original `model.IncreaseTokenQuota` (remain +=, used -=). */
+  async releaseTokenQuota(tokenId: number, quota: number): Promise<void> {
+    if (quota <= 0) return;
+    await this.db
+      .prepare("UPDATE api_tokens SET remain_quota = remain_quota + ?, used_quota = used_quota - ?, accessed_time = ? WHERE id = ? AND deleted_at = 0")
+      .bind(quota, quota, nowSec(), tokenId)
+      .run();
+  }
+
+  /** Original `model.DecreaseTokenQuota` (no remain check; Recalculate extra). */
+  async decreaseTokenQuota(tokenId: number, quota: number): Promise<void> {
+    if (quota <= 0) return;
+    await this.db
+      .prepare("UPDATE api_tokens SET remain_quota = remain_quota - ?, used_quota = used_quota + ?, accessed_time = ? WHERE id = ? AND deleted_at = 0")
+      .bind(quota, quota, nowSec(), tokenId)
+      .run();
+  }
+
+  /** Original `model.UpdateUserUsedQuotaAndRequestCount`. */
+  async addUserUsedQuotaAndRequestCount(userId: number, quota: number): Promise<void> {
+    await this.db.prepare("UPDATE users SET used_quota = used_quota + ?, request_count = request_count + 1 WHERE id = ?").bind(quota, userId).run();
+  }
+
+  /** Original `model.UpdateUserUsedQuota` (refund/recalculate; request_count unchanged). */
+  async addUserUsedQuota(userId: number, quota: number): Promise<void> {
+    await this.db.prepare("UPDATE users SET used_quota = used_quota + ? WHERE id = ?").bind(quota, userId).run();
+  }
+
+  /** Original `model.UpdateChannelUsedQuota`. */
+  async addChannelUsedQuota(channelId: number, quota: number): Promise<void> {
+    if (!channelId) return;
+    await this.db.prepare("UPDATE channels SET used_quota = used_quota + ? WHERE id = ?").bind(quota, channelId).run();
+  }
+
+  async consumeQuota(userId: number, tokenId: number | null, channelId: number | null, quota: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE users SET quota = quota - ?, used_quota = used_quota + ?, request_count = request_count + 1 WHERE id = ?")
+      .bind(quota, quota, userId)
+      .run();
+    if (tokenId) {
+      await this.db
+        .prepare(
+          "UPDATE api_tokens SET used_quota = used_quota + ?, remain_quota = CASE WHEN unlimited_quota = 1 THEN remain_quota ELSE remain_quota - ? END, accessed_time = ? WHERE id = ? AND deleted_at = 0",
+        )
+        .bind(quota, quota, nowSec(), tokenId)
+        .run();
+    }
+    if (channelId) {
+      await this.db.prepare("UPDATE channels SET used_quota = used_quota + ? WHERE id = ?").bind(quota, channelId).run();
+    }
+  }
+
+  async getTokenByKey(key: string): Promise<TokenRow | null> {
+    return this.db.prepare("SELECT * FROM api_tokens WHERE key = ? AND deleted_at = 0").bind(key).first<TokenRow>();
+  }
+
+  async getTokenById(id: number, userId?: number): Promise<TokenRow | null> {
+    if (userId != null) {
+      return this.db.prepare("SELECT * FROM api_tokens WHERE id = ? AND user_id = ? AND deleted_at = 0").bind(id, userId).first<TokenRow>();
+    }
+    return this.db.prepare("SELECT * FROM api_tokens WHERE id = ? AND deleted_at = 0").bind(id).first<TokenRow>();
+  }
+
+  async insertToken(t: Partial<TokenRow>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        `INSERT INTO api_tokens (user_id, key, status, name, created_time, expired_time, remain_quota, unlimited_quota, model_limits_enabled, model_limits, allow_ips, "group", auto_groups, cross_group_retry)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        t.user_id,
+        t.key,
+        t.status ?? TOKEN_ENABLED,
+        t.name ?? "",
+        t.created_time ?? nowSec(),
+        t.expired_time ?? -1,
+        t.remain_quota ?? 0,
+        bool01(t.unlimited_quota),
+        bool01(t.model_limits_enabled),
+        t.model_limits ?? "",
+        t.allow_ips ?? "",
+        t.group ?? "",
+        t.auto_groups ?? "",
+        bool01(t.cross_group_retry),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateToken(id: number, userId: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      const col = k === "group" ? `"group"` : k;
+      cols.push(`${col} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(id, userId);
+    await this.db.prepare(`UPDATE api_tokens SET ${cols.join(", ")} WHERE id = ? AND user_id = ? AND deleted_at = 0`).bind(...vals).run();
+  }
+
+  /** Original `model.Token.Delete` (GORM soft delete; unique key retained). */
+  async deleteToken(id: number, userId: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE api_tokens SET deleted_at = ? WHERE id = ? AND user_id = ? AND deleted_at = 0")
+      .bind(nowSec(), id, userId)
+      .run();
+  }
+
+  /** Original `model.CountUserTokens`. */
+  async countUserTokens(userId: number): Promise<number> {
+    const totalRow = await this.db
+      .prepare("SELECT COUNT(*) as c FROM api_tokens WHERE user_id = ? AND deleted_at = 0")
+      .bind(userId)
+      .first<{ c: number }>();
+    return num(totalRow?.c);
+  }
+
+  /** Original `model.GetAllUserTokens` + `CountUserTokens`. */
+  async listTokens(
+    userId: number,
+    offset: number,
+    limit: number,
+  ): Promise<{ items: TokenRow[]; total: number }> {
+    const total = await this.countUserTokens(userId);
+    const { results } = await this.db
+      .prepare("SELECT * FROM api_tokens WHERE user_id = ? AND deleted_at = 0 ORDER BY id DESC LIMIT ? OFFSET ?")
+      .bind(userId, limit, offset)
+      .all<TokenRow>();
+    return { items: results, total };
+  }
+
+  /**
+   * Original `model.SearchUserTokens`.
+   * `keyword` matches `name LIKE` (exact unless the caller includes `%`); `token` matches `"key" LIKE` after `sk-` TrimPrefix.
+   */
+  async searchUserTokens(
+    userId: number,
+    keyword: string,
+    token: string,
+    offset: number,
+    limit: number,
+    maxTokens: number,
+  ): Promise<{ items: TokenRow[]; total: number }> {
+    let pageSize = limit;
+    if (pageSize <= 0 || pageSize > SEARCH_USER_TOKENS_HARD_LIMIT) pageSize = SEARCH_USER_TOKENS_HARD_LIMIT;
+    let start = offset;
+    if (start < 0) start = 0;
+
+    let keyQuery = token;
+    if (keyQuery.startsWith("sk-")) keyQuery = keyQuery.slice("sk-".length);
+
+    const hasFuzzy = keyword.includes("%") || keyQuery.includes("%");
+    if (hasFuzzy) {
+      const count = await this.countUserTokens(userId);
+      if (count > maxTokens) {
+        throw new Error("令牌数量超过上限，仅允许精确搜索，请勿使用 % 通配符");
+      }
+    }
+
+    let where = "user_id = ? AND deleted_at = 0";
+    const binds: unknown[] = [userId];
+    if (keyword) {
+      where += " AND name LIKE ? ESCAPE '!'";
+      binds.push(sanitizeLikePattern(keyword));
+    }
+    if (keyQuery) {
+      where += ` AND "key" LIKE ? ESCAPE '!'`;
+      binds.push(sanitizeLikePattern(keyQuery));
+    }
+
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM api_tokens WHERE ${where}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM api_tokens WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, pageSize, start)
+      .all<TokenRow>();
+    return { items: results, total: num(totalRow?.c) };
+  }
+
+  async deleteTokensBatch(userId: number, ids: number[]): Promise<number> {
+    let n = 0;
+    const deletedAt = nowSec();
+    for (const id of ids) {
+      const r = await this.db
+        .prepare("UPDATE api_tokens SET deleted_at = ? WHERE id = ? AND user_id = ? AND deleted_at = 0")
+        .bind(deletedAt, id, userId)
+        .run();
+      n += Number(r.meta.changes || 0);
+    }
+    return n;
+  }
+
+  async getChannel(id: number): Promise<ChannelRow | null> {
+    return this.db.prepare("SELECT * FROM channels WHERE id = ?").bind(id).first<ChannelRow>();
+  }
+
+  async getChannelsByIds(ids: number[]): Promise<ChannelRow[]> {
+    if (!ids.length) return [];
+    const unique = [...new Set(ids)];
+    const ph = unique.map(() => "?").join(",");
+    const { results } = await this.db
+      .prepare(`SELECT * FROM channels WHERE id IN (${ph})`)
+      .bind(...unique)
+      .all<ChannelRow>();
+    return results;
+  }
+
+  async insertChannel(c: Partial<ChannelRow>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        `INSERT INTO channels (type, key, status, name, weight, created_time, test_time, response_time, base_url, other, models, "group", used_quota, model_mapping, status_code_mapping, priority, auto_ban, tag, header_override, param_override, remark, settings, openai_organization, test_model, balance, balance_updated_time, other_info, channel_info, setting)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        c.type ?? 1,
+        c.key ?? "",
+        c.status ?? CHANNEL_ENABLED,
+        c.name,
+        c.weight ?? 1,
+        c.created_time ?? nowSec(),
+        c.test_time ?? 0,
+        c.response_time ?? 0,
+        c.base_url ?? "",
+        c.other ?? "",
+        c.models ?? "",
+        c.group ?? "default",
+        c.used_quota ?? 0,
+        c.model_mapping ?? "",
+        c.status_code_mapping ?? "",
+        c.priority ?? 0,
+        c.auto_ban ?? 1,
+        c.tag ?? null,
+        c.header_override ?? "",
+        c.param_override ?? "",
+        c.remark ?? "",
+        c.settings ?? "",
+        c.openai_organization ?? "",
+        c.test_model ?? "",
+        c.balance ?? "",
+        c.balance_updated_time ?? 0,
+        c.other_info ?? "",
+        c.channel_info ?? "",
+        c.setting ?? "",
+      )
+      .run();
+    const id = Number(r.meta.last_row_id || 0);
+    const ch = await this.getChannel(id);
+    if (ch) await this.replaceChannelAbilities(ch);
+    return id;
+  }
+
+  async replaceChannelAbilities(ch: ChannelRow): Promise<void> {
+    await this.db.prepare("DELETE FROM abilities WHERE channel_id = ?").bind(ch.id).run();
+    const models = csv(ch.models);
+    const groups = csv(ch.group || "default");
+    const enabled = Number(ch.status) === CHANNEL_ENABLED ? 1 : 0;
+    for (const group of groups) {
+      for (const model of models) {
+        await this.db
+          .prepare(
+            `INSERT OR IGNORE INTO abilities ("group", model, channel_id, enabled, priority, weight, tag) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(group, model, ch.id, enabled, ch.priority || 0, ch.weight || 0, ch.tag || "")
+          .run();
+      }
+    }
+  }
+
+  async fixAbilities(): Promise<{ success: number; fails: number }> {
+    if (!tryLockChannelFix()) {
+      throw new Error("已经有一个修复任务在运行中，请稍后再试");
+    }
+    try {
+      await this.db.exec("DELETE FROM abilities");
+      const { results } = await this.db.prepare("SELECT * FROM channels").all<ChannelRow>();
+      if (!results.length) return { success: 0, fails: 0 };
+      let success = 0;
+      let fails = 0;
+      for (let i = 0; i < results.length; i += 50) {
+        const chunk = results.slice(i, i + 50);
+        try {
+          const ph = chunk.map(() => "?").join(",");
+          await this.db
+            .prepare(`DELETE FROM abilities WHERE channel_id IN (${ph})`)
+            .bind(...chunk.map((ch) => ch.id))
+            .run();
+        } catch {
+          fails += chunk.length;
+          continue;
+        }
+        for (const ch of chunk) {
+          try {
+            await this.replaceChannelAbilities(ch);
+            success += 1;
+          } catch {
+            fails += 1;
+          }
+        }
+      }
+      return { success, fails };
+    } finally {
+      unlockChannelFix();
+    }
+  }
+
+  async updateChannel(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      const col = k === "group" ? `"group"` : k;
+      cols.push(`${col} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(id);
+    await this.db.prepare(`UPDATE channels SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+    const ch = await this.getChannel(id);
+    if (ch) await this.replaceChannelAbilities(ch);
+  }
+
+  async batchSetChannelTag(ids: number[], tag: string | null): Promise<void> {
+    if (!ids.length) return;
+    const ph = ids.map(() => "?").join(",");
+    await this.db
+      .prepare(`UPDATE channels SET tag = ? WHERE id IN (${ph})`)
+      .bind(tag, ...ids)
+      .run();
+    const channels = await this.getChannelsByIds(ids);
+    for (const ch of channels) await this.replaceChannelAbilities(ch);
+  }
+
+  async deleteChannel(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM abilities WHERE channel_id = ?").bind(id).run();
+    await this.db.prepare("DELETE FROM channels WHERE id = ?").bind(id).run();
+  }
+
+  async deleteDisabledChannels(): Promise<number> {
+    await this.db.prepare("DELETE FROM abilities WHERE channel_id IN (SELECT id FROM channels WHERE status != 1)").run();
+    const r = await this.db.prepare("DELETE FROM channels WHERE status != 1").run();
+    return Number(r.meta.changes || 0);
+  }
+
+  async deleteChannelsBatch(ids: number[]): Promise<number> {
+    let n = 0;
+    for (const id of ids) {
+      await this.db.prepare("DELETE FROM abilities WHERE channel_id = ?").bind(id).run();
+      const r = await this.db.prepare("DELETE FROM channels WHERE id = ?").bind(id).run();
+      n += Number(r.meta.changes || 0);
+    }
+    return n;
+  }
+
+  async setChannelsByTag(tag: string, status: number): Promise<number> {
+    const r = await this.db.prepare("UPDATE channels SET status = ? WHERE tag = ?").bind(status, tag).run();
+    const { results } = await this.db.prepare("SELECT * FROM channels WHERE tag = ?").bind(tag).all<ChannelRow>();
+    for (const ch of results) await this.replaceChannelAbilities(ch);
+    return Number(r.meta.changes || 0);
+  }
+
+  async channelsByTag(tag: string): Promise<ChannelRow[]> {
+    const { results } = await this.db.prepare("SELECT * FROM channels WHERE tag = ?").bind(tag).all<ChannelRow>();
+    return results;
+  }
+
+  async listChannels(opts: {
+    offset: number;
+    limit: number;
+    group?: string;
+    status?: number;
+    type?: number;
+    tag_mode?: boolean;
+    sort_by?: string;
+    sort_order?: string;
+    id_sort?: boolean;
+  }): Promise<{ items: ChannelRow[]; total: number; type_counts: Record<string, number> }> {
+    const where: string[] = ["1=1"];
+    const binds: unknown[] = [];
+    const group = normalizeChannelGroupFilter(opts.group || "");
+    if (group) {
+      where.push(channelGroupLikeSql());
+      binds.push(channelGroupLikePattern(group));
+    }
+    if (opts.status === CHANNEL_ENABLED) where.push("status = 1");
+    else if (opts.status === 0) where.push("status != 1");
+    const countWhere = where.join(" AND ");
+    const countBinds = [...binds];
+    if (opts.type != null && opts.type >= 0) {
+      where.push("type = ?");
+      binds.push(opts.type);
+    }
+    const w = where.join(" AND ");
+    const counts = await this.db
+      .prepare(`SELECT type, COUNT(*) as c FROM channels WHERE ${countWhere} GROUP BY type`)
+      .bind(...countBinds)
+      .all<{ type: number; c: number }>();
+    const type_counts: Record<string, number> = {};
+    for (const r of counts.results) type_counts[String(r.type)] = num(r.c);
+    const order = channelOrderSql(opts.sort_by, opts.sort_order, opts.id_sort);
+    if (opts.tag_mode) {
+      const tagWhere = `${w} AND tag != ''`;
+      const totalRow = await this.db
+        .prepare(`SELECT COUNT(DISTINCT tag) as c FROM channels WHERE ${tagWhere}`)
+        .bind(...binds)
+        .first<{ c: number }>();
+      const { results: tagRows } = await this.db
+        .prepare(`SELECT DISTINCT tag FROM channels WHERE ${tagWhere} ORDER BY tag LIMIT ? OFFSET ?`)
+        .bind(...binds, opts.limit, opts.offset)
+        .all<{ tag: string }>();
+      const tags = tagRows.map((r) => r.tag).filter(Boolean);
+      let items: ChannelRow[] = [];
+      if (tags.length) {
+        const ph = tags.map(() => "?").join(",");
+        const { results } = await this.db
+          .prepare(`SELECT * FROM channels WHERE ${w} AND tag IN (${ph}) ORDER BY ${order}`)
+          .bind(...binds, ...tags)
+          .all<ChannelRow>();
+        items = results;
+      }
+      return { items, total: num(totalRow?.c), type_counts };
+    }
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM channels WHERE ${w}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM channels WHERE ${w} ORDER BY ${order} LIMIT ? OFFSET ?`)
+      .bind(...binds, opts.limit, opts.offset)
+      .all<ChannelRow>();
+    return { items: results, total: num(totalRow?.c), type_counts };
+  }
+
+  /**
+   * Original `model.SearchChannels` / `SearchTags` (all matches, unsorted type/status
+   * filters happen in the HTTP handler).
+   */
+  async searchChannels(opts: {
+    keyword?: string;
+    group?: string;
+    model?: string;
+    id_sort?: boolean;
+    sort_by?: string;
+    sort_order?: string;
+    tag_mode?: boolean;
+  }): Promise<ChannelRow[]> {
+    const keyword = opts.keyword || "";
+    const model = opts.model || "";
+    const group = normalizeChannelGroupFilter(opts.group || "");
+    const where = "(id = ? OR name LIKE ? OR key = ? OR base_url LIKE ?) AND models LIKE ?";
+    const binds: unknown[] = [string2Int(keyword), `%${keyword}%`, keyword, `%${keyword}%`, `%${model}%`];
+    let extra = "";
+    if (group) {
+      extra = ` AND ${channelGroupLikeSql()}`;
+      binds.push(channelGroupLikePattern(group));
+    }
+    const order = channelOrderSql(opts.sort_by, opts.sort_order, opts.id_sort);
+    if (opts.tag_mode) {
+      const tagOrder = opts.id_sort ? "id DESC" : "priority DESC";
+      const { results: matched } = await this.db
+        .prepare(`SELECT * FROM channels WHERE ${where}${extra} ORDER BY ${tagOrder}`)
+        .bind(...binds)
+        .all<ChannelRow>();
+      const tags: string[] = [];
+      const seen = new Set<string>();
+      for (const row of matched) {
+        const tag = String(row.tag || "");
+        if (!tag || seen.has(tag)) continue;
+        seen.add(tag);
+        tags.push(tag);
+      }
+      const items: ChannelRow[] = [];
+      for (const tag of tags) {
+        const tagWhere = ["tag = ?"];
+        const tagBinds: unknown[] = [tag];
+        if (group) {
+          tagWhere.unshift(channelGroupLikeSql());
+          tagBinds.unshift(channelGroupLikePattern(group));
+        }
+        const { results } = await this.db
+          .prepare(`SELECT * FROM channels WHERE ${tagWhere.join(" AND ")} ORDER BY ${order}`)
+          .bind(...tagBinds)
+          .all<ChannelRow>();
+        items.push(...results);
+      }
+      return items;
+    }
+    const { results } = await this.db
+      .prepare(`SELECT * FROM channels WHERE ${where}${extra} ORDER BY ${order}`)
+      .bind(...binds)
+      .all<ChannelRow>();
+    return results;
+  }
+
+  async enabledChannels(): Promise<ChannelRow[]> {
+    const { results } = await this.db.prepare("SELECT * FROM channels WHERE status = 1").all<ChannelRow>();
+    return results;
+  }
+
+  /** All channels including disabled — original `GetConfiguredModelChannels`. */
+  async allChannels(): Promise<ChannelRow[]> {
+    const { results } = await this.db.prepare("SELECT * FROM channels").all<ChannelRow>();
+    return results;
+  }
+
+  /** Original abilities JOIN enabled channels — `GetModelConnections`. */
+  async listEnabledModelConnections(): Promise<
+    {
+      model: string;
+      group: string;
+      channel_id: number;
+      channel_name: string;
+      channel_type: number;
+      channel_settings: string;
+    }[]
+  > {
+    const { results } = await this.db
+      .prepare(
+        `SELECT abilities.model as model, abilities."group" as "group", abilities.channel_id as channel_id,
+                channels.name as channel_name, channels.type as channel_type, channels.settings as channel_settings
+         FROM abilities
+         JOIN channels ON abilities.channel_id = channels.id
+         WHERE abilities.enabled = 1 AND channels.status = 1
+         ORDER BY abilities.model, abilities.channel_id`,
+      )
+      .all<{
+        model: string;
+        group: string;
+        channel_id: number;
+        channel_name: string;
+        channel_type: number;
+        channel_settings: string;
+      }>();
+    if (results.length) return results;
+    const channels = await this.enabledChannels();
+    const out: {
+      model: string;
+      group: string;
+      channel_id: number;
+      channel_name: string;
+      channel_type: number;
+      channel_settings: string;
+    }[] = [];
+    for (const ch of channels) {
+      const groups = csv(ch.group || "default");
+      for (const model of csv(ch.models)) {
+        for (const group of groups) {
+          out.push({
+            model,
+            group,
+            channel_id: ch.id,
+            channel_name: ch.name,
+            channel_type: ch.type,
+            channel_settings: ch.settings || "",
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  async abilitiesFor(group: string, model: string): Promise<{ channel_id: number; priority: number; weight: number }[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT channel_id, priority, weight FROM abilities WHERE "group" = ? AND model = ? AND enabled = 1 ORDER BY priority DESC, weight DESC`,
+      )
+      .bind(group, model)
+      .all<{ channel_id: number; priority: number; weight: number }>();
+    return results;
+  }
+
+  /** Original `model.filterAbilitiesByConstraints` + `GetChannel`. */
+  async filterAbilitiesByConstraints(
+    abilities: { channel_id: number; priority: number; weight: number }[],
+    modelName: string,
+    filters: ChannelFilter[],
+  ): Promise<{ channel_id: number; priority: number; weight: number }[]> {
+    if (!abilities.length) return [];
+    const ids: number[] = [];
+    const seen = new Set<number>();
+    for (const ability of abilities) {
+      if (seen.has(ability.channel_id)) continue;
+      seen.add(ability.channel_id);
+      ids.push(ability.channel_id);
+    }
+    let channels: ChannelRow[];
+    try {
+      channels = await this.getChannelsByIds(ids);
+    } catch {
+      if (identityFilterRequiresKey(filters)) return [];
+      return abilities;
+    }
+    const channelsById = new Map(channels.map((channel) => [channel.id, channel]));
+    return abilities.filter((ability) => channelSatisfiesFilters(channelsById.get(ability.channel_id) ?? null, modelName, filters).ok);
+  }
+
+  async getRandomSatisfiedChannel(
+    group: string,
+    model: string,
+    retry: number,
+    filters: ChannelFilter[] = [],
+  ): Promise<ChannelRow | null> {
+    let abilities = await this.abilitiesFor(group, model);
+    if (!abilities.length) {
+      const normalized = routingMatchModelName(model);
+      if (normalized && normalized !== model) abilities = await this.abilitiesFor(group, normalized);
+    }
+    abilities = await this.filterAbilitiesByConstraints(abilities, model, filters);
+    const id = pickAbilityChannelId(abilities, retry);
+    if (!id) return null;
+    return this.getChannel(id);
+  }
+
+  async taskPluginUsage(key: string): Promise<{ channel_count: number; in_flight_count: number; channels: { id: number; name: string }[] }> {
+    const { results } = await this.db
+      .prepare("SELECT id, name, setting FROM channels WHERE type = 61 AND status = ?")
+      .bind(CHANNEL_ENABLED)
+      .all<{ id: number; name: string; setting: string }>();
+    const channels: { id: number; name: string }[] = [];
+    for (const ch of results) {
+      const setting = parseJson<Record<string, unknown>>(ch.setting || "", {});
+      if (String(setting.task_plugin_key || setting.TaskPluginKey || "") === key) {
+        channels.push({ id: Number(ch.id), name: String(ch.name || "") });
+      }
+    }
+    const inflight = await this.db
+      .prepare("SELECT COUNT(*) as c FROM tasks WHERE platform = ? AND status NOT IN ('SUCCESS', 'FAILURE')")
+      .bind(key)
+      .first<{ c: number }>();
+    return { channel_count: channels.length, in_flight_count: num(inflight?.c), channels };
+  }
+
+  /** Original `model.Channel.UpdateResponseTime` (`response_time`, `test_time` only). */
+  async updateChannelResponseTime(id: number, responseTime: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE channels SET response_time = ?, test_time = ? WHERE id = ?")
+      .bind(responseTime, nowSec(), id)
+      .run();
+  }
+
+  /** Original `model.UpdateChannelStatus` + `UpdateAbilityStatus`. */
+  async updateChannelStatus(id: number, status: number, reason = ""): Promise<boolean> {
+    const ch = await this.getChannel(id);
+    if (!ch) return false;
+    if (Number(ch.status) === status) return false;
+    const info = parseJson<Record<string, unknown>>(String(ch.other_info || ""), {});
+    info.status_reason = reason;
+    info.status_time = nowSec();
+    await this.db
+      .prepare("UPDATE channels SET status = ?, other_info = ? WHERE id = ?")
+      .bind(status, JSON.stringify(info), id)
+      .run();
+    await this.db
+      .prepare("UPDATE abilities SET enabled = ? WHERE channel_id = ?")
+      .bind(status === CHANNEL_ENABLED ? 1 : 0, id)
+      .run();
+    return true;
+  }
+
+  async autoDisableChannel(id: number, reason = ""): Promise<boolean> {
+    const ch = await this.getChannel(id);
+    if (!ch) return false;
+    if (Number(ch.auto_ban) !== 1) return false;
+    return this.updateChannelStatus(id, CHANNEL_AUTO_DISABLED, reason);
+  }
+
+  async insertLog(l: Partial<LogRow>): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO request_logs (user_id, created_at, type, content, username, token_name, model_name, quota, prompt_tokens, completion_tokens, use_time, is_stream, channel_id, token_id, "group", ip, request_id, upstream_request_id, other)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        l.user_id ?? 0,
+        l.created_at ?? nowSec(),
+        l.type ?? LOG_CONSUME,
+        l.content ?? "",
+        l.username ?? "",
+        l.token_name ?? "",
+        l.model_name ?? "",
+        l.quota ?? 0,
+        l.prompt_tokens ?? 0,
+        l.completion_tokens ?? 0,
+        l.use_time ?? 0,
+        l.is_stream ?? 0,
+        l.channel_id ?? 0,
+        l.token_id ?? 0,
+        l.group ?? "",
+        l.ip ?? "",
+        l.request_id ?? "",
+        l.upstream_request_id ?? "",
+        l.other ?? "",
+      )
+      .run();
+  }
+
+  async listLogs(opts: {
+    offset: number;
+    limit: number;
+    userId?: number;
+    type?: number;
+    start?: number;
+    end?: number;
+    model?: string;
+    username?: string;
+    tokenName?: string;
+    tokenId?: number;
+    channel?: number;
+    requestId?: string;
+    group?: string;
+    upstreamRequestId?: string;
+    /** Original GetAllLogs: `created_at desc, id desc`. GetUserLogs / GetLogByTokenId: `id desc`. */
+    order?: "created_at_id" | "id";
+    /** Original GetAllLogs fills `ChannelName` from a channel id→name map after fetch. */
+    fillChannelNames?: boolean;
+  }): Promise<{ items: LogRow[]; total: number }> {
+    const where: string[] = ["1=1"];
+    const binds: unknown[] = [];
+    if (opts.userId) {
+      where.push("request_logs.user_id = ?");
+      binds.push(opts.userId);
+    }
+    if (opts.type) {
+      where.push("request_logs.type = ?");
+      binds.push(opts.type);
+    }
+    if (opts.start) {
+      where.push("request_logs.created_at >= ?");
+      binds.push(opts.start);
+    }
+    if (opts.end) {
+      where.push("request_logs.created_at <= ?");
+      binds.push(opts.end);
+    }
+    applyExplicitLogTextFilter("request_logs.model_name", opts.model, where, binds);
+    applyExplicitLogTextFilter("request_logs.username", opts.username, where, binds);
+    if (opts.tokenName) {
+      where.push("request_logs.token_name = ?");
+      binds.push(opts.tokenName);
+    }
+    if (opts.tokenId) {
+      where.push("request_logs.token_id = ?");
+      binds.push(opts.tokenId);
+    }
+    if (opts.channel) {
+      where.push("request_logs.channel_id = ?");
+      binds.push(opts.channel);
+    }
+    if (opts.requestId) {
+      where.push("request_logs.request_id = ?");
+      binds.push(opts.requestId);
+    }
+    if (opts.group) {
+      where.push('request_logs."group" = ?');
+      binds.push(opts.group);
+    }
+    if (opts.upstreamRequestId) {
+      where.push("request_logs.upstream_request_id = ?");
+      binds.push(opts.upstreamRequestId);
+    }
+    const w = where.join(" AND ");
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM request_logs WHERE ${w}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const orderSql =
+      opts.order === "created_at_id"
+        ? "request_logs.created_at DESC, request_logs.id DESC"
+        : "request_logs.id DESC";
+    const { results } = await this.db
+      .prepare(`SELECT * FROM request_logs WHERE ${w} ORDER BY ${orderSql} LIMIT ? OFFSET ?`)
+      .bind(...binds, opts.limit, opts.offset)
+      .all<LogRow>();
+    const items = results ?? [];
+    if (opts.fillChannelNames) await this.fillLogChannelNames(items);
+    return { items, total: num(totalRow?.c) };
+  }
+
+  /** Original GetAllLogs channel map fill. Missing channels stay `""` (not `channel-%d`). */
+  private async fillLogChannelNames(logs: LogRow[]): Promise<void> {
+    const channelIds = [...new Set(logs.map((log) => Number(log.channel_id || 0)).filter(Boolean))];
+    if (!channelIds.length) return;
+    const ph = channelIds.map(() => "?").join(",");
+    const { results: channels } = await this.db
+      .prepare(`SELECT id, name FROM channels WHERE id IN (${ph})`)
+      .bind(...channelIds)
+      .all<{ id: number; name: string }>();
+    const channelMap = new Map<number, string>();
+    for (const ch of channels) channelMap.set(ch.id, ch.name);
+    for (const log of logs) {
+      log.channel_name = channelMap.get(Number(log.channel_id || 0)) || "";
+    }
+  }
+
+  async logStat(opts: {
+    userId?: number;
+    start?: number;
+    end?: number;
+    username?: string;
+    tokenName?: string;
+    model?: string;
+    channel?: number;
+    group?: string;
+    type?: number;
+  }): Promise<{
+    quota: number;
+    rpm: number;
+    tpm: number;
+  }> {
+    const where: string[] = [`type = ${LOG_CONSUME}`];
+    const binds: unknown[] = [];
+    applyExplicitLogTextFilter("username", opts.username, where, binds);
+    if (opts.tokenName) {
+      where.push("token_name = ?");
+      binds.push(opts.tokenName);
+    }
+    applyExplicitLogTextFilter("model_name", opts.model, where, binds);
+    if (opts.channel) {
+      where.push("channel_id = ?");
+      binds.push(opts.channel);
+    }
+    if (opts.group) {
+      where.push('"group" = ?');
+      binds.push(opts.group);
+    }
+    const quotaWhere = [...where];
+    const quotaBinds = [...binds];
+    if (opts.start) {
+      quotaWhere.push("created_at >= ?");
+      quotaBinds.push(opts.start);
+    }
+    if (opts.end) {
+      quotaWhere.push("created_at <= ?");
+      quotaBinds.push(opts.end);
+    }
+    const w = quotaWhere.join(" AND ");
+    const row = await this.db
+      .prepare(`SELECT COALESCE(SUM(quota),0) as quota FROM request_logs WHERE ${w}`)
+      .bind(...quotaBinds)
+      .first<{ quota: number }>();
+    const minuteAgo = nowSec() - 60;
+    const rpmWhere = [...where, "created_at >= ?"].join(" AND ");
+    const rpmRow = await this.db
+      .prepare(`SELECT COUNT(*) as c, COALESCE(SUM(prompt_tokens+completion_tokens),0) as t FROM request_logs WHERE ${rpmWhere}`)
+      .bind(...binds, minuteAgo)
+      .first<{ c: number; t: number }>();
+    return { quota: num(row?.quota), rpm: num(rpmRow?.c), tpm: num(rpmRow?.t) };
+  }
+
+  async bumpQuotaData(
+    user: UserRow,
+    model: string,
+    quota: number,
+    tokens: number,
+    extra: { useGroup?: string; tokenId?: number; channelId?: number } = {},
+  ): Promise<void> {
+    const hour = hourStartSec();
+    const useGroup = extra.useGroup || user.group || "default";
+    const tokenId = extra.tokenId || 0;
+    const channelId = extra.channelId || 0;
+    const existing = await this.db
+      .prepare(
+        "SELECT id FROM quota_data WHERE user_id = ? AND model_name = ? AND created_at = ? AND use_group = ? AND token_id = ? AND channel_id = ?",
+      )
+      .bind(user.id, model, hour, useGroup, tokenId, channelId)
+      .first<{ id: number }>();
+    if (existing) {
+      await this.db
+        .prepare("UPDATE quota_data SET quota = quota + ?, token_used = token_used + ?, count = count + 1 WHERE id = ?")
+        .bind(quota, tokens, existing.id)
+        .run();
+      return;
+    }
+    await this.db
+      .prepare(
+        "INSERT INTO quota_data (user_id, username, model_name, created_at, quota, token_used, count, use_group, token_id, channel_id, node_name) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'workerd')",
+      )
+      .bind(user.id, user.username, model, hour, quota, tokens, useGroup, tokenId, channelId)
+      .run();
+  }
+
+  async quotaDates(userId: number | null, start: number, end: number, username = ""): Promise<unknown[]> {
+    if (userId) {
+      const { results } = await this.db
+        .prepare(
+          `SELECT user_id, username, model_name, created_at, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+           FROM quota_data WHERE user_id = ? AND created_at >= ? AND created_at <= ?
+           GROUP BY user_id, username, model_name, created_at ORDER BY created_at`,
+        )
+        .bind(userId, start, end)
+        .all();
+      return results;
+    }
+    if (username) {
+      const { results } = await this.db
+        .prepare(
+          `SELECT user_id, username, model_name, created_at, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+           FROM quota_data WHERE username = ? AND created_at >= ? AND created_at <= ?
+           GROUP BY user_id, username, model_name, created_at ORDER BY created_at`,
+        )
+        .bind(username, start, end)
+        .all();
+      return results;
+    }
+    const { results } = await this.db
+      .prepare(
+        `SELECT model_name, created_at, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+         FROM quota_data WHERE created_at >= ? AND created_at <= ? GROUP BY model_name, created_at ORDER BY created_at`,
+      )
+      .bind(start, end)
+      .all();
+    return results;
+  }
+
+  async quotaDatesByUser(start: number, end: number): Promise<unknown[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT username, created_at, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+         FROM quota_data WHERE created_at >= ? AND created_at <= ? GROUP BY username, created_at ORDER BY created_at`,
+      )
+      .bind(start, end)
+      .all();
+    return results;
+  }
+
+  /** Original `model.GetFlowQuotaData` role dimensions + fillFlowTokenNames/fillFlowChannelNames. */
+  async flowQuotaDates(
+    start: number,
+    end: number,
+    userId: number | null,
+    username = "",
+    role = 0,
+  ): Promise<Record<string, unknown>[]> {
+    const where = ["use_group <> ''", "created_at >= ?", "created_at <= ?"];
+    const binds: unknown[] = [start, end];
+    const root = role >= ROLE_ROOT;
+    const admin = !root && role >= ROLE_ADMIN;
+    if (!root && !admin) {
+      where.push("user_id = ?");
+      binds.push(userId ?? 0);
+    } else if (username) {
+      where.push("username = ?");
+      binds.push(username);
+    }
+    const w = where.join(" AND ");
+    let sql: string;
+    if (root) {
+      sql = `SELECT user_id, username, node_name, token_id, use_group, model_name, channel_id,
+                    SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+             FROM quota_data WHERE ${w}
+             GROUP BY user_id, username, node_name, token_id, use_group, model_name, channel_id ORDER BY quota DESC`;
+    } else if (admin) {
+      sql = `SELECT user_id, username, use_group, model_name, channel_id,
+                    SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+             FROM quota_data WHERE ${w}
+             GROUP BY user_id, username, use_group, model_name, channel_id ORDER BY quota DESC`;
+    } else {
+      sql = `SELECT token_id, use_group, model_name, SUM(count) as count, SUM(quota) as quota, SUM(token_used) as token_used
+             FROM quota_data WHERE ${w} GROUP BY token_id, use_group, model_name ORDER BY quota DESC`;
+    }
+    const { results } = await this.db.prepare(sql).bind(...binds).all<Record<string, unknown>>();
+    if (root || !admin) await this.fillFlowTokenNames(results);
+    if (root || admin) await this.fillFlowChannelNames(results);
+    return results;
+  }
+
+  /** Original `fillFlowTokenNames`: deleted tokens keep empty `token_name` for localized "deleted (id)". */
+  private async fillFlowTokenNames(rows: Record<string, unknown>[]): Promise<void> {
+    const tokenIds = [...new Set(rows.map((r) => Number(r.token_id || 0)).filter(Boolean))];
+    if (!tokenIds.length) return;
+    const ph = tokenIds.map(() => "?").join(",");
+    const { results: tokens } = await this.db
+      .prepare(`SELECT id, name FROM api_tokens WHERE id IN (${ph}) AND deleted_at = 0`)
+      .bind(...tokenIds)
+      .all<{ id: number; name: string }>();
+    const tokenNames = new Map<number, string>();
+    for (const t of tokens) {
+      if (t.name) tokenNames.set(t.id, t.name);
+    }
+    for (const row of rows) {
+      const name = tokenNames.get(Number(row.token_id || 0));
+      if (name) row.token_name = name;
+    }
+  }
+
+  /** Original `fillFlowChannelNames`: missing channel rows become `channel-%d`. */
+  private async fillFlowChannelNames(rows: Record<string, unknown>[]): Promise<void> {
+    const channelIds = [...new Set(rows.map((r) => Number(r.channel_id || 0)).filter(Boolean))];
+    if (!channelIds.length) return;
+    const ph = channelIds.map(() => "?").join(",");
+    const { results: channels } = await this.db
+      .prepare(`SELECT id, name FROM channels WHERE id IN (${ph})`)
+      .bind(...channelIds)
+      .all<{ id: number; name: string }>();
+    const channelNames = new Map<number, string>();
+    for (const ch of channels) {
+      if (ch.name) channelNames.set(ch.id, ch.name);
+    }
+    for (const row of rows) {
+      const channelId = Number(row.channel_id || 0);
+      if (!channelId) continue;
+      const name = channelNames.get(channelId);
+      row.channel_name = name || `channel-${channelId}`;
+    }
+  }
+
+  async insertRedemption(r: Partial<RedemptionRow>): Promise<number> {
+    const res = await this.db
+      .prepare(
+        "INSERT INTO redemptions (user_id, name, key, status, quota, created_time, expired_time) VALUES (?, ?, ?, 1, ?, ?, ?)",
+      )
+      .bind(r.user_id ?? 0, r.name ?? "", r.key, r.quota ?? 0, nowSec(), r.expired_time ?? 0)
+      .run();
+    return Number(res.meta.last_row_id || 0);
+  }
+
+  async getRedemptionByKey(key: string): Promise<RedemptionRow | null> {
+    return this.db.prepare("SELECT * FROM redemptions WHERE key = ? AND deleted_at = 0").bind(key).first<RedemptionRow>();
+  }
+
+  async getRedemption(id: number): Promise<RedemptionRow | null> {
+    return this.db.prepare("SELECT * FROM redemptions WHERE id = ? AND deleted_at = 0").bind(id).first<RedemptionRow>();
+  }
+
+  async listRedemptions(
+    offset: number,
+    limit: number,
+    keyword = "",
+    status = "",
+  ): Promise<{ items: RedemptionRow[]; total: number }> {
+    let where = "deleted_at = 0";
+    const binds: unknown[] = [];
+    if (keyword) {
+      if (/^-?\d+$/.test(keyword)) {
+        where += " AND (id = ? OR name LIKE ?)";
+        binds.push(Number(keyword), `${keyword}%`);
+      } else {
+        where += " AND name LIKE ?";
+        binds.push(`${keyword}%`);
+      }
+    }
+    if (status) {
+      const now = nowSec();
+      if (status === "expired") {
+        where += " AND status = ? AND expired_time != 0 AND expired_time < ?";
+        binds.push(REDEMPTION_ENABLED, now);
+      } else if (status === String(REDEMPTION_ENABLED)) {
+        where += " AND status = ? AND (expired_time = 0 OR expired_time >= ?)";
+        binds.push(REDEMPTION_ENABLED, now);
+      } else if (status === String(REDEMPTION_DISABLED) || status === String(REDEMPTION_USED)) {
+        where += " AND status = ?";
+        binds.push(Number(status));
+      }
+    }
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM redemptions WHERE ${where}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM redemptions WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, limit, offset)
+      .all<RedemptionRow>();
+    return { items: results, total: num(totalRow?.c) };
+  }
+
+  async deleteRedemptionsBatch(ids: number[]): Promise<number> {
+    let n = 0;
+    const deletedAt = nowSec();
+    for (const id of ids) {
+      const r = await this.db
+        .prepare("UPDATE redemptions SET deleted_at = ? WHERE id = ? AND deleted_at = 0")
+        .bind(deletedAt, id)
+        .run();
+      n += Number(r.meta.changes || 0);
+    }
+    return n;
+  }
+
+  /** Original `model.DeleteInvalidRedemptions` (GORM soft delete). */
+  async deleteInvalidRedemptions(): Promise<number> {
+    const r = await this.db
+      .prepare(
+        "UPDATE redemptions SET deleted_at = ? WHERE deleted_at = 0 AND (status IN (?, ?) OR (status = ? AND expired_time != 0 AND expired_time < ?))",
+      )
+      .bind(nowSec(), REDEMPTION_USED, REDEMPTION_DISABLED, REDEMPTION_ENABLED, nowSec())
+      .run();
+    return Number(r.meta.changes || 0);
+  }
+
+  async updateRedemption(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE redemptions SET ${cols.join(", ")} WHERE id = ? AND deleted_at = 0`).bind(...vals).run();
+  }
+
+  /** Original `model.Redemption.Delete` (GORM soft delete; unique key retained). */
+  async deleteRedemption(id: number): Promise<void> {
+    await this.db.prepare("UPDATE redemptions SET deleted_at = ? WHERE id = ? AND deleted_at = 0").bind(nowSec(), id).run();
+  }
+
+  async uniqueGroups(): Promise<string[]> {
+    const ratios = parseJson<Record<string, number>>(await this.option("GroupRatio"), { ...DEFAULT_GROUP_RATIO });
+    return Object.keys(ratios);
+  }
+
+  async audit(
+    userId: number,
+    username: string,
+    type: string,
+    content: string,
+    ip: string,
+    extra: {
+      actor_role?: number;
+      category?: string;
+      action?: string;
+      token_ref?: string;
+      auth_method?: string;
+      user_agent?: string;
+      method?: string;
+      route?: string;
+      status?: number;
+      success?: boolean;
+      request_id?: string;
+      other?: string;
+    } = {},
+  ): Promise<void> {
+    const category = extra.category || type;
+    const action = extra.action || type;
+    await this.db
+      .prepare(
+        `INSERT INTO audit_logs (
+          event_id, user_id, username, actor_role, created_at, type, category, action, token_ref,
+          auth_method, ip, user_agent, method, route, status, success, request_id, content, other
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        extra.request_id || crypto.randomUUID(),
+        userId,
+        username,
+        extra.actor_role ?? 0,
+        nowSec(),
+        type,
+        category,
+        action,
+        extra.token_ref || "",
+        extra.auth_method || "",
+        ip,
+        extra.user_agent || "",
+        extra.method || "",
+        extra.route || "",
+        extra.status ?? 0,
+        extra.success === false ? 0 : 1,
+        extra.request_id || "",
+        content,
+        extra.other || "",
+      )
+      .run();
+  }
+
+  async listAudit(
+    offset: number,
+    limit: number,
+    opts: {
+      userId?: number;
+      username?: string;
+      category?: string;
+      token_ref?: string;
+      exclude_token_ref?: string;
+      request_id?: string;
+      start_timestamp?: number;
+      end_timestamp?: number;
+      success?: boolean;
+      viewerRole?: number;
+      selfView?: boolean;
+    } = {},
+  ): Promise<{ items: unknown[]; total: number }> {
+    const where: string[] = ["1=1"];
+    const binds: unknown[] = [];
+    const viewerRole = opts.viewerRole ?? 0;
+    if (viewerRole < ROLE_ROOT) {
+      where.push("actor_role IN (?, ?)");
+      binds.push(ROLE_USER, ROLE_ADMIN);
+    }
+    if (opts.userId) {
+      where.push("user_id = ?");
+      binds.push(opts.userId);
+    }
+    if (opts.username) {
+      where.push("username = ?");
+      binds.push(opts.username);
+    }
+    if (opts.category) {
+      where.push("category = ?");
+      binds.push(opts.category);
+    }
+    if (opts.token_ref) {
+      where.push("token_ref = ?");
+      binds.push(opts.token_ref);
+    }
+    if (opts.exclude_token_ref) {
+      where.push("token_ref != ?");
+      binds.push(opts.exclude_token_ref);
+    }
+    if (opts.request_id) {
+      where.push("request_id = ?");
+      binds.push(opts.request_id);
+    }
+    if (opts.start_timestamp) {
+      where.push("created_at >= ?");
+      binds.push(opts.start_timestamp);
+    }
+    if (opts.end_timestamp) {
+      where.push("created_at <= ?");
+      binds.push(opts.end_timestamp);
+    }
+    if (opts.success === true) where.push("success = 1");
+    if (opts.success === false) where.push("success = 0");
+    const w = where.join(" AND ");
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM audit_logs WHERE ${w}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM audit_logs WHERE ${w} ORDER BY created_at DESC, event_id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, limit, offset)
+      .all<Record<string, unknown>>();
+    let visibility: AuditOtherVisibility = "user";
+    if (!opts.selfView && viewerRole >= ROLE_ROOT) visibility = "root";
+    else if (!opts.selfView && viewerRole >= ROLE_ADMIN) visibility = "admin";
+    return { items: results.map((row) => publicAudit(row, visibility)), total: num(totalRow?.c) };
+  }
+
+  async accessTokenLastUsed(
+    userId: number,
+    tokenRef: string,
+  ): Promise<{ last_used_at: number | null; last_used_ip: string }> {
+    const last = await this.db
+      .prepare(
+        `SELECT created_at, ip FROM audit_logs
+         WHERE user_id = ? AND token_ref = ? AND category = 'access_token'
+         ORDER BY created_at DESC, id DESC LIMIT 1`,
+      )
+      .bind(userId, tokenRef)
+      .first<{ created_at?: number; ip?: string }>();
+    if (!last) return { last_used_at: null, last_used_ip: "" };
+    return { last_used_at: Number(last.created_at) || null, last_used_ip: last.ip || "" };
+  }
+
+  async insertMj(task: Record<string, unknown>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        `INSERT INTO mj_tasks (code, action, user_id, mj_id, prompt, prompt_en, description, state, status, image_url, video_url, video_urls, progress, fail_reason, channel_id, quota, buttons, properties, submit_time, start_time, finish_time, token_id, billing_channel_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        task.code ?? 0,
+        task.action ?? "",
+        task.user_id ?? 0,
+        task.mj_id ?? "",
+        task.prompt ?? "",
+        task.prompt_en ?? "",
+        task.description ?? "",
+        task.state ?? "",
+        task.status ?? "",
+        task.image_url ?? "",
+        task.video_url ?? "",
+        task.video_urls ?? "",
+        task.progress ?? "0%",
+        task.fail_reason ?? "",
+        task.channel_id ?? 0,
+        task.quota ?? 0,
+        typeof task.buttons === "string" ? task.buttons : task.buttons != null ? JSON.stringify(task.buttons) : "",
+        typeof task.properties === "string" ? task.properties : task.properties != null ? JSON.stringify(task.properties) : "",
+        task.submit_time ?? nowMs(),
+        task.start_time ?? 0,
+        task.finish_time ?? 0,
+        task.token_id ?? 0,
+        task.billing_channel_id ?? 0,
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async getMjById(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM mj_tasks WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  }
+
+  /** Original `model.GetByOnlyMJId`. */
+  async getMjByMjId(mjId: string): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM mj_tasks WHERE mj_id = ?").bind(mjId).first<Record<string, unknown>>();
+  }
+
+  /** Original `model.GetByMJId`. */
+  async getMjByUserMjId(userId: number, mjId: string): Promise<Record<string, unknown> | null> {
+    return this.db
+      .prepare("SELECT * FROM mj_tasks WHERE user_id = ? AND mj_id = ?")
+      .bind(userId, mjId)
+      .first<Record<string, unknown>>();
+  }
+
+  /** Original `model.GetByMJIds`. */
+  async getMjByUserMjIds(userId: number, mjIds: string[]): Promise<Record<string, unknown>[]> {
+    if (!mjIds.length) return [];
+    const ph = mjIds.map(() => "?").join(",");
+    const { results } = await this.db
+      .prepare(`SELECT * FROM mj_tasks WHERE user_id = ? AND mj_id IN (${ph})`)
+      .bind(userId, ...mjIds)
+      .all<Record<string, unknown>>();
+    return results || [];
+  }
+
+  /** Original `model.GetAllUnFinishTasks` (`progress != 100%`). */
+  async listUnfinishedMjTasks(): Promise<Record<string, unknown>[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM mj_tasks WHERE progress != ?")
+      .bind("100%")
+      .all<Record<string, unknown>>();
+    return results || [];
+  }
+
+  /** Original `model.HasUnfinishedMidjourneyTasks`. */
+  async hasUnfinishedMjTasks(): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT id FROM mj_tasks WHERE progress != ? LIMIT 1")
+      .bind("100%")
+      .first<{ id: number }>();
+    return Boolean(row?.id);
+  }
+
+  /** Original `Midjourney.UpdateWithStatus` CAS. */
+  async updateMjByIdIfStatus(id: number, fromStatus: string, patch: Record<string, unknown>): Promise<boolean> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return false;
+    vals.push(id, fromStatus);
+    const r = await this.db.prepare(`UPDATE mj_tasks SET ${cols.join(", ")} WHERE id = ? AND status = ?`).bind(...vals).run();
+    return Number(r.meta.changes || 0) === 1;
+  }
+
+  async updateMj(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(id);
+    await this.db.prepare(`UPDATE mj_tasks SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  /** Original `Midjourney.UpdateBillingState`. */
+  async updateMjBillingState(id: number, quota: number, tokenId: number, billingChannelId: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE mj_tasks SET quota = ?, token_id = ?, billing_channel_id = ? WHERE id = ?")
+      .bind(quota, tokenId, billingChannelId, id)
+      .run();
+  }
+
+  /** Original `model.MjBulkUpdate` by mj_id. */
+  async bulkUpdateMjByMjIds(mjIds: string[], patch: Record<string, unknown>): Promise<void> {
+    if (!mjIds.length) return;
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    const ph = mjIds.map(() => "?").join(",");
+    await this.db.prepare(`UPDATE mj_tasks SET ${cols.join(", ")} WHERE mj_id IN (${ph})`).bind(...vals, ...mjIds).run();
+  }
+
+  /** Original `model.MjBulkUpdateByTaskIds`. */
+  async bulkUpdateMjByIds(ids: number[], patch: Record<string, unknown>): Promise<void> {
+    if (!ids.length) return;
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    const ph = ids.map(() => "?").join(",");
+    await this.db.prepare(`UPDATE mj_tasks SET ${cols.join(", ")} WHERE id IN (${ph})`).bind(...vals, ...ids).run();
+  }
+
+  async listMj(
+    userId: number | null,
+    offset: number,
+    limit: number,
+    filters: { channel_id?: string; mj_id?: string; start_timestamp?: string; end_timestamp?: string } = {},
+  ): Promise<{ items: unknown[]; total: number }> {
+    const where: string[] = [userId ? "user_id = ?" : "1=1"];
+    const binds: unknown[] = userId ? [userId] : [];
+    if (userId == null && filters.channel_id) {
+      where.push("channel_id = ?");
+      binds.push(filters.channel_id);
+    }
+    if (filters.mj_id) {
+      where.push("mj_id = ?");
+      binds.push(filters.mj_id);
+    }
+    if (filters.start_timestamp) {
+      where.push("submit_time >= ?");
+      binds.push(filters.start_timestamp);
+    }
+    if (filters.end_timestamp) {
+      where.push("submit_time <= ?");
+      binds.push(filters.end_timestamp);
+    }
+    const w = where.join(" AND ");
+    const totalRow = await this.db.prepare(`SELECT COUNT(*) as c FROM mj_tasks WHERE ${w}`).bind(...binds).first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM mj_tasks WHERE ${w} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, limit, offset)
+      .all();
+    return { items: results, total: num(totalRow?.c) };
+  }
+
+  /** Original `model.GetGroupEnabledModels` (`abilities` only; no `channels.models` CSV fallback). */
+  async enabledModels(group: string): Promise<string[]> {
+    const { results } = await this.db
+      .prepare(`SELECT DISTINCT model FROM abilities WHERE "group" = ? AND enabled = 1`)
+      .bind(group)
+      .all<{ model: string }>();
+    return results.map((r) => r.model);
+  }
+
+  /** Original `model.GetEnabledModels`. */
+  async enabledModelsAll(): Promise<string[]> {
+    const { results } = await this.db
+      .prepare(`SELECT DISTINCT model FROM abilities WHERE enabled = 1`)
+      .all<{ model: string }>();
+    return results.map((r) => r.model);
+  }
+
+  /** Original `service.GetGroupsEnabledModels` (group order, first-seen wins). */
+  async enabledModelsForGroups(groups: string[]): Promise<string[]> {
+    const want = groups.filter(Boolean);
+    if (!want.length) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const group of want) {
+      for (const model of await this.enabledModels(group)) {
+        if (seen.has(model)) continue;
+        seen.add(model);
+        out.push(model);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Original `model.GetMissingModels`.
+   * Empty enabled list → `[]string{}` JSON `[]`.
+   * Enabled models exist but all have meta → nil slice JSON `null`.
+   */
+  async getMissingModels(): Promise<string[] | null> {
+    const models = await this.enabledModelsAll();
+    if (models.length === 0) return [];
+    const meta = (await this.listModelMeta()) as { model_name: string }[];
+    const existing = new Set(meta.map((m) => m.model_name));
+    const missing: string[] = [];
+    for (const name of models) {
+      if (!existing.has(name)) missing.push(name);
+    }
+    return missing.length === 0 ? null : missing;
+  }
+
+  /**
+   * Original `model.GetPreferredModelOwnerChannelTypes`.
+   * Highest `priority`, then `weight`, then lowest `channel_id`; first-seen model wins.
+   */
+  async preferredModelOwnerChannelTypes(modelNames: string[], groups: string[]): Promise<Record<string, number>> {
+    const names = [...new Set(modelNames.filter(Boolean))];
+    const result: Record<string, number> = {};
+    if (!names.length) return result;
+    const groupList = [...new Set(groups.filter(Boolean))];
+    const namePh = names.map(() => "?").join(",");
+    let sql = `SELECT abilities.model as model, channels.type as channel_type
+      FROM abilities
+      JOIN channels ON abilities.channel_id = channels.id
+      WHERE abilities.model IN (${namePh}) AND abilities.enabled = 1 AND channels.status = ?`;
+    const binds: unknown[] = [...names, CHANNEL_ENABLED];
+    if (groupList.length) {
+      sql += ` AND abilities."group" IN (${groupList.map(() => "?").join(",")})`;
+      binds.push(...groupList);
+    }
+    sql += ` ORDER BY COALESCE(abilities.priority, 0) DESC, abilities.weight DESC, abilities.channel_id ASC`;
+    const { results } = await this.db.prepare(sql).bind(...binds).all<{ model: string; channel_type: number }>();
+    for (const row of results) {
+      if (result[row.model] != null) continue;
+      result[row.model] = Number(row.channel_type);
+    }
+    return result;
+  }
+
+  async hasCheckedIn(userId: number, date: string): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT id FROM checkins WHERE user_id = ? AND checkin_date = ?")
+      .bind(userId, date)
+      .first<{ id: number }>();
+    return !!row;
+  }
+
+  async insertCheckin(userId: number, date: string, quota: number): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO checkins (user_id, checkin_date, quota_awarded, created_at) VALUES (?, ?, ?, ?)")
+      .bind(userId, date, quota, nowSec())
+      .run();
+  }
+
+  async checkinStats(
+    userId: number,
+    month: string,
+  ): Promise<{
+    checked_in_today: boolean;
+    total_checkins: number;
+    total_quota: number;
+    checkin_count: number;
+    records: { checkin_date: string; quota_awarded: number }[];
+  }> {
+    const start = `${month}-01`;
+    const end = `${month}-31`;
+    const { results } = await this.db
+      .prepare(
+        "SELECT checkin_date, quota_awarded FROM checkins WHERE user_id = ? AND checkin_date >= ? AND checkin_date <= ? ORDER BY checkin_date DESC",
+      )
+      .bind(userId, start, end)
+      .all<{ checkin_date: string; quota_awarded: number }>();
+    const totals = await this.db
+      .prepare("SELECT COUNT(*) as c, COALESCE(SUM(quota_awarded),0) as q FROM checkins WHERE user_id = ?")
+      .bind(userId)
+      .first<{ c: number; q: number }>();
+    const today = new Date().toISOString().slice(0, 10);
+    return {
+      checked_in_today: await this.hasCheckedIn(userId, today),
+      total_checkins: num(totals?.c),
+      total_quota: num(totals?.q),
+      checkin_count: results.length,
+      records: results,
+    };
+  }
+
+  async counts(): Promise<{ users: number; channels: number; tokens: number; logs: number }> {
+    const u = await this.db.prepare("SELECT COUNT(*) as c FROM users").first<{ c: number }>();
+    const c = await this.db.prepare("SELECT COUNT(*) as c FROM channels").first<{ c: number }>();
+    const t = await this.db.prepare("SELECT COUNT(*) as c FROM api_tokens WHERE deleted_at = 0").first<{ c: number }>();
+    const l = await this.db.prepare("SELECT COUNT(*) as c FROM request_logs").first<{ c: number }>();
+    return { users: num(u?.c), channels: num(c?.c), tokens: num(t?.c), logs: num(l?.c) };
+  }
+
+  async insertSession(row: {
+    sid: string;
+    user_id: number;
+    ip: string;
+    ua: string;
+    expires_at: number;
+    login_method?: string;
+    refresh_hash?: string;
+    version?: number;
+    user_auth_version?: number;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        "INSERT INTO login_sessions (sid, user_id, created_at, last_seen, expires_at, ip, ua, revoked, login_method, refresh_hash, version, user_auth_version, last_refresh_hash, last_rotated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, '', 0)",
+      )
+      .bind(
+        row.sid,
+        row.user_id,
+        nowSec(),
+        nowSec(),
+        row.expires_at,
+        row.ip,
+        row.ua,
+        row.login_method || "password",
+        row.refresh_hash || "",
+        row.version || 1,
+        row.user_auth_version || 1,
+      )
+      .run();
+  }
+
+  async getSession(sid: string): Promise<import("./types.js").LoginSessionRow | null> {
+    return this.db.prepare("SELECT * FROM login_sessions WHERE sid = ?").bind(sid).first<LoginSessionRow>();
+  }
+
+  /** Original `model.CountActiveUserSessions` (`revoked=0` and `expires_at > now`; stale auth versions still count). */
+  async countActiveSessions(userId: number, now = nowSec()): Promise<number> {
+    if (userId <= 0) return 0;
+    const row = await this.db
+      .prepare("SELECT COUNT(*) as c FROM login_sessions WHERE user_id = ? AND revoked = 0 AND expires_at > ?")
+      .bind(userId, now)
+      .first<{ c: number }>();
+    return num(row?.c);
+  }
+
+  /** Original `model.CountUserSessionsCreatedSince` (`created_at > createdAfter`; userId 0 is global). */
+  async countSessionsCreatedSince(userId: number, createdAfter: number): Promise<number> {
+    if (userId < 0 || createdAfter <= 0) return 0;
+    const row =
+      userId > 0
+        ? await this.db
+            .prepare("SELECT COUNT(*) as c FROM login_sessions WHERE created_at > ? AND user_id = ?")
+            .bind(createdAfter, userId)
+            .first<{ c: number }>()
+        : await this.db
+            .prepare("SELECT COUNT(*) as c FROM login_sessions WHERE created_at > ?")
+            .bind(createdAfter)
+            .first<{ c: number }>();
+    return num(row?.c);
+  }
+
+  async rotateSessionRefresh(
+    sid: string,
+    currentHash: string,
+    nextHash: string,
+    now: number,
+    ip: string,
+    ua: string,
+  ): Promise<import("./types.js").LoginSessionRow | null> {
+    const r = await this.db
+      .prepare(
+        "UPDATE login_sessions SET refresh_hash = ?, last_refresh_hash = ?, last_rotated_at = ?, version = version + 1, last_seen = ?, ip = ?, ua = ? WHERE sid = ? AND refresh_hash = ? AND revoked = 0",
+      )
+      .bind(nextHash, currentHash, now, now, ip, ua, sid, currentHash)
+      .run();
+    if (!Number(r.meta.changes || 0)) {
+      const fallback = await this.db
+        .prepare(
+          "UPDATE login_sessions SET refresh_hash = ?, last_refresh_hash = ?, last_rotated_at = ?, version = version + 1, last_seen = ?, ip = ?, ua = ? WHERE sid = ? AND (refresh_hash = '' OR refresh_hash IS NULL) AND revoked = 0",
+        )
+        .bind(nextHash, currentHash, now, now, ip, ua, sid)
+        .run();
+      if (!Number(fallback.meta.changes || 0)) return null;
+    }
+    return this.getSession(sid);
+  }
+
+  async bumpAuthVersion(userId: number): Promise<void> {
+    await this.db.prepare("UPDATE users SET auth_version = COALESCE(auth_version, 1) + 1 WHERE id = ?").bind(userId).run();
+    await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE user_id = ?").bind(userId).run();
+  }
+
+  async touchSession(sid: string): Promise<void> {
+    await this.db.prepare("UPDATE login_sessions SET last_seen = ? WHERE sid = ?").bind(nowSec(), sid).run();
+  }
+
+  async extendSession(sid: string, expiresAt: number, ip: string, ua: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE login_sessions SET last_seen = ?, expires_at = ?, ip = ?, ua = ? WHERE sid = ?")
+      .bind(nowSec(), expiresAt, ip, ua, sid)
+      .run();
+  }
+
+  async revokeSession(sid: string, userId?: number): Promise<void> {
+    if (userId != null) {
+      await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE sid = ? AND user_id = ?").bind(sid, userId).run();
+      return;
+    }
+    await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE sid = ?").bind(sid).run();
+  }
+
+  async revokeOtherSessions(userId: number, keepSid: string): Promise<number> {
+    const r = await this.db
+      .prepare("UPDATE login_sessions SET revoked = 1 WHERE user_id = ? AND sid != ? AND revoked = 0")
+      .bind(userId, keepSid)
+      .run();
+    return Number(r.meta.changes || 0);
+  }
+
+  /**
+   * Original `model.ListActiveUserSessions`: current SID first, then others by
+   * last_active_at/created_at, matching user_auth_version, unexpired, unrevoked, cap 100.
+   */
+  async listActiveUserSessions(
+    userId: number,
+    currentSid = "",
+    now = nowSec(),
+  ): Promise<
+    {
+      sid: string;
+      created_at: number;
+      last_seen: number;
+      ip: string;
+      ua: string;
+      revoked: number;
+      expires_at: number;
+      login_method?: string;
+    }[]
+  > {
+    if (userId <= 0) return [];
+    const user = await this.getUserById(userId);
+    const authVersion = Number(user?.auth_version || 0);
+    if (authVersion <= 0) return [];
+    const current = String(currentSid || "").trim();
+    const select =
+      `SELECT sid, created_at, last_seen, ip, ua, revoked, expires_at, login_method FROM login_sessions`;
+    const out: {
+      sid: string;
+      created_at: number;
+      last_seen: number;
+      ip: string;
+      ua: string;
+      revoked: number;
+      expires_at: number;
+      login_method?: string;
+    }[] = [];
+    if (current) {
+      const row = await this.db
+        .prepare(
+          `${select} WHERE user_id = ? AND user_auth_version = ? AND revoked = 0 AND expires_at > ? AND sid = ? LIMIT 1`,
+        )
+        .bind(userId, authVersion, now, current)
+        .first<(typeof out)[number]>();
+      if (row) out.push(row);
+    }
+    const remaining = USER_SESSION_LIST_LIMIT - out.length;
+    if (remaining <= 0) return out;
+    const others = current
+      ? await this.db
+          .prepare(
+            `${select} WHERE user_id = ? AND user_auth_version = ? AND revoked = 0 AND expires_at > ? AND sid <> ? ORDER BY last_seen DESC, created_at DESC LIMIT ?`,
+          )
+          .bind(userId, authVersion, now, current, remaining)
+          .all<(typeof out)[number]>()
+      : await this.db
+          .prepare(
+            `${select} WHERE user_id = ? AND user_auth_version = ? AND revoked = 0 AND expires_at > ? ORDER BY last_seen DESC, created_at DESC LIMIT ?`,
+          )
+          .bind(userId, authVersion, now, remaining)
+          .all<(typeof out)[number]>();
+    out.push(...(others.results ?? []));
+    return out;
+  }
+
+  async listSessions(userId: number, currentSid = "", now = nowSec()) {
+    return this.listActiveUserSessions(userId, currentSid, now);
+  }
+
+  async insertAuthFlow(row: {
+    token: string;
+    type: string;
+    user_id: number;
+    expires_at: number;
+    payload?: string;
+    session_id?: string;
+  }): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO auth_flows (token, type, user_id, expires_at, payload, session_id, consumed_at) VALUES (?, ?, ?, ?, ?, ?, 0)")
+      .bind(row.token, row.type, row.user_id, row.expires_at, row.payload ?? "", row.session_id ?? "")
+      .run();
+  }
+
+  async getAuthFlow(token: string): Promise<{
+    token: string;
+    type: string;
+    user_id: number;
+    expires_at: number;
+    payload: string;
+    session_id?: string;
+    consumed_at?: number;
+  } | null> {
+    return this.db.prepare("SELECT * FROM auth_flows WHERE token = ?").bind(token).first<{
+      token: string;
+      type: string;
+      user_id: number;
+      expires_at: number;
+      payload: string;
+      session_id?: string;
+      consumed_at?: number;
+    }>();
+  }
+
+  async consumeAuthFlow(
+    token: string,
+    match: { type: string; user_id: number; session_id?: string },
+  ): Promise<"ok" | "consumed" | "expired" | "invalid"> {
+    const now = nowSec();
+    const sessionClause = match.session_id ? " AND session_id = ?" : "";
+    const binds: unknown[] = [now, token, match.type, match.user_id];
+    if (match.session_id) binds.push(match.session_id);
+    binds.push(now);
+    const r = await this.db
+      .prepare(
+        `UPDATE auth_flows SET consumed_at = ? WHERE token = ? AND type = ? AND user_id = ?${sessionClause} AND consumed_at = 0 AND expires_at > ?`,
+      )
+      .bind(...binds)
+      .run();
+    if (Number(r.meta.changes || 0) === 1) return "ok";
+    const row = await this.getAuthFlow(token);
+    if (!row) return "invalid";
+    if (Number(row.consumed_at || 0) > 0) return "consumed";
+    if (Number(row.expires_at) <= now) return "expired";
+    return "invalid";
+  }
+
+  async updateAuthFlowPayload(token: string, payload: string): Promise<void> {
+    await this.db.prepare("UPDATE auth_flows SET payload = ? WHERE token = ?").bind(payload, token).run();
+  }
+
+  async deleteAuthFlow(token: string): Promise<void> {
+    await this.db.prepare("DELETE FROM auth_flows WHERE token = ?").bind(token).run();
+  }
+
+  async casbinPolicies(subject: string): Promise<{ v1: string; v2: string; v3: string }[]> {
+    const { results } = await this.db
+      .prepare("SELECT v1, v2, v3 FROM casbin_rule WHERE ptype = 'p' AND v0 = ?")
+      .bind(subject)
+      .all<{ v1: string; v2: string; v3: string }>();
+    return results;
+  }
+
+  async userPermissionOverrides(userId: number): Promise<Record<string, Record<string, boolean>> | null> {
+    const results = await this.casbinPolicies(`user:${userId}`);
+    if (!results.length) return null;
+    const out: Record<string, Record<string, boolean>> = {};
+    for (const row of results) {
+      if (!out[row.v1]) out[row.v1] = {};
+      out[row.v1][row.v2] = row.v3 !== "deny";
+    }
+    return out;
+  }
+
+  async setUserCasbinPolicies(userId: number, deltas: Record<string, Record<string, boolean>>): Promise<void> {
+    const subject = `user:${userId}`;
+    await this.db.prepare("DELETE FROM casbin_rule WHERE ptype = 'p' AND v0 = ?").bind(subject).run();
+    for (const [resource, actions] of Object.entries(deltas)) {
+      for (const [action, allowed] of Object.entries(actions)) {
+        await this.db
+          .prepare("INSERT OR IGNORE INTO casbin_rule (ptype, v0, v1, v2, v3, v4, v5) VALUES ('p', ?, ?, ?, ?, '', '')")
+          .bind(subject, resource, action, allowed ? "allow" : "deny")
+          .run();
+      }
+    }
+  }
+
+  async clearUserCasbinPolicies(userId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM casbin_rule WHERE ptype = 'p' AND v0 = ?").bind(`user:${userId}`).run();
+  }
+
+  async insertEmailCode(email: string, code: string, type: string, ttlSec = 600): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO email_codes (email, code, type, expires_at, used) VALUES (?, ?, ?, ?, 0)")
+      .bind(email, code, type, nowSec() + ttlSec)
+      .run();
+  }
+
+  async verifyEmailCode(email: string, code: string, type: string): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT id FROM email_codes WHERE email = ? AND code = ? AND type = ? AND used = 0 AND expires_at >= ? ORDER BY id DESC LIMIT 1")
+      .bind(email, code, type, nowSec())
+      .first<{ id: number }>();
+    return Boolean(row);
+  }
+
+  async consumeEmailCode(email: string, code: string, type: string): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT id FROM email_codes WHERE email = ? AND code = ? AND type = ? AND used = 0 AND expires_at >= ? ORDER BY id DESC LIMIT 1")
+      .bind(email, code, type, nowSec())
+      .first<{ id: number }>();
+    if (!row) return false;
+    await this.db.prepare("UPDATE email_codes SET used = 1 WHERE id = ?").bind(row.id).run();
+    return true;
+  }
+
+  async insertTopup(row: {
+    user_id: number;
+    amount: number;
+    money?: number;
+    trade_no?: string;
+    payment_method?: string;
+    payment_provider?: string;
+    status?: string;
+    complete_time?: number;
+    created_at?: number;
+  }): Promise<number> {
+    const r = await this.db
+      .prepare(
+        "INSERT INTO topups (user_id, amount, money, trade_no, payment_method, payment_provider, complete_time, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        row.user_id,
+        row.amount,
+        row.money ?? 0,
+        row.trade_no ?? "",
+        row.payment_method ?? "redemption",
+        row.payment_provider ?? "",
+        row.complete_time ?? 0,
+        row.status ?? "success",
+        row.created_at ?? nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  /**
+   * Original GetUserTopUps / SearchUserTopUps / GetAllTopUps / SearchAllTopUps.
+   * User lists are limited to `topUpQueryWindowSeconds`; admin lists are not.
+   * `keyword` is `trade_no LIKE` after `sanitizeLikePattern` (no automatic `%` wrap).
+   */
+  async listTopups(
+    userId: number | null,
+    offset: number,
+    limit: number,
+    keyword = "",
+  ): Promise<{ items: unknown[]; total: number }> {
+    const where: string[] = [];
+    const binds: unknown[] = [];
+    if (userId != null) {
+      where.push("user_id = ?");
+      binds.push(userId);
+      where.push("created_at >= ?");
+      binds.push(nowSec() - TOP_UP_QUERY_WINDOW_SECONDS);
+    }
+    if (keyword) {
+      where.push("trade_no LIKE ? ESCAPE '!'");
+      binds.push(sanitizeLikePattern(keyword));
+    }
+    const w = where.length ? where.join(" AND ") : "1=1";
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM topups WHERE ${w}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM topups WHERE ${w} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, limit, offset)
+      .all();
+    return { items: results, total: num(totalRow?.c) };
+  }
+
+  async getTopupByTrade(tradeNo: string): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM topups WHERE trade_no = ?").bind(tradeNo).first<Record<string, unknown>>();
+  }
+
+  /**
+   * Original `model.creditTopUpQuota`: atomic `quota + credited` only when current quota
+   * is within `MaxWalletQuota - creditedQuota`. Optional `updates` match GORM `Updates`
+   * extras (`stripe_customer`, `email`).
+   */
+  async creditTopUpQuota(userId: number, creditedQuota: number, updates: Record<string, unknown> = {}): Promise<void> {
+    if (creditedQuota <= 0 || creditedQuota > MAX_WALLET_QUOTA) throw new Error(ERR_INVALID_TOP_UP_QUOTA);
+    const maxCurrent = MAX_WALLET_QUOTA - creditedQuota;
+    const sets = ["quota = quota + ?"];
+    const binds: unknown[] = [creditedQuota];
+    if (updates.stripe_customer != null) {
+      sets.push("stripe_customer = ?");
+      binds.push(String(updates.stripe_customer));
+    }
+    if (updates.email != null) {
+      sets.push("email = ?");
+      binds.push(String(updates.email));
+    }
+    binds.push(userId, maxCurrent);
+    const r = await this.db
+      .prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ? AND quota <= ?`)
+      .bind(...binds)
+      .run();
+    if (Number(r.meta.changes || 0) === 1) return;
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error("record not found");
+    throw new Error(ERR_TOP_UP_QUOTA_LIMIT_EXCEEDED);
+  }
+
+  /** Original `model.RecordTopupLog` (`other.admin_info` payment callback fields). */
+  private async recordTopupLog(
+    userId: number,
+    content: string,
+    callerIp: string,
+    paymentMethod: string,
+    callbackPaymentMethod: string,
+  ): Promise<void> {
+    const user = await this.getUserById(userId);
+    await this.insertLog({
+      user_id: userId,
+      username: user?.username || "",
+      type: LOG_TOPUP,
+      content,
+      ip: callerIp,
+      other: JSON.stringify({
+        admin_info: {
+          server_ip: "",
+          node_name: "edge-api",
+          caller_ip: callerIp,
+          payment_method: paymentMethod,
+          callback_payment_method: callbackPaymentMethod,
+          version: VERSION,
+        },
+      }),
+    });
+  }
+
+  /** Mark pending top-up success then credit; roll back the order if credit fails. */
+  private async settlePendingTopUp(
+    row: Record<string, unknown>,
+    quotaToAdd: number,
+    updates: Record<string, unknown> = {},
+    extraPatch: Record<string, unknown> = {},
+  ): Promise<void> {
+    const id = Number(row.id);
+    const userId = Number(row.user_id);
+    const completeTime = nowSec();
+    const previousMethod = String(row.payment_method || "");
+    await this.updateTopup(id, { complete_time: completeTime, status: "success", ...extraPatch });
+    try {
+      await this.creditTopUpQuota(userId, quotaToAdd, updates);
+    } catch (err) {
+      const rollback: Record<string, unknown> = { complete_time: 0, status: "pending" };
+      if (extraPatch.payment_method != null) rollback.payment_method = previousMethod;
+      await this.updateTopup(id, rollback);
+      throw err;
+    }
+  }
+
+  private async topUpQuotaPerUnit(): Promise<number> {
+    return (await this.optionNum("QuotaPerUnit", 500000)) || 500000;
+  }
+
+  /**
+   * Original `model.RechargeEpay`.
+   * Credits `Amount * QuotaPerUnit`. Success is idempotent. Records `RecordTopupLog`.
+   */
+  async rechargeEpay(tradeNo: string, actualPaymentMethod = "", callerIp = ""): Promise<{ alreadyDone: boolean }> {
+    if (!tradeNo) throw new Error("未提供支付单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error(ERR_TOP_UP_NOT_FOUND);
+    if (String(row.payment_provider || "") !== "epay") throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    if (String(row.status) === "success") return { alreadyDone: true };
+    if (String(row.status) !== "pending") throw new Error(ERR_TOP_UP_STATUS_INVALID);
+    const quotaToAdd = walletQuotaFromDecimalStrict(Number(row.amount || 0) * (await this.topUpQuotaPerUnit()));
+    const extra: Record<string, unknown> = {};
+    if (actualPaymentMethod && actualPaymentMethod !== String(row.payment_method || "")) {
+      extra.payment_method = actualPaymentMethod;
+    }
+    await this.settlePendingTopUp(row, quotaToAdd, {}, extra);
+    const formatted = await storeLogQuota(this, quotaToAdd);
+    await this.recordTopupLog(
+      Number(row.user_id),
+      `使用在线充值成功，充值金额: ${formatted}，支付金额：${Number(row.money || 0).toFixed(6)}`,
+      callerIp,
+      String(extra.payment_method || row.payment_method || ""),
+      "epay",
+    );
+    return { alreadyDone: false };
+  }
+
+  /**
+   * Original `model.Recharge` (Stripe).
+   * Credits `Money * QuotaPerUnit`. Not idempotent on success. Sets `stripe_customer`.
+   */
+  async rechargeStripe(tradeNo: string, customerId = "", callerIp = ""): Promise<void> {
+    if (!tradeNo) throw new Error("未提供支付单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("充值订单不存在");
+    if (String(row.payment_provider || "") !== "stripe") throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    if (String(row.status) !== "pending") throw new Error("充值订单状态错误");
+    const quotaToAdd = walletQuotaFromDecimalStrict(Number(row.money || 0) * (await this.topUpQuotaPerUnit()));
+    await this.settlePendingTopUp(row, quotaToAdd, { stripe_customer: customerId });
+    const formatted = await storeFormatQuota(this, quotaToAdd);
+    await this.recordTopupLog(
+      Number(row.user_id),
+      `使用在线充值成功，充值金额: ${formatted}，支付金额：${Math.trunc(Number(row.amount || 0))}`,
+      callerIp,
+      String(row.payment_method || ""),
+      "stripe",
+    );
+  }
+
+  /**
+   * Original `model.RechargeCreem`.
+   * Credits `Amount` as quota (not multiplied by QuotaPerUnit). Fills empty email.
+   */
+  async rechargeCreem(tradeNo: string, customerEmail = "", _customerName = "", callerIp = ""): Promise<void> {
+    if (!tradeNo) throw new Error("未提供支付单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("充值订单不存在");
+    if (String(row.payment_provider || "") !== "creem") throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    if (String(row.status) !== "pending") throw new Error("充值订单状态错误");
+    const quotaToAdd = walletQuotaFromDecimalStrict(Number(row.amount || 0));
+    const updates: Record<string, unknown> = {};
+    if (customerEmail) {
+      const user = await this.getUserById(Number(row.user_id));
+      if (user && !user.email) updates.email = customerEmail;
+    }
+    await this.settlePendingTopUp(row, quotaToAdd, updates);
+    await this.recordTopupLog(
+      Number(row.user_id),
+      `使用Creem充值成功，充值额度: ${quotaToAdd}，支付金额：${Number(row.money || 0).toFixed(2)}`,
+      callerIp,
+      String(row.payment_method || ""),
+      "creem",
+    );
+  }
+
+  /**
+   * Original `model.RechargeWaffo`.
+   * Credits `Amount * QuotaPerUnit`. Success is idempotent.
+   */
+  async rechargeWaffo(tradeNo: string, callerIp = ""): Promise<void> {
+    if (!tradeNo) throw new Error("未提供支付单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("充值订单不存在");
+    if (String(row.payment_provider || "") !== "waffo") throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    if (String(row.status) === "success") return;
+    if (String(row.status) !== "pending") throw new Error("充值订单状态错误");
+    const quotaToAdd = walletQuotaFromDecimalStrict(Number(row.amount || 0) * (await this.topUpQuotaPerUnit()));
+    await this.settlePendingTopUp(row, quotaToAdd);
+    if (quotaToAdd > 0) {
+      const formatted = await storeFormatQuota(this, quotaToAdd);
+      await this.recordTopupLog(
+        Number(row.user_id),
+        `Waffo充值成功，充值额度: ${formatted}，支付金额: ${Number(row.money || 0).toFixed(2)}`,
+        callerIp,
+        String(row.payment_method || ""),
+        "waffo",
+      );
+    }
+  }
+
+  /**
+   * Original `model.RechargeWaffoPancake`.
+   * Credits `Amount * QuotaPerUnit`. Success is idempotent. Uses `RecordLog` (no admin_info).
+   */
+  async rechargeWaffoPancake(tradeNo: string): Promise<void> {
+    if (!tradeNo) throw new Error("未提供支付单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("充值订单不存在");
+    if (String(row.payment_provider || "") !== "waffo_pancake") throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    if (String(row.status) === "success") return;
+    if (String(row.status) !== "pending") throw new Error("充值订单状态错误");
+    const quotaToAdd = walletQuotaFromDecimalStrict(Number(row.amount || 0) * (await this.topUpQuotaPerUnit()));
+    await this.settlePendingTopUp(row, quotaToAdd);
+    if (quotaToAdd > 0) {
+      const user = await this.getUserById(Number(row.user_id));
+      const formatted = await storeFormatQuota(this, quotaToAdd);
+      await this.insertLog({
+        user_id: Number(row.user_id),
+        username: user?.username || "",
+        type: LOG_TOPUP,
+        content: `Waffo Pancake充值成功，充值额度: ${formatted}，支付金额: ${Number(row.money || 0).toFixed(2)}`,
+      });
+    }
+  }
+
+  /**
+   * Original `model.ManualCompleteTopUp`.
+   * Stripe credits `Money * QuotaPerUnit`; other providers credit `Amount * QuotaPerUnit`.
+   * Success is idempotent. Records `RecordTopupLog` after settlement.
+   */
+  async manualCompleteTopUp(tradeNo: string, callerIp: string): Promise<void> {
+    if (!tradeNo) throw new Error("未提供订单号");
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("充值订单不存在");
+    if (String(row.status) === "success") return;
+    if (String(row.status) !== "pending") throw new Error("订单状态不是待支付，无法补单");
+
+    const quotaPerUnit = (await this.optionNum("QuotaPerUnit", 500000)) || 500000;
+    const provider = String(row.payment_provider || "");
+    const raw =
+      provider === "stripe" ? Number(row.money || 0) * quotaPerUnit : Number(row.amount || 0) * quotaPerUnit;
+    const quotaToAdd = walletQuotaFromDecimalStrict(raw);
+
+    const id = Number(row.id);
+    const userId = Number(row.user_id);
+    const payMoney = Number(row.money || 0);
+    const paymentMethod = String(row.payment_method || "");
+    const completeTime = nowSec();
+    await this.updateTopup(id, { complete_time: completeTime, status: "success" });
+    try {
+      await this.creditTopUpQuota(userId, quotaToAdd);
+    } catch (err) {
+      await this.updateTopup(id, { complete_time: 0, status: "pending" });
+      throw err;
+    }
+
+    const user = await this.getUserById(userId);
+    const formatted = await storeFormatQuota(this, quotaToAdd);
+    await this.insertLog({
+      user_id: userId,
+      username: user?.username || "",
+      type: LOG_TOPUP,
+      content: `管理员补单成功，充值金额: ${formatted}，支付金额：${payMoney.toFixed(6)}`,
+      ip: callerIp,
+      other: JSON.stringify({
+        admin_info: {
+          server_ip: "",
+          node_name: "edge-api",
+          caller_ip: callerIp,
+          payment_method: paymentMethod,
+          callback_payment_method: "admin",
+          version: VERSION,
+        },
+      }),
+    });
+  }
+
+  async updateTopup(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE topups SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  /** Original `model.GetSubscriptionOrderByTradeNo`. */
+  async getSubscriptionOrderByTrade(tradeNo: string): Promise<Record<string, unknown> | null> {
+    if (!tradeNo) return null;
+    return this.db.prepare("SELECT * FROM subscription_orders WHERE trade_no = ?").bind(tradeNo).first<Record<string, unknown>>();
+  }
+
+  /** Original `SubscriptionOrder.Insert`. */
+  async insertSubscriptionOrder(row: {
+    user_id: number;
+    plan_id: number;
+    money: number;
+    trade_no: string;
+    payment_method: string;
+    payment_provider: string;
+    status?: string;
+    create_time?: number;
+  }): Promise<number> {
+    const created = row.create_time ?? nowSec();
+    const r = await this.db
+      .prepare(
+        `INSERT INTO subscription_orders (
+           user_id, plan_id, money, trade_no, payment_method, payment_provider, status, create_time, complete_time, provider_payload
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '')`,
+      )
+      .bind(
+        row.user_id,
+        row.plan_id,
+        row.money,
+        row.trade_no,
+        row.payment_method,
+        row.payment_provider,
+        row.status ?? "pending",
+        created,
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateSubscriptionOrder(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(id);
+    await this.db.prepare(`UPDATE subscription_orders SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  /** Original `model.upsertSubscriptionTopUpTx`. */
+  async upsertSubscriptionTopup(order: {
+    user_id: number;
+    money: number;
+    trade_no: string;
+    payment_method: string;
+    create_time: number;
+  }): Promise<void> {
+    const now = nowSec();
+    const existing = await this.getTopupByTrade(order.trade_no);
+    if (!existing) {
+      await this.insertTopup({
+        user_id: order.user_id,
+        amount: 0,
+        money: order.money,
+        trade_no: order.trade_no,
+        payment_method: order.payment_method,
+        payment_provider: "",
+        status: "success",
+        complete_time: now,
+        created_at: order.create_time || now,
+      });
+      return;
+    }
+    const method = String(existing.payment_method || "");
+    if (!method) {
+      await this.updateTopup(Number(existing.id), {
+        money: order.money,
+        payment_method: order.payment_method,
+        complete_time: now,
+        status: "success",
+      });
+      return;
+    }
+    if (method !== order.payment_method) throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    await this.updateTopup(Number(existing.id), {
+      money: order.money,
+      complete_time: now,
+      status: "success",
+    });
+  }
+
+  /** Original `model.CompleteSubscriptionOrder` (idempotent). */
+  async completeSubscriptionOrder(
+    tradeNo: string,
+    providerPayload: string,
+    expectedPaymentProvider: string,
+    actualPaymentMethod: string,
+  ): Promise<void> {
+    if (!tradeNo) throw new Error("tradeNo is empty");
+    const order = await this.getSubscriptionOrderByTrade(tradeNo);
+    if (!order) throw new Error(ERR_SUBSCRIPTION_ORDER_NOT_FOUND);
+    if (expectedPaymentProvider && String(order.payment_provider || "") !== expectedPaymentProvider) {
+      throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    }
+    if (String(order.status) === "success") return;
+    if (String(order.status) !== "pending") throw new Error(ERR_SUBSCRIPTION_ORDER_STATUS_INVALID);
+    const plan = await this.getPlan(Number(order.plan_id || 0));
+    if (!plan) throw new Error("record not found");
+    const userId = Number(order.user_id || 0);
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error("record not found");
+    let paymentMethod = String(order.payment_method || "");
+    if (actualPaymentMethod && paymentMethod !== actualPaymentMethod) paymentMethod = actualPaymentMethod;
+    await this.createUserSubscriptionFromPlan(userId, plan, "order");
+    await this.upsertSubscriptionTopup({
+      user_id: userId,
+      money: Number(order.money || 0),
+      trade_no: String(order.trade_no || tradeNo),
+      payment_method: paymentMethod,
+      create_time: Number(order.create_time || 0),
+    });
+    const now = nowSec();
+    await this.updateSubscriptionOrder(Number(order.id), {
+      status: "success",
+      complete_time: now,
+      payment_method: paymentMethod,
+      provider_payload: providerPayload || String(order.provider_payload || ""),
+    });
+    const money = Number(order.money || 0);
+    await this.insertLog({
+      user_id: userId,
+      username: user.username || "",
+      type: LOG_TOPUP,
+      content: `订阅购买成功，套餐: ${String(plan.title || "")}，支付金额: ${money.toFixed(2)}，支付方式: ${paymentMethod}`,
+    });
+  }
+
+  /** Original `model.ExpireSubscriptionOrder`. */
+  async expireSubscriptionOrder(tradeNo: string, expectedPaymentProvider: string): Promise<void> {
+    if (!tradeNo) throw new Error("tradeNo is empty");
+    const order = await this.getSubscriptionOrderByTrade(tradeNo);
+    if (!order) throw new Error(ERR_SUBSCRIPTION_ORDER_NOT_FOUND);
+    if (expectedPaymentProvider && String(order.payment_provider || "") !== expectedPaymentProvider) {
+      throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    }
+    if (String(order.status) !== "pending") return;
+    await this.updateSubscriptionOrder(Number(order.id), { status: "expired", complete_time: nowSec() });
+  }
+
+  /** Original `model.UpdatePendingTopUpStatus`. */
+  async updatePendingTopupStatus(tradeNo: string, expectedPaymentProvider: string, targetStatus: string): Promise<void> {
+    const row = await this.getTopupByTrade(tradeNo);
+    if (!row) throw new Error("topup not found");
+    if (expectedPaymentProvider && String(row.payment_provider || "") !== expectedPaymentProvider) {
+      throw new Error(ERR_PAYMENT_METHOD_MISMATCH);
+    }
+    if (String(row.status) !== "pending") throw new Error("topup status invalid");
+    await this.updateTopup(Number(row.id), { status: targetStatus, complete_time: nowSec() });
+  }
+
+  async upsertPerfMetric(row: {
+    model_name: string;
+    group: string;
+    bucket_ts: number;
+    request_count: number;
+    success_count: number;
+    total_latency_ms: number;
+    ttft_sum_ms: number;
+    ttft_count: number;
+    output_tokens: number;
+    generation_ms: number;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO perf_metrics (model_name, "group", bucket_ts, request_count, success_count, total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(model_name, "group", bucket_ts) DO UPDATE SET
+           request_count = request_count + excluded.request_count,
+           success_count = success_count + excluded.success_count,
+           total_latency_ms = total_latency_ms + excluded.total_latency_ms,
+           ttft_sum_ms = ttft_sum_ms + excluded.ttft_sum_ms,
+           ttft_count = ttft_count + excluded.ttft_count,
+           output_tokens = output_tokens + excluded.output_tokens,
+           generation_ms = generation_ms + excluded.generation_ms`,
+      )
+      .bind(
+        row.model_name,
+        row.group,
+        row.bucket_ts,
+        row.request_count,
+        row.success_count,
+        row.total_latency_ms,
+        row.ttft_sum_ms,
+        row.ttft_count,
+        row.output_tokens,
+        row.generation_ms,
+      )
+      .run();
+  }
+
+  async listPerfMetrics(modelName: string, group: string, start: number, end: number): Promise<Record<string, unknown>[]> {
+    const sql = group
+      ? `SELECT model_name, "group", bucket_ts, request_count, success_count, total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms
+         FROM perf_metrics WHERE model_name = ? AND "group" = ? AND bucket_ts >= ? AND bucket_ts <= ? ORDER BY bucket_ts ASC`
+      : `SELECT model_name, "group", bucket_ts, request_count, success_count, total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms
+         FROM perf_metrics WHERE model_name = ? AND bucket_ts >= ? AND bucket_ts <= ? ORDER BY bucket_ts ASC`;
+    const stmt = this.db.prepare(sql);
+    const { results } = group
+      ? await stmt.bind(modelName, group, start, end).all<Record<string, unknown>>()
+      : await stmt.bind(modelName, start, end).all<Record<string, unknown>>();
+    return results;
+  }
+
+  async listPerfMetricBuckets(start: number, end: number, groups: string[]): Promise<Record<string, unknown>[]> {
+    if (!groups.length) return [];
+    const ph = groups.map(() => "?").join(",");
+    const { results } = await this.db
+      .prepare(
+        `SELECT model_name, "group", bucket_ts, request_count, success_count, total_latency_ms, ttft_sum_ms, ttft_count, output_tokens, generation_ms
+         FROM perf_metrics WHERE bucket_ts >= ? AND bucket_ts <= ? AND "group" IN (${ph}) ORDER BY bucket_ts ASC`,
+      )
+      .bind(start, end, ...groups)
+      .all<Record<string, unknown>>();
+    return results;
+  }
+
+  async rankings(start: number, end: number, limit = 50): Promise<{ model_name: string; token_used: number; quota: number }[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT model_name, SUM(token_used) as token_used, SUM(quota) as quota
+         FROM quota_data WHERE created_at >= ? AND created_at <= ?
+         GROUP BY model_name ORDER BY token_used DESC LIMIT ?`,
+      )
+      .bind(start, end, limit)
+      .all<{ model_name: string; token_used: number; quota: number }>();
+    return results;
+  }
+
+  async rankingTotals(start: number, end: number): Promise<{ model_name: string; total_tokens: number }[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT model_name, SUM(token_used) as total_tokens
+         FROM quota_data WHERE model_name <> '' AND created_at >= ? AND created_at <= ?
+         GROUP BY model_name HAVING SUM(token_used) > 0 ORDER BY total_tokens DESC`,
+      )
+      .bind(start, end)
+      .all<{ model_name: string; total_tokens: number }>();
+    return results;
+  }
+
+  async rankingBuckets(start: number, end: number, bucketSize: number): Promise<{ model_name: string; bucket: number; tokens: number }[]> {
+    const size = bucketSize > 0 ? bucketSize : 3600;
+    const { results } = await this.db
+      .prepare(
+        `SELECT model_name, (created_at / ?) * ? as bucket, SUM(token_used) as tokens
+         FROM quota_data WHERE model_name <> '' AND created_at >= ? AND created_at <= ?
+         GROUP BY model_name, (created_at / ?) * ?
+         HAVING SUM(token_used) > 0 ORDER BY bucket ASC`,
+      )
+      .bind(size, size, start, end, size, size)
+      .all<{ model_name: string; bucket: number; tokens: number }>();
+    return results;
+  }
+
+  async rankingModelMeta(): Promise<Record<string, { vendor: string; vendor_icon: string }>> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT m.model_name as model_name, COALESCE(v.name, '') as vendor, COALESCE(v.icon, '') as vendor_icon
+         FROM model_meta m LEFT JOIN vendors v ON v.id = m.vendor_id AND v.deleted_at = 0
+         WHERE m.deleted_at = 0`,
+      )
+      .all<{ model_name: string; vendor: string; vendor_icon: string }>();
+    const out: Record<string, { vendor: string; vendor_icon: string }> = {};
+    for (const row of results) {
+      out[String(row.model_name)] = { vendor: String(row.vendor || "Unknown"), vendor_icon: String(row.vendor_icon || "") };
+    }
+    return out;
+  }
+
+  async listPlans(enabledOnly = false): Promise<Record<string, unknown>[]> {
+    const sql = enabledOnly
+      ? "SELECT * FROM subscription_plans WHERE enabled = 1 ORDER BY sort_order DESC, id DESC"
+      : "SELECT * FROM subscription_plans ORDER BY sort_order DESC, id DESC";
+    const { results } = await this.db.prepare(sql).all<Record<string, unknown>>();
+    return results;
+  }
+
+  async getPlan(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM subscription_plans WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  }
+
+  async insertPlan(p: Record<string, unknown>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        `INSERT INTO subscription_plans (
+           title, subtitle, description, price_amount, currency, duration_unit, duration_value, custom_seconds,
+           enabled, sort_order, allow_balance_pay, allow_wallet_overflow, stripe_price_id, creem_product_id,
+           waffo_pancake_product_id, max_purchase_per_user, upgrade_group, downgrade_group, total_amount,
+           quota_reset_period, quota_reset_custom_seconds, price_quota, duration_days, grant_quota, "group", models,
+           created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        p.title ?? "",
+        p.subtitle ?? "",
+        p.description ?? "",
+        Number(p.price_amount || 0),
+        p.currency || "USD",
+        p.duration_unit ?? "month",
+        Number(p.duration_value || 1),
+        Number(p.custom_seconds || 0),
+        p.enabled == null ? 1 : Number(p.enabled),
+        Number(p.sort_order || 0),
+        p.allow_balance_pay == null ? 1 : Number(p.allow_balance_pay),
+        p.allow_wallet_overflow == null ? 1 : Number(p.allow_wallet_overflow),
+        p.stripe_price_id ?? "",
+        p.creem_product_id ?? "",
+        p.waffo_pancake_product_id ?? "",
+        Number(p.max_purchase_per_user || 0),
+        p.upgrade_group ?? "",
+        p.downgrade_group ?? "",
+        Number(p.total_amount || p.grant_quota || 0),
+        p.quota_reset_period ?? "never",
+        Number(p.quota_reset_custom_seconds || 0),
+        Number(p.price_quota || 0),
+        Number(p.duration_days || 30),
+        Number(p.grant_quota || p.total_amount || 0),
+        p.group ?? "",
+        p.models ?? "",
+        nowSec(),
+        nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updatePlan(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      const col = k === "group" ? `"group"` : k;
+      cols.push(`${col} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(id);
+    await this.db.prepare(`UPDATE subscription_plans SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async listUserSubs(userId: number): Promise<Record<string, unknown>[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT s.*, p.title as plan_title FROM user_subscriptions s
+         LEFT JOIN subscription_plans p ON p.id = s.plan_id
+         WHERE s.user_id = ? ORDER BY COALESCE(s.end_time, s.expire_at) DESC, s.id DESC`,
+      )
+      .bind(userId)
+      .all<Record<string, unknown>>();
+    return results;
+  }
+
+  async listActiveUserSubs(userId: number | undefined, planId: number): Promise<Record<string, unknown>[]> {
+    const now = nowSec();
+    if (userId) {
+      const { results } = await this.db
+        .prepare(
+          `SELECT * FROM user_subscriptions
+           WHERE user_id = ? AND plan_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+             AND (COALESCE(end_time, expire_at, 0) > ?)
+           ORDER BY COALESCE(end_time, expire_at) ASC, id ASC`,
+        )
+        .bind(userId, planId, now)
+        .all<Record<string, unknown>>();
+      return results;
+    }
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM user_subscriptions
+         WHERE plan_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+           AND (COALESCE(end_time, expire_at, 0) > ?)
+         ORDER BY user_id ASC, COALESCE(end_time, expire_at) ASC, id ASC`,
+      )
+      .bind(planId, now)
+      .all<Record<string, unknown>>();
+    return results;
+  }
+
+  async insertUserSub(row: {
+    user_id: number;
+    plan_id: number;
+    start_at?: number;
+    expire_at?: number;
+    remaining_quota?: number;
+    amount_total?: number;
+    amount_used?: number;
+    start_time?: number;
+    end_time?: number;
+    status?: string;
+    source?: string;
+    last_reset_time?: number;
+    next_reset_time?: number;
+    upgrade_group?: string;
+    prev_user_group?: string;
+    downgrade_group?: string;
+    allow_wallet_overflow?: number | boolean;
+  }): Promise<number> {
+    const start = Number(row.start_time || row.start_at || nowSec());
+    const end = Number(row.end_time || row.expire_at || 0);
+    const total = Number(row.amount_total ?? row.remaining_quota ?? 0);
+    const overflow = row.allow_wallet_overflow == null ? 1 : Number(row.allow_wallet_overflow);
+    const r = await this.db
+      .prepare(
+        `INSERT INTO user_subscriptions (
+           user_id, plan_id, amount_total, amount_used, start_time, end_time, status, source,
+           last_reset_time, next_reset_time, upgrade_group, prev_user_group, downgrade_group, allow_wallet_overflow,
+           start_at, expire_at, remaining_quota, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        row.user_id,
+        row.plan_id,
+        total,
+        Number(row.amount_used || 0),
+        start,
+        end,
+        row.status || "active",
+        row.source || "order",
+        Number(row.last_reset_time || 0),
+        Number(row.next_reset_time || 0),
+        row.upgrade_group || "",
+        row.prev_user_group || "",
+        row.downgrade_group || "",
+        overflow,
+        start,
+        end,
+        total,
+        nowSec(),
+        nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async countUserSubscriptionsByPlan(userId: number, planId: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) as c FROM user_subscriptions WHERE user_id = ? AND plan_id = ?")
+      .bind(userId, planId)
+      .first<{ c: number }>();
+    return Number(row?.c || 0);
+  }
+
+  /** Original `model.CreateUserSubscriptionFromPlanTx`. */
+  async createUserSubscriptionFromPlan(
+    userId: number,
+    plan: Record<string, unknown>,
+    source: string,
+  ): Promise<{
+    id: number;
+    prev_user_group: string;
+    upgrade_group: string;
+    downgrade_group: string;
+  }> {
+    if (userId <= 0) throw new Error("invalid user id");
+    const planId = Number(plan.id || 0);
+    if (!planId) throw new Error("invalid plan");
+    const maxPurchase = Number(plan.max_purchase_per_user || 0);
+    if (maxPurchase > 0) {
+      const count = await this.countUserSubscriptionsByPlan(userId, planId);
+      if (count >= maxPurchase) throw new Error("已达到该套餐购买上限");
+    }
+    const now = nowSec();
+    const endUnix = calcPlanEndTime(now, plan);
+    const nextReset = calcNextResetTime(now, plan, endUnix);
+    const lastReset = nextReset > 0 ? now : 0;
+    const upgradeGroup = String(plan.upgrade_group || "").trim();
+    const downgradeGroup = String(plan.downgrade_group || "").trim();
+    let prevGroup = "";
+    if (upgradeGroup) {
+      const user = await this.getUserById(userId);
+      if (!user) throw new Error("invalid user id");
+      const currentGroup = String(user.group || "");
+      if (currentGroup !== upgradeGroup) {
+        prevGroup = currentGroup;
+        await this.updateUser(userId, { group: upgradeGroup });
+      }
+    }
+    const overflow = plan.allow_wallet_overflow == null ? 1 : Number(plan.allow_wallet_overflow) ? 1 : 0;
+    const id = await this.insertUserSub({
+      user_id: userId,
+      plan_id: planId,
+      start_time: now,
+      end_time: endUnix,
+      amount_total: Number(plan.total_amount || plan.grant_quota || 0),
+      source,
+      last_reset_time: lastReset,
+      next_reset_time: nextReset,
+      upgrade_group: upgradeGroup,
+      prev_user_group: prevGroup,
+      downgrade_group: downgradeGroup,
+      allow_wallet_overflow: overflow,
+    });
+    return {
+      id,
+      prev_user_group: prevGroup,
+      upgrade_group: upgradeGroup,
+      downgrade_group: downgradeGroup,
+    };
+  }
+
+  /** Original `model.AdminBindSubscription`. */
+  async adminBindSubscription(
+    userId: number,
+    planId: number,
+  ): Promise<{ id: number; message: string }> {
+    if (userId <= 0 || planId <= 0) throw new Error("invalid userId or planId");
+    const plan = await this.getPlan(planId);
+    if (!plan) throw new Error("套餐不存在");
+    const created = await this.createUserSubscriptionFromPlan(userId, plan, "admin");
+    return {
+      id: created.id,
+      message: created.prev_user_group ? `用户分组将升级到 ${created.upgrade_group}` : "",
+    };
+  }
+
+  /** Original `model.downgradeUserGroupForSubscriptionTx`. */
+  async applySubscriptionGroupDowngrade(sub: Record<string, unknown>, now = nowSec()): Promise<string> {
+    const userId = Number(sub.user_id || 0);
+    const subId = Number(sub.id || 0);
+    const downgradeGroup = String(sub.downgrade_group || "").trim();
+    const upgradeGroup = String(sub.upgrade_group || "").trim();
+    if (!downgradeGroup && !upgradeGroup) return "";
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error("invalid user id");
+    const currentGroup = String(user.group || "");
+    const active = await this.db
+      .prepare(
+        `SELECT id FROM user_subscriptions
+         WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+           AND COALESCE(end_time, expire_at, 0) > ? AND id <> ? AND upgrade_group <> ''
+         ORDER BY COALESCE(end_time, expire_at) DESC, id DESC LIMIT 1`,
+      )
+      .bind(userId, now, subId)
+      .first<{ id: number }>();
+    if (active) return "";
+    let target = downgradeGroup;
+    if (!target) {
+      if (currentGroup !== upgradeGroup) return "";
+      target = String(sub.prev_user_group || "").trim();
+    }
+    if (!target || target === currentGroup) return "";
+    await this.updateUser(userId, { group: target });
+    return target;
+  }
+
+  /** Original `model.AdminInvalidateUserSubscription`. */
+  async adminInvalidateUserSubscription(id: number): Promise<string> {
+    if (id <= 0) throw new Error("invalid userSubscriptionId");
+    const sub = await this.getUserSub(id);
+    if (!sub) throw new Error("record not found");
+    const now = nowSec();
+    await this.updateUserSub(id, { status: "cancelled", end_time: now, expire_at: now, updated_at: now });
+    const target = await this.applySubscriptionGroupDowngrade(sub, now);
+    return target ? `用户分组将回退到 ${target}` : "";
+  }
+
+  /** Original `model.AdminDeleteUserSubscription`. */
+  async adminDeleteUserSubscription(id: number): Promise<string> {
+    if (id <= 0) throw new Error("invalid userSubscriptionId");
+    const sub = await this.getUserSub(id);
+    if (!sub) throw new Error("record not found");
+    const now = nowSec();
+    const target = await this.applySubscriptionGroupDowngrade(sub, now);
+    await this.deleteUserSub(id);
+    return target ? `用户分组将回退到 ${target}` : "";
+  }
+
+  async updateUserSub(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE user_subscriptions SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async deleteUserSub(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM user_subscriptions WHERE id = ?").bind(id).run();
+  }
+
+  /** Original `model.ExpireDueSubscriptions`. */
+  async expireSubscriptions(limit = 200): Promise<number> {
+    const n = Number.isInteger(limit) && limit > 0 ? limit : 200;
+    const now = nowSec();
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM user_subscriptions
+         WHERE (status = 'active' OR status = 1 OR status = '1')
+           AND COALESCE(end_time, expire_at, 0) > 0 AND COALESCE(end_time, expire_at, 0) <= ?
+         ORDER BY COALESCE(end_time, expire_at) ASC, id ASC
+         LIMIT ?`,
+      )
+      .bind(now, n)
+      .all<Record<string, unknown>>();
+    if (!results?.length) return 0;
+    const userIds = [...new Set(results.map((row) => Number(row.user_id || 0)).filter((id) => id > 0))];
+    let expiredCount = 0;
+    for (const userId of userIds) {
+      const upd = await this.db
+        .prepare(
+          `UPDATE user_subscriptions SET status = 'expired', updated_at = ?
+           WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+             AND COALESCE(end_time, expire_at, 0) > 0 AND COALESCE(end_time, expire_at, 0) <= ?`,
+        )
+        .bind(now, userId, now)
+        .run();
+      expiredCount += Number(upd.meta?.changes || 0);
+      const active = await this.db
+        .prepare(
+          `SELECT id FROM user_subscriptions
+           WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+             AND COALESCE(end_time, expire_at, 0) > ? AND upgrade_group <> ''
+           ORDER BY COALESCE(end_time, expire_at) DESC, id DESC LIMIT 1`,
+        )
+        .bind(userId, now)
+        .first<{ id: number }>();
+      if (active) continue;
+      const lastExpired = await this.db
+        .prepare(
+          `SELECT * FROM user_subscriptions
+           WHERE user_id = ? AND status = 'expired' AND (downgrade_group <> '' OR upgrade_group <> '')
+           ORDER BY COALESCE(end_time, expire_at) DESC, id DESC LIMIT 1`,
+        )
+        .bind(userId)
+        .first<Record<string, unknown>>();
+      if (!lastExpired) continue;
+      const user = await this.getUserById(userId);
+      if (!user) continue;
+      const currentGroup = String(user.group || "");
+      let target = String(lastExpired.downgrade_group || "").trim();
+      if (!target) {
+        const upgradeGroup = String(lastExpired.upgrade_group || "").trim();
+        const prevGroup = String(lastExpired.prev_user_group || "").trim();
+        if (!upgradeGroup || !prevGroup) continue;
+        if (currentGroup !== upgradeGroup) continue;
+        target = prevGroup;
+      }
+      if (!target || target === currentGroup) continue;
+      await this.updateUser(userId, { group: target });
+    }
+    return expiredCount;
+  }
+
+  async getUserSub(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM user_subscriptions WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  }
+
+  /** Original `model.HasActiveUserSubscription`. */
+  async hasActiveUserSubscription(userId: number): Promise<boolean> {
+    if (userId <= 0) throw new Error("invalid userId");
+    const row = await this.db
+      .prepare(
+        `SELECT COUNT(*) as c FROM user_subscriptions
+         WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+           AND COALESCE(end_time, expire_at, 0) > ?`,
+      )
+      .bind(userId, nowSec())
+      .first<{ c: number }>();
+    return Number(row?.c || 0) > 0;
+  }
+
+  /** Original `model.UserActiveSubscriptionsAllowWalletOverflow`. */
+  async userActiveSubscriptionsAllowWalletOverflow(userId: number): Promise<boolean> {
+    if (userId <= 0) throw new Error("invalid userId");
+    const row = await this.db
+      .prepare(
+        `SELECT COUNT(*) as c FROM user_subscriptions
+         WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+           AND COALESCE(end_time, expire_at, 0) > ? AND allow_wallet_overflow = 0`,
+      )
+      .bind(userId, nowSec())
+      .first<{ c: number }>();
+    return Number(row?.c || 0) === 0;
+  }
+
+  /** Original `model.GetSubscriptionPlanInfoByUserSubscriptionId`. */
+  async getSubscriptionPlanInfoByUserSubscriptionId(
+    userSubscriptionId: number,
+  ): Promise<{ planId: number; planTitle: string } | null> {
+    if (userSubscriptionId <= 0) return null;
+    const row = await this.db
+      .prepare(
+        `SELECT s.plan_id as plan_id, COALESCE(p.title, '') as plan_title
+         FROM user_subscriptions s LEFT JOIN subscription_plans p ON p.id = s.plan_id
+         WHERE s.id = ?`,
+      )
+      .bind(userSubscriptionId)
+      .first<{ plan_id: number; plan_title: string }>();
+    if (!row) return null;
+    return { planId: Number(row.plan_id || 0), planTitle: String(row.plan_title || "") };
+  }
+
+  /** Original `model.maybeResetUserSubscriptionWithPlanTx`. */
+  async maybeResetUserSubscription(
+    sub: Record<string, unknown>,
+    planRow?: Record<string, unknown> | null,
+  ): Promise<Record<string, unknown>> {
+    const now = nowSec();
+    const nextReset = Number(sub.next_reset_time || 0);
+    if (nextReset > 0 && nextReset > now) return sub;
+    const plan = planRow ?? (await this.getPlan(Number(sub.plan_id || 0)));
+    if (!plan || normalizeResetPeriod(plan.quota_reset_period) === "never") return sub;
+    const endUnix = Number(sub.end_time || sub.expire_at || 0);
+    let baseUnix = Number(sub.last_reset_time || 0);
+    if (baseUnix <= 0) baseUnix = Number(sub.start_time || sub.start_at || 0);
+    let next = calcNextResetTime(baseUnix, plan, endUnix);
+    let advanced = false;
+    let base = baseUnix;
+    while (next > 0 && next <= now) {
+      advanced = true;
+      base = next;
+      next = calcNextResetTime(base, plan, endUnix);
+    }
+    if (!advanced) {
+      if (nextReset === 0 && next > 0) {
+        await this.db
+          .prepare("UPDATE user_subscriptions SET last_reset_time = ?, next_reset_time = ?, updated_at = ? WHERE id = ?")
+          .bind(base, next, now, Number(sub.id))
+          .run();
+        return { ...sub, last_reset_time: base, next_reset_time: next };
+      }
+      return sub;
+    }
+    await this.db
+      .prepare("UPDATE user_subscriptions SET amount_used = 0, last_reset_time = ?, next_reset_time = ?, updated_at = ? WHERE id = ?")
+      .bind(base, next, now, Number(sub.id))
+      .run();
+    return { ...sub, amount_used: 0, last_reset_time: base, next_reset_time: next };
+  }
+
+  /** Original `model.ResetDueSubscriptions`. */
+  async resetDueSubscriptions(limit = 200): Promise<number> {
+    const n = Number.isInteger(limit) && limit > 0 ? limit : 200;
+    const now = nowSec();
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM user_subscriptions
+         WHERE next_reset_time > 0 AND next_reset_time <= ?
+           AND (status = 'active' OR status = 1 OR status = '1')
+         ORDER BY next_reset_time ASC LIMIT ?`,
+      )
+      .bind(now, n)
+      .all<Record<string, unknown>>();
+    let resetCount = 0;
+    for (const row of results || []) {
+      const locked = await this.getUserSub(Number(row.id));
+      if (!locked) continue;
+      if (Number(locked.next_reset_time || 0) <= 0 || Number(locked.next_reset_time) > now) continue;
+      const plan = await this.getPlan(Number(locked.plan_id || 0));
+      if (!plan) continue;
+      await this.maybeResetUserSubscription(locked, plan);
+      resetCount += 1;
+    }
+    return resetCount;
+  }
+
+  /** Original `model.CleanupSubscriptionPreConsumeRecords`. */
+  async cleanupSubscriptionPreConsumeRecords(olderThanSeconds = 7 * 24 * 3600): Promise<number> {
+    const older = olderThanSeconds > 0 ? olderThanSeconds : 7 * 24 * 3600;
+    const cutoff = nowSec() - older;
+    const r = await this.db
+      .prepare("DELETE FROM subscription_pre_consume_records WHERE updated_at < ?")
+      .bind(cutoff)
+      .run();
+    return Number(r.meta.changes || 0);
+  }
+
+  /** Original `model.PreConsumeUserSubscription`. */
+  async preConsumeUserSubscription(
+    requestId: string,
+    userId: number,
+    amount: number,
+  ): Promise<{
+    userSubscriptionId: number;
+    preConsumed: number;
+    amountTotal: number;
+    amountUsedBefore: number;
+    amountUsedAfter: number;
+  }> {
+    if (userId <= 0) throw new Error("invalid userId");
+    if (!String(requestId || "").trim()) throw new Error("requestId is empty");
+    if (amount <= 0) throw new Error("amount must be > 0");
+    const now = nowSec();
+    const existing = await this.db
+      .prepare("SELECT * FROM subscription_pre_consume_records WHERE request_id = ?")
+      .bind(requestId)
+      .first<Record<string, unknown>>();
+    if (existing) {
+      if (String(existing.status) === "refunded") throw new Error("subscription pre-consume already refunded");
+      const sub = await this.getUserSub(Number(existing.user_subscription_id || 0));
+      if (!sub) throw new Error("no active subscription");
+      return {
+        userSubscriptionId: Number(sub.id),
+        preConsumed: Number(existing.pre_consumed || 0),
+        amountTotal: Number(sub.amount_total || 0),
+        amountUsedBefore: Number(sub.amount_used || 0),
+        amountUsedAfter: Number(sub.amount_used || 0),
+      };
+    }
+    const { results: subs } = await this.db
+      .prepare(
+        `SELECT * FROM user_subscriptions
+         WHERE user_id = ? AND (status = 'active' OR status = 1 OR status = '1')
+           AND COALESCE(end_time, expire_at, 0) > ?
+         ORDER BY COALESCE(end_time, expire_at) ASC, id ASC`,
+      )
+      .bind(userId, now)
+      .all<Record<string, unknown>>();
+    if (!subs.length) throw new Error("no active subscription");
+    for (const candidate of subs) {
+      const sub = await this.maybeResetUserSubscription(candidate);
+      const usedBefore = Number(sub.amount_used || 0);
+      const amountTotal = Number(sub.amount_total || 0);
+      if (amountTotal > 0 && amountTotal - usedBefore < amount) continue;
+      try {
+        await this.db
+          .prepare(
+            `INSERT INTO subscription_pre_consume_records
+             (request_id, user_id, user_subscription_id, pre_consumed, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 'consumed', ?, ?)`,
+          )
+          .bind(requestId, userId, Number(sub.id), amount, now, now)
+          .run();
+      } catch {
+        const dup = await this.db
+          .prepare("SELECT * FROM subscription_pre_consume_records WHERE request_id = ?")
+          .bind(requestId)
+          .first<Record<string, unknown>>();
+        if (dup) {
+          if (String(dup.status) === "refunded") throw new Error("subscription pre-consume already refunded");
+          return {
+            userSubscriptionId: Number(sub.id),
+            preConsumed: Number(dup.pre_consumed || 0),
+            amountTotal,
+            amountUsedBefore: Number(sub.amount_used || 0),
+            amountUsedAfter: Number(sub.amount_used || 0),
+          };
+        }
+        throw new Error("no active subscription");
+      }
+      await this.db
+        .prepare("UPDATE user_subscriptions SET amount_used = amount_used + ?, updated_at = ? WHERE id = ?")
+        .bind(amount, now, Number(sub.id))
+        .run();
+      return {
+        userSubscriptionId: Number(sub.id),
+        preConsumed: amount,
+        amountTotal,
+        amountUsedBefore: usedBefore,
+        amountUsedAfter: usedBefore + amount,
+      };
+    }
+    throw new Error(`subscription quota insufficient, need=${amount}`);
+  }
+
+  /** Original `model.RefundSubscriptionPreConsume`. */
+  async refundSubscriptionPreConsume(requestId: string): Promise<void> {
+    if (!String(requestId || "").trim()) throw new Error("requestId is empty");
+    const record = await this.db
+      .prepare("SELECT * FROM subscription_pre_consume_records WHERE request_id = ?")
+      .bind(requestId)
+      .first<Record<string, unknown>>();
+    if (!record) throw new Error("record not found");
+    if (String(record.status) === "refunded") return;
+    const preConsumed = Number(record.pre_consumed || 0);
+    if (preConsumed > 0) {
+      await this.postConsumeUserSubscriptionDelta(Number(record.user_subscription_id || 0), -preConsumed);
+    }
+    await this.db
+      .prepare("UPDATE subscription_pre_consume_records SET status = 'refunded', updated_at = ? WHERE id = ?")
+      .bind(nowSec(), Number(record.id))
+      .run();
+  }
+
+  /** Original `model.PostConsumeUserSubscriptionDelta`. */
+  async postConsumeUserSubscriptionDelta(userSubscriptionId: number, delta: number): Promise<void> {
+    if (userSubscriptionId <= 0) throw new Error("invalid userSubscriptionId");
+    if (!delta) return;
+    const sub = await this.getUserSub(userSubscriptionId);
+    if (!sub) throw new Error("invalid userSubscriptionId");
+    const amountTotal = Number(sub.amount_total || 0);
+    const newUsed = Math.max(Number(sub.amount_used || 0) + delta, 0);
+    if (amountTotal > 0 && newUsed > amountTotal) {
+      throw new Error(`subscription used exceeds total, used=${newUsed} total=${amountTotal}`);
+    }
+    await this.db
+      .prepare("UPDATE user_subscriptions SET amount_used = ?, updated_at = ? WHERE id = ?")
+      .bind(newUsed, nowSec(), userSubscriptionId)
+      .run();
+  }
+
+  async vendorModelCounts(): Promise<Record<string, number>> {
+    const { results } = await this.db
+      .prepare("SELECT vendor_id as vendor_id, COUNT(*) as count FROM model_meta WHERE deleted_at = 0 GROUP BY vendor_id")
+      .all<{ vendor_id: number; count: number }>();
+    const out: Record<string, number> = {};
+    for (const row of results) out[String(row.vendor_id || 0)] = Number(row.count || 0);
+    return out;
+  }
+
+  async insertTask(row: Record<string, unknown>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        `INSERT INTO tasks (task_id, user_id, token_id, channel_id, "group", quota, platform, action, status, progress, model_name, prompt, fail_reason, result, properties, data, private_data, created_at, updated_at, submit_time)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        row.task_id ?? crypto.randomUUID(),
+        row.user_id ?? 0,
+        row.token_id ?? 0,
+        row.channel_id ?? 0,
+        row.group ?? "",
+        row.quota ?? 0,
+        row.platform ?? "",
+        row.action ?? "",
+        row.status ?? "SUBMITTED",
+        row.progress ?? "0%",
+        row.model_name ?? "",
+        row.prompt ?? "",
+        row.fail_reason ?? "",
+        typeof row.result === "string" ? row.result : JSON.stringify(row.result ?? ""),
+        typeof row.properties === "string" ? row.properties : JSON.stringify(row.properties ?? {}),
+        typeof row.data === "string" ? row.data : JSON.stringify(row.data ?? null),
+        typeof row.private_data === "string" ? row.private_data : JSON.stringify(row.private_data ?? {}),
+        nowSec(),
+        nowSec(),
+        nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async getTaskByTid(taskId: string): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM tasks WHERE task_id = ?").bind(taskId).first<Record<string, unknown>>();
+  }
+
+  /** Original `model.GetByTaskId` — ownership is `user_id` AND `task_id`. */
+  async getTaskByUserAndTid(userId: number, taskId: string): Promise<Record<string, unknown> | null> {
+    if (!taskId) return null;
+    return this.db
+      .prepare("SELECT * FROM tasks WHERE user_id = ? AND task_id = ?")
+      .bind(userId, taskId)
+      .first<Record<string, unknown>>();
+  }
+
+  /** Original `model.GetByTaskIdsForPlatforms`. */
+  async getTasksByUserPlatformsAndIds(
+    userId: number,
+    platforms: string[],
+    taskIds: string[],
+  ): Promise<Record<string, unknown>[]> {
+    if (!platforms.length || !taskIds.length) return [];
+    const phP = platforms.map(() => "?").join(",");
+    const phT = taskIds.map(() => "?").join(",");
+    const { results } = await this.db
+      .prepare(`SELECT * FROM tasks WHERE user_id = ? AND platform IN (${phP}) AND task_id IN (${phT})`)
+      .bind(userId, ...platforms, ...taskIds)
+      .all<Record<string, unknown>>();
+    return results || [];
+  }
+
+  async updateTaskByTid(taskId: string, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(taskId);
+    await this.db.prepare(`UPDATE tasks SET ${cols.join(", ")} WHERE task_id = ?`).bind(...vals).run();
+  }
+
+  /** Original `Task.UpdateWithStatus` CAS guarded by previous status. */
+  async updateTaskByTidIfStatus(taskId: string, fromStatus: string, patch: Record<string, unknown>): Promise<boolean> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return false;
+    vals.push(taskId, fromStatus);
+    const r = await this.db.prepare(`UPDATE tasks SET ${cols.join(", ")} WHERE task_id = ? AND status = ?`).bind(...vals).run();
+    return Number(r.meta.changes || 0) === 1;
+  }
+
+  /** Original `Task.UpdateQuota`. */
+  async updateTaskQuota(taskId: string, quota: number): Promise<void> {
+    await this.db.prepare("UPDATE tasks SET quota = ? WHERE task_id = ?").bind(quota, taskId).run();
+  }
+
+  /** Original `model.GetAllUnFinishSyncTasks`. */
+  async listUnfinishedSyncTasks(limit = 1000): Promise<Record<string, unknown>[]> {
+    const n = Number.isInteger(limit) && limit > 0 ? limit : 1000;
+    const { results } = await this.db
+      .prepare(
+        "SELECT * FROM tasks WHERE progress != ? AND status != ? AND status != ? ORDER BY id LIMIT ?",
+      )
+      .bind("100%", "FAILURE", "SUCCESS", n)
+      .all<Record<string, unknown>>();
+    return results || [];
+  }
+
+  /** Original `model.HasUnfinishedSyncTasks`. */
+  async hasUnfinishedSyncTasks(): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        "SELECT id FROM tasks WHERE progress != ? AND status != ? AND status != ? LIMIT 1",
+      )
+      .bind("100%", "FAILURE", "SUCCESS")
+      .first<{ id: number }>();
+    return Boolean(row?.id);
+  }
+
+  /** Original `model.GetTimedOutUnfinishedTasks`. */
+  async listTimedOutUnfinishedTasks(cutoffUnix: number, limit = 100): Promise<Record<string, unknown>[]> {
+    const n = Number.isInteger(limit) && limit > 0 ? limit : 100;
+    const { results } = await this.db
+      .prepare(
+        "SELECT * FROM tasks WHERE progress != ? AND status NOT IN (?, ?) AND submit_time < ? ORDER BY submit_time LIMIT ?",
+      )
+      .bind("100%", "FAILURE", "SUCCESS", cutoffUnix, n)
+      .all<Record<string, unknown>>();
+    return results || [];
+  }
+
+  /** Original `model.TaskBulkUpdateByID` (no CAS; not for billing transitions). */
+  async bulkUpdateTasksByIds(ids: number[], patch: Record<string, unknown>): Promise<void> {
+    if (!ids.length) return;
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    const ph = ids.map(() => "?").join(",");
+    await this.db.prepare(`UPDATE tasks SET ${cols.join(", ")} WHERE id IN (${ph})`).bind(...vals, ...ids).run();
+  }
+
+  async listTasks(
+    userId: number | null,
+    offset: number,
+    limit: number,
+    filters: {
+      platform?: string;
+      task_id?: string;
+      status?: string;
+      action?: string;
+      start_timestamp?: number;
+      end_timestamp?: number;
+      channel_id?: string;
+    } = {},
+  ): Promise<{ items: unknown[]; total: number }> {
+    const where: string[] = [userId ? "t.user_id = ?" : "1=1"];
+    const binds: unknown[] = userId ? [userId] : [];
+    if (filters.platform) {
+      where.push("t.platform = ?");
+      binds.push(filters.platform);
+    }
+    if (filters.task_id) {
+      where.push("t.task_id = ?");
+      binds.push(filters.task_id);
+    }
+    if (filters.status) {
+      where.push("t.status = ?");
+      binds.push(filters.status);
+    }
+    if (filters.action) {
+      where.push("t.action = ?");
+      binds.push(filters.action);
+    }
+    if (filters.start_timestamp) {
+      where.push("t.submit_time >= ?");
+      binds.push(filters.start_timestamp);
+    }
+    if (filters.end_timestamp) {
+      where.push("t.submit_time <= ?");
+      binds.push(filters.end_timestamp);
+    }
+    if (userId == null && filters.channel_id) {
+      where.push("t.channel_id = ?");
+      binds.push(filters.channel_id);
+    }
+    const w = where.join(" AND ");
+    const totalRow = await this.db.prepare(`SELECT COUNT(*) as c FROM tasks t WHERE ${w}`).bind(...binds).first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(
+        `SELECT t.id, t.created_at, t.updated_at, t.task_id, t.user_id, t.token_id, t.channel_id, t."group" AS "group",
+                t.quota, t.platform, t.action, t.status, t.progress, t.model_name, t.prompt, t.fail_reason, t.result,
+                t.properties, t.data, t.private_data, t.submit_time, t.start_time, t.finish_time, u.username AS username
+         FROM tasks t LEFT JOIN users u ON t.user_id = u.id WHERE ${w} ORDER BY t.id DESC LIMIT ? OFFSET ?`,
+      )
+      .bind(...binds, limit, offset)
+      .all();
+    return { items: results ?? [], total: num(totalRow?.c) };
+  }
+
+  async listVendors(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM vendors WHERE deleted_at = 0 ORDER BY id").all();
+    return results;
+  }
+
+  /** Original `model.SearchVendors` — LIKE on name/description, linked/unlinked EXISTS, `ORDER BY id DESC`. */
+  async searchVendors(opts: {
+    keyword?: string;
+    association?: string;
+    offset: number;
+    limit: number;
+  }): Promise<{ items: Record<string, unknown>[]; total: number }> {
+    const where: string[] = ["deleted_at = 0"];
+    const binds: unknown[] = [];
+    const keyword = opts.keyword || "";
+    if (keyword) {
+      const like = `%${keyword}%`;
+      where.push("(name LIKE ? OR description LIKE ?)");
+      binds.push(like, like);
+    }
+    const association = opts.association || "";
+    if (association === "linked") {
+      where.push("EXISTS (SELECT 1 FROM model_meta WHERE model_meta.vendor_id = vendors.id AND model_meta.deleted_at = 0)");
+    } else if (association === "unlinked") {
+      where.push("NOT EXISTS (SELECT 1 FROM model_meta WHERE model_meta.vendor_id = vendors.id AND model_meta.deleted_at = 0)");
+    }
+    const whereSql = where.join(" AND ");
+    const totalRow = await this.db
+      .prepare(`SELECT COUNT(*) as c FROM vendors WHERE ${whereSql}`)
+      .bind(...binds)
+      .first<{ c: number }>();
+    const { results } = await this.db
+      .prepare(`SELECT * FROM vendors WHERE ${whereSql} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .bind(...binds, opts.limit, opts.offset)
+      .all();
+    return { items: results as Record<string, unknown>[], total: num(totalRow?.c) };
+  }
+
+  async getVendor(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM vendors WHERE id = ? AND deleted_at = 0").bind(id).first<Record<string, unknown>>();
+  }
+
+  async insertVendor(name: string, description = "", icon = ""): Promise<number> {
+    const t = nowSec();
+    const r = await this.db
+      .prepare("INSERT INTO vendors (name, description, icon, status, created_at, created_time, updated_time) VALUES (?, ?, ?, 1, ?, ?, ?)")
+      .bind(name, description, icon, t, t, t)
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateVendor(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE vendors SET ${cols.join(", ")} WHERE id = ? AND deleted_at = 0`).bind(...vals).run();
+  }
+
+  /** Original `model.Vendor.Delete` (GORM soft delete; live name unique so names can be reused). */
+  async deleteVendor(id: number): Promise<void> {
+    await this.db.prepare("UPDATE vendors SET deleted_at = ? WHERE id = ? AND deleted_at = 0").bind(nowSec(), id).run();
+  }
+
+  async listPrefill(type = ""): Promise<unknown[]> {
+    if (type) {
+      const { results } = await this.db
+        .prepare("SELECT * FROM prefill_groups WHERE type = ? AND deleted_at = 0 ORDER BY updated_time DESC, id DESC")
+        .bind(type)
+        .all();
+      return results;
+    }
+    const { results } = await this.db
+      .prepare("SELECT * FROM prefill_groups WHERE deleted_at = 0 ORDER BY updated_time DESC, id DESC")
+      .all();
+    return results;
+  }
+
+  async insertPrefill(name: string, type: string, items: string, description = ""): Promise<number> {
+    const t = nowSec();
+    const r = await this.db
+      .prepare("INSERT INTO prefill_groups (name, type, items, description, created_at, created_time, updated_time) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .bind(name, type, items, description, t, t, t)
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  /** Original `PrefillGroup.Update` (`DB.Save` replaces all columns, including zero values). */
+  async savePrefill(row: {
+    id: number;
+    name: string;
+    type: string;
+    items: string;
+    description: string;
+    created_time: number;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE prefill_groups SET name = ?, type = ?, items = ?, description = ?, created_time = ?, updated_time = ? WHERE id = ? AND deleted_at = 0",
+      )
+      .bind(row.name, row.type, row.items, row.description, row.created_time, nowSec(), row.id)
+      .run();
+  }
+
+  /** Original `model.DeletePrefillGroupByID` (GORM soft delete; live name unique so names can be reused). */
+  async deletePrefill(id: number): Promise<void> {
+    await this.db.prepare("UPDATE prefill_groups SET deleted_at = ? WHERE id = ? AND deleted_at = 0").bind(nowSec(), id).run();
+  }
+
+  async listOAuthProviders(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM oauth_providers ORDER BY id").all();
+    return results;
+  }
+
+  async getOAuthProvider(idOrSlug: string | number): Promise<Record<string, unknown> | null> {
+    if (typeof idOrSlug === "number" || /^\d+$/.test(String(idOrSlug))) {
+      return this.db.prepare("SELECT * FROM oauth_providers WHERE id = ?").bind(Number(idOrSlug)).first<Record<string, unknown>>();
+    }
+    return this.db.prepare("SELECT * FROM oauth_providers WHERE slug = ?").bind(String(idOrSlug)).first<Record<string, unknown>>();
+  }
+
+  async insertOAuthProvider(p: Record<string, unknown>): Promise<number> {
+    const t = nowSec();
+    const authorization = String(p.authorization_endpoint || p.auth_url || "");
+    const token = String(p.token_endpoint || p.token_url || "");
+    const userInfo = String(p.user_info_endpoint || p.user_info_url || "");
+    const r = await this.db
+      .prepare(
+        `INSERT INTO oauth_providers (
+          name, slug, icon, client_id, client_secret, auth_url, token_url, user_info_url,
+          authorization_endpoint, token_endpoint, user_info_endpoint, scopes,
+          user_id_field, username_field, display_name_field, email_field, well_known,
+          auth_style, access_policy, access_denied_message, enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        p.name ?? "",
+        p.slug ?? "",
+        p.icon ?? "",
+        p.client_id ?? "",
+        p.client_secret ?? "",
+        authorization,
+        token,
+        userInfo,
+        authorization,
+        token,
+        userInfo,
+        p.scopes ?? "",
+        p.user_id_field || "sub",
+        p.username_field || "preferred_username",
+        p.display_name_field || "name",
+        p.email_field || "email",
+        p.well_known ?? "",
+        Number(p.auth_style || 0),
+        p.access_policy ?? "",
+        p.access_denied_message ?? "",
+        p.enabled == null ? 0 : Number(p.enabled),
+        t,
+        t,
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateOAuthProvider(id: number, patch: Record<string, unknown>): Promise<void> {
+    const allowed = new Set([
+      "name",
+      "slug",
+      "icon",
+      "client_id",
+      "client_secret",
+      "auth_url",
+      "token_url",
+      "user_info_url",
+      "authorization_endpoint",
+      "token_endpoint",
+      "user_info_endpoint",
+      "scopes",
+      "user_id_field",
+      "username_field",
+      "display_name_field",
+      "email_field",
+      "well_known",
+      "auth_style",
+      "access_policy",
+      "access_denied_message",
+      "enabled",
+      "updated_at",
+    ]);
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (!allowed.has(k)) continue;
+      if (k === "client_secret" && (v == null || v === "")) continue;
+      cols.push(`${k} = ?`);
+      vals.push(k === "enabled" ? Number(v) : v);
+    }
+    if (!cols.length) return;
+    if (!cols.includes("updated_at = ?")) {
+      cols.push("updated_at = ?");
+      vals.push(nowSec());
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE oauth_providers SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async isOAuthSlugTaken(slug: string, exceptId = 0): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT id FROM oauth_providers WHERE slug = ? AND id != ?")
+      .bind(slug, exceptId)
+      .first<{ id: number }>();
+    return Boolean(row);
+  }
+
+  async countOAuthBindings(providerId: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) as c FROM user_oauth_bindings WHERE provider_id = ?")
+      .bind(providerId)
+      .first<{ c: number }>();
+    return Number(row?.c || 0);
+  }
+
+  async deleteOAuthProvider(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM oauth_providers WHERE id = ?").bind(id).run();
+  }
+
+  async listPasskeys(userId: number): Promise<{ id: number; credential_id: string; public_key: string; name: string; created_at: number; last_used_at?: number; rp_id?: string }[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM passkeys WHERE user_id = ?")
+      .bind(userId)
+      .all<{ id: number; credential_id: string; public_key: string; name: string; created_at: number; last_used_at?: number; rp_id?: string }>();
+    return results;
+  }
+
+  async getPasskeyByCred(credentialId: string): Promise<{
+    id: number;
+    user_id: number;
+    credential_id: string;
+    public_key: string;
+    last_used_at?: number;
+  } | null> {
+    return this.db.prepare("SELECT * FROM passkeys WHERE credential_id = ?").bind(credentialId).first<{ id: number; user_id: number; credential_id: string; public_key: string; last_used_at?: number }>();
+  }
+
+  async insertPasskey(userId: number, credentialId: string, publicKey: string, name = "", rpId = ""): Promise<number> {
+    const r = await this.db
+      .prepare("INSERT INTO passkeys (user_id, credential_id, public_key, name, created_at, last_used_at, rp_id) VALUES (?, ?, ?, ?, ?, 0, ?)")
+      .bind(userId, credentialId, publicKey, name, nowSec(), rpId)
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async countPasskeysByRemovedRpIds(removed: string[]): Promise<{ affected: number; unknown: number }> {
+    const { results } = await this.db.prepare("SELECT rp_id FROM passkeys").all<{ rp_id?: string | null }>();
+    let affected = 0;
+    let unknown = 0;
+    for (const row of results) {
+      if (row.rp_id == null || row.rp_id === "") unknown += 1;
+      else if (removed.includes(row.rp_id)) affected += 1;
+    }
+    return { affected, unknown };
+  }
+
+  async channelsForModel(model: string): Promise<{ type: number; status: number; models: string; model_mapping: string }[]> {
+    const { results } = await this.db
+      .prepare("SELECT DISTINCT channel_id FROM abilities WHERE model = ?")
+      .bind(model)
+      .all<{ channel_id: number }>();
+    const ids = results.map((r) => r.channel_id);
+    if (!ids.length) return [];
+    const ph = ids.map(() => "?").join(",");
+    const { results: channels } = await this.db
+      .prepare(`SELECT type, status, models, model_mapping FROM channels WHERE id IN (${ph})`)
+      .bind(...ids)
+      .all<{ type: number; status: number; models: string; model_mapping: string }>();
+    return channels;
+  }
+
+  async touchPasskey(credentialId: string): Promise<void> {
+    await this.db.prepare("UPDATE passkeys SET last_used_at = ? WHERE credential_id = ?").bind(nowSec(), credentialId).run();
+  }
+
+  async deletePasskeys(userId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM passkeys WHERE user_id = ?").bind(userId).run();
+  }
+
+  async listUserOAuthBindings(userId: number): Promise<
+    { provider_id: number; provider_name: string; provider_slug: string; provider_icon: string; provider_user_id: string }[]
+  > {
+    const { results } = await this.db
+      .prepare(
+        `SELECT b.provider_id, p.name as provider_name, p.slug as provider_slug, p.icon as provider_icon, b.provider_user_id
+         FROM user_oauth_bindings b JOIN oauth_providers p ON p.id = b.provider_id
+         WHERE b.user_id = ? ORDER BY b.id`,
+      )
+      .bind(userId)
+      .all<{
+        provider_id: number;
+        provider_name: string;
+        provider_slug: string;
+        provider_icon: string;
+        provider_user_id: string;
+      }>();
+    return results;
+  }
+
+  async getUserOAuthBinding(userId: number, providerId: number): Promise<{ provider_user_id: string } | null> {
+    return this.db
+      .prepare("SELECT provider_user_id FROM user_oauth_bindings WHERE user_id = ? AND provider_id = ?")
+      .bind(userId, providerId)
+      .first<{ provider_user_id: string }>();
+  }
+
+  async getUserByOAuthBinding(providerId: number, providerUserId: string): Promise<UserRow | null> {
+    const row = await this.db
+      .prepare("SELECT user_id FROM user_oauth_bindings WHERE provider_id = ? AND provider_user_id = ?")
+      .bind(providerId, providerUserId)
+      .first<{ user_id: number }>();
+    if (!row) return null;
+    return this.getUserById(row.user_id);
+  }
+
+  async upsertUserOAuthBinding(userId: number, providerId: number, providerUserId: string): Promise<void> {
+    const existing = await this.getUserOAuthBinding(userId, providerId);
+    if (existing) {
+      await this.db
+        .prepare("UPDATE user_oauth_bindings SET provider_user_id = ? WHERE user_id = ? AND provider_id = ?")
+        .bind(providerUserId, userId, providerId)
+        .run();
+      return;
+    }
+    await this.db
+      .prepare("INSERT INTO user_oauth_bindings (user_id, provider_id, provider_user_id, created_at) VALUES (?, ?, ?, ?)")
+      .bind(userId, providerId, providerUserId, nowSec())
+      .run();
+  }
+
+  async deleteUserOAuthBinding(userId: number, providerId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM user_oauth_bindings WHERE user_id = ? AND provider_id = ?").bind(userId, providerId).run();
+  }
+
+  async oauthBindingTaken(providerId: number, providerUserId: string, exceptUserId = 0): Promise<boolean> {
+    const row = await this.db
+      .prepare("SELECT user_id FROM user_oauth_bindings WHERE provider_id = ? AND provider_user_id = ?")
+      .bind(providerId, providerUserId)
+      .first<{ user_id: number }>();
+    return Boolean(row && row.user_id !== exceptUserId);
+  }
+
+  async listModelMeta(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM model_meta WHERE deleted_at = 0 ORDER BY id").all();
+    return results;
+  }
+
+  async insertModelMeta(model_name: string, description = "", vendor_id = 0): Promise<number> {
+    const t = nowSec();
+    const r = await this.db
+      .prepare(
+        "INSERT INTO model_meta (model_name, description, vendor_id, icon, tags, endpoints, created_at, created_time, updated_time, status, sync_official, name_rule) VALUES (?, ?, ?, '', '', '', ?, ?, ?, 1, 1, 0)",
+      )
+      .bind(model_name, description, vendor_id, t, t, t)
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async isModelNameDuplicated(id: number, name: string): Promise<boolean> {
+    if (!name) return false;
+    const row = await this.db
+      .prepare("SELECT id FROM model_meta WHERE model_name = ? AND id <> ? AND deleted_at = 0")
+      .bind(name, id)
+      .first<{ id: number }>();
+    return Boolean(row);
+  }
+
+  async updateModelMeta(id: number, patch: Record<string, unknown>): Promise<void> {
+    const allowed = new Set([
+      "model_name",
+      "description",
+      "icon",
+      "tags",
+      "vendor_id",
+      "endpoints",
+      "status",
+      "sync_official",
+      "name_rule",
+      "updated_time",
+      "created_time",
+      "created_at",
+    ]);
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (!allowed.has(k) || v === undefined) continue;
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    if (!cols.length) return;
+    vals.push(id);
+    await this.db.prepare(`UPDATE model_meta SET ${cols.join(", ")} WHERE id = ? AND deleted_at = 0`).bind(...vals).run();
+  }
+
+  async deleteModelMeta(id: number): Promise<void> {
+    await this.deleteModelMetadata([id], false, false);
+  }
+
+  async getModelMeta(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM model_meta WHERE id = ? AND deleted_at = 0").bind(id).first<Record<string, unknown>>();
+  }
+
+  async searchModelMeta(keyword: string): Promise<unknown[]> {
+    return this.searchModels({ keyword });
+  }
+
+  /** Original `model.SearchModels` — `ORDER BY id DESC`. */
+  async searchModels(opts: {
+    keyword?: string;
+    vendor?: string;
+    status?: number | null;
+    syncOfficial?: number | null;
+  }): Promise<Record<string, unknown>[]> {
+    const where: string[] = ["model_meta.deleted_at = 0"];
+    const binds: unknown[] = [];
+    const keyword = (opts.keyword || "").trim();
+    if (keyword) {
+      where.push("(model_meta.model_name LIKE ? OR model_meta.description LIKE ? OR model_meta.tags LIKE ?)");
+      const q = `%${keyword}%`;
+      binds.push(q, q, q);
+    }
+    const vendor = opts.vendor ?? "";
+    let join = "";
+    if (vendor !== "") {
+      if (/^-?\d+$/.test(vendor)) {
+        where.push("model_meta.vendor_id = ?");
+        binds.push(Number(vendor));
+      } else {
+        join = "JOIN vendors ON vendors.id = model_meta.vendor_id AND vendors.deleted_at = 0";
+        where.push("vendors.name LIKE ?");
+        binds.push(`%${vendor}%`);
+      }
+    }
+    if (opts.status != null) {
+      where.push("model_meta.status = ?");
+      binds.push(opts.status);
+    }
+    if (opts.syncOfficial != null) {
+      where.push("model_meta.sync_official = ?");
+      binds.push(opts.syncOfficial);
+    }
+    const { results } = await this.db
+      .prepare(`SELECT model_meta.* FROM model_meta ${join} WHERE ${where.join(" AND ")} ORDER BY model_meta.id DESC`)
+      .bind(...binds)
+      .all();
+    return results as Record<string, unknown>[];
+  }
+
+  async deleteModelMetaBatch(ids: number[]): Promise<number> {
+    return (await this.deleteModelMetadata(ids, false, false)).deleted_count;
+  }
+
+  /** Original `model.DeleteModelMetadata`. */
+  async deleteModelMetadata(
+    ids: number[],
+    removeFromChannels: boolean,
+    removePricing: boolean,
+  ): Promise<{ deleted_count: number; updated_channels: number }> {
+    const result = { deleted_count: 0, updated_channels: 0 };
+    if (!ids.length || ids.length > 1000) throw new Error("select between 1 and 1000 models");
+    const selected = new Set<number>();
+    for (const id of ids) {
+      if (id <= 0) throw new Error("invalid model ID");
+      selected.add(id);
+    }
+    const modelIDs = [...selected].sort((a, b) => a - b);
+    const records: Record<string, unknown>[] = [];
+    for (const id of modelIDs) {
+      const row = await this.getModelMeta(id);
+      if (!row) throw new Error("selected models changed; reload before deleting");
+      records.push(row);
+    }
+    const names = new Set<string>();
+    for (const record of records) {
+      if (removeFromChannels && Number(record.name_rule || 0) !== NAME_RULE_EXACT) {
+        throw new Error("only exact-match models can be removed from channels");
+      }
+      names.add(String(record.model_name || ""));
+    }
+    if (removeFromChannels) {
+      const { results } = await this.db
+        .prepare(`SELECT id, models FROM channels ORDER BY id`)
+        .all<{ id: number; models: string }>();
+      for (const channel of results) {
+        const models = csv(channel.models);
+        const remaining = models.filter((name) => !names.has(name.trim()));
+        if (remaining.length === models.length) continue;
+        await this.updateChannel(channel.id, { models: remaining.join(",") });
+        result.updated_channels += 1;
+      }
+    }
+    if (removePricing) {
+      for (const key of MODEL_PRICING_OPTION_KEYS) {
+        const map = parseJson<Record<string, unknown>>(await this.option(key), {});
+        let changed = false;
+        for (const name of names) {
+          if (Object.prototype.hasOwnProperty.call(map, name)) {
+            delete map[name];
+            changed = true;
+          }
+        }
+        if (changed) await this.setOption(key, JSON.stringify(map));
+      }
+    }
+    const ph = modelIDs.map(() => "?").join(",");
+    await this.db
+      .prepare(`UPDATE model_meta SET deleted_at = ? WHERE id IN (${ph}) AND deleted_at = 0`)
+      .bind(nowSec(), ...modelIDs)
+      .run();
+    result.deleted_count = records.length;
+    return result;
+  }
+
+  async listTaskPlugins(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM task_plugins ORDER BY key").all();
+    return results;
+  }
+
+  /**
+   * Original `model.ListTaskPlugins`: every version row ordered by key, created_at DESC, id DESC.
+   * Legacy `task_plugins` rows are included only when the key has no version history.
+   */
+  async listTaskPluginCatalogRows(): Promise<Record<string, unknown>[]> {
+    const { results: versions } = await this.db
+      .prepare(`SELECT * FROM task_plugin_versions ORDER BY "key" ASC, created_at DESC, rowid DESC`)
+      .all();
+    const { results: legacy } = await this.db
+      .prepare(`SELECT * FROM task_plugins ORDER BY "key" ASC, created_at DESC, rowid DESC`)
+      .all();
+    const keys = new Set((versions as Record<string, unknown>[]).map((row) => String(row.key || "")));
+    const out = [...(versions as Record<string, unknown>[])];
+    for (const row of legacy as Record<string, unknown>[]) {
+      if (!keys.has(String(row.key || ""))) out.push(row);
+    }
+    return out;
+  }
+
+  /**
+   * Original `model.GetTaskPluginSyncSnapshot`: every Active database override
+   * (enabled and disabled) hashed as `{key,api_version,version,source_hash,enabled}`
+   * sorted by key then version. `plugins` is the enabled subset used for routing sync.
+   */
+  async getTaskPluginSyncSnapshot(): Promise<{ plugins: Record<string, unknown>[]; revision: string }> {
+    const { results: versionRows } = await this.db
+      .prepare(`SELECT * FROM task_plugin_versions WHERE active = 1 ORDER BY "key", version, id`)
+      .all();
+    const active: Record<string, unknown>[] = [...(versionRows as Record<string, unknown>[])];
+    const { results: versionKeys } = await this.db.prepare(`SELECT DISTINCT "key" FROM task_plugin_versions`).all();
+    const keysWithVersions = new Set((versionKeys as Record<string, unknown>[]).map((row) => String(row.key)));
+    const { results: legacy } = await this.db
+      .prepare(`SELECT * FROM task_plugins WHERE active = 1 ORDER BY "key", version`)
+      .all();
+    for (const row of legacy as Record<string, unknown>[]) {
+      if (!keysWithVersions.has(String(row.key))) active.push(row);
+    }
+    return {
+      plugins: active.filter((row) => taskPluginRowEnabled(row)),
+      revision: taskPluginSyncRevisionFromRows(active),
+    };
+  }
+
+  /** Original in-memory `taskPluginSyncState`, persisted per D1 so test DBs stay isolated. */
+  async getTaskPluginSyncPayload(): Promise<string> {
+    const row = await this.db.prepare("SELECT payload FROM task_plugin_sync_state WHERE id = 1").first<{ payload: string }>();
+    return row?.payload ? String(row.payload) : "";
+  }
+
+  async setTaskPluginSyncPayload(payload: string): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO task_plugin_sync_state (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload")
+      .bind(payload)
+      .run();
+  }
+
+  async getTaskPlugin(key: string): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM task_plugins WHERE key = ?").bind(key).first<Record<string, unknown>>();
+  }
+
+  async upsertTaskPlugin(p: Record<string, unknown>): Promise<void> {
+    const enabled = p.enabled == null ? 1 : Number(p.enabled) ? 1 : 0;
+    const active = p.active == null ? (String(p.status || "") === "active" ? 1 : 0) : Number(p.active) ? 1 : 0;
+    await this.db
+      .prepare(
+        `INSERT INTO task_plugins (key, name, version, status, active_version, icon, manifest, routes, source, source_hash, remark, enabled, active, api_version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET name=excluded.name, version=excluded.version, status=excluded.status,
+           active_version=excluded.active_version, icon=excluded.icon, manifest=excluded.manifest, routes=excluded.routes,
+           source=excluded.source, source_hash=excluded.source_hash, remark=excluded.remark, enabled=excluded.enabled,
+           active=excluded.active, api_version=excluded.api_version, updated_at=excluded.updated_at`,
+      )
+      .bind(
+        String(p.key),
+        String(p.name || p.key),
+        String(p.version || "1.0.0"),
+        String(p.status || (enabled ? "active" : "inactive")),
+        String(p.active_version != null && String(p.active_version) !== "" ? p.active_version : p.version || "1.0.0"),
+        String(p.icon || ""),
+        typeof p.manifest === "string" ? p.manifest : JSON.stringify(p.manifest || {}),
+        typeof p.routes === "string" ? p.routes : JSON.stringify(p.routes || []),
+        String(p.source || ""),
+        String(p.source_hash || ""),
+        String(p.remark || ""),
+        enabled,
+        active,
+        Number(p.api_version || 1),
+        nowSec(),
+        nowSec(),
+      )
+      .run();
+  }
+
+  async listTaskPluginVersions(key: string): Promise<Record<string, unknown>[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM task_plugin_versions WHERE key = ? ORDER BY created_at DESC, id DESC")
+      .bind(key)
+      .all();
+    if (results.length) return results as Record<string, unknown>[];
+    const current = await this.getTaskPlugin(key);
+    return current ? [current] : [];
+  }
+
+  async getTaskPluginVersion(key: string, version = ""): Promise<Record<string, unknown> | null> {
+    if (version) {
+      const row = await this.db
+        .prepare("SELECT * FROM task_plugin_versions WHERE key = ? AND version = ?")
+        .bind(key, version)
+        .first<Record<string, unknown>>();
+      if (row) return row;
+      const current = await this.getTaskPlugin(key);
+      if (current && String(current.version) === version) return current;
+      return null;
+    }
+    const active = await this.db
+      .prepare("SELECT * FROM task_plugin_versions WHERE key = ? AND active = 1 ORDER BY id DESC LIMIT 1")
+      .bind(key)
+      .first<Record<string, unknown>>();
+    if (active) return active;
+    return this.getTaskPlugin(key);
+  }
+
+  async saveTaskPluginVersion(p: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const key = String(p.key);
+    const version = String(p.version || "1.0.0");
+    const existing = await this.db
+      .prepare("SELECT * FROM task_plugin_versions WHERE key = ? AND version = ?")
+      .bind(key, version)
+      .first<Record<string, unknown>>();
+    const sourceHash = String(p.source_hash || "");
+    if (existing && String(existing.source_hash || "") && String(existing.source_hash) !== sourceHash) {
+      throw new Error("plugin key and version already exist with different source");
+    }
+    const others = await this.db
+      .prepare("SELECT COUNT(*) as c FROM task_plugin_versions WHERE key = ? AND active = 1")
+      .bind(key)
+      .first<{ c: number }>();
+    const active = existing ? Number(existing.active || 0) : Number(others?.c || 0) === 0 ? 1 : 0;
+    const enabled = p.enabled == null ? 1 : Number(p.enabled) ? 1 : 0;
+    if (existing) {
+      await this.db
+        .prepare("UPDATE task_plugin_versions SET enabled = ?, remark = ?, icon = CASE WHEN ? = '' THEN icon ELSE ? END WHERE key = ? AND version = ?")
+        .bind(enabled, String(p.remark || ""), String(p.icon || ""), String(p.icon || ""), key, version)
+        .run();
+      return (await this.getTaskPluginVersion(key, version)) || existing;
+    }
+    const r = await this.db
+      .prepare(
+        `INSERT INTO task_plugin_versions (key, api_version, version, source, source_hash, icon, enabled, active, created_at, remark)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        key,
+        Number(p.api_version || 1),
+        version,
+        String(p.source || ""),
+        sourceHash,
+        String(p.icon || ""),
+        enabled,
+        active,
+        nowSec(),
+        String(p.remark || ""),
+      )
+      .run();
+    return {
+      id: Number(r.meta.last_row_id || 0),
+      key,
+      api_version: Number(p.api_version || 1),
+      version,
+      source: String(p.source || ""),
+      source_hash: sourceHash,
+      enabled: Boolean(enabled),
+      active: Boolean(active),
+      created_at: nowSec(),
+      remark: String(p.remark || ""),
+    };
+  }
+
+  async activateTaskPluginVersion(key: string, version: string): Promise<boolean> {
+    const target = await this.getTaskPluginVersion(key, version);
+    if (!target) return false;
+    await this.db.prepare("UPDATE task_plugin_versions SET active = 0 WHERE key = ?").bind(key).run();
+    await this.db.prepare("UPDATE task_plugin_versions SET active = 1, enabled = 1 WHERE key = ? AND version = ?").bind(key, version).run();
+    await this.upsertTaskPlugin({
+      ...target,
+      key,
+      version,
+      active_version: version,
+      status: "active",
+      active: 1,
+      enabled: 1,
+    });
+    return true;
+  }
+
+  async setTaskPluginEnabled(key: string, enabled: boolean): Promise<void> {
+    const r = await this.db
+      .prepare("UPDATE task_plugin_versions SET enabled = ? WHERE key = ? AND active = 1")
+      .bind(enabled ? 1 : 0, key)
+      .run();
+    const p = await this.getTaskPlugin(key);
+    if (p) {
+      await this.upsertTaskPlugin({
+        ...p,
+        enabled: enabled ? 1 : 0,
+        status: enabled ? "active" : "inactive",
+        active: Number(p.active ?? 1) ? 1 : 0,
+      });
+    }
+    if (!Number(r.meta.changes || 0) && !p) throw new Error("record not found");
+  }
+
+  async deleteTaskPluginVersion(key: string, version: string): Promise<boolean> {
+    const r = await this.db.prepare("DELETE FROM task_plugin_versions WHERE key = ? AND version = ?").bind(key, version).run();
+    const left = await this.db.prepare("SELECT COUNT(*) as c FROM task_plugin_versions WHERE key = ?").bind(key).first<{ c: number }>();
+    if (!Number(left?.c || 0)) await this.deleteTaskPlugin(key);
+    return Number(r.meta.changes || 0) > 0;
+  }
+
+  async deleteTaskPlugin(key: string): Promise<void> {
+    await this.db.prepare("DELETE FROM task_plugin_versions WHERE key = ?").bind(key).run();
+    await this.db.prepare("DELETE FROM task_plugins WHERE key = ?").bind(key).run();
+  }
+
+  async insertSystemTask(row: {
+    id: string;
+    type: string;
+    status?: string;
+    progress?: string;
+    result?: string;
+    payload?: unknown;
+    state?: unknown;
+    error?: string;
+    locked_by?: string;
+    active_key?: string | null;
+  }): Promise<void> {
+    const status = row.status || "pending";
+    const payload = marshalSystemTaskJSON(row.payload);
+    const state = marshalSystemTaskJSON(row.state);
+    const result = marshalSystemTaskJSON(row.result);
+    const activeKey =
+      row.active_key !== undefined
+        ? row.active_key
+        : status === "pending" || status === "running"
+          ? row.type
+          : null;
+    await this.db
+      .prepare(
+        "INSERT INTO system_tasks (id, type, status, progress, result, payload, state, error, locked_by, active_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        row.id,
+        row.type,
+        status,
+        row.progress ?? "",
+        result,
+        payload,
+        state,
+        row.error ?? "",
+        row.locked_by ?? "",
+        activeKey,
+        nowSec(),
+        nowSec(),
+      )
+      .run();
+  }
+
+  /** Original `model.CreateSystemTask` (pending + `active_key` = type). */
+  async createSystemTask(taskType: string, payload: unknown = null, state: unknown = null): Promise<Record<string, unknown>> {
+    const id = generateSystemTaskId();
+    try {
+      await this.insertSystemTask({ id, type: taskType, status: "pending", payload, state });
+    } catch {
+      const existing = await this.currentSystemTask(taskType);
+      if (existing) return existing;
+      throw new Error("create system task failed");
+    }
+    const row = await this.getSystemTask(id);
+    if (row) return row;
+    const existing = await this.currentSystemTask(taskType);
+    if (existing) return existing;
+    throw new Error("create system task failed");
+  }
+
+  async updateSystemTask(id: string, patch: Record<string, unknown>): Promise<void> {
+    const next = { ...patch };
+    const status = String(next.status || "");
+    if ((status === "succeeded" || status === "failed") && !("active_key" in next)) {
+      next.active_key = null;
+    }
+    const cols: string[] = ["updated_at = ?"];
+    const vals: unknown[] = [nowSec()];
+    for (const [k, v] of Object.entries(next)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE system_tasks SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async listSystemTasks(limit = 20): Promise<Record<string, unknown>[]> {
+    const n = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 20;
+    const { results } = await this.db
+      .prepare("SELECT rowid, * FROM system_tasks ORDER BY rowid DESC LIMIT ?")
+      .bind(n)
+      .all();
+    return results as Record<string, unknown>[];
+  }
+
+  async getSystemTask(id: string): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT rowid, * FROM system_tasks WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  }
+
+  async currentSystemTask(type = ""): Promise<Record<string, unknown> | null> {
+    if (type) {
+      return this.db
+        .prepare("SELECT rowid, * FROM system_tasks WHERE type = ? AND status IN ('pending', 'running') ORDER BY rowid DESC LIMIT 1")
+        .bind(type)
+        .first<Record<string, unknown>>();
+    }
+    return this.db.prepare("SELECT rowid, * FROM system_tasks WHERE status IN ('pending', 'running') ORDER BY rowid DESC LIMIT 1").first<Record<string, unknown>>();
+  }
+
+  /** Original `model.FindPendingSystemTasks` earliest pending of one type (`ORDER BY id ASC`). */
+  async findPendingSystemTask(type: string): Promise<Record<string, unknown> | null> {
+    return this.db
+      .prepare("SELECT rowid, * FROM system_tasks WHERE type = ? AND status = 'pending' ORDER BY rowid ASC LIMIT 1")
+      .bind(type)
+      .first<Record<string, unknown>>();
+  }
+
+  /** Original `model.GetLatestSystemTask` (`ORDER BY id DESC`). */
+  async getLatestSystemTask(type: string): Promise<Record<string, unknown> | null> {
+    return this.db
+      .prepare("SELECT rowid, * FROM system_tasks WHERE type = ? ORDER BY rowid DESC LIMIT 1")
+      .bind(type)
+      .first<Record<string, unknown>>();
+  }
+
+  /**
+   * Original `model.acquireSystemTaskLock`. One row per task type (type PK).
+   * Returns the previous lock's task_id when an expired lease is stolen.
+   */
+  async acquireSystemTaskLock(
+    taskType: string,
+    taskId: string,
+    lockedBy: string,
+    now: number,
+    lockUntil: number,
+  ): Promise<{ acquired: boolean; expiredTaskId: string }> {
+    try {
+      const inserted = await this.db
+        .prepare(
+          "INSERT INTO system_task_locks (type, task_id, locked_by, locked_until, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(taskType, taskId, lockedBy, lockUntil, now)
+        .run();
+      if (Number(inserted.meta.changes || 0) > 0) return { acquired: true, expiredTaskId: "" };
+    } catch {
+      /* original GORM Create unique on type — steal if expired */
+    }
+    const existing = await this.db
+      .prepare("SELECT * FROM system_task_locks WHERE type = ?")
+      .bind(taskType)
+      .first<{ task_id: string; locked_until: number }>();
+    if (!existing) return { acquired: false, expiredTaskId: "" };
+    if (Number(existing.locked_until) >= now) return { acquired: false, expiredTaskId: "" };
+    const stolen = await this.db
+      .prepare(
+        "UPDATE system_task_locks SET task_id = ?, locked_by = ?, locked_until = ?, updated_at = ? WHERE type = ? AND locked_until < ?",
+      )
+      .bind(taskId, lockedBy, lockUntil, now, taskType, now)
+      .run();
+    if (!Number(stolen.meta.changes || 0)) return { acquired: false, expiredTaskId: "" };
+    return { acquired: true, expiredTaskId: String(existing.task_id || "") };
+  }
+
+  /** Original `model.ReleaseSystemTaskLock`. */
+  async releaseSystemTaskLock(taskId: string, lockedBy: string): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM system_task_locks WHERE task_id = ? AND locked_by = ?")
+      .bind(taskId, lockedBy)
+      .run();
+  }
+
+  /** Original `model.MarkSystemTaskLeaseExpired`. */
+  async markSystemTaskLeaseExpired(taskId: string): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE system_tasks SET status = 'failed', active_key = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+      )
+      .bind("task lease expired", nowSec(), taskId)
+      .run();
+  }
+
+  /** Original `model.ExpireStaleSystemTaskLocks`. */
+  async expireStaleSystemTaskLocks(now = nowSec()): Promise<void> {
+    const { results } = await this.db
+      .prepare("SELECT type, task_id, locked_by, locked_until FROM system_task_locks WHERE locked_until < ?")
+      .bind(now)
+      .all<{ type: string; task_id: string; locked_by: string; locked_until: number }>();
+    for (const lock of results || []) {
+      await this.markSystemTaskLeaseExpired(String(lock.task_id));
+      await this.db
+        .prepare(
+          "DELETE FROM system_task_locks WHERE type = ? AND task_id = ? AND locked_by = ? AND locked_until < ?",
+        )
+        .bind(lock.type, lock.task_id, lock.locked_by, now)
+        .run();
+    }
+  }
+
+  /** Original `model.RenewSystemTaskLock`. */
+  async renewSystemTaskLock(taskId: string, lockedBy: string, lockUntil: number): Promise<void> {
+    const now = nowSec();
+    const r = await this.db
+      .prepare(
+        "UPDATE system_task_locks SET locked_until = ?, updated_at = ? WHERE task_id = ? AND locked_by = ? AND locked_until >= ?",
+      )
+      .bind(lockUntil, now, taskId, lockedBy, now)
+      .run();
+    if (!Number(r.meta.changes || 0)) throw new SystemTaskLockLostError();
+  }
+
+  /**
+   * Original `model.ClaimSystemTask`: pending → running + `locked_by` after
+   * acquiring the per-type lock. Expired locks fail the previous running task
+   * with `task lease expired`.
+   */
+  async claimSystemTask(
+    taskId: string,
+    runnerId: string,
+    taskType?: string,
+    lockUntil?: number,
+  ): Promise<Record<string, unknown> | null> {
+    const now = nowSec();
+    const until = lockUntil ?? now + SYSTEM_TASK_LOCK_TTL_SEC;
+    const pending = taskType
+      ? await this.db
+          .prepare("SELECT rowid, * FROM system_tasks WHERE id = ? AND type = ? AND status = 'pending'")
+          .bind(taskId, taskType)
+          .first<Record<string, unknown>>()
+      : await this.db
+          .prepare("SELECT rowid, * FROM system_tasks WHERE id = ? AND status = 'pending'")
+          .bind(taskId)
+          .first<Record<string, unknown>>();
+    if (!pending) return null;
+    const type = String(pending.type || taskType || "");
+    const id = String(pending.id || taskId);
+    const lock = await this.acquireSystemTaskLock(type, id, runnerId, now, until);
+    if (!lock.acquired) return null;
+    if (lock.expiredTaskId && lock.expiredTaskId !== id) {
+      try {
+        await this.markSystemTaskLeaseExpired(lock.expiredTaskId);
+      } catch (err) {
+        await this.releaseSystemTaskLock(id, runnerId);
+        throw err;
+      }
+    }
+    const r = await this.db
+      .prepare(
+        "UPDATE system_tasks SET status = 'running', locked_by = ?, updated_at = ? WHERE id = ? AND type = ? AND status = 'pending'",
+      )
+      .bind(runnerId, now, id, type)
+      .run();
+    if (!Number(r.meta.changes || 0)) {
+      await this.releaseSystemTaskLock(id, runnerId);
+      return null;
+    }
+    return this.getSystemTask(id);
+  }
+
+  /** Original `model.UpdateSystemTaskState` (requires held per-type lock). */
+  async updateSystemTaskState(taskId: string, lockedBy: string, state: unknown): Promise<void> {
+    const stateText = marshalSystemTaskJSON(state);
+    const now = nowSec();
+    const r = await this.db
+      .prepare(
+        `UPDATE system_tasks SET state = ?, updated_at = ?
+         WHERE id = ? AND status = 'running' AND locked_by = ?
+         AND EXISTS (
+           SELECT 1 FROM system_task_locks
+           WHERE system_task_locks.task_id = system_tasks.id
+             AND system_task_locks.locked_by = ?
+             AND system_task_locks.locked_until >= ?
+         )`,
+      )
+      .bind(stateText, now, taskId, lockedBy, lockedBy, now)
+      .run();
+    if (Number(r.meta.changes || 0) > 0) return;
+    const held = await this.db
+      .prepare(
+        `SELECT COUNT(*) as c FROM system_tasks
+         WHERE id = ? AND status = 'running' AND locked_by = ?
+         AND EXISTS (
+           SELECT 1 FROM system_task_locks
+           WHERE system_task_locks.task_id = system_tasks.id
+             AND system_task_locks.locked_by = ?
+             AND system_task_locks.locked_until >= ?
+         )`,
+      )
+      .bind(taskId, lockedBy, lockedBy, now)
+      .first<{ c: number }>();
+    if (!Number(held?.c || 0)) throw new SystemTaskLockLostError();
+  }
+
+  /** Original `model.FinishSystemTask` (requires held lock; then releases it). */
+  async finishSystemTask(
+    taskId: string,
+    lockedBy: string,
+    status: string,
+    resultPayload: unknown = null,
+    errorMessage = "",
+  ): Promise<void> {
+    const resultText = marshalSystemTaskJSON(resultPayload);
+    const now = nowSec();
+    const r = await this.db
+      .prepare(
+        `UPDATE system_tasks SET status = ?, active_key = NULL, result = ?, error = ?, updated_at = ?
+         WHERE id = ? AND status = 'running' AND locked_by = ?
+         AND EXISTS (
+           SELECT 1 FROM system_task_locks
+           WHERE system_task_locks.task_id = system_tasks.id
+             AND system_task_locks.locked_by = ?
+             AND system_task_locks.locked_until >= ?
+         )`,
+      )
+      .bind(status, resultText, errorMessage, now, taskId, lockedBy, lockedBy, now)
+      .run();
+    if (!Number(r.meta.changes || 0)) throw new SystemTaskLockLostError();
+    await this.releaseSystemTaskLock(taskId, lockedBy);
+  }
+
+  /** Original `model.CountOldLog`. */
+  async countOldLogs(targetTimestamp: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) as c FROM request_logs WHERE created_at < ?")
+      .bind(targetTimestamp)
+      .first<{ c: number }>();
+    return Number(row?.c || 0);
+  }
+
+  /** Original `model.DeleteOldLogBatch` (SQLite equivalent of GORM `Limit(limit).Delete`). */
+  async deleteOldLogBatch(targetTimestamp: number, limit: number): Promise<number> {
+    const n = limit > 0 ? limit : 100;
+    const r = await this.db
+      .prepare(
+        "DELETE FROM request_logs WHERE id IN (SELECT id FROM request_logs WHERE created_at < ? ORDER BY id ASC LIMIT ?)",
+      )
+      .bind(targetTimestamp, n)
+      .run();
+    return Number(r.meta.changes || 0);
+  }
+
+  async prefillNameTaken(name: string, exceptId = 0): Promise<boolean> {
+    const row = await this.db.prepare("SELECT id FROM prefill_groups WHERE name = ? AND id <> ? AND deleted_at = 0").bind(name, exceptId).first();
+    return Boolean(row);
+  }
+
+  async getPrefill(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM prefill_groups WHERE id = ? AND deleted_at = 0").bind(id).first<Record<string, unknown>>();
+  }
+
+  async listDeployments(): Promise<unknown[]> {
+    const { results } = await this.db.prepare("SELECT * FROM deployments ORDER BY id DESC").all();
+    return results;
+  }
+
+  /** Original `model.UpsertSystemInstance`. Conflict updates info/started_at/last_seen_at/updated_at only. */
+  async upsertSystemInstance(nodeName: string, info: string, startedAt: number, lastSeenAt: number): Promise<void> {
+    const now = lastSeenAt || nowSec();
+    await this.db
+      .prepare(
+        `INSERT INTO system_instances (node_name, info, started_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(node_name) DO UPDATE SET
+           info = excluded.info,
+           started_at = excluded.started_at,
+           last_seen_at = excluded.last_seen_at,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(nodeName, info, startedAt, now, now, now)
+      .run();
+  }
+
+  /** Original `model.ListSystemInstances` order `last_seen_at desc`. */
+  async listSystemInstances(): Promise<Record<string, unknown>[]> {
+    const { results } = await this.db.prepare("SELECT * FROM system_instances ORDER BY last_seen_at DESC").all();
+    return results as Record<string, unknown>[];
+  }
+
+  /** Original `model.DeleteStaleSystemInstances`. */
+  async deleteStaleSystemInstances(now: number, staleAfterSeconds: number): Promise<number> {
+    const r = await this.db
+      .prepare("DELETE FROM system_instances WHERE last_seen_at < ?")
+      .bind(now - staleAfterSeconds)
+      .run();
+    return Number(r.meta?.changes || 0);
+  }
+
+  /** Original `model.DeleteStaleSystemInstance`. */
+  async deleteStaleSystemInstance(nodeName: string, now: number, staleAfterSeconds: number): Promise<boolean> {
+    const r = await this.db
+      .prepare("DELETE FROM system_instances WHERE node_name = ? AND last_seen_at < ?")
+      .bind(nodeName, now - staleAfterSeconds)
+      .run();
+    return Number(r.meta?.changes || 0) > 0;
+  }
+
+  async getDeployment(id: number): Promise<Record<string, unknown> | null> {
+    return this.db.prepare("SELECT * FROM deployments WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  }
+
+  async insertDeployment(p: Record<string, unknown>): Promise<number> {
+    const r = await this.db
+      .prepare(
+        "INSERT INTO deployments (name, model_name, status, hardware, location, replicas, extra, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        String(p.name || ""),
+        String(p.model_name || ""),
+        String(p.status || "pending"),
+        String(p.hardware || ""),
+        String(p.location || ""),
+        Number(p.replicas || 1),
+        typeof p.extra === "string" ? p.extra : JSON.stringify(p.extra || {}),
+        nowSec(),
+      )
+      .run();
+    return Number(r.meta.last_row_id || 0);
+  }
+
+  async updateDeployment(id: number, patch: Record<string, unknown>): Promise<void> {
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    for (const [k, v] of Object.entries(patch)) {
+      cols.push(`${k} = ?`);
+      vals.push(v);
+    }
+    vals.push(id);
+    await this.db.prepare(`UPDATE deployments SET ${cols.join(", ")} WHERE id = ?`).bind(...vals).run();
+  }
+
+  async deleteDeployment(id: number): Promise<void> {
+    await this.db.prepare("DELETE FROM deployments WHERE id = ?").bind(id).run();
+  }
+
+  async cleanupExpired(cutoff: number): Promise<void> {
+    await this.db.prepare("DELETE FROM email_codes WHERE expires_at < ?").bind(cutoff).run();
+    await this.db.prepare("DELETE FROM auth_flows WHERE expires_at < ?").bind(cutoff).run();
+    await this.db.prepare("UPDATE login_sessions SET revoked = 1 WHERE expires_at > 0 AND expires_at < ?").bind(nowSec()).run();
+    const batch = 300;
+    for (;;) {
+      const expired = await this.expireSubscriptions(batch);
+      if (!expired || expired < batch) break;
+    }
+    for (;;) {
+      const n = await this.resetDueSubscriptions(batch);
+      if (!n || n < batch) break;
+    }
+    await this.cleanupSubscriptionPreConsumeRecords();
+  }
+}
+
+type AuditOtherVisibility = "user" | "admin" | "root";
+
+/** Original `model.GetAuditLogs` Other projection by viewer role / SelfView. */
+export function publicAudit(
+  row: Record<string, unknown>,
+  visibility: AuditOtherVisibility = "user",
+): Record<string, unknown> {
+  const other = { ...parseJson<Record<string, unknown>>(String(row.other || ""), {}) };
+  if (visibility !== "root") delete other.root_info;
+  if (visibility === "user") {
+    delete other.admin_info;
+    delete other.audit_info;
+  }
+  return {
+    id: row.id,
+    event_id: row.event_id || "",
+    user_id: row.user_id,
+    username: row.username,
+    actor_role: Number(row.actor_role) || 0,
+    created_at: Number(row.created_at),
+    category: row.category || row.type || "",
+    action: row.action || row.type || "",
+    token_ref: row.token_ref || "",
+    auth_method: row.auth_method || "",
+    ip: row.ip || "",
+    user_agent: row.user_agent || "",
+    method: row.method || "",
+    route: row.route || "",
+    status: Number(row.status) || 0,
+    success: Number(row.success) !== 0,
+    request_id: row.request_id || "",
+    content: row.content || "",
+    other,
+  };
+}
+
+export function publicUser(u: UserRow): Record<string, unknown> {
+  const settingRaw = u.settings || "";
+  let sidebar_modules = "";
+  let stripe_customer = String(u.stripe_customer || "");
+  try {
+    const parsed = JSON.parse(settingRaw || "{}") as Record<string, unknown>;
+    sidebar_modules = String(parsed.sidebar_modules || parsed.SidebarModules || "");
+    if (!stripe_customer) stripe_customer = String(parsed.stripe_customer || parsed.stripeCustomer || "");
+  } catch {
+    /* setting is not JSON */
+  }
+  return {
+    id: u.id,
+    username: u.username,
+    // Original GetAllUsers/SearchUsers/GetUser `Omit("password","access_token")` plus
+    // `gorm:"-:all"` zeros — always empty strings, never the stored hash.
+    password: "",
+    original_password: "",
+    display_name: u.display_name,
+    has_password: !!u.password,
+    role: u.role,
+    status: u.status,
+    email: u.email,
+    github_id: u.github_id,
+    discord_id: u.discord_id || "",
+    oidc_id: u.oidc_id || "",
+    wechat_id: u.wechat_id || "",
+    telegram_id: u.telegram_id || "",
+    verification_code: "",
+    group: u.group,
+    quota: u.quota,
+    used_quota: u.used_quota,
+    request_count: u.request_count,
+    aff_code: u.aff_code,
+    aff_count: u.aff_count || 0,
+    aff_quota: u.aff_quota || 0,
+    aff_history_quota: u.aff_history_quota ?? u.aff_quota ?? 0,
+    inviter_id: u.inviter_id,
+    linux_do_id: u.linuxdo_id || "",
+    setting: settingRaw,
+    remark: u.remark || "",
+    created_at: u.created_at || 0,
+    last_login_at: u.last_login_at || 0,
+    stripe_customer,
+    sidebar_modules,
+    permissions: permissionsFor(u),
+    billing_preference: normalizeBillingPreference(u.billing_preference),
+    totp_enabled: Number(u.totp_enabled) === 1,
+    email_verified: Number(u.email_verified) === 1,
+    has_access_token: Boolean(u.access_token),
+    DeletedAt: Number(u.deleted_at || 0) ? new Date(Number(u.deleted_at) * 1000).toISOString() : null,
+  };
+}
+
+export function permissionsFor(user: { role: number; admin_permissions?: string } | number): Record<string, unknown> {
+  const role = typeof user === "number" ? user : user.role;
+  const overrides = typeof user === "number" ? null : parsePermissionOverrides(user.admin_permissions);
+  const admin = role >= 10;
+  const root = role >= 100;
+  return {
+    sidebar_settings: !root,
+    sidebar_modules: root ? {} : admin ? { admin: { setting: false } } : { admin: false },
+    admin_permissions: capabilities(role, overrides),
+    is_admin: admin,
+    is_root: root,
+  };
+}
+
+export { publicToken, publicChannel, stripChannelKey } from "./dto.js";
