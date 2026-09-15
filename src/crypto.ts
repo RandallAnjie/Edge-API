@@ -143,22 +143,46 @@ export function displayTokenKey(key: string): string {
   return "sk-" + key;
 }
 
+/** Original `lo.AlphanumericCharset` used by `common.GetRandomString`. */
+export const ALPHANUMERIC_CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+/** Original `common.keyChars` used by `GenerateRandomCharsKey` / `GenerateKey`. */
+export const TOKEN_KEY_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+function randomStringFromCharset(length: number, charset: string): string {
+  if (length <= 0) return "";
+  const n = charset.length;
+  const out: string[] = [];
+  const limit = 256 - (256 % n);
+  while (out.length < length) {
+    const buf = new Uint8Array(Math.max(length - out.length, 16));
+    crypto.getRandomValues(buf);
+    for (let i = 0; i < buf.length && out.length < length; i++) {
+      if (buf[i] >= limit) continue;
+      out.push(charset[buf[i] % n]);
+    }
+  }
+  return out.join("");
+}
+
+/** Original `common.GetRandomString`. */
+export function getRandomString(length: number): string {
+  return randomStringFromCharset(length, ALPHANUMERIC_CHARSET);
+}
+
+/** Original `common.GenerateKey` → `GenerateRandomCharsKey(48)`. */
 export function generateTokenKey(): string {
-  const buf = new Uint8Array(24);
-  crypto.getRandomValues(buf);
-  return [...buf].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return randomCharsKey(48);
 }
 
+/** Original `model.User.Insert` / `GetAffCode` uses `common.GetRandomString(4)`. */
 export function generateAffCode(): string {
-  const buf = new Uint8Array(4);
-  crypto.getRandomValues(buf);
-  return [...buf].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return getRandomString(4);
 }
 
+/** Original `common.GetUUID` (UUID without hyphens). */
 export function generateRedemptionKey(): string {
-  const buf = new Uint8Array(16);
-  crypto.getRandomValues(buf);
-  return [...buf].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return crypto.randomUUID().replace(/-/g, "");
 }
 
 export function timingSafeEqualStr(a: string, b: string): boolean {
@@ -206,21 +230,8 @@ export async function deriveNextRefreshSecret(sessionSecret: string, sid: string
   return bytesToHex(await hmacSha256Raw(await authSigningKey(sessionSecret, "refresh-rotate"), `${sid}.${currentSecret}`));
 }
 
-const KEY_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
 export function randomCharsKey(length: number): string {
-  const out: string[] = [];
-  const buf = new Uint8Array(length * 2);
-  crypto.getRandomValues(buf);
-  for (let i = 0; out.length < length && i < buf.length; i++) {
-    if (buf[i] >= KEY_CHARS.length * Math.floor(256 / KEY_CHARS.length)) continue;
-    out.push(KEY_CHARS[buf[i] % KEY_CHARS.length]);
-  }
-  while (out.length < length) {
-    const extra = crypto.getRandomValues(new Uint8Array(1))[0];
-    out.push(KEY_CHARS[extra % KEY_CHARS.length]);
-  }
-  return out.join("");
+  return randomStringFromCharset(length, TOKEN_KEY_CHARS);
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

@@ -803,7 +803,7 @@ export function adminRouter(): Router<Env> {
       cross_group_retry: crossGroupRetry,
       status: TOKEN_ENABLED,
     });
-    return apiOk({ id, key: displayTokenKey(key) }, "创建成功");
+    return apiOk({ id, key: displayTokenKey(key) });
   });
 
   r.slash("PUT", "/api/token/", async (c) => {
