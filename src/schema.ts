@@ -1,3 +1,5 @@
+import { invalidatePricingCache } from "./pricing-cache.js";
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -821,4 +823,5 @@ export async function ensureSchema(db: D1Database): Promise<void> {
 
 export function resetSchemaFlag(): void {
   /* Per-database WeakSet: each in-memory D1 is a new object, so tests do not share schema state. */
+  invalidatePricingCache();
 }

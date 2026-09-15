@@ -5,8 +5,9 @@ import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { Store } from "../src/store.js";
 import { hasModelBillingConfig } from "../src/billing-setting.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, tokenModelLimitsMap } from "../src/constants.js";
+import { getModelSupportEndpointTypes, invalidatePricingCache } from "../src/pricing-cache.js";
 import { listModelsTokenLimitAllows, tokenModelLimitAllows } from "../src/ratio-setting.js";
-import { tokenModelLimitsMap } from "../src/constants.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -206,4 +207,61 @@ test("original ListModels JSON owned_by uses preferred ability channel type", as
   const mini = ((listed.body.data as { id: string; owned_by: string }[]) || []).find((m) => m.id === "gpt-4o-mini");
   assert.ok(mini);
   assert.equal(mini.owned_by, "google gemini");
+});
+
+test("original GetModelSupportEndpointTypes is empty until GetPricing fills the cache", () => {
+  invalidatePricingCache();
+  assert.deepEqual(getModelSupportEndpointTypes(""), []);
+  assert.deepEqual(getModelSupportEndpointTypes("gemini-3.5-flash"), []);
+});
+
+test("original ListModels JSON uses GetModelSupportEndpointTypes from pricing cache", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const store = new Store(e.DB);
+  await store.setOption("SelfUseModeEnabled", "true");
+  await store.insertChannel({
+    name: "advanced-custom-channel",
+    type: CHANNEL_TYPE_ADVANCED_CUSTOM,
+    key: "advanced-custom-key",
+    models: "gemini-3.5-flash",
+    group: "default",
+    settings: JSON.stringify({
+      advanced_custom: {
+        advanced_routes: [
+          { incoming_path: "/v1/chat/completions", upstream_path: "/v1/chat/completions" },
+          {
+            incoming_path: "/v1/responses",
+            upstream_path: "/v1beta/models/{model}:generateContent",
+            converter: "openai_responses_to_gemini_generate_content",
+            models: ["re:^gemini-"],
+          },
+        ],
+      },
+    }),
+  });
+  const sk = await apiKey(e, auth);
+  const before = await json(new Request("http://local/v1/models", { headers: { authorization: "Bearer " + sk } }), e);
+  const beforeRow = ((before.body.data as { id: string; supported_endpoint_types: string[] }[]) || []).find(
+    (m) => m.id === "gemini-3.5-flash",
+  );
+  assert.ok(beforeRow);
+  assert.deepEqual(beforeRow.supported_endpoint_types, []);
+
+  const pricing = await json(new Request("http://local/api/pricing", { headers: auth }), e);
+  assert.equal(pricing.body.success, true);
+  const priced = ((pricing.body.data as { model_name: string; supported_endpoint_types: string[] }[]) || []).find(
+    (m) => m.model_name === "gemini-3.5-flash",
+  );
+  assert.ok(priced);
+  assert.deepEqual(priced.supported_endpoint_types, ["openai", "openai-response"]);
+  assert.deepEqual(getModelSupportEndpointTypes("gemini-3.5-flash"), ["openai", "openai-response"]);
+
+  const listed = await json(new Request("http://local/v1/models", { headers: { authorization: "Bearer " + sk } }), e);
+  const row = ((listed.body.data as { id: string; supported_endpoint_types: string[] }[]) || []).find(
+    (m) => m.id === "gemini-3.5-flash",
+  );
+  assert.ok(row);
+  assert.deepEqual(row.supported_endpoint_types, ["openai", "openai-response"]);
 });

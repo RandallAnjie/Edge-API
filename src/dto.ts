@@ -28,6 +28,7 @@ import {
 } from "./ratio-setting.js";
 import { pluginUsageByModel, listRoutingPlugins } from "./task-plugin-factory.js";
 import { pluginModelNames, pluginUsageForModel } from "./plugin-meta.js";
+import { replaceModelSupportEndpointTypes } from "./pricing-cache.js";
 import type { Store } from "./store.js";
 import type { ChannelRow, LogRow, RedemptionRow, TokenRow, UserRow } from "./types.js";
 
@@ -463,6 +464,9 @@ export async function buildPricing(
       if (DEFAULT_ENDPOINT_INFO[et] && !supported[et]) supported[et] = DEFAULT_ENDPOINT_INFO[et];
     }
   }
+  const nextSupport: Record<string, string[]> = {};
+  for (const [name, endpoints] of typesByModel) nextSupport[name] = endpoints.slice();
+  replaceModelSupportEndpointTypes(nextSupport);
   const pricing: Record<string, unknown>[] = [];
   for (const name of names) {
     const enable_groups = [...(groupsByModel.get(name) || new Set())];
@@ -1323,13 +1327,16 @@ export function openaiCreatedAtRfc3339(): string {
   return new Date(OPENAI_MODEL_CREATED * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-export function openAIModel(id: string, ownedBy = "custom"): Record<string, unknown> {
+export { getModelSupportEndpointTypes, invalidatePricingCache } from "./pricing-cache.js";
+
+export function openAIModel(id: string, ownedBy = "custom", endpointTypes?: string[]): Record<string, unknown> {
   return {
     id,
     object: "model",
     created: OPENAI_MODEL_CREATED,
     owned_by: ownedBy,
-    supported_endpoint_types: endpointTypesForChannel(channelTypeForOwner(ownedBy), id),
+    supported_endpoint_types:
+      endpointTypes ?? endpointTypesForChannel(channelTypeForOwner(ownedBy), id),
   };
 }
 

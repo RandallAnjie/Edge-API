@@ -156,6 +156,7 @@ import { tokenAllowsModel } from "./auth.js";
 import { ADAPTOR_MODELS } from "./channel-models.js";
 import { factoryPluginMeta, listRoutingPlugins } from "./task-plugin-factory.js";
 import { hasModelBillingConfig } from "./billing-setting.js";
+import { getModelSupportEndpointTypes } from "./pricing-cache.js";
 import { listModelsTokenLimitAllows } from "./ratio-setting.js";
 
 export type ClientFormat = "openai" | "anthropic" | "gemini";
@@ -2269,7 +2270,7 @@ export async function listModelsForAuth(store: Store, auth: AuthToken, format: C
     const staticHit = ADAPTOR_MODELS.find((m) => m.id === id);
     const channelType = preferredTypes[id];
     const ownedBy = channelType != null ? ownerForChannelType(channelType) : staticHit?.owned_by || "custom";
-    return openAIModel(id, ownedBy);
+    return openAIModel(id, ownedBy, getModelSupportEndpointTypes(id));
   });
   if (format === "gemini") {
     return new Response(
