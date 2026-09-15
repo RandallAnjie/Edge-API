@@ -38,6 +38,7 @@ import { decodeAwsEventStreamResponse } from "./aws-eventstream.js";
 import { applyZhipuV3Authorization } from "./zhipu-convert.js";
 import { applyTencentTc3Authorization, tencentUsesNativeAdaptor } from "./tencent-convert.js";
 import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
+import { parseVolcengineAuth, runVolcTtsWebSocket, volcTtsEncodingFromRequest, volcTtsIsStream, wrapVolcTtsHttpResponse } from "./volc-tts.js";
 import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
@@ -518,6 +519,14 @@ function buildTestTarget(
       upstreamModelName: mappedModel,
       relayMode: "rerank",
     });
+  } else if (channel.type === CHANNEL_TYPE_VOLC && mode === "audio_speech") {
+    payload = convertOpenAIRequest(body as Record<string, unknown>, {
+      channelType: channel.type,
+      originModelName: originModel,
+      upstreamModelName: mappedModel,
+      channelKey: pickChannelKey(channel.key),
+      relayMode: "audio_speech",
+    });
   }
   const extra: Record<string, string> = {};
   if (kind === "anthropic" || kindName === "anthropic") extra["anthropic-version"] = CLAUDE_VERSION;
@@ -596,6 +605,14 @@ export async function testChannel(
       parseXunfeiAuth(pickChannelKey(channel.key));
       const body = target.body && typeof target.body === "object" && !Array.isArray(target.body) ? (target.body as Record<string, unknown>) : {};
       res = await runXunfeiChat(body, pickChannelKey(channel.key), { stream: isStream });
+    } else if (channel.type === CHANNEL_TYPE_VOLC && mode === "audio_speech") {
+      parseVolcengineAuth(pickChannelKey(channel.key));
+      const body = target.body && typeof target.body === "object" && !Array.isArray(target.body) ? (target.body as Record<string, unknown>) : {};
+      if (volcTtsIsStream(body)) {
+        res = await runVolcTtsWebSocket(target.url, pickChannelKey(channel.key), body, volcTtsEncodingFromRequest(body));
+      } else {
+        res = await wrapVolcTtsHttpResponse(await fetchTarget(target), volcTtsEncodingFromRequest(body));
+      }
     } else {
       res = await fetchTarget(target);
     }

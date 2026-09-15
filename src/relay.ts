@@ -69,6 +69,13 @@ import { openaiFromJinaRerank } from "./jina-convert.js";
 import { openaiFromSiliconFlowRerank } from "./siliconflow-convert.js";
 import { openaiFromPalmResponse, palmUpstreamToOpenAIChat } from "./palm-convert.js";
 import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
+import {
+  parseVolcengineAuth,
+  runVolcTtsWebSocket,
+  volcTtsEncodingFromRequest,
+  volcTtsIsStream,
+  wrapVolcTtsHttpResponse,
+} from "./volc-tts.js";
 import { openaiFromReplicatePrediction } from "./replicate-convert.js";
 import { applyJimengAuthorization, openaiFromJimengImage } from "./jimeng-convert.js";
 import { miniMaxTTSDoResponse, openaiFromMiniMaxImage } from "./minimax-convert.js";
@@ -534,6 +541,20 @@ async function convertOutbound(
   }
   if (client === "openai" && channelType === CHANNEL_TYPE_MINIMAX && (mode === "images" || mode === "audio_speech")) {
     return convertOpenAIRequest(o, { channelType, originModelName: origin, upstreamModelName: upstream, settings, relayMode: mode });
+  }
+  if (
+    client === "openai" &&
+    channelType === CHANNEL_TYPE_VOLC &&
+    (mode === "audio_speech" || mode === "audio_transcription" || mode === "audio_translation")
+  ) {
+    return convertOpenAIRequest(o, {
+      channelType,
+      originModelName: origin,
+      upstreamModelName: upstream,
+      settings,
+      relayMode: mode,
+      channelKey: extras.channelKey,
+    });
   }
   if (
     client === "openai" &&
@@ -1736,6 +1757,21 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           stream: opts.stream,
           requestUrl: opts.req.url,
         });
+      } else if (channel.type === CHANNEL_TYPE_VOLC && mode === "audio_speech" && volcTtsIsStream(asObj(outbound))) {
+        try {
+          parseVolcengineAuth(pickChannelKey(channel.key));
+          res = await runVolcTtsWebSocket(
+            target.url,
+            pickChannelKey(channel.key),
+            asObj(outbound),
+            volcTtsEncodingFromRequest(asObj(outbound)),
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          const status = Number((err as { status?: number }).status || 502);
+          const code = String((err as { code?: string }).code || "bad_response_status_code");
+          return openaiError(status, message, code);
+        }
       } else {
         res = await fetchUpstream(target);
       }
@@ -2092,6 +2128,26 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       headers.set("cache-control", "no-cache");
       headers.set("x-oneapi-request-id", rid);
       return new Response(clientBody, { status: 200, headers });
+    }
+
+    if (channel.type === CHANNEL_TYPE_VOLC && mode === "audio_speech") {
+      try {
+        const encoding = volcTtsEncodingFromRequest(asObj(outbound));
+        const audioRes = volcTtsIsStream(asObj(outbound)) ? res : await wrapVolcTtsHttpResponse(res, encoding);
+        extra.cachedTokens = 0;
+        extra.promptCacheHitTokens = 0;
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, true, "", extra);
+        const headers = new Headers();
+        headers.set("content-type", audioRes.headers.get("content-type") || "application/octet-stream");
+        headers.set("x-oneapi-request-id", rid);
+        return new Response(audioRes.body, { status: 200, headers });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const status = Number((err as { status?: number }).status || 500);
+        const code = String((err as { code?: string }).code || "bad_response");
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, message.slice(0, 2000), extra);
+        return openaiError(status, message, code);
+      }
     }
 
     const text = await res.text();

@@ -3637,6 +3637,49 @@ test("original Volc, xAI, and DeepSeek ConvertOpenAIRequest JSON and URLs", () =
     "https://ark.cn-beijing.volces.com/api/coding/v1/messages",
   );
 
+  const volcTts = convertOpenAIRequest(
+    { model: "tts-1", input: "hello spark", voice: "alloy", response_format: "opus", speed: 1.2 },
+    {
+      channelType: CHANNEL_TYPE_VOLC,
+      originModelName: "tts-1",
+      upstreamModelName: "tts-1",
+      relayMode: "audio_speech",
+      channelKey: "appid|access",
+    },
+  );
+  assert.deepEqual(volcTts.app, { appid: "appid", token: "access", cluster: "volcano_tts" });
+  assert.deepEqual(volcTts.user, { uid: "openai_relay_user" });
+  assert.deepEqual(volcTts.audio, {
+    voice_type: "zh_male_M392_conversation_wvae_bigtts",
+    encoding: "ogg_opus",
+    speed_ratio: 1.2,
+    rate: 24000,
+  });
+  assert.equal((volcTts.request as { text: string; operation: string; model: string }).text, "hello spark");
+  assert.equal((volcTts.request as { operation: string }).operation, "submit");
+  assert.equal((volcTts.request as { model: string }).model, "tts-1");
+  assert.match(String((volcTts.request as { reqid: string }).reqid), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  const volcTtsChannel = testChannel({
+    type: CHANNEL_TYPE_VOLC,
+    key: "appid|access",
+    base_url: "",
+    models: "tts-1",
+  });
+  const volcTtsUp = buildUpstream(volcTtsChannel, "audio_speech", "/v1/audio/speech", "tts-1", volcTts);
+  assert.equal(volcTtsUp.url, "wss://openspeech.bytedance.com/api/v1/tts/ws_binary");
+  assert.equal(volcTtsUp.headers.authorization, "Bearer;access");
+  assert.equal(volcTtsUp.headers["content-type"], "application/json");
+  const volcTtsCustom = testChannel({
+    type: CHANNEL_TYPE_VOLC,
+    key: "appid|access",
+    base_url: "https://tts.example",
+    models: "tts-1",
+  });
+  assert.equal(
+    buildUpstream(volcTtsCustom, "audio_speech", "/v1/audio/speech", "tts-1", volcTts).url,
+    "https://tts.example/v1/audio/speech",
+  );
+
   const deepseek = testChannel({ type: CHANNEL_TYPE_DEEPSEEK, key: "sk-ds", base_url: "", models: "deepseek-chat" });
   assert.equal(
     buildUpstream(deepseek, "chat", "/v1/chat/completions", "deepseek-chat", dsMax).url,
@@ -3790,6 +3833,9 @@ test("original Coze/Dify/Moonshot ConvertImage/Audio/Embedding/Responses error s
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MINIMAX, "responses"), "not implemented");
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MINIMAX, "audio_transcription"), "unsupported audio relay mode");
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_MINIMAX, "audio_speech"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_VOLC, "audio_speech"), undefined);
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_VOLC, "audio_transcription"), "unsupported audio relay mode");
+  assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_VOLC, "audio_translation"), "unsupported audio relay mode");
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_CLOUDFLARE, "images"), "not implemented");
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_CLOUDFLARE, "embeddings"), undefined);
   assert.equal(nativeOpenAIConvertEndpointError(CHANNEL_TYPE_BAIDU, "images"), "not implemented");

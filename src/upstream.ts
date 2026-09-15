@@ -49,6 +49,7 @@ import { palmRequestURL } from "./palm-convert.js";
 import { siliconflowRequestURL } from "./siliconflow-convert.js";
 import { tencentNativeRequestURL, tencentTokenHubBase, tencentUsesNativeAdaptor } from "./tencent-convert.js";
 import { xunfeiRequestURL } from "./xunfei-convert.js";
+import { applyVolcTtsHeaders, volcTtsRequestURL } from "./volc-tts.js";
 import { replicateRequestURL } from "./replicate-convert.js";
 import { applyNewApiHeaders, newApiRequestURL } from "./newapi-convert.js";
 import { jimengRequestURL } from "./jimeng-convert.js";
@@ -433,6 +434,18 @@ export function buildUpstream(
   if (channel.type === CHANNEL_TYPE_SILICONFLOW) {
     url = siliconflowRequestURL(base, mode, openaiPath(mode, requestPath));
     headers.authorization = `Bearer ${apiKey}`;
+    payload = applyChannelParamOverride(channel, payload, headers, {
+      ...relayInfo,
+      originalModel: relayInfo.originalModel || model,
+      upstreamModel: relayInfo.upstreamModel || upstreamModel,
+      requestPath: relayInfo.requestPath || requestPath,
+    }, apiKey, upstreamModel);
+    return { url, headers, body: payload, method };
+  }
+
+  if (channel.type === CHANNEL_TYPE_VOLC && mode === "audio_speech") {
+    url = volcTtsRequestURL(channel.base_url || "");
+    applyVolcTtsHeaders(headers, apiKey);
     payload = applyChannelParamOverride(channel, payload, headers, {
       ...relayInfo,
       originalModel: relayInfo.originalModel || model,

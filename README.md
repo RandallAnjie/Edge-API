@@ -48,7 +48,7 @@ QuantumNous [new-api](https://github.com/QuantumNous/new-api) 的 **RandallFlare
 - Files / fine-tunes / images/variations 与上游一致返回 501
 - 渠道优先级 + 权重随机 + 失败重试
 - OpenAI ↔ Anthropic / Gemini 协议转换
-- Azure / OpenAI 兼容 / Anthropic / Gemini / Ollama / Cloudflare / 阿里兼容模式 / 智谱 / 火山 / 自定义 URL
+- Azure / OpenAI 兼容 / Anthropic / Gemini / Ollama / Cloudflare / 阿里兼容模式 / 智谱 / 火山（含 TTS WebSocket 二进制协议） / 自定义 URL
 - multipart（音频等）原样转发 Content-Type 与 body
 - 额度：ModelRatio × CompletionRatio × GroupRatio；用户额度 + 令牌额度双扣
 

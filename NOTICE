@@ -52,7 +52,9 @@ Material changes from upstream:
   return a structured error. Vertex ADC uses the original HTTP path (RS256 JWT
   + `https://www.googleapis.com/oauth2/v4/token`, no Google SDK). AWS AKSK uses
   the original HTTP path (Bedrock `InvokeModel` / `InvokeModelWithResponseStream`
-  + SigV4 service `bedrock`, no AWS SDK). Stripe/Epay/Creem/Waffo checkout use HTTP APIs
+  + SigV4 service `bedrock`, no AWS SDK). Volcengine TTS uses the original HTTP path
+  (`wss://openspeech.bytedance.com/api/v1/tts/ws_binary` binary frames, or
+  `{base}/v1/audio/speech` JSON `code` 3000, no Volc SDK). Stripe/Epay/Creem/Waffo checkout use HTTP APIs
   (no vendor SDK). io.net model deployments use the original HTTP API (no
   vendor SDK). Original QuantumNous factory task plugins (`plugins/tasks/*/plugin.js`)
   are embedded and listed/routed with original JSON (`source: "factory"`).

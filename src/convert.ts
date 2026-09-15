@@ -16,6 +16,7 @@ import { convertAwsOpenAIRequest } from "./aws-convert.js";
 import { convertGeminiImageFromOpenAI, convertVertexOpenAIRequest } from "./vertex-convert.js";
 import { convertOllamaGenerateRequest, convertOllamaOpenAIRequest } from "./ollama-convert.js";
 import { convertDeepSeekClaudeRequest, convertDeepSeekOpenAIRequest, convertVolcOpenAIRequest, convertXaiImageRequest, convertXaiOpenAIRequest, openaiFromXaiResponse, xaiSseToOpenAIChat } from "./vendor-convert.js";
+import { convertVolcTTSRequest, VOLC_TTS_UNSUPPORTED_AUDIO } from "./volc-tts.js";
 import { convertBaiduEmbeddingRequest, convertBaiduOpenAIRequest } from "./baidu-convert.js";
 import { convertCohereOpenAIRequest, convertCohereRerankRequest } from "./cohere-convert.js";
 import { convertCozeOpenAIRequest } from "./coze-convert.js";
@@ -443,6 +444,14 @@ export {
 export { convertBaiduV2OpenAIRequest } from "./baidu-v2-convert.js";
 export { convertMiniMaxImageRequest, convertMiniMaxOpenAIRequest, convertMiniMaxTTSRequest, openaiFromMiniMaxImage, miniMaxTTSDoResponse } from "./minimax-convert.js";
 export {
+  convertVolcTTSRequest,
+  volcTtsRequestURL,
+  volcTtsIsStream,
+  VOLC_TTS_WS_URL,
+  VOLC_TTS_INVALID_KEY,
+  VOLC_TTS_UNSUPPORTED_AUDIO,
+} from "./volc-tts.js";
+export {
   convertTencentOpenAIRequest,
   openaiFromTencentResponse,
   parseTencentConfig,
@@ -760,6 +769,9 @@ export function nativeOpenAIConvertEndpointError(channelType: number, mode?: str
     if (m === "audio_transcription" || m === "audio_translation") return "unsupported audio relay mode";
     return undefined;
   }
+  if (channelType === CHANNEL_TYPE_VOLC && (m === "audio_transcription" || m === "audio_translation")) {
+    return VOLC_TTS_UNSUPPORTED_AUDIO;
+  }
   if (channelType === CHANNEL_TYPE_COZE && (images || audio || embeddings || rerank || responses)) return "not implemented";
   if (channelType === CHANNEL_TYPE_DIFY && (images || audio || embeddings || responses)) return "not implemented";
   if (channelType === CHANNEL_TYPE_ZHIPU_V4 && audio) return "not implemented";
@@ -822,6 +834,12 @@ export function convertOpenAIRequest(body: Record<string, unknown>, opts: Conver
     return convertOllamaOpenAIRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
   }
   if (opts.channelType === CHANNEL_TYPE_VOLC) {
+    if (opts.relayMode === "audio_speech") {
+      return convertVolcTTSRequest(suffixed.body, {
+        originModelName: opts.originModelName,
+        apiKey: opts.channelKey,
+      });
+    }
     return convertVolcOpenAIRequest(suffixed.body, {
       originModelName: opts.originModelName,
       upstreamModelName: suffixed.upstreamModelName,
