@@ -248,7 +248,7 @@ export function factoryTaskPluginDetail(key: string): TaskPluginDetail | null {
   };
 }
 
-/** Plugins that serve traffic: enabled overrides, else factory fallback. */
+/** Plugins that serve traffic: compiled enabled overrides, else factory fallback. */
 export async function listRoutingPlugins(store: Store): Promise<RoutingPlugin[]> {
   if (!(await taskPluginMasterEnabled(store))) return [];
   const rows = (await store.listTaskPlugins()) as Record<string, unknown>[];
@@ -260,13 +260,21 @@ export async function listRoutingPlugins(store: Store): Promise<RoutingPlugin[]>
   const out: RoutingPlugin[] = [];
   const seen = new Set<string>();
   for (const [key, row] of enabledOverrides) {
-    seen.add(key);
-    out.push({
-      key,
-      meta: overrideMetaFromRow(row),
-      source: String(row.source || ""),
-      hasIcon: Boolean(row.icon),
-    });
+    try {
+      const loaded = compilePlugin(String(row.source || ""), {
+        key,
+        version: String(row.version || ""),
+      });
+      seen.add(key);
+      out.push({
+        key,
+        meta: loaded.meta,
+        source: String(row.source || ""),
+        hasIcon: Boolean(row.icon),
+      });
+    } catch {
+      /* Original DefaultRegistry only routes plugins that Register compiled. */
+    }
   }
   for (const key of FACTORY_TASK_PLUGIN_KEYS) {
     if (seen.has(key) || disabled.has(key)) continue;

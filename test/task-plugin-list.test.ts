@@ -468,3 +468,90 @@ export function parseTaskResult() { return {}; }
   assert.equal(typeof (delCustom.body.data as { in_flight_count: number }).in_flight_count, "number");
   assert.ok(Array.isArray((delCustom.body.data as { channels: unknown[] }).channels));
 });
+
+test("original routing Register Meta JSON: normalizeV1Meta and factory fallback", async () => {
+  const { e, auth, store } = await boot();
+  const source = `
+export const meta = {
+  apiVersion: 1, key: "route-normalize", name: "Route Normalize", version: "1.0.0",
+  author: {name: "Test"}, models: ["route-normalize"], fetchMode: "per_task",
+  allowedHosts: null, auth: {type: "vertex_oauth"}
+};
+export function buildSubmitRequest(){return {url:"https://provider.example/submit"}}
+export function parseSubmitResponse(){return {taskId:"upstream"}}
+export function buildQueryRequest(){return {url:"https://provider.example"}}
+export function parseTaskResult(){return {status:"SUCCESS"}}
+`;
+  const uploaded = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ source, force: true }),
+    }),
+    e,
+  );
+  assert.equal(uploaded.body.success, true, String(uploaded.body.message));
+  const { listRoutingPlugins } = await import("../src/task-plugin-factory.js");
+  const routed = await listRoutingPlugins(store);
+  const plugin = routed.find((item) => item.key === "route-normalize");
+  assert.ok(plugin);
+  const authMeta = plugin.meta.auth as { type?: string };
+  assert.equal(authMeta.type, "oauth2_jwt");
+  assert.deepEqual(plugin.meta.submitResponseTypes, ["json"]);
+  assert.deepEqual(plugin.meta.allowedHosts, []);
+
+  const ch = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "route-normalize-ch",
+        type: 61,
+        key: "plugin-key",
+        models: "route-normalize",
+        group: "default",
+        setting: { task_plugin_key: "route-normalize" },
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, String(ch.body.message));
+  const models = await json(
+    new Request("http://local/api/channel/fetch_models/" + (ch.body.data as { id: number }).id, { headers: auth }),
+    e,
+  );
+  assert.equal(models.body.success, true, String(models.body.message));
+  assert.deepEqual(models.body.data, ["route-normalize"]);
+
+  await store.upsertTaskPlugin({
+    key: "kling",
+    version: "9.9.9",
+    enabled: 1,
+    active: 1,
+    source: compileFailSource("kling", "9.9.9"),
+  });
+  const klingCh = await json(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "kling-fallback-ch",
+        type: 61,
+        key: "plugin-key",
+        models: "kling",
+        group: "default",
+        setting: { task_plugin_key: "kling" },
+      }),
+    }),
+    e,
+  );
+  assert.equal(klingCh.body.success, true, String(klingCh.body.message));
+  const klingModels = await json(
+    new Request("http://local/api/channel/fetch_models/" + (klingCh.body.data as { id: number }).id, { headers: auth }),
+    e,
+  );
+  assert.equal(klingModels.body.success, true, String(klingModels.body.message));
+  const names = klingModels.body.data as string[];
+  assert.ok(names.length > 1);
+  assert.notDeepEqual(names, ["kling"]);
+});

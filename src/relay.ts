@@ -144,7 +144,6 @@ import { channelKind, isChannelSpecialBase, resolveBaseUrl } from "./catalog.js"
 import {
   anthropicModel,
   consumeLogOther,
-  extractPluginMeta,
   geminiModel,
   groupInUserUsableGroups,
   modelNotFoundError,
@@ -155,7 +154,7 @@ import {
 } from "./dto.js";
 import { tokenAllowsModel } from "./auth.js";
 import { ADAPTOR_MODELS } from "./channel-models.js";
-import { factoryPluginMeta } from "./task-plugin-factory.js";
+import { factoryPluginMeta, listRoutingPlugins } from "./task-plugin-factory.js";
 
 export type ClientFormat = "openai" | "anthropic" | "gemini";
 
@@ -2326,9 +2325,8 @@ export async function fetchUpstreamModels(channel: ChannelRow, store?: Store): P
   if (channel.type === CHANNEL_TYPE_TASK_PLUGIN) {
     const setting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
     const pluginKey = String(setting.task_plugin_key || setting.TaskPluginKey || "").trim();
-    const plugin = store ? await store.getTaskPlugin(pluginKey) : null;
-    const factoryMeta = factoryPluginMeta(pluginKey);
-    const meta = plugin ? extractPluginMeta(String(plugin.source || "")) : factoryMeta;
+    const registered = store ? (await listRoutingPlugins(store)).find((plugin) => plugin.key === pluginKey) : null;
+    const meta = registered?.meta || factoryPluginMeta(pluginKey);
     if (!meta) throw new Error(`task plugin ${JSON.stringify(pluginKey)} is not registered`);
     const models = Array.isArray(meta.models) ? (meta.models as unknown[]).map((m) => String(m)) : [];
     return normalizeModelNames(models);
