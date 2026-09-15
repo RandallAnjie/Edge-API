@@ -100,11 +100,44 @@ test("original helper.HasModelBillingConfig ignores self-use fallback and empty 
 });
 
 test("original ListModels token-limit check is exact or RoutingMatchModelName only", () => {
+  assert.equal(listModelsTokenLimitAllows({ "gpt-4o-mini": true }, "gpt-4o-mini"), true);
+  assert.equal(listModelsTokenLimitAllows({ "claude-3-7-sonnet": true }, "claude-3-7-sonnet-thinking"), true);
+  assert.equal(listModelsTokenLimitAllows({ "claude-3-7-sonnet-thinking": true }, "claude-3-7-sonnet"), false);
+  const padded = tokenModelLimitsMap(" gpt-4o-mini ");
+  assert.deepEqual(padded, { " gpt-4o-mini ": true });
+  assert.equal(listModelsTokenLimitAllows(padded, "gpt-4o-mini"), false);
   const wildcard = { "gemini-2.5-flash-thinking-*": true };
   assert.equal(tokenModelLimitAllows(wildcard, "gemini-2.5-flash-thinking-8192"), true);
-  assert.equal(listModelsTokenLimitAllows(wildcard, "gemini-2.5-flash-thinking-8192"), false);
-  assert.equal(listModelsTokenLimitAllows({ "gpt-4o-mini": true }, "gpt-4o-mini"), true);
-  assert.equal(listModelsTokenLimitAllows(tokenModelLimitsMap("gpt-4o-mini,"), "gpt-4o-mini"), true);
+  assert.equal(listModelsTokenLimitAllows(wildcard, "gemini-2.5-flash-thinking-8192"), true);
+});
+
+test("original ListModels JSON uses GetModelLimitsMap exact/routing keys", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const store = new Store(e.DB);
+  await store.setOption("SelfUseModeEnabled", "true");
+  await store.insertChannel({
+    name: "list-limits",
+    type: 1,
+    key: "sk-list",
+    models: "gpt-4o-mini,gpt-4o",
+    group: "default",
+  });
+  const paddedSk = await apiKey(e, auth, {
+    model_limits_enabled: true,
+    model_limits: " gpt-4o-mini ",
+  });
+  const padded = await json(new Request("http://local/v1/models", { headers: { authorization: "Bearer " + paddedSk } }), e);
+  const paddedIds = ((padded.body.data as { id: string }[]) || []).map((m) => m.id);
+  assert.equal(paddedIds.includes("gpt-4o-mini"), false);
+  assert.equal(paddedIds.includes("gpt-4o"), false);
+
+  const exactSk = await apiKey(e, auth, { name: "exact-limits", model_limits_enabled: true, model_limits: "gpt-4o-mini" });
+  const exact = await json(new Request("http://local/v1/models", { headers: { authorization: "Bearer " + exactSk } }), e);
+  const exactIds = ((exact.body.data as { id: string }[]) || []).map((m) => m.id);
+  assert.equal(exactIds.includes("gpt-4o-mini"), true);
+  assert.equal(exactIds.includes("gpt-4o"), false);
 });
 
 test("original ListModels JSON hides unpriced models and empty tiered expr", async () => {
@@ -145,35 +178,6 @@ test("original ListModels JSON hides unpriced models and empty tiered expr", asy
   assert.equal(ids.includes("zz-tiered-empty-expr-model"), false);
   assert.equal(ids.includes("zz-tiered-missing-expr-model"), false);
   assert.equal(ids.includes("zz-unpriced-model"), false);
-});
-
-test("original ListModels JSON uses GetModelLimitsMap exact/routing keys not FormatMatchingModelName", async () => {
-  resetSchemaFlag();
-  const e = env();
-  const { auth } = await boot(e);
-  const store = new Store(e.DB);
-  await store.setOption("SelfUseModeEnabled", "true");
-  await store.insertChannel({
-    name: "list-limits",
-    type: 1,
-    key: "sk-list",
-    models: "gpt-4o-mini,gemini-2.5-flash-thinking-8192",
-    group: "default",
-  });
-  const sk = await apiKey(e, auth, {
-    model_limits_enabled: true,
-    model_limits: "gemini-2.5-flash-thinking-*",
-  });
-  const listed = await json(new Request("http://local/v1/models", { headers: { authorization: "Bearer " + sk } }), e);
-  const ids = ((listed.body.data as { id: string }[]) || []).map((m) => m.id);
-  assert.equal(ids.includes("gemini-2.5-flash-thinking-8192"), false);
-  assert.equal(ids.includes("gpt-4o-mini"), false);
-
-  const exactSk = await apiKey(e, auth, { name: "exact-limits", model_limits_enabled: true, model_limits: "gpt-4o-mini" });
-  const exact = await json(new Request("http://local/v1/models", { headers: { authorization: "Bearer " + exactSk } }), e);
-  const exactIds = ((exact.body.data as { id: string }[]) || []).map((m) => m.id);
-  assert.equal(exactIds.includes("gpt-4o-mini"), true);
-  assert.equal(exactIds.includes("gemini-2.5-flash-thinking-8192"), false);
 });
 
 test("original ListModels JSON owned_by uses preferred ability channel type", async () => {
