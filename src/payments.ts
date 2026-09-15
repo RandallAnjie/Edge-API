@@ -975,43 +975,218 @@ export async function requestHttpPay(
   return requestWaffoPay(store, user, req, body as { amount?: number });
 }
 
-export async function handleCreemWebhook(store: Store, req: Request): Promise<Response> {
-  if (!(await paymentEnabled(store, "creem"))) return new Response(null, { status: 403 });
-  const secret = await store.option("CreemWebhookSecret");
-  const raw = await req.text();
-  if (secret) {
-    const signature = req.headers.get("creem-signature") || "";
-    if (!signature) return new Response(null, { status: 401 });
-    const expected = await hmacSha256Hex(secret, raw);
-    if (!timingSafeEqualStr(expected, signature)) return new Response(null, { status: 401 });
+async function creemWebhookEnabled(store: Store): Promise<boolean> {
+  if (!(await paymentEnabled(store, "creem"))) return false;
+  return Boolean((await store.option("CreemWebhookSecret")).trim());
+}
+
+function creemJsonString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function creemJsonInt(value: unknown): number | null {
+  if (value == null) return 0;
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) return null;
+  return value;
+}
+
+function creemJsonStringMap(value: unknown): Record<string, string> | null | undefined {
+  if (value == null) return undefined;
+  if (!isJsonObject(value)) return null;
+  const out: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "string") return null;
+    out[key] = item;
   }
-  const event = parseJson<{
-    eventType?: string;
-    object?: {
-      request_id?: string;
-      order?: { id?: string; status?: string; type?: string };
-      customer?: { email?: string; name?: string };
-    };
-  }>(raw, {});
-  if (event.eventType === "checkout.completed") {
-    if (event.object?.order?.status && event.object.order.status !== "paid") return new Response(null, { status: 200 });
-    const trade = String(event.object?.request_id || "");
-    if (!trade) return new Response(null, { status: 400 });
-    const result = await tryCompleteSubscriptionOrder(store, trade, raw, "creem", "");
-    if (result === "completed") return new Response(null, { status: 200 });
-    if (result === "rejected") return new Response(null, { status: 500 });
-    const orderType = String(event.object?.order?.type || "onetime");
-    if (orderType && orderType !== "onetime") return new Response(null, { status: 200 });
-    try {
-      await store.rechargeCreem(
-        trade,
-        String(event.object?.customer?.email || ""),
-        String(event.object?.customer?.name || ""),
-        clientIp(req),
-      );
-    } catch {
-      return new Response(null, { status: 500 });
-    }
+  return out;
+}
+
+function creemExpectStrings(obj: Record<string, unknown>, keys: string[]): boolean {
+  return keys.every((key) => !(key in obj) || obj[key] == null || typeof obj[key] === "string");
+}
+
+/** Original `common.GetJsonString` of `CreemWebhookEvent` (struct field order, zero values). */
+function creemFulfillPayload(event: Record<string, unknown>): string | null {
+  if (!creemExpectStrings(event, ["id", "eventType"])) return null;
+  const obj = event.object == null ? {} : event.object;
+  if (!isJsonObject(obj)) return null;
+  const order = obj.order == null ? {} : obj.order;
+  const product = obj.product == null ? {} : obj.product;
+  const customer = obj.customer == null ? {} : obj.customer;
+  if (!isJsonObject(order) || !isJsonObject(product) || !isJsonObject(customer)) return null;
+  if (
+    !creemExpectStrings(obj, ["id", "object", "request_id", "status", "mode"]) ||
+    !creemExpectStrings(order, [
+      "object",
+      "id",
+      "customer",
+      "product",
+      "currency",
+      "status",
+      "type",
+      "transaction",
+      "created_at",
+      "updated_at",
+      "mode",
+    ]) ||
+    !creemExpectStrings(product, [
+      "id",
+      "object",
+      "name",
+      "description",
+      "currency",
+      "billing_type",
+      "billing_period",
+      "status",
+      "tax_mode",
+      "tax_category",
+      "default_success_url",
+      "created_at",
+      "updated_at",
+      "mode",
+    ]) ||
+    !creemExpectStrings(customer, ["id", "object", "email", "name", "country", "created_at", "updated_at", "mode"])
+  ) {
+    return null;
+  }
+  const createdAt = creemJsonInt(event.created_at);
+  const orderAmount = creemJsonInt(order.amount);
+  const orderSubTotal = creemJsonInt(order.sub_total);
+  const orderTax = creemJsonInt(order.tax_amount);
+  const orderDue = creemJsonInt(order.amount_due);
+  const orderPaid = creemJsonInt(order.amount_paid);
+  const productPrice = creemJsonInt(product.price);
+  const units = creemJsonInt(obj.units);
+  if (
+    createdAt == null ||
+    orderAmount == null ||
+    orderSubTotal == null ||
+    orderTax == null ||
+    orderDue == null ||
+    orderPaid == null ||
+    productPrice == null ||
+    units == null
+  ) {
+    return null;
+  }
+  const metadata = creemJsonStringMap(obj.metadata);
+  if (metadata === null) return null;
+  const productOut: Record<string, unknown> = {
+    id: creemJsonString(product.id),
+    object: creemJsonString(product.object),
+    name: creemJsonString(product.name),
+    description: creemJsonString(product.description),
+    price: productPrice,
+    currency: creemJsonString(product.currency),
+    billing_type: creemJsonString(product.billing_type),
+    billing_period: creemJsonString(product.billing_period),
+    status: creemJsonString(product.status),
+    tax_mode: creemJsonString(product.tax_mode),
+    tax_category: creemJsonString(product.tax_category),
+    created_at: creemJsonString(product.created_at),
+    updated_at: creemJsonString(product.updated_at),
+    mode: creemJsonString(product.mode),
+  };
+  if (typeof product.default_success_url === "string") productOut.default_success_url = product.default_success_url;
+  const objectOut: Record<string, unknown> = {
+    id: creemJsonString(obj.id),
+    object: creemJsonString(obj.object),
+    request_id: creemJsonString(obj.request_id),
+    order: {
+      object: creemJsonString(order.object),
+      id: creemJsonString(order.id),
+      customer: creemJsonString(order.customer),
+      product: creemJsonString(order.product),
+      amount: orderAmount,
+      currency: creemJsonString(order.currency),
+      sub_total: orderSubTotal,
+      tax_amount: orderTax,
+      amount_due: orderDue,
+      amount_paid: orderPaid,
+      status: creemJsonString(order.status),
+      type: creemJsonString(order.type),
+      transaction: creemJsonString(order.transaction),
+      created_at: creemJsonString(order.created_at),
+      updated_at: creemJsonString(order.updated_at),
+      mode: creemJsonString(order.mode),
+    },
+    product: productOut,
+    units,
+    customer: {
+      id: creemJsonString(customer.id),
+      object: creemJsonString(customer.object),
+      email: creemJsonString(customer.email),
+      name: creemJsonString(customer.name),
+      country: creemJsonString(customer.country),
+      created_at: creemJsonString(customer.created_at),
+      updated_at: creemJsonString(customer.updated_at),
+      mode: creemJsonString(customer.mode),
+    },
+    status: creemJsonString(obj.status),
+    mode: creemJsonString(obj.mode),
+  };
+  if (metadata && Object.keys(metadata).length) objectOut.metadata = metadata;
+  return JSON.stringify({
+    id: creemJsonString(event.id),
+    eventType: creemJsonString(event.eventType),
+    created_at: createdAt,
+    object: objectOut,
+  });
+}
+
+async function creemHandleCheckoutCompleted(
+  store: Store,
+  req: Request,
+  event: Record<string, unknown>,
+  payload: string,
+): Promise<Response> {
+  const obj = isJsonObject(event.object) ? event.object : {};
+  const order = isJsonObject(obj.order) ? obj.order : {};
+  if (creemJsonString(order.status) !== "paid") return new Response(null, { status: 200 });
+  const referenceId = creemJsonString(obj.request_id);
+  if (!referenceId) return new Response(null, { status: 400 });
+  const result = await tryCompleteSubscriptionOrder(store, referenceId, payload, "creem", "");
+  if (result === "completed") return new Response(null, { status: 200 });
+  if (result === "rejected") return new Response(null, { status: 500 });
+  if (creemJsonString(order.type) !== "onetime") return new Response(null, { status: 200 });
+  const row = await store.getTopupByTrade(referenceId);
+  if (!row) return new Response(null, { status: 400 });
+  if (String(row.status) !== "pending") return new Response(null, { status: 200 });
+  const customer = isJsonObject(obj.customer) ? obj.customer : {};
+  try {
+    await store.rechargeCreem(referenceId, creemJsonString(customer.email), creemJsonString(customer.name), clientIp(req));
+  } catch {
+    return new Response(null, { status: 500 });
+  }
+  return new Response(null, { status: 200 });
+}
+
+/** Original `controller.CreemWebhook`. */
+export async function handleCreemWebhook(store: Store, req: Request): Promise<Response> {
+  if (!(await creemWebhookEnabled(store))) return new Response(null, { status: 403 });
+  let raw = "";
+  try {
+    raw = await req.text();
+  } catch {
+    return new Response(null, { status: 400 });
+  }
+  const signature = req.headers.get("creem-signature") || "";
+  if (!signature) return new Response(null, { status: 401 });
+  const secret = await store.option("CreemWebhookSecret");
+  const expected = await hmacSha256Hex(secret, raw);
+  if (!timingSafeEqualStr(expected, signature)) return new Response(null, { status: 401 });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return new Response(null, { status: 400 });
+  }
+  if (parsed === null) return new Response(null, { status: 200 });
+  if (!isJsonObject(parsed)) return new Response(null, { status: 400 });
+  const payload = creemFulfillPayload(parsed);
+  if (!payload) return new Response(null, { status: 400 });
+  if (creemJsonString(parsed.eventType) === "checkout.completed") {
+    return creemHandleCheckoutCompleted(store, req, parsed, payload);
   }
   return new Response(null, { status: 200 });
 }
