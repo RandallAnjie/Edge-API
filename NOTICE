@@ -61,7 +61,9 @@ Material changes from upstream:
   Gemini `inlineData` via original `MediaContent.ToFileSource` + GetBase64Data
   (`get file data failed: …` / `get file data from '…' failed: …`). Extra-OK:
   ConvertOpenAIRequest stays sync; URL fetch runs in convertOutbound before
-  ConvertRequest. xAI ConvertOpenAIResponsesRequest fills empty `model` from
+  ConvertRequest. Zhipu v4, Volcengine, Perplexity, Ali, NewAPI, and Sub2API
+  ConvertOpenAIResponsesRequest return the request JSON as-is (no openai.Adaptor
+  reasoning-suffix rewrite). xAI ConvertOpenAIResponsesRequest fills empty `model` from
   UpstreamModelName and does not run openai.Adaptor reasoning-suffix stripping.
   Volcengine TTS uses the original HTTP path
   (`wss://openspeech.bytedance.com/api/v1/tts/ws_binary` binary frames, or

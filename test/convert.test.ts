@@ -2542,6 +2542,46 @@ test("original OpenAI chat ToFileSource file/input_audio/video_url ConvertReques
   );
 });
 
+test("original ConvertOpenAIResponsesRequest pass-through adaptors skip openai suffix JSON", () => {
+  const passThrough = { passThrough: true as const };
+  for (const channelType of [
+    CHANNEL_TYPE_ZHIPU_V4,
+    CHANNEL_TYPE_VOLC,
+    CHANNEL_TYPE_PERPLEXITY,
+    CHANNEL_TYPE_ALI,
+    CHANNEL_TYPE_NEW_API,
+    CHANNEL_TYPE_SUB2API,
+  ]) {
+    const out = convertOpenAIResponsesRequest(
+      { model: "gpt-5.1-high", input: "hi" },
+      { channelType, originModelName: "gpt-5.1-high", upstreamModelName: "gpt-5.1-high", settings: passThrough },
+    );
+    assert.equal(out.model, "gpt-5.1-high", String(channelType));
+    assert.equal("reasoning" in out, false, String(channelType));
+  }
+  const openai = convertOpenAIResponsesRequest(
+    { model: "gpt-5.1-high", input: "hi" },
+    {
+      channelType: CHANNEL_TYPE_OPENAI,
+      originModelName: "gpt-5.1-high",
+      upstreamModelName: "gpt-5.1-high",
+      settings: passThrough,
+    },
+  );
+  assert.equal(openai.model, "gpt-5.1");
+  assert.deepEqual(openai.reasoning, { effort: "high" });
+  const mapped = convertOpenAIResponsesRequest(
+    { model: "client-model", input: "hi" },
+    {
+      channelType: CHANNEL_TYPE_NEW_API,
+      originModelName: "client-model",
+      upstreamModelName: "upstream-model",
+      settings: passThrough,
+    },
+  );
+  assert.equal(mapped.model, "client-model");
+});
+
 test("original Claude ConvertOpenAIRequest injects default max_tokens and thinking adapter JSON", () => {
   const missing = convertOpenAIRequest(
     { model: "claude-3-5-sonnet", messages: [{ role: "user", content: "hi" }] },

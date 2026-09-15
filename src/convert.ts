@@ -1117,7 +1117,7 @@ export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opt
   if (opts.channelType === CHANNEL_TYPE_XUNFEI) throw new Error("not implemented");
   if (opts.channelType === CHANNEL_TYPE_JIMENG) throw new Error("not implemented");
   if (opts.channelType === CHANNEL_TYPE_NEW_API || opts.channelType === CHANNEL_TYPE_SUB2API) {
-    return convertNewApiResponsesRequest(suffixed.body, { upstreamModelName: suffixed.upstreamModelName });
+    return convertNewApiResponsesRequest(suffixed.body);
   }
   if (opts.channelType === CHANNEL_TYPE_CODEX) {
     return convertCodexResponsesRequest(suffixed.body, {
@@ -1164,6 +1164,14 @@ export function convertOpenAIResponsesRequest(body: Record<string, unknown>, opt
       upstreamModelName: suffixed.upstreamModelName,
       settings,
     });
+  }
+  if (
+    opts.channelType === CHANNEL_TYPE_ZHIPU_V4 ||
+    opts.channelType === CHANNEL_TYPE_VOLC ||
+    opts.channelType === CHANNEL_TYPE_PERPLEXITY ||
+    opts.channelType === CHANNEL_TYPE_ALI
+  ) {
+    return { ...suffixed.body };
   }
   const converted = convertOpenAIResponsesAdaptorRequest(
     suffixed.body,

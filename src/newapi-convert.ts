@@ -18,12 +18,9 @@ export function convertNewApiOpenAIRequest(
   return out;
 }
 
-/** Original NewAPI ConvertOpenAIResponsesRequest / ConvertEmbeddingRequest: return request as-is. */
-export function convertNewApiResponsesRequest(
-  body: Record<string, unknown>,
-  opts: ConvertNewApiOpts = {},
-): Record<string, unknown> {
-  return convertNewApiOpenAIRequest(body, opts);
+/** Original NewAPI ConvertOpenAIResponsesRequest: `return request, nil`. */
+export function convertNewApiResponsesRequest(body: Record<string, unknown>): Record<string, unknown> {
+  return { ...body };
 }
 
 export function newApiUnsupportedEndpoint(): never {
