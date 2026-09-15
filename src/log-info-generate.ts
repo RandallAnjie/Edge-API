@@ -5,6 +5,7 @@
  * WSS (`ws: true`) stays in openai-realtime-usage; this file owns HTTP audio
  * (`audio: true`) and must not merge the two.
  */
+import { quotaClampAuditMap, type QuotaClamp } from "./task-plugin-usage.js";
 
 export const RELAY_FORMAT_OPENAI = "openai";
 export const RELAY_FORMAT_CLAUDE = "claude";
@@ -99,6 +100,12 @@ export type ConsumeLogOtherOpts = ClaudeOtherInfoOpts & {
    * compatible/chat PostAudioConsumeQuota.
    */
   containsAudioRatios?: boolean;
+  /**
+   * Original `service.noteQuotaClamp` / `attachQuotaSaturation` after
+   * `TryTieredSettle` (`tiered_settle.go`) or `quotaFromDecimalChecked`.
+   * Nested under `admin_info.quota_saturation` so `formatUserLogs` strips it.
+   */
+  quotaClamp?: QuotaClamp | null;
 };
 
 /** Original `appendRequestConversionChain` display labels. */
@@ -398,5 +405,25 @@ export function consumeLogOther(opts: ConsumeLogOtherOpts): string {
   }
   if (opts.publicExtra) Object.assign(other, opts.publicExtra);
   other.admin_info = consumeLogAdmin(opts);
+  attachQuotaSaturation(other, opts.quotaClamp);
   return JSON.stringify(other);
+}
+
+/**
+ * Original `service.attachQuotaSaturation` (`log_info_generate.go`).
+ * Creates `admin_info` if absent. No-op when the clamp is nil.
+ */
+export function attachQuotaSaturation(
+  other: Record<string, unknown>,
+  clamp: QuotaClamp | null | undefined,
+): void {
+  const audit = quotaClampAuditMap(clamp);
+  if (!audit) return;
+  const existing = other.admin_info;
+  const admin =
+    existing && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  admin.quota_saturation = audit;
+  other.admin_info = admin;
 }

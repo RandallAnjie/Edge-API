@@ -1522,6 +1522,7 @@ async function settle(
       channelAffinity: extra.channelAffinity,
       billingSource: extra.billingSource || "wallet",
       publicExtra,
+      quotaClamp: tiered?.result?.clamp,
     }),
   });
   if (ok && extra.affinity && extra.env) {

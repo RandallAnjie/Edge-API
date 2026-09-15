@@ -16,7 +16,7 @@ import {
 } from "./ratio-setting.js";
 import { insufficientTokenQuotaMessage, insufficientWssUserQuotaMessage, storeFormatQuota } from "./quota.js";
 import type { Store } from "./store.js";
-import { logOtherSnapshot, newLogOther, setLogOtherAdmin, setLogOtherPublic } from "./task-plugin-billing.js";
+import { attachQuotaSaturationToOther, logOtherSnapshot, newLogOther, setLogOtherAdmin, setLogOtherPublic } from "./task-plugin-billing.js";
 import type { AuthToken, ChannelRow } from "./types.js";
 
 export type WssPriceData = {
@@ -107,7 +107,7 @@ export function preWssAudioQuota(price: WssPriceData, usage: RealtimeUsage): num
  * completion / audio / audio-completion lookups use UpstreamModelName
  * (`QuotaInfo.ModelName`).
  */
-export function postWssAudioQuota(price: WssPriceData, usage: RealtimeUsage): number {
+function postWssAudioQuotaChecked(price: WssPriceData, usage: RealtimeUsage) {
   return calculateAudioQuota({
     inputTextTokens: usage.input_token_details.text_tokens,
     inputAudioTokens: usage.input_token_details.audio_tokens,
@@ -122,7 +122,11 @@ export function postWssAudioQuota(price: WssPriceData, usage: RealtimeUsage): nu
     audioRatio: price.upstreamAudioRatio,
     audioCompletionRatio: price.upstreamAudioCompletionRatio,
     quotaPerUnit: price.quotaPerUnit,
-  }).quota;
+  });
+}
+
+export function postWssAudioQuota(price: WssPriceData, usage: RealtimeUsage): number {
+  return postWssAudioQuotaChecked(price, usage).quota;
 }
 
 export async function preWssConsumeQuota(opts: {
@@ -180,7 +184,8 @@ export async function postWssConsumeQuota(opts: {
   requestId: string;
 }): Promise<void> {
   const { store, auth, channel, price, usage } = opts;
-  let quota = postWssAudioQuota(price, usage);
+  const audioQuota = postWssAudioQuotaChecked(price, usage);
+  let quota = audioQuota.quota;
   const useTimeSeconds = Math.max(0, Math.floor((Date.now() - opts.startMs) / 1000));
   let logContent: string;
   if (!price.usePrice) {
@@ -224,6 +229,7 @@ export async function postWssConsumeQuota(opts: {
   setLogOtherAdmin(maps, "use_channel", [String(channel.id)]);
   const multi = parseChannelInfo(String(channel.channel_info || ""));
   if (multi.is_multi_key) setLogOtherAdmin(maps, "is_multi_key", true);
+  attachQuotaSaturationToOther(maps, audioQuota.clamp);
   const other = logOtherSnapshot(maps);
   const ip = userRecordsIpLog(auth.user.settings) ? clientIp(opts.req) : "";
   await store.insertLog({

@@ -824,6 +824,7 @@ export async function testChannel(
         containsAudioRatios: audioLog.containsAudioRatios,
         billingSource: "wallet",
         publicExtra,
+        quotaClamp: tiered?.result?.clamp,
       }),
     });
   }

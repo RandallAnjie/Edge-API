@@ -6,8 +6,15 @@ import { evaluateTaskCompletionUsage, parseBillingSnapshot, type BillingSnapshot
 import { DEFAULT_GROUP_RATIO, LOG_CONSUME, LOG_REFUND, parseJson } from "./constants.js";
 import { getModelRatioFromMap } from "./ratio-setting.js";
 import type { Store } from "./store.js";
-import { otherRatioMultiplier, quotaFromFloatChecked, type QuotaClamp } from "./task-plugin-usage.js";
+import {
+  otherRatioMultiplier,
+  quotaClampAuditMap,
+  quotaFromFloatChecked,
+  type QuotaClamp,
+} from "./task-plugin-usage.js";
 import type { UserRow } from "./types.js";
+
+export { quotaClampAuditMap } from "./task-plugin-usage.js";
 
 /** Original `relaycommon.TaskInfo` fields used by poll settlement. */
 export type TaskCompleteInfo = {
@@ -113,13 +120,7 @@ export function logOtherSnapshot(other: LogOtherMaps): Record<string, unknown> {
   return result;
 }
 
-/** Original `common.QuotaClamp.AuditMap`. */
-export function quotaClampAuditMap(clamp: QuotaClamp | null | undefined): Record<string, unknown> | null {
-  if (!clamp) return null;
-  return { op: clamp.op, kind: clamp.kind, original: clamp.original, clamped: clamp.clamped };
-}
-
-/** Original `attachQuotaSaturationToOther`. */
+/** Original `service.attachQuotaSaturationToOther`. */
 export function attachQuotaSaturationToOther(other: LogOtherMaps, clamp: QuotaClamp | null | undefined): void {
   const audit = quotaClampAuditMap(clamp);
   if (!audit) return;

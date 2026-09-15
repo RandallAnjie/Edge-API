@@ -20,6 +20,19 @@ export type QuotaClamp = {
   clamped: number;
 };
 
+/** Original `common.QuotaClamp.AuditMap` (`quota_math.go`). */
+export function quotaClampAuditMap(
+  clamp: QuotaClamp | null | undefined,
+): { op: string; kind: string; original: number; clamped: number } | null {
+  if (!clamp) return null;
+  return {
+    op: clamp.op,
+    kind: clamp.kind,
+    original: clamp.original,
+    clamped: clamp.clamped,
+  };
+}
+
 export type UsageFieldSchema = {
   type: string;
   unit: string;
