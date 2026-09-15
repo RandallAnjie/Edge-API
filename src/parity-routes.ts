@@ -86,7 +86,29 @@ import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { rpFromRequest } from "./passkey.js";
 import { passkeyDomainHttpError, passkeySettingsSnapshot, selectPasskeyBeginRpIDs } from "./passkey-domains.js";
 import { calcNextResetTime, parseCodexOAuthKey, publicPlan } from "./subscription.js";
-import { computeStatusCounts, ionetApiKey, ionetRequest, ionetSettings, IONET_NOT_CONFIGURED, mapIoNetDeployment } from "./ionet.js";
+import {
+  computeStatusCounts,
+  ionetApiKey,
+  ionetRequest,
+  ionetSettings,
+  ionetWrapError,
+  IONET_NOT_CONFIGURED,
+  logsEndpoint,
+  mapIoNetAvailableReplicas,
+  mapIoNetContainerDetails,
+  mapIoNetContainerList,
+  mapIoNetDeployment,
+  mapIoNetDeploymentDetail,
+  mapIoNetExtendedDeployment,
+  mapIoNetHardwareTypes,
+  mapIoNetLocations,
+  mapIoNetPriceEstimation,
+  priceEstimationCurrency,
+  priceEstimationDurationHours,
+  testIoNetTotals,
+  validateDeployRequest,
+  validatePriceEstimationRequest,
+} from "./ionet.js";
 import type { Env } from "./types.js";
 
 type C = Context<Env>;
@@ -1568,7 +1590,7 @@ export function registerParity(r: Router<Env>): void {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
     const q = pageQuery(c.url);
-    const status = (c.url.searchParams.get("status") || "").toLowerCase();
+    const status = (c.url.searchParams.get("status") || "").toLowerCase().trim();
     const params = new URLSearchParams({
       page: String(q.page),
       page_size: String(q.page_size),
@@ -1577,11 +1599,11 @@ export function registerParity(r: Router<Env>): void {
     });
     if (status) params.set("status", status);
     const fetched = await ionetRequest(key, "GET", `/deployments?${params.toString()}`);
-    if (!fetched.ok) return apiFail(fetched.message);
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to list deployments", fetched.message));
     const raw = (fetched.json || {}) as { deployments?: Record<string, unknown>[]; total?: number };
-    const deployments = raw.deployments || (Array.isArray(fetched.json) ? (fetched.json as Record<string, unknown>[]) : []);
+    const deployments = raw.deployments || [];
     const items = deployments.map(mapIoNetDeployment);
-    const total = Number(raw.total || items.length);
+    const total = Number(raw.total || 0);
     return apiOk({
       page: q.page,
       page_size: q.page_size,
@@ -1594,139 +1616,252 @@ export function registerParity(r: Router<Env>): void {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
     const q = pageQuery(c.url);
-    const keyword = (c.url.searchParams.get("keyword") || "").toLowerCase();
-    const fetched = await ionetRequest(key, "GET", `/deployments?page=${q.page}&page_size=${q.page_size}&sort_by=created_at&sort_order=desc`);
-    if (!fetched.ok) return apiFail(fetched.message);
+    const status = (c.url.searchParams.get("status") || "").toLowerCase().trim();
+    const keyword = (c.url.searchParams.get("keyword") || "").trim();
+    const params = new URLSearchParams({
+      page: String(q.page),
+      page_size: String(q.page_size),
+      sort_by: "created_at",
+      sort_order: "desc",
+    });
+    if (status) params.set("status", status);
+    const fetched = await ionetRequest(key, "GET", `/deployments?${params.toString()}`);
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to list deployments", fetched.message));
     const raw = (fetched.json || {}) as { deployments?: Record<string, unknown>[]; total?: number };
     let deployments = raw.deployments || [];
-    if (keyword) deployments = deployments.filter((d) => String(d.name || "").toLowerCase().includes(keyword));
+    if (keyword) {
+      const kw = keyword.toLowerCase();
+      deployments = deployments.filter((d) => String(d.name || "").toLowerCase().includes(kw));
+    }
     const items = deployments.map(mapIoNetDeployment);
+    const total = keyword ? items.length : Number(raw.total || 0);
     return apiOk({
       page: q.page,
       page_size: q.page_size,
-      total: items.length,
+      total,
       items,
-      status_counts: computeStatusCounts(items.length, deployments),
     });
   });
   r.get("/api/deployments/hardware-types", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
     const fetched = await ionetRequest(key, "GET", "/hardware/max-gpus-per-container");
-    if (!fetched.ok) return apiFail(fetched.message);
-    const payload = (fetched.json || {}) as { hardware?: unknown[]; total?: number };
-    const hardware_types = payload.hardware || [];
-    return apiOk({
-      hardware_types,
-      total: hardware_types.length,
-      total_available: Number(payload.total || 0),
-    });
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to list hardware types", ionetWrapError("failed to get max GPUs per container", fetched.message)));
+    return apiOk(mapIoNetHardwareTypes((fetched.json || {}) as { hardware?: Record<string, unknown>[]; total?: number }));
   });
   r.get("/api/deployments/locations", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
     const fetched = await ionetRequest(key, "GET", "/locations", undefined, false);
-    if (!fetched.ok) return apiFail(fetched.message);
-    const payload = (fetched.json || {}) as { locations?: unknown[]; total?: number };
-    const locations = payload.locations || (Array.isArray(fetched.json) ? fetched.json : []);
-    return apiOk({ locations, total: Number(payload.total || (locations as unknown[]).length) });
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to list locations", fetched.message));
+    return apiOk(mapIoNetLocations((fetched.json || {}) as { locations?: Record<string, unknown>[]; total?: number }));
   });
   r.get("/api/deployments/available-replicas", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const hardwareId = c.url.searchParams.get("hardware_id") || "";
-    if (!hardwareId) return apiFail("hardware_id parameter is required");
-    const gpuCount = c.url.searchParams.get("gpu_count") || "1";
+    const hardwareIdStr = c.url.searchParams.get("hardware_id") || "";
+    if (!hardwareIdStr) return apiFail("hardware_id parameter is required");
+    const hardwareId = Number.parseInt(hardwareIdStr, 10);
+    if (!Number.isFinite(hardwareId) || hardwareId <= 0) return apiFail("invalid hardware_id parameter");
+    let gpuCount = 1;
+    const gpuCountStr = c.url.searchParams.get("gpu_count") || "";
+    if (gpuCountStr) {
+      const parsed = Number.parseInt(gpuCountStr, 10);
+      if (Number.isFinite(parsed) && parsed > 0) gpuCount = parsed;
+    }
     const fetched = await ionetRequest(key, "GET", `/available-replicas?hardware_id=${hardwareId}&hardware_qty=${gpuCount}`);
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(fetched.json);
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to get available replicas", fetched.message));
+    return apiOk(mapIoNetAvailableReplicas(fetched.json, hardwareId, gpuCount));
   });
   r.post("/api/deployments/price-estimation", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const body = await readJson(c.req);
-    const fetched = await ionetRequest(key, "POST", "/price-estimation", body);
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(fetched.json);
+    let body: Record<string, unknown>;
+    try {
+      body = (await readJson(c.req)) as Record<string, unknown>;
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+    const validated = validatePriceEstimationRequest(body);
+    if (!validated.ok) return apiFail(validated.message);
+    const fetched = await ionetRequest(key, "GET", `/price${validated.query}`);
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to get price estimation", fetched.message));
+    return apiOk(
+      mapIoNetPriceEstimation(
+        (fetched.json || {}) as Record<string, unknown>,
+        priceEstimationCurrency(body),
+        priceEstimationDurationHours(body),
+      ),
+    );
   });
   r.get("/api/deployments/check-name", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const name = c.url.searchParams.get("name") || "";
-    const fetched = await ionetRequest(key, "GET", `/deployments?page=1&page_size=100&sort_by=created_at&sort_order=desc`);
-    if (!fetched.ok) return apiFail(fetched.message);
-    const raw = (fetched.json || {}) as { deployments?: { name?: string }[] };
-    const items = raw.deployments || [];
-    return apiOk({ available: !items.some((d) => d.name === name) });
+    const clusterName = (c.url.searchParams.get("name") || "").trim();
+    if (!clusterName) return apiFail("name parameter is required");
+    const fetched = await ionetRequest(
+      key,
+      "GET",
+      `/clusters/check_cluster_name_availability?cluster_name=${encodeURIComponent(clusterName)}`,
+      undefined,
+      { unwrapData: false },
+    );
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to check cluster name availability", fetched.message));
+    return apiOk({ available: fetched.json === true, name: clusterName });
   });
   r.post("/api/deployments/", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const body = await readJson(c.req);
-    const fetched = await ionetRequest(key, "POST", "/deploy", body);
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(fetched.json, "Deployment created successfully");
+    let body: Record<string, unknown>;
+    try {
+      body = (await readJson(c.req)) as Record<string, unknown>;
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+    const invalid = validateDeployRequest(body);
+    if (invalid) return apiFail(ionetWrapError("failed to deploy container", invalid));
+    const fetched = await ionetRequest(key, "POST", "/deploy", body, { unwrapData: false });
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to deploy container", fetched.message));
+    const resp = (fetched.json || {}) as { deployment_id?: string; status?: string };
+    return apiOk({
+      deployment_id: String(resp.deployment_id || ""),
+      status: String(resp.status || ""),
+      message: "Deployment created successfully",
+    });
   });
   r.get("/api/deployments/:id", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const fetched = await ionetRequest(key, "GET", `/deployment/${encodeURIComponent(c.params.id)}`);
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(mapIoNetDeployment((fetched.json || {}) as Record<string, unknown>));
+    const deploymentId = c.params.id.trim();
+    if (!deploymentId) return apiFail("deployment ID is required");
+    const fetched = await ionetRequest(key, "GET", `/deployment/${encodeURIComponent(deploymentId)}`);
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to get deployment details", fetched.message));
+    return apiOk(mapIoNetDeploymentDetail((fetched.json || {}) as Record<string, unknown>));
   });
   r.get("/api/deployments/:id/logs", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const fetched = await ionetRequest(key, "GET", `/deployment/${encodeURIComponent(c.params.id)}/logs`);
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(fetched.json);
+    const deploymentId = c.params.id.trim();
+    if (!deploymentId) return apiFail("deployment ID is required");
+    const path = logsEndpoint(deploymentId, c.url);
+    if (!path.ok) return apiFail(path.message);
+    const fetched = await ionetRequest(key, "GET", path.path, undefined, { enterprise: false, unwrapData: false, rawText: true });
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to get container logs", fetched.message));
+    return apiOk(fetched.text);
   });
   r.get("/api/deployments/:id/containers", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const fetched = await ionetRequest(key, "GET", `/deployment/${encodeURIComponent(c.params.id)}/containers`);
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(fetched.json);
+    const deploymentId = c.params.id.trim();
+    if (!deploymentId) return apiFail("deployment ID is required");
+    const fetched = await ionetRequest(key, "GET", `/deployment/${encodeURIComponent(deploymentId)}/containers`);
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to list containers", fetched.message));
+    return apiOk(mapIoNetContainerList((fetched.json || {}) as Record<string, unknown>));
   });
   r.get("/api/deployments/:id/containers/:container_id", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
+    const deploymentId = c.params.id.trim();
+    const containerId = c.params.container_id.trim();
+    if (!deploymentId) return apiFail("deployment ID is required");
+    if (!containerId) return apiFail("container ID is required");
     const fetched = await ionetRequest(
       key,
       "GET",
-      `/deployment/${encodeURIComponent(c.params.id)}/containers/${encodeURIComponent(c.params.container_id)}`,
+      `/deployment/${encodeURIComponent(deploymentId)}/container/${encodeURIComponent(containerId)}`,
+      undefined,
+      { unwrapData: false },
     );
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(fetched.json);
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to get container details", fetched.message));
+    if (fetched.json == null || typeof fetched.json !== "object") return apiFail("container details not found");
+    return apiOk(mapIoNetContainerDetails(deploymentId, fetched.json as Record<string, unknown>));
   });
   r.put("/api/deployments/:id", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const fetched = await ionetRequest(key, "PUT", `/deployment/${encodeURIComponent(c.params.id)}`, await readJson(c.req));
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(fetched.json);
+    const deploymentId = c.params.id.trim();
+    if (!deploymentId) return apiFail("deployment ID is required");
+    let body: Record<string, unknown>;
+    try {
+      body = (await readJson(c.req)) as Record<string, unknown>;
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+    const fetched = await ionetRequest(key, "PATCH", `/deployment/${encodeURIComponent(deploymentId)}`, body, { unwrapData: false });
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to update deployment", fetched.message));
+    const resp = (fetched.json || {}) as { status?: string; deployment_id?: string };
+    return apiOk({ status: String(resp.status || ""), deployment_id: String(resp.deployment_id || "") });
   });
   r.put("/api/deployments/:id/name", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const body = (await readJson(c.req)) as { name?: string };
-    const fetched = await ionetRequest(key, "PUT", `/deployment/${encodeURIComponent(c.params.id)}`, { name: body.name || "" });
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(fetched.json);
+    const deploymentId = c.params.id.trim();
+    if (!deploymentId) return apiFail("deployment ID is required");
+    let body: { name?: string };
+    try {
+      body = (await readJson(c.req)) as { name?: string };
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+    const name = String(body.name ?? "").trim();
+    if (!Object.prototype.hasOwnProperty.call(body, "name") || body.name == null || String(body.name) === "") {
+      return apiFail("Key: 'Name' Error:Field validation for 'Name' failed on the 'required' tag");
+    }
+    if (!name) return apiFail("deployment name cannot be empty");
+    const available = await ionetRequest(
+      key,
+      "GET",
+      `/clusters/check_cluster_name_availability?cluster_name=${encodeURIComponent(name)}`,
+      undefined,
+      { unwrapData: false },
+    );
+    if (!available.ok) return apiFail(ionetWrapError("failed to check name availability", ionetWrapError("failed to check cluster name availability", available.message)));
+    if (available.json !== true) return apiFail("deployment name is not available, please choose a different name");
+    const fetched = await ionetRequest(
+      key,
+      "PUT",
+      `/clusters/${encodeURIComponent(deploymentId)}/update-name`,
+      { cluster_name: name },
+      { unwrapData: false },
+    );
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to update cluster name", fetched.message));
+    const resp = (fetched.json || {}) as { status?: string; message?: string };
+    return apiOk({
+      status: String(resp.status || ""),
+      message: String(resp.message || ""),
+      id: deploymentId,
+      name,
+    });
   });
   r.post("/api/deployments/:id/extend", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const fetched = await ionetRequest(key, "POST", `/deployment/${encodeURIComponent(c.params.id)}/extend`, await readJson(c.req));
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(fetched.json);
+    const deploymentId = c.params.id.trim();
+    if (!deploymentId) return apiFail("deployment ID is required");
+    let body: { duration_hours?: number };
+    try {
+      body = (await readJson(c.req)) as { duration_hours?: number };
+    } catch (err) {
+      return apiFail(err instanceof Error ? err.message : String(err));
+    }
+    if (Number(body.duration_hours || 0) < 1) return apiFail(ionetWrapError("failed to extend deployment", "duration_hours must be at least 1"));
+    const fetched = await ionetRequest(key, "POST", `/deployment/${encodeURIComponent(deploymentId)}/extend`, body);
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to extend deployment", fetched.message));
+    return apiOk(mapIoNetExtendedDeployment(deploymentId, (fetched.json || {}) as Record<string, unknown>));
   });
   r.delete("/api/deployments/:id", async (c) => {
     const key = await requireIoNetKey(c);
     if (key instanceof Response) return key;
-    const fetched = await ionetRequest(key, "DELETE", `/deployment/${encodeURIComponent(c.params.id)}`);
-    if (!fetched.ok) return apiFail(fetched.message);
-    return apiOk(fetched.json);
+    const deploymentId = c.params.id.trim();
+    if (!deploymentId) return apiFail("deployment ID is required");
+    const fetched = await ionetRequest(key, "DELETE", `/deployment/${encodeURIComponent(deploymentId)}`, undefined, { unwrapData: false });
+    if (!fetched.ok) return apiFail(ionetWrapError("failed to delete deployment", fetched.message));
+    const resp = (fetched.json || {}) as { status?: string; deployment_id?: string };
+    return apiOk({
+      status: String(resp.status || ""),
+      deployment_id: String(resp.deployment_id || ""),
+      message: "Deployment termination requested successfully",
+    });
   });
 
   r.get("/api/user/topup/info", async (c) => {
@@ -2127,14 +2262,20 @@ async function testIoNet(c: C): Promise<Response> {
   const s = store(c);
   const u = await requireAdmin(c, s);
   if (isResponse(u)) return u;
-  const body = (await readJson(c.req).catch(() => ({}))) as { api_key?: string };
-  const key = (body.api_key || (await s.option("model_deployment.ionet.api_key")) || (await s.option("IoNetApiKey"))).trim();
+  const raw = await c.req.text();
+  let body: { api_key?: string } = {};
+  if (raw.trim()) {
+    try {
+      body = JSON.parse(raw) as { api_key?: string };
+    } catch {
+      return apiFail("invalid request payload");
+    }
+  }
+  const key = String(body.api_key || (await s.option("model_deployment.ionet.api_key")) || (await s.option("IoNetApiKey"))).trim();
   if (!key) return apiFail("api_key is required");
   const fetched = await ionetRequest(key, "GET", "/hardware/max-gpus-per-container");
   if (!fetched.ok) return apiFail(fetched.message);
-  const payload = (fetched.json || {}) as { hardware?: unknown[]; total?: number };
-  const hardware = payload.hardware || [];
-  return apiOk({ hardware_count: hardware.length, total_available: Number(payload.total || 0) });
+  return apiOk(testIoNetTotals((fetched.json || {}) as { hardware?: { available?: number }[]; total?: number }));
 }
 
 async function resetPlanSubscriptions(
