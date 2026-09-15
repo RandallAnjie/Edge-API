@@ -132,7 +132,7 @@ test("original GetTokenUsage JSON uses GetModelLimitsMap including empty keys", 
   assert.equal(spacedLimits["gpt-4"], undefined);
 });
 
-test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
+test("original TokenAuthReadOnly then GetTokenUsage auth JSON", async () => {
   resetSchemaFlag();
   const e = env();
   const { auth } = await boot(e);
@@ -140,8 +140,20 @@ test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
   const none = await json(new Request("http://local/api/usage/token"), e);
   assert.equal(none.res.status, 401);
   assert.equal(none.body.success, false);
-  assert.equal(none.body.message, "No Authorization header");
+  assert.equal(none.body.message, "Token not provided");
   assert.equal(none.body.code, undefined);
+  assert.equal("error" in none.body, false);
+
+  const noneZh = await json(
+    new Request("http://local/api/usage/token", { headers: { "accept-language": "zh-CN" } }),
+    e,
+  );
+  assert.equal(noneZh.body.message, "未提供令牌");
+  const noneTw = await json(
+    new Request("http://local/api/usage/token", { headers: { "accept-language": "zh-TW" } }),
+    e,
+  );
+  assert.equal(noneTw.body.message, "未提供令牌");
 
   const badScheme = await json(
     new Request("http://local/api/usage/token", { headers: { authorization: "Token x" } }),
@@ -149,22 +161,22 @@ test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
   );
   assert.equal(badScheme.res.status, 401);
   assert.equal(badScheme.body.success, false);
-  assert.equal(badScheme.body.message, "Invalid Bearer token");
+  assert.equal(badScheme.body.message, "Invalid token");
 
   const extraParts = await json(
     new Request("http://local/api/usage/token", { headers: { authorization: "Bearer sk-foo extra" } }),
     e,
   );
   assert.equal(extraParts.res.status, 401);
-  assert.equal(extraParts.body.message, "Invalid Bearer token");
+  assert.equal(extraParts.body.message, "Invalid token");
 
   const missing = await json(
     new Request("http://local/api/usage/token", { headers: { authorization: "Bearer sk-missing-usage" } }),
     e,
   );
-  assert.equal(missing.res.status, 200);
+  assert.equal(missing.res.status, 401);
   assert.equal(missing.body.success, false);
-  assert.equal(missing.body.message, "Failed to get token info, please try again later");
+  assert.equal(missing.body.message, "Invalid token");
 
   const missingZh = await json(
     new Request("http://local/api/usage/token", {
@@ -172,7 +184,7 @@ test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
     }),
     e,
   );
-  assert.equal(missingZh.body.message, "获取令牌信息失败，请稍后重试");
+  assert.equal(missingZh.body.message, "无效的令牌");
 
   const missingTw = await json(
     new Request("http://local/api/usage/token", {
@@ -180,7 +192,7 @@ test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
     }),
     e,
   );
-  assert.equal(missingTw.body.message, "獲取令牌資訊失敗，請稍後重試");
+  assert.equal(missingTw.body.message, "無效的令牌");
 
   const created = await json(
     new Request("http://local/api/token/", {
@@ -192,6 +204,14 @@ test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
   );
   assert.equal(created.body.success, true, String(created.body.message));
   const createdData = created.body.data as { id: number; key: string };
+
+  const noBearer = await json(
+    new Request("http://local/api/usage/token", { headers: { authorization: createdData.key } }),
+    e,
+  );
+  assert.equal(noBearer.res.status, 401);
+  assert.equal(noBearer.body.message, "Invalid Bearer token");
+
   const disabled = await json(
     new Request("http://local/api/token/?status_only=true", {
       method: "PUT",
@@ -201,8 +221,45 @@ test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
     e,
   );
   assert.equal(disabled.body.success, true, String(disabled.body.message));
-  const usage = await json(
+  const usageDisabled = await json(
     new Request("http://local/api/usage/token", { headers: { authorization: "Bearer " + createdData.key } }),
+    e,
+  );
+  assert.equal(usageDisabled.res.status, 401, usageDisabled.text);
+  assert.equal(usageDisabled.body.success, false);
+  assert.equal(usageDisabled.body.message, "This token status is unavailable");
+  const usageDisabledZh = await json(
+    new Request("http://local/api/usage/token", {
+      headers: { authorization: "Bearer " + createdData.key, "accept-language": "zh-CN" },
+    }),
+    e,
+  );
+  assert.equal(usageDisabledZh.body.message, "该令牌状态不可用");
+  const usageDisabledTw = await json(
+    new Request("http://local/api/usage/token", {
+      headers: { authorization: "Bearer " + createdData.key, "accept-language": "zh-TW" },
+    }),
+    e,
+  );
+  assert.equal(usageDisabledTw.body.message, "該令牌狀態不可用");
+
+  const expiredTk = await json(
+    new Request("http://local/api/token/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        name: "expired-usage",
+        remain_quota: 0,
+        unlimited_quota: false,
+        expired_time: 1,
+      }),
+    }),
+    e,
+  );
+  assert.equal(expiredTk.body.success, true, String(expiredTk.body.message));
+  const expiredData = expiredTk.body.data as { key: string };
+  const usage = await json(
+    new Request("http://local/api/usage/token", { headers: { authorization: "Bearer " + expiredData.key } }),
     e,
   );
   assert.equal(usage.res.status, 200, usage.text);
@@ -211,12 +268,12 @@ test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
   assert.equal("success" in usage.body, false);
   const data = usage.body.data as Record<string, unknown>;
   assert.equal(data.object, "token_usage");
-  assert.equal(data.name, "disabled-usage");
-  assert.equal(data.total_granted, 10);
+  assert.equal(data.name, "expired-usage");
+  assert.equal(data.total_granted, 0);
   assert.equal(data.total_used, 0);
-  assert.equal(data.total_available, 10);
+  assert.equal(data.total_available, 0);
   assert.equal(data.unlimited_quota, false);
-  assert.equal(data.expires_at, 0);
+  assert.equal(data.expires_at, 1);
   assert.deepEqual(Object.keys(data).sort(), [
     "expires_at",
     "model_limits",
@@ -231,7 +288,7 @@ test("original GetTokenUsage auth and MsgTokenGetInfoFailed JSON", async () => {
   assert.deepEqual(Object.keys(usage.body).sort(), ["code", "data", "message"]);
 
   const slash = await json(
-    new Request("http://local/api/usage/token/", { headers: { authorization: "Bearer " + createdData.key } }),
+    new Request("http://local/api/usage/token/", { headers: { authorization: "Bearer " + expiredData.key } }),
     e,
   );
   assert.equal(slash.res.status, 200);

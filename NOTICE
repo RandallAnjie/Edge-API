@@ -93,6 +93,14 @@ Material changes from upstream:
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
   Without KV the gin in-memory path returns empty HTTP 429. Extra-OK: KV get/put is not
   Redis lua-atomic. Default `ModelRequestRateLimitSuccessCount` is original `1000`.
+  GET `/api/usage/token` runs original `middleware.TokenAuthReadOnly` then
+  `controller.GetTokenUsage`. Missing/invalid/disabled keys use gin JSON
+  (`success: false`) with original 3-way i18n (`Token not provided` /
+  `Invalid token` / `This token status is unavailable` /
+  `Database error, please contact the administrator`). GetTokenUsage
+  `{code:true,message:"ok",data:{object:"token_usage",...}}` has no `success`.
+  Extra-OK: TokenAuthReadOnly still looks up by hyphen-split key; GetTokenUsage
+  then re-reads the Bearer remainder without the channel-pin split.
   io.net model deployments use the original HTTP API (no
   vendor SDK). Original QuantumNous factory task plugins (`plugins/tasks/*/plugin.js`)
   are embedded and listed/routed with original JSON (`source: "factory"`).

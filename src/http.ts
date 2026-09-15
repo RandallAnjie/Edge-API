@@ -150,6 +150,30 @@ export function invalidChannelIdMessage(req: Request): string {
   }
 }
 
+/** Original `i18n.MsgTokenNotProvided`. */
+export function tokenNotProvidedMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "未提供令牌";
+    case "zh-CN":
+      return "未提供令牌";
+    default:
+      return "Token not provided";
+  }
+}
+
+/** Original `i18n.MsgTokenStatusUnavailable`. */
+export function tokenStatusUnavailableMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "該令牌狀態不可用";
+    case "zh-CN":
+      return "该令牌状态不可用";
+    default:
+      return "This token status is unavailable";
+  }
+}
+
 /** Original `i18n.MsgTokenInvalid`. */
 export function tokenInvalidMessage(req: Request): string {
   switch (i18nLang(req)) {

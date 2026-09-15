@@ -2063,9 +2063,11 @@ function tokenGetInfoFailedMessage(req: Request): string {
   }
 }
 
-/** Original `controller.GetTokenUsage`. */
+/** Original `controller.GetTokenUsage` after `middleware.TokenAuthReadOnly`. */
 async function tokenUsage(c: C): Promise<Response> {
   const s = store(c);
+  const auth = await authenticateTokenReadOnly(c, s);
+  if (auth instanceof Response) return auth;
   const authHeader = c.req.headers.get("authorization") || "";
   if (!authHeader) return json(401, { success: false, message: "No Authorization header" });
   const parts = authHeader.split(" ");

@@ -42,6 +42,8 @@ import {
   withSetCookies,
   invalidChannelIdMessage,
   tokenInvalidMessage,
+  tokenNotProvidedMessage,
+  tokenStatusUnavailableMessage,
   userBannedMessage,
   SPECIFIC_CHANNEL_VERSION,
 } from "./http.js";
@@ -521,12 +523,6 @@ export function isResponse(v: unknown): v is Response {
   return v instanceof Response;
 }
 
-function tokenAuthReadOnlyMessage(req: Request, zh: string, en: string): string {
-  const lang = (req.headers.get("accept-language") || "").toLowerCase();
-  if (lang.startsWith("zh")) return zh;
-  return en;
-}
-
 /** Original `middleware.TokenAuthReadOnly` — gin JSON, not OpenAI errors. */
 export async function authenticateTokenReadOnly(
   c: Context<Env>,
@@ -534,22 +530,22 @@ export async function authenticateTokenReadOnly(
 ): Promise<{ token: TokenRow; user: UserRow } | Response> {
   const header = c.req.headers.get("authorization") || "";
   if (!header) {
-    return json(401, { success: false, message: tokenAuthReadOnlyMessage(c.req, "未提供令牌", "Token not provided") });
+    return json(401, { success: false, message: tokenNotProvidedMessage(c.req) });
   }
   const key = parseApiKey(header);
   const token = await store.getTokenByKey(key);
   if (!token) {
-    return json(401, { success: false, message: tokenAuthReadOnlyMessage(c.req, "无效的令牌", "Invalid token") });
+    return json(401, { success: false, message: tokenInvalidMessage(c.req) });
   }
   if (token.status === TOKEN_DISABLED) {
-    return json(401, { success: false, message: tokenAuthReadOnlyMessage(c.req, "该令牌状态不可用", "This token status is unavailable") });
+    return json(401, { success: false, message: tokenStatusUnavailableMessage(c.req) });
   }
   const user = await store.getUserById(token.user_id);
   if (!user) {
-    return json(500, { success: false, message: tokenAuthReadOnlyMessage(c.req, "数据库错误", "Database error") });
+    return json(500, { success: false, message: databaseErrorMessage(c.req) });
   }
   if (user.status !== USER_ENABLED) {
-    return json(403, { success: false, message: tokenAuthReadOnlyMessage(c.req, "用户已被封禁", "User has been banned") });
+    return json(403, { success: false, message: userBannedMessage(c.req) });
   }
   return { token, user };
 }
