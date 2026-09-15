@@ -168,7 +168,7 @@ function stringSlice(raw: unknown, name: string): string[] {
   });
 }
 
-function normalizeMetaBaseURL(raw: string): string {
+export function normalizeMetaBaseURL(raw: string): string {
   for (const character of raw) {
     const code = character.charCodeAt(0);
     if (code <= 32 || code === 127) throw new Error("plugin meta baseUrl must not contain whitespace or control characters");

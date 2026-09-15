@@ -1,5 +1,6 @@
 import { parseJson } from "./constants.js";
 import { compilePlugin } from "./jsplugin.js";
+import { normalizeMetaBaseURL } from "./jsplugin-validate.js";
 import {
   extractPluginMeta,
   pluginModelNames,
@@ -279,29 +280,96 @@ export async function listRoutingPlugins(store: Store): Promise<RoutingPlugin[]>
   return out;
 }
 
-/** Original GetTaskPluginOptions JSON. */
+function localizedTextView(raw: unknown): Record<string, string> | null {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "string") return { en: raw };
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    const out: Record<string, string> = {};
+    for (const [locale, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof value === "string") out[locale] = value;
+    }
+    return Object.keys(out).length ? out : null;
+  }
+  return null;
+}
+
+/** Original `jsplugin.decodeUsageSchema` JSON as returned inside GetTaskPluginOptions. */
+function usageSchemaOptionView(raw: unknown): Record<string, Record<string, unknown>> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [name, field] of Object.entries(raw as Record<string, unknown>)) {
+    if (!field || typeof field !== "object" || Array.isArray(field)) continue;
+    const src = field as Record<string, unknown>;
+    const view: Record<string, unknown> = {};
+    if (src.type) view.type = src.type;
+    if (src.unit) view.unit = src.unit;
+    const unitLabel = localizedTextView(src.unitLabel);
+    if (unitLabel) view.unitLabel = unitLabel;
+    const description = localizedTextView(src.description);
+    if (description) view.description = description;
+    if (Array.isArray(src.enum)) view.enum = src.enum;
+    if (src.enumLabels && typeof src.enumLabels === "object" && !Array.isArray(src.enumLabels)) {
+      const labels: Record<string, Record<string, string>> = {};
+      for (const [value, label] of Object.entries(src.enumLabels as Record<string, unknown>)) {
+        const text = localizedTextView(label);
+        if (text) labels[value] = text;
+      }
+      if (Object.keys(labels).length) view.enumLabels = labels;
+    }
+    out[name] = view;
+  }
+  return out;
+}
+
+function optionBaseUrl(raw: unknown): string {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  try {
+    return normalizeMetaBaseURL(value);
+  } catch {
+    return value;
+  }
+}
+
+/** Original GetTaskPluginOptions gin.H JSON from DefaultRegistry Snapshot + Get. */
 export async function listTaskPluginOptions(store: Store): Promise<Record<string, unknown>[]> {
   if (!(await taskPluginMasterEnabled(store))) return [];
   const plugins = await listRoutingPlugins(store);
-  const options = plugins.map((plugin) => {
-    const meta = plugin.meta;
-    return {
+  const options: Record<string, unknown>[] = [];
+  for (const plugin of plugins) {
+    let meta = plugin.meta;
+    const factorySource = FACTORY_TASK_PLUGIN_SOURCES[plugin.key];
+    if (factorySource == null || plugin.source !== factorySource) {
+      try {
+        const loaded = compilePlugin(plugin.source, { key: plugin.key });
+        meta = taskPluginMetaView(loaded.meta, {
+          key: plugin.key,
+          version: String(loaded.meta.version || ""),
+          name: String(loaded.meta.name || plugin.key),
+        });
+      } catch {
+        continue;
+      }
+    }
+    options.push({
       key: String(meta.key || plugin.key),
       name: String(meta.name || plugin.key),
-      description: meta.description,
+      description: localizedTextView(meta.description),
       icon: meta.icon ? String(meta.icon) : "",
       hasIcon: plugin.hasIcon,
-      baseUrl: meta.baseUrl ? String(meta.baseUrl) : "",
+      baseUrl: optionBaseUrl(meta.baseUrl),
       sortPriority: Number(meta.sortPriority || 0) || 0,
       website: meta.website ? String(meta.website) : "",
       models: Array.isArray(meta.models) ? meta.models : [],
       channelTypes: Array.isArray(meta.channelTypes) ? meta.channelTypes : [],
-      usageSchema: meta.usageSchema,
+      usageSchema: usageSchemaOptionView(meta.usageSchema),
       usageProfiles: Array.isArray(meta.usageProfiles) ? meta.usageProfiles : [],
-    };
-  });
+    });
+  }
   options.sort((a, b) => {
-    if (a.sortPriority !== b.sortPriority) return b.sortPriority - a.sortPriority;
+    const left = Number(a.sortPriority || 0) || 0;
+    const right = Number(b.sortPriority || 0) || 0;
+    if (left !== right) return right - left;
     return String(a.key).localeCompare(String(b.key));
   });
   return options;

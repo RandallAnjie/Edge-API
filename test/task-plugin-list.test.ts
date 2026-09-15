@@ -278,3 +278,82 @@ test("original GetTaskPluginIcon DecodeIconDataURI 404 and override has_icon fro
   assert.equal((detail.body.data as { has_icon: boolean }).has_icon, true);
   assert.equal(String(JSON.stringify(detail.body.data)).includes("base64,"), false);
 });
+
+/** Original GetTaskPluginOptions gin.H keys. */
+const ORIGINAL_OPTION_FIELDS = [
+  "key",
+  "name",
+  "description",
+  "icon",
+  "hasIcon",
+  "baseUrl",
+  "sortPriority",
+  "website",
+  "models",
+  "channelTypes",
+  "usageSchema",
+  "usageProfiles",
+] as const;
+
+test("original GetTaskPluginOptions compiled Meta, LocalizedText, normalized baseUrl JSON", async () => {
+  const { e, auth, store } = await boot();
+  const source = `
+export const meta = {
+  apiVersion: 1, key: "usage-options-probe", name: "Usage Options", version: "1.0.0", author: {name: "Test"},
+  description: {en: "Video generation via the vendor API", zh: "通过厂商接口生成视频"},
+  icon: "text:UO", baseUrl: "http://localhost:9000/",
+  channelTypes: [1990, 1991],
+  models: ["usage-options-model"], fetchMode: "per_task",
+  usageSchema: {seconds: {type: "number", unit: "second", description: "Video generation unit price"}},
+  usageProfiles: [{models:["usage-options-model"],schema:{image_count:{type:"number",unit:"count"}}}]
+};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+`;
+  const uploaded = await json(
+    new Request("http://local/api/plugin/task", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ source }),
+    }),
+    e,
+  );
+  assert.equal(uploaded.body.success, true, String(uploaded.body.message));
+
+  const options = await json(new Request("http://local/api/task_plugin_options", { headers: auth }), e);
+  assert.equal(options.body.success, true, String(options.body.message));
+  const items = options.body.data as Record<string, unknown>[];
+  for (const item of items) {
+    for (const field of ORIGINAL_OPTION_FIELDS) assert.ok(field in item, "missing GetTaskPluginOptions " + field);
+  }
+  const probe = items.find((item) => item.key === "usage-options-probe");
+  assert.ok(probe);
+  assert.deepEqual(probe!.description, {
+    en: "Video generation via the vendor API",
+    zh: "通过厂商接口生成视频",
+  });
+  assert.equal((probe!.usageSchema as Record<string, { unit: string; description: { en: string } }>).seconds.unit, "second");
+  assert.equal(
+    (probe!.usageSchema as Record<string, { description: { en: string } }>).seconds.description.en,
+    "Video generation unit price",
+  );
+  const profiles = probe!.usageProfiles as { models: string[]; schema: Record<string, { unit: string }> }[];
+  assert.equal(profiles.length, 1);
+  assert.deepEqual(profiles[0].models, ["usage-options-model"]);
+  assert.equal(profiles[0].schema.image_count.unit, "count");
+  assert.equal(probe!.icon, "text:UO");
+  assert.deepEqual(probe!.channelTypes, [1990, 1991]);
+  assert.equal(probe!.baseUrl, "http://localhost:9000");
+  assert.equal(typeof probe!.hasIcon, "boolean");
+  assert.equal(typeof probe!.sortPriority, "number");
+
+  await store.setOption("TaskPluginEnabled", "false");
+  const empty = await json(new Request("http://local/api/task_plugin_options", { headers: auth }), e);
+  assert.equal(empty.body.success, true, String(empty.body.message));
+  assert.deepEqual(empty.body.data, []);
+  const listed = await json(new Request("http://local/api/plugin/task", { headers: auth }), e);
+  assert.equal(listed.body.success, true, String(listed.body.message));
+  assert.ok((listed.body.data as { meta: { key: string } }[]).some((item) => item.meta.key === "kling"));
+});
