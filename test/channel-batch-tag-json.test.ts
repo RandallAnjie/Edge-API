@@ -60,7 +60,7 @@ async function addChannel(e: Env, auth: Record<string, string>, name: string): P
 }
 
 async function channelTag(e: Env, auth: Record<string, string>, id: number): Promise<unknown> {
-  const ch = await getChannel(e, auth, id);
+  const ch = await json(new Request("http://local/api/channel/" + id, { headers: auth }), e);
   assert.equal(ch.body.success, true, String(ch.body.message));
   return (ch.body.data as { tag: unknown }).tag;
 }
