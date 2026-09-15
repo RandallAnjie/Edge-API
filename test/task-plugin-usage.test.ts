@@ -150,6 +150,7 @@ export const meta = {
     tokens: {type: "number", unit: "token"},
     mode: {enum: ["std", "pro"]},
   },
+  usageExamples: [{label: "std · 1s", facts: {duration: 1, count: 1, tokens: 1, mode: "std"}}],
 };
 export function buildSubmitRequest(ctx) { return {url: ctx.baseUrl + "/submit"}; }
 export function parseSubmitResponse() { return {taskId: "1"}; }
@@ -268,7 +269,7 @@ export function extractUsageOnComplete(ctx,result,body){return body.usage;}
 
 test("original fractional usage facts survive EstimateBillingValidated JSON", () => {
   const source = `
-export const meta = {apiVersion:1,key:"frac",name:"Frac",version:"1.0.0",author:{name:"Test"},models:["model"],fetchMode:"per_task",usageSchema:{units:{type:"number",unit:"token"}}};
+export const meta = {apiVersion:1,key:"frac",name:"Frac",version:"1.0.0",author:{name:"Test"},models:["model"],fetchMode:"per_task",usageSchema:{units:{type:"number",unit:"token"}},usageExamples:[{label:"sample",facts:{units:1}}]};
 export function buildSubmitRequest(ctx) { return {url: ctx.baseUrl + "/submit"}; }
 export function parseSubmitResponse() { return {taskId: "task"}; }
 export function buildQueryRequest() { return {url: "https://example.com"}; }
