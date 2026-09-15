@@ -226,7 +226,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     });
     if (selected.error) return openaiError(selected.error.status, selected.error.message, selected.error.code);
     if (!selected.channel) {
-      return openaiError(503, noAvailableChannelMessage(req, selected.usingGroup, model), "no_available_channel");
+      return openaiError(503, noAvailableChannelMessage(req, selected.usingGroup, model), "model_not_found");
     }
     if ((req.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
       return openaiError(426, "Realtime 需要 WebSocket Upgrade", "upgrade_required");

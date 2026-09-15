@@ -85,6 +85,9 @@ Material changes from upstream:
   then blocking handler. Stripe/Epay/Creem/Waffo checkout use HTTP APIs
   (no vendor SDK). GetTopUpInfo data keys match original `controller.GetTopUpInfo`
   gin.H (no extra `stripe`/`epay`/`creem`/`waffo`/`quota_per_unit`/`price` fields).
+  Distributor empty-channel OpenAI errors use original `ErrorCodeModelNotFound`
+  (`model_not_found`, HTTP 503, `type: new_api_error`). Extra-OK: task-plugin and
+  Midjourney fallbacks may still surface `no_available_channel`.
   io.net model deployments use the original HTTP API (no
   vendor SDK). Original QuantumNous factory task plugins (`plugins/tasks/*/plugin.js`)
   are embedded and listed/routed with original JSON (`source: "factory"`).

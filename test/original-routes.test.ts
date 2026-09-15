@@ -5162,6 +5162,8 @@ test("original auto-group selection, playground group, affinity TTL/usage cache,
       e,
     );
     assert.equal(missing.res.status, 503);
+    assert.equal((missing.body.error as { code: string }).code, "model_not_found");
+    assert.equal((missing.body.error as { type: string }).type, "new_api_error");
     assert.match(String((missing.body.error as { message: string }).message), /No available channel for model no-such-model-xyz under group/);
     assert.match(String((missing.body.error as { message: string }).message), /\(distributor\)/);
 

@@ -264,7 +264,7 @@ export async function selectDistributedChannel(opts: {
         error: {
           status: 503,
           message: getChannelFailedMessage(req, showGroup, model, selected.error),
-          code: "no_available_channel",
+          code: "model_not_found",
         },
       };
     }
@@ -278,7 +278,7 @@ export async function selectDistributedChannel(opts: {
       affinity,
       usingGroup,
       channel: null,
-      error: { status: 503, message: noAvailableChannelMessage(req, showGroup, model), code: "no_available_channel" },
+      error: { status: 503, message: noAvailableChannelMessage(req, showGroup, model), code: "model_not_found" },
     };
   }
   const selectedFilter = channelSatisfiesFilters(first, model, filters);

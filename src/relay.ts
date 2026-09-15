@@ -1468,7 +1468,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   const selectState = selected.selectState;
   if (!first) {
     const showGroup = auth.usingGroup === "auto" ? "auto" : auth.usingGroup;
-    return openaiError(503, noAvailableChannelMessage(opts.req, showGroup, model), "no_available_channel");
+    return openaiError(503, noAvailableChannelMessage(opts.req, showGroup, model), "model_not_found");
   }
 
   const autoDisable = await store.optionBool("AutomaticDisableChannelEnabled", false);

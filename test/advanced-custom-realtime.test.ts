@@ -325,7 +325,7 @@ test("original Advanced Custom realtime unmatched route is distributor no availa
     e,
   );
   assert.equal(missing.res.status, 503, missing.text);
-  assert.equal((missing.body.error as { code?: string }).code, "no_available_channel");
+  assert.equal((missing.body.error as { code?: string }).code, "model_not_found");
   assert.equal((missing.body.error as { type?: string }).type, "new_api_error");
   assert.equal((missing.body.error as { param?: string }).param, "");
   assert.match(
