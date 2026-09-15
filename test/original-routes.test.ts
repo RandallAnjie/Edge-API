@@ -4945,9 +4945,9 @@ test("original auto-group selection, playground group, affinity TTL/usage cache,
   assert.equal(sess.login_method, "password");
   const setCookie = login.res.headers.getSetCookie?.() || [];
   const cookieJoined = setCookie.length ? setCookie.join("\n") : login.res.headers.get("set-cookie") || "";
-  assert.match(cookieJoined, /session=/);
   assert.match(cookieJoined, /new_api_refresh=/);
   assert.match(cookieJoined, /new_api_has_session=/);
+  assert.equal(/session=/.test(cookieJoined.replaceAll("new_api_has_session=", "")), false);
 
   const status = await json(new Request("http://local/api/status"), e);
   const st = status.body.data as Record<string, unknown>;

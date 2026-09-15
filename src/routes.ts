@@ -52,13 +52,15 @@ import {
   verifyPassword,
   decryptPassword,
 } from "./crypto.js";
-import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, clearAuthCookies, isSecureRequest, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
+import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
+  authLogout,
   issueSessionSafe,
   isResponse,
+  maybeClearRefreshCookie,
   readSession,
   refreshLoginSession,
   requireAdmin,
@@ -331,23 +333,14 @@ export function adminRouter(): Router<Env> {
   });
 
   r.post("/api/user/auth/logout", async (c) => {
-    const s = store(c);
-    const { authSessionMismatch, currentSid } = await import("./auth.js");
-    const expected = (c.req.headers.get("X-Auth-Session") || "").trim();
-    const sid = await currentSid(c, s);
-    if (expected && sid && expected !== sid) return authSessionMismatch();
-    if (sid) await s.revokeSession(sid);
-    const res = apiOk({ revoked_sid: sid || "", cookie_cleared: true });
-    const headers = new Headers(res.headers);
-    for (const cookie of clearAuthCookies(isSecureRequest(c.req))) headers.append("set-cookie", cookie);
-    return new Response(res.body, { status: 200, headers });
+    return authLogout(store(c), c.env, c.req);
   });
 
   r.post("/api/user/auth/refresh", async (c) => {
     const s = store(c);
     const expected = (c.req.headers.get("X-Auth-Session") || "").trim();
     const result = await refreshLoginSession(s, c.env, c.req, expected);
-    if (!result.ok) return result.response;
+    if (!result.ok) return maybeClearRefreshCookie(c.req, result.response);
     return sessionResponse(result.issued);
   });
 

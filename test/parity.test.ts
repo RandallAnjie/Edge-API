@@ -154,11 +154,11 @@ test("login AuthBundle has original session + cookies", async () => {
   assert.match(data.session.sid, /^[0-9a-f-]{36}$/i);
   const setCookie = login.res.headers.getSetCookie?.() || [];
   const joined = setCookie.length ? setCookie.join("\n") : String(login.res.headers.get("set-cookie") || "");
-  assert.match(joined, /session=/);
   assert.match(joined, /new-api_refresh|new_api_refresh/);
   assert.match(joined, /new_api_has_session/);
   assert.match(joined, /Path=\/api\/user\/auth/);
   assert.match(joined, /SameSite=Strict/);
+  assert.equal(/session=/.test(joined.replaceAll("new_api_has_session=", "")), false);
   const refresh = cookieVal(login.res, "new_api_refresh");
   assert.equal(refresh.startsWith(data.session.sid + "."), true);
   assert.notEqual(refresh, data.access_token);

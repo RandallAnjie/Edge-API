@@ -30,14 +30,15 @@ import {
   apiFail,
   apiFailCode,
   apiOk,
+  clearAuthCookies,
   clientIp,
   cookieGet,
   isSecureRequest,
   json,
   readJson,
   refreshCookie,
-  sessionCookie,
   sessionHintCookie,
+  withSetCookies,
   openaiError,
   invalidChannelIdMessage,
   SPECIFIC_CHANNEL_VERSION,
@@ -118,9 +119,9 @@ async function bundleFor(
   );
   const secure = isSecureRequest(req);
   const maxAge = Math.max(Number(sess.expires_at) - now, 1);
-  const cookie = sessionCookie(token, ACCESS_TOKEN_TTL_SEC, secure);
-  const cookies = [cookie, sessionHintCookie(maxAge, secure)];
-  if (refreshRaw) cookies.splice(1, 0, refreshCookie(refreshRaw, maxAge, secure));
+  const cookies: string[] = [];
+  if (refreshRaw) cookies.push(refreshCookie(refreshRaw, maxAge, secure));
+  cookies.push(sessionHintCookie(maxAge, secure));
   const data = {
     access_token: token,
     token_type: "Bearer",
@@ -128,7 +129,7 @@ async function bundleFor(
     session: sessionView(sess, true),
     user: await publicSelf(store, user),
   };
-  return { token, cookie, cookies, data, sid: sess.sid };
+  return { token, cookie: cookies[0] || "", cookies, data, sid: sess.sid };
 }
 
 export async function issueSession(
@@ -209,11 +210,72 @@ export function authSessionIssuanceLimit(): Response {
   return json(429, { success: false, code: "AUTH_SESSION_ISSUANCE_LIMIT", message: "Too Many Requests", data: null });
 }
 
+/** Original `controller.dashboardBearer`. */
+function dashboardBearer(req: Request): string {
+  const parts = (req.headers.get("authorization") || "").trim().split(/\s+/);
+  if (parts.length !== 2 || parts[0].toLowerCase() !== "bearer" || !parts[1]) return "";
+  return parts[1];
+}
+
+/** Original `controller.AuthLogout` JSON + ClearRefreshCookie. */
+export async function authLogout(store: Store, env: Env, req: Request): Promise<Response> {
+  const expectedSID = (req.headers.get("X-Auth-Session") || "").trim();
+  const rawRefresh = cookieGet(req, "new_api_refresh") || "";
+  const parsed = splitRefreshToken(rawRefresh);
+  const cookieSID = parsed?.sid || "";
+  const hasCookieSID = Boolean(cookieSID);
+  const secure = isSecureRequest(req);
+  const cleared = clearAuthCookies(secure);
+
+  if (expectedSID && rawRefresh && hasCookieSID && cookieSID !== expectedSID) {
+    return authSessionMismatch();
+  }
+
+  const bearer = dashboardBearer(req);
+  if (bearer) {
+    const jwt = await verifyAccessJwt(bearer, await sessionSecret(env, store));
+    if (jwt) {
+      const sessionId = jwt.sid;
+      const userId = Number(jwt.sub);
+      if (expectedSID && expectedSID !== sessionId) return authSessionMismatch();
+      await store.revokeSession(sessionId, userId);
+      let cookieCleared = false;
+      let cookies: string[] = [];
+      if (rawRefresh && hasCookieSID && cookieSID === sessionId) {
+        await store.revokeSession(cookieSID, userId);
+        cookieCleared = true;
+        cookies = cleared;
+      }
+      return withSetCookies(
+        json(200, {
+          success: true,
+          message: "",
+          data: { revoked_sid: sessionId, cookie_cleared: cookieCleared },
+        }),
+        cookies,
+      );
+    }
+  }
+
+  if (!rawRefresh) {
+    return withSetCookies(json(200, { success: true, message: "" }), cleared);
+  }
+  if (expectedSID && expectedSID !== cookieSID) return authSessionMismatch();
+  if (parsed) await store.revokeSession(parsed.sid);
+  return withSetCookies(json(200, { success: true, message: "" }), cleared);
+}
+
+export function refreshAuthUnauthorized(req: Request): Response {
+  return withSetCookies(authUnauthorized(), clearAuthCookies(isSecureRequest(req)));
+}
+
+export function maybeClearRefreshCookie(req: Request, res: Response): Response {
+  if (res.status !== 401) return res;
+  return withSetCookies(res, clearAuthCookies(isSecureRequest(req)));
+}
+
 export function sessionResponse(issued: { data: Record<string, unknown>; cookies: string[] }, status = 200, message = ""): Response {
-  const res = apiOk(issued.data, message);
-  const headers = new Headers(res.headers);
-  for (const c of issued.cookies) headers.append("set-cookie", c);
-  return new Response(res.body, { status, headers });
+  return withSetCookies(apiOk(issued.data, message), issued.cookies);
 }
 
 export async function refreshLoginSession(

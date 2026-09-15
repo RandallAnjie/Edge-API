@@ -524,13 +524,18 @@ export function clearSessionCookie(secure: boolean): string {
   return sessionCookie("", 0, secure);
 }
 
+/** Original `service.ClearRefreshCookie`: refresh + session-hint only. */
 export function clearAuthCookies(secure: boolean): string[] {
   return [
-    sessionCookie("", 0, secure, "session", "/"),
     sessionCookie("", 0, secure, "new_api_refresh", "/api/user/auth"),
-    sessionCookie("", 0, secure, "new_api_refresh", "/"),
-    "new_api_has_session=; Path=/; Max-Age=0; SameSite=Strict",
+    "new_api_has_session=; Path=/; Max-Age=0; SameSite=Strict" + (secure ? "; Secure" : ""),
   ];
+}
+
+export function withSetCookies(res: Response, cookies: string[]): Response {
+  const headers = new Headers(res.headers);
+  for (const cookie of cookies) headers.append("set-cookie", cookie);
+  return new Response(res.body, { status: res.status, headers });
 }
 
 export function isSecureRequest(req: Request): boolean {
