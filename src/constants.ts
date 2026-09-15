@@ -366,6 +366,12 @@ export function nowSec(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+/** Original `service.systemTaskLockTTL`. */
+export const SYSTEM_TASK_LOCK_TTL_SEC = 60;
+
+/** Original `model.ErrSystemTaskLockLost`. */
+export const ERR_SYSTEM_TASK_LOCK_LOST = "system task lock lost";
+
 /** Original Midjourney `time.Now().UnixNano() / int64(time.Millisecond)`. */
 export function nowMs(): number {
   return Date.now();

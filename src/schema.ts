@@ -529,6 +529,17 @@ CREATE TABLE IF NOT EXISTS system_tasks (
   updated_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_system_tasks_active_key ON system_tasks(active_key) WHERE active_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS system_task_locks (
+  type TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL DEFAULT '',
+  locked_by TEXT NOT NULL DEFAULT '',
+  locked_until INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_system_task_locks_task_id ON system_task_locks(task_id);
+CREATE INDEX IF NOT EXISTS idx_system_task_locks_locked_by ON system_task_locks(locked_by);
+CREATE INDEX IF NOT EXISTS idx_system_task_locks_locked_until ON system_task_locks(locked_until);
+CREATE INDEX IF NOT EXISTS idx_system_task_locks_updated_at ON system_task_locks(updated_at);
 CREATE TABLE IF NOT EXISTS deployments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL DEFAULT '',

@@ -708,6 +708,7 @@ export default {
         await env.DB.prepare("DELETE FROM audit_logs WHERE created_at < ?").bind(cutoff).run();
         const store = new Store(env.DB);
         await store.cleanupExpired(nowSec());
+        await store.expireStaleSystemTaskLocks(nowSec());
         try {
           await reportCurrentSystemInstance(store, env);
         } catch {

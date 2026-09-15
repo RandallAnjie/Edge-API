@@ -3,6 +3,7 @@ import {
   CHANNEL_ENABLED,
   DEFAULT_GROUP_RATIO,
   DEFAULT_OPTIONS,
+  ERR_SYSTEM_TASK_LOCK_LOST,
   LOG_CONSUME,
   LOG_TOPUP,
   MAX_WALLET_QUOTA,
@@ -13,6 +14,7 @@ import {
   ROLE_ADMIN,
   ROLE_ROOT,
   ROLE_USER,
+  SYSTEM_TASK_LOCK_TTL_SEC,
   TOKEN_ENABLED,
   USER_ENABLED,
   VERSION,
@@ -84,6 +86,14 @@ function marshalSystemTaskJSON(v: unknown): string {
   if (v == null) return "";
   if (typeof v === "string") return v;
   return JSON.stringify(v);
+}
+
+/** Original `model.ErrSystemTaskLockLost`. */
+export class SystemTaskLockLostError extends Error {
+  constructor() {
+    super(ERR_SYSTEM_TASK_LOCK_LOST);
+    this.name = "SystemTaskLockLostError";
+  }
 }
 
 /** Original `model.searchHardLimit` in `SearchUserTokens`. */
@@ -4555,14 +4565,198 @@ export class Store {
       .first<Record<string, unknown>>();
   }
 
-  /** Original `model.ClaimSystemTask` pending → running + `locked_by`. */
-  async claimSystemTask(taskId: string, runnerId: string): Promise<Record<string, unknown> | null> {
-    const r = await this.db
-      .prepare("UPDATE system_tasks SET status = 'running', locked_by = ?, updated_at = ? WHERE id = ? AND status = 'pending'")
-      .bind(runnerId, nowSec(), taskId)
+  /**
+   * Original `model.acquireSystemTaskLock`. One row per task type (type PK).
+   * Returns the previous lock's task_id when an expired lease is stolen.
+   */
+  async acquireSystemTaskLock(
+    taskType: string,
+    taskId: string,
+    lockedBy: string,
+    now: number,
+    lockUntil: number,
+  ): Promise<{ acquired: boolean; expiredTaskId: string }> {
+    try {
+      const inserted = await this.db
+        .prepare(
+          "INSERT INTO system_task_locks (type, task_id, locked_by, locked_until, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(taskType, taskId, lockedBy, lockUntil, now)
+        .run();
+      if (Number(inserted.meta.changes || 0) > 0) return { acquired: true, expiredTaskId: "" };
+    } catch {
+      /* original GORM Create unique on type — steal if expired */
+    }
+    const existing = await this.db
+      .prepare("SELECT * FROM system_task_locks WHERE type = ?")
+      .bind(taskType)
+      .first<{ task_id: string; locked_until: number }>();
+    if (!existing) return { acquired: false, expiredTaskId: "" };
+    if (Number(existing.locked_until) >= now) return { acquired: false, expiredTaskId: "" };
+    const stolen = await this.db
+      .prepare(
+        "UPDATE system_task_locks SET task_id = ?, locked_by = ?, locked_until = ?, updated_at = ? WHERE type = ? AND locked_until < ?",
+      )
+      .bind(taskId, lockedBy, lockUntil, now, taskType, now)
       .run();
-    if (!Number(r.meta.changes || 0)) return null;
-    return this.getSystemTask(taskId);
+    if (!Number(stolen.meta.changes || 0)) return { acquired: false, expiredTaskId: "" };
+    return { acquired: true, expiredTaskId: String(existing.task_id || "") };
+  }
+
+  /** Original `model.ReleaseSystemTaskLock`. */
+  async releaseSystemTaskLock(taskId: string, lockedBy: string): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM system_task_locks WHERE task_id = ? AND locked_by = ?")
+      .bind(taskId, lockedBy)
+      .run();
+  }
+
+  /** Original `model.MarkSystemTaskLeaseExpired`. */
+  async markSystemTaskLeaseExpired(taskId: string): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE system_tasks SET status = 'failed', active_key = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+      )
+      .bind("task lease expired", nowSec(), taskId)
+      .run();
+  }
+
+  /** Original `model.ExpireStaleSystemTaskLocks`. */
+  async expireStaleSystemTaskLocks(now = nowSec()): Promise<void> {
+    const { results } = await this.db
+      .prepare("SELECT type, task_id, locked_by, locked_until FROM system_task_locks WHERE locked_until < ?")
+      .bind(now)
+      .all<{ type: string; task_id: string; locked_by: string; locked_until: number }>();
+    for (const lock of results || []) {
+      await this.markSystemTaskLeaseExpired(String(lock.task_id));
+      await this.db
+        .prepare(
+          "DELETE FROM system_task_locks WHERE type = ? AND task_id = ? AND locked_by = ? AND locked_until < ?",
+        )
+        .bind(lock.type, lock.task_id, lock.locked_by, now)
+        .run();
+    }
+  }
+
+  /** Original `model.RenewSystemTaskLock`. */
+  async renewSystemTaskLock(taskId: string, lockedBy: string, lockUntil: number): Promise<void> {
+    const now = nowSec();
+    const r = await this.db
+      .prepare(
+        "UPDATE system_task_locks SET locked_until = ?, updated_at = ? WHERE task_id = ? AND locked_by = ? AND locked_until >= ?",
+      )
+      .bind(lockUntil, now, taskId, lockedBy, now)
+      .run();
+    if (!Number(r.meta.changes || 0)) throw new SystemTaskLockLostError();
+  }
+
+  /**
+   * Original `model.ClaimSystemTask`: pending → running + `locked_by` after
+   * acquiring the per-type lock. Expired locks fail the previous running task
+   * with `task lease expired`.
+   */
+  async claimSystemTask(
+    taskId: string,
+    runnerId: string,
+    taskType?: string,
+    lockUntil?: number,
+  ): Promise<Record<string, unknown> | null> {
+    const now = nowSec();
+    const until = lockUntil ?? now + SYSTEM_TASK_LOCK_TTL_SEC;
+    const pending = taskType
+      ? await this.db
+          .prepare("SELECT rowid, * FROM system_tasks WHERE id = ? AND type = ? AND status = 'pending'")
+          .bind(taskId, taskType)
+          .first<Record<string, unknown>>()
+      : await this.db
+          .prepare("SELECT rowid, * FROM system_tasks WHERE id = ? AND status = 'pending'")
+          .bind(taskId)
+          .first<Record<string, unknown>>();
+    if (!pending) return null;
+    const type = String(pending.type || taskType || "");
+    const id = String(pending.id || taskId);
+    const lock = await this.acquireSystemTaskLock(type, id, runnerId, now, until);
+    if (!lock.acquired) return null;
+    if (lock.expiredTaskId && lock.expiredTaskId !== id) {
+      try {
+        await this.markSystemTaskLeaseExpired(lock.expiredTaskId);
+      } catch (err) {
+        await this.releaseSystemTaskLock(id, runnerId);
+        throw err;
+      }
+    }
+    const r = await this.db
+      .prepare(
+        "UPDATE system_tasks SET status = 'running', locked_by = ?, updated_at = ? WHERE id = ? AND type = ? AND status = 'pending'",
+      )
+      .bind(runnerId, now, id, type)
+      .run();
+    if (!Number(r.meta.changes || 0)) {
+      await this.releaseSystemTaskLock(id, runnerId);
+      return null;
+    }
+    return this.getSystemTask(id);
+  }
+
+  /** Original `model.UpdateSystemTaskState` (requires held per-type lock). */
+  async updateSystemTaskState(taskId: string, lockedBy: string, state: unknown): Promise<void> {
+    const stateText = marshalSystemTaskJSON(state);
+    const now = nowSec();
+    const r = await this.db
+      .prepare(
+        `UPDATE system_tasks SET state = ?, updated_at = ?
+         WHERE id = ? AND status = 'running' AND locked_by = ?
+         AND EXISTS (
+           SELECT 1 FROM system_task_locks
+           WHERE system_task_locks.task_id = system_tasks.id
+             AND system_task_locks.locked_by = ?
+             AND system_task_locks.locked_until >= ?
+         )`,
+      )
+      .bind(stateText, now, taskId, lockedBy, lockedBy, now)
+      .run();
+    if (Number(r.meta.changes || 0) > 0) return;
+    const held = await this.db
+      .prepare(
+        `SELECT COUNT(*) as c FROM system_tasks
+         WHERE id = ? AND status = 'running' AND locked_by = ?
+         AND EXISTS (
+           SELECT 1 FROM system_task_locks
+           WHERE system_task_locks.task_id = system_tasks.id
+             AND system_task_locks.locked_by = ?
+             AND system_task_locks.locked_until >= ?
+         )`,
+      )
+      .bind(taskId, lockedBy, lockedBy, now)
+      .first<{ c: number }>();
+    if (!Number(held?.c || 0)) throw new SystemTaskLockLostError();
+  }
+
+  /** Original `model.FinishSystemTask` (requires held lock; then releases it). */
+  async finishSystemTask(
+    taskId: string,
+    lockedBy: string,
+    status: string,
+    resultPayload: unknown = null,
+    errorMessage = "",
+  ): Promise<void> {
+    const resultText = marshalSystemTaskJSON(resultPayload);
+    const now = nowSec();
+    const r = await this.db
+      .prepare(
+        `UPDATE system_tasks SET status = ?, active_key = NULL, result = ?, error = ?, updated_at = ?
+         WHERE id = ? AND status = 'running' AND locked_by = ?
+         AND EXISTS (
+           SELECT 1 FROM system_task_locks
+           WHERE system_task_locks.task_id = system_tasks.id
+             AND system_task_locks.locked_by = ?
+             AND system_task_locks.locked_until >= ?
+         )`,
+      )
+      .bind(status, resultText, errorMessage, now, taskId, lockedBy, lockedBy, now)
+      .run();
+    if (!Number(r.meta.changes || 0)) throw new SystemTaskLockLostError();
+    await this.releaseSystemTaskLock(taskId, lockedBy);
   }
 
   /** Original `model.CountOldLog`. */

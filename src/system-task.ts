@@ -1,13 +1,15 @@
 /**
  * Original `service.StartLogCleanupTask` / `runLogCleanupTask` on workerd.
  */
-import { parseJson } from "./constants.js";
+import { ERR_SYSTEM_TASK_LOCK_LOST, SYSTEM_TASK_LOCK_TTL_SEC, nowSec, parseJson } from "./constants.js";
 import { getRandomString } from "./crypto.js";
-import type { Store } from "./store.js";
+import { SystemTaskLockLostError, type Store } from "./store.js";
 
 export const SYSTEM_TASK_TYPE_LOG_CLEANUP = "log_cleanup";
 /** Original `service.logCleanupBatchSize`. */
 export const LOG_CLEANUP_BATCH_SIZE = 100;
+/** Original `service.systemTaskLockTTL`. */
+export const SYSTEM_TASK_LOCK_TTL = SYSTEM_TASK_LOCK_TTL_SEC;
 
 export type LogCleanupPayload = {
   target_timestamp: number;
@@ -55,6 +57,15 @@ function taskIdOf(row: Record<string, unknown>): string {
   return String(row.id || row.task_id || "");
 }
 
+function isSystemTaskLockLost(err: unknown): boolean {
+  return err instanceof SystemTaskLockLostError || (err instanceof Error && err.message === ERR_SYSTEM_TASK_LOCK_LOST);
+}
+
+/** Original `service.systemTaskLockUntil`. */
+export function systemTaskLockUntil(now = nowSec()): number {
+  return now + SYSTEM_TASK_LOCK_TTL_SEC;
+}
+
 /** Starts only when awaited / then'd so test no-op `waitUntil` does not run the runner. */
 export function lazySystemTaskRun(work: () => Promise<unknown>): Promise<unknown> {
   return {
@@ -66,11 +77,30 @@ export function lazySystemTaskRun(work: () => Promise<unknown>): Promise<unknown
   } as Promise<unknown>;
 }
 
-async function failLogCleanup(store: Store, task: Record<string, unknown>, err: unknown): Promise<void> {
-  await store.updateSystemTask(taskIdOf(task), {
-    status: "failed",
-    error: err instanceof Error ? err.message : String(err),
-  });
+async function persistLogCleanupState(store: Store, taskId: string, runnerId: string, state: LogCleanupState): Promise<boolean> {
+  try {
+    await store.updateSystemTaskState(taskId, runnerId, state);
+    await store.renewSystemTaskLock(taskId, runnerId, systemTaskLockUntil());
+    return true;
+  } catch (err) {
+    if (isSystemTaskLockLost(err)) return false;
+    throw err;
+  }
+}
+
+async function failLogCleanup(store: Store, task: Record<string, unknown>, runnerId: string, err: unknown): Promise<void> {
+  try {
+    await store.finishSystemTask(
+      taskIdOf(task),
+      runnerId,
+      "failed",
+      null,
+      err instanceof Error ? err.message : String(err),
+    );
+  } catch (finishErr) {
+    if (isSystemTaskLockLost(finishErr)) return;
+    throw finishErr;
+  }
 }
 
 /** Original `service.StartLogCleanupTask`. */
@@ -87,7 +117,7 @@ export async function startLogCleanupTask(store: Store, targetTimestamp: number)
 }
 
 /** Original `service.runLogCleanupTask`. */
-export async function runLogCleanupTask(store: Store, task: Record<string, unknown>): Promise<void> {
+export async function runLogCleanupTask(store: Store, task: Record<string, unknown>, runnerId: string): Promise<void> {
   const id = taskIdOf(task);
   const payloadRaw = decodeSystemTaskJSON(task.payload) as LogCleanupPayload | null;
   const payload: LogCleanupPayload = {
@@ -95,7 +125,7 @@ export async function runLogCleanupTask(store: Store, task: Record<string, unkno
     batch_size: Number(payloadRaw?.batch_size || 0),
   };
   if (payload.target_timestamp <= 0) {
-    await failLogCleanup(store, task, new Error("target timestamp is required"));
+    await failLogCleanup(store, task, runnerId, new Error("target timestamp is required"));
     return;
   }
   if (payload.batch_size <= 0) payload.batch_size = LOG_CLEANUP_BATCH_SIZE;
@@ -111,7 +141,7 @@ export async function runLogCleanupTask(store: Store, task: Record<string, unkno
   for (;;) {
     const remaining = await store.countOldLogs(payload.target_timestamp);
     syncLogCleanupStateFromRemaining(state, remaining);
-    await store.updateSystemTask(id, { state: JSON.stringify(state) });
+    if (!(await persistLogCleanupState(store, id, runnerId, state))) return;
     if (state.remaining === 0) break;
 
     let progressed = false;
@@ -124,11 +154,11 @@ export async function runLogCleanupTask(store: Store, task: Record<string, unkno
       if (state.remaining > rowsAffected) state.remaining -= rowsAffected;
       else state.remaining = 0;
       state.progress = logCleanupProgress(state.processed, state.total);
-      await store.updateSystemTask(id, { state: JSON.stringify(state) });
+      if (!(await persistLogCleanupState(store, id, runnerId, state))) return;
     }
 
     if (!progressed) {
-      await failLogCleanup(store, task, new Error("no log rows were deleted"));
+      await failLogCleanup(store, task, runnerId, new Error("no log rows were deleted"));
       return;
     }
   }
@@ -136,21 +166,28 @@ export async function runLogCleanupTask(store: Store, task: Record<string, unkno
   state.remaining = 0;
   state.progress = 100;
   if (state.total < state.processed) state.total = state.processed;
-  await store.updateSystemTask(id, { state: JSON.stringify(state) });
+  if (!(await persistLogCleanupState(store, id, runnerId, state))) return;
   const result: LogCleanupResult = { deleted_count: state.processed };
-  await store.updateSystemTask(id, {
-    status: "succeeded",
-    result: JSON.stringify(result),
-    error: "",
-  });
+  try {
+    await store.finishSystemTask(id, runnerId, "succeeded", result, "");
+  } catch (err) {
+    if (isSystemTaskLockLost(err)) return;
+    throw err;
+  }
 }
 
 /** Original runner claim pass for `log_cleanup`. */
 export async function runPendingLogCleanupSystemTask(store: Store): Promise<void> {
+  await store.expireStaleSystemTaskLocks(nowSec());
   const pending = await store.findPendingSystemTask(SYSTEM_TASK_TYPE_LOG_CLEANUP);
   if (!pending) return;
   const runnerId = `workerd-${getRandomString(8)}`;
-  const claimed = await store.claimSystemTask(taskIdOf(pending), runnerId);
+  const claimed = await store.claimSystemTask(
+    taskIdOf(pending),
+    runnerId,
+    SYSTEM_TASK_TYPE_LOG_CLEANUP,
+    systemTaskLockUntil(),
+  );
   if (!claimed) return;
-  await runLogCleanupTask(store, claimed);
+  await runLogCleanupTask(store, claimed, runnerId);
 }

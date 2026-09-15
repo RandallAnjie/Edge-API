@@ -4,9 +4,15 @@ import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import worker from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
-import { Store } from "../src/store.js";
+import { nowSec } from "../src/constants.js";
 import { TOKEN_KEY_CHARS, generateSystemTaskId } from "../src/crypto.js";
-import { LOG_CLEANUP_BATCH_SIZE, runPendingLogCleanupSystemTask } from "../src/system-task.js";
+import { Store, SystemTaskLockLostError } from "../src/store.js";
+import {
+  LOG_CLEANUP_BATCH_SIZE,
+  SYSTEM_TASK_TYPE_LOG_CLEANUP,
+  runPendingLogCleanupSystemTask,
+  systemTaskLockUntil,
+} from "../src/system-task.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 void worker;
@@ -155,6 +161,9 @@ test("original StartLogCleanupTask SystemTaskResponse JSON is pending with activ
   assert.equal(afterCurrent.body.success, true);
   assert.equal(afterCurrent.body.data, null);
 
+  const leftoverLock = await e.DB.prepare("SELECT * FROM system_task_locks WHERE type = ?").bind("log_cleanup").first();
+  assert.equal(leftoverLock, null);
+
   assert.equal(await store.countOldLogs(10), 0);
   const kept = await e.DB.prepare("SELECT COUNT(*) as c FROM request_logs WHERE created_at >= 10").first<{ c: number }>();
   assert.equal(Number(kept?.c || 0), 1);
@@ -243,4 +252,155 @@ test("workerd waitUntil observation runs pending log_cleanup after StartLogClean
   const finished = await json(new Request("http://local/api/system-task/" + body.data.task_id, { headers: auth }), e);
   assert.equal((finished.body.data as { status: string }).status, "succeeded");
   assert.equal("active_key" in (finished.body.data as object), false);
+});
+
+test("original SystemTask lock prevents concurrent claim of the same type", async () => {
+  const { e, auth, store } = await boot();
+  const created = await json(
+    new Request("http://local/api/system-task/log-cleanup?target_timestamp=10", { method: "POST", headers: auth }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const firstId = String((created.body.data as { task_id: string }).task_id);
+  await store.insertSystemTask({
+    id: generateSystemTaskId(),
+    type: SYSTEM_TASK_TYPE_LOG_CLEANUP,
+    status: "pending",
+    active_key: null,
+  });
+  const first = await store.claimSystemTask(firstId, "runner-a", SYSTEM_TASK_TYPE_LOG_CLEANUP, systemTaskLockUntil());
+  assert.ok(first);
+  assert.equal(first.status, "running");
+  assert.equal(first.locked_by, "runner-a");
+
+  const secondPending = await store.findPendingSystemTask(SYSTEM_TASK_TYPE_LOG_CLEANUP);
+  assert.ok(secondPending);
+  const secondId = String(secondPending.id);
+  const second = await store.claimSystemTask(secondId, "runner-b", SYSTEM_TASK_TYPE_LOG_CLEANUP, systemTaskLockUntil());
+  assert.equal(second, null);
+
+  const held = await json(new Request("http://local/api/system-task/" + firstId, { headers: auth }), e);
+  const heldTask = held.body.data as Record<string, unknown>;
+  assertOriginalSystemTaskFields(heldTask, ["active_key"]);
+  assert.equal(heldTask.status, "running");
+  assert.equal(heldTask.locked_by, "runner-a");
+  assert.equal(heldTask.active_key, SYSTEM_TASK_TYPE_LOG_CLEANUP);
+
+  const blocked = await json(new Request("http://local/api/system-task/" + secondId, { headers: auth }), e);
+  const blockedTask = blocked.body.data as Record<string, unknown>;
+  assert.equal(blockedTask.status, "pending");
+  assert.equal(blockedTask.locked_by, "");
+});
+
+test("original expired SystemTask lock fails old run JSON and claims legacy pending", async () => {
+  const { e, auth, store } = await boot();
+  const created = await json(
+    new Request("http://local/api/system-task/log-cleanup?target_timestamp=10", { method: "POST", headers: auth }),
+    e,
+  );
+  const firstId = String((created.body.data as { task_id: string }).task_id);
+  const claimed = await store.claimSystemTask(firstId, "runner-a", SYSTEM_TASK_TYPE_LOG_CLEANUP, nowSec() + 60);
+  assert.ok(claimed);
+  await e.DB.prepare("UPDATE system_task_locks SET locked_until = ? WHERE task_id = ?")
+    .bind(nowSec() - 1, firstId)
+    .run();
+
+  const secondId = generateSystemTaskId();
+  await store.insertSystemTask({
+    id: secondId,
+    type: SYSTEM_TASK_TYPE_LOG_CLEANUP,
+    status: "pending",
+    active_key: null,
+  });
+  const stolen = await store.claimSystemTask(secondId, "runner-b", SYSTEM_TASK_TYPE_LOG_CLEANUP, systemTaskLockUntil());
+  assert.ok(stolen);
+  assert.equal(stolen.locked_by, "runner-b");
+  assert.equal(String(stolen.id), secondId);
+
+  const expired = await json(new Request("http://local/api/system-task/" + firstId, { headers: auth }), e);
+  const expiredTask = expired.body.data as Record<string, unknown>;
+  assertOriginalSystemTaskFields(expiredTask);
+  assert.equal(expiredTask.status, "failed");
+  assert.equal(expiredTask.error, "task lease expired");
+  assert.equal("active_key" in expiredTask, false);
+  assert.equal(expiredTask.locked_by, "runner-a");
+
+  const current = await json(new Request("http://local/api/system-task/current?type=log_cleanup", { headers: auth }), e);
+  const currentTask = current.body.data as Record<string, unknown>;
+  assert.equal(currentTask.task_id, secondId);
+  assert.equal(currentTask.status, "running");
+  assert.equal(currentTask.locked_by, "runner-b");
+  assert.equal(currentTask.active_key, SYSTEM_TASK_TYPE_LOG_CLEANUP);
+});
+
+test("original ExpireStaleSystemTaskLocks JSON fails old run and allows a new StartLogCleanupTask", async () => {
+  const { e, auth, store } = await boot();
+  const created = await json(
+    new Request("http://local/api/system-task/log-cleanup?target_timestamp=10", { method: "POST", headers: auth }),
+    e,
+  );
+  const firstId = String((created.body.data as { task_id: string }).task_id);
+  assert.ok(await store.claimSystemTask(firstId, "runner-a", SYSTEM_TASK_TYPE_LOG_CLEANUP, nowSec() + 60));
+  await e.DB.prepare("UPDATE system_task_locks SET locked_until = ? WHERE task_id = ?")
+    .bind(nowSec() - 1, firstId)
+    .run();
+
+  await store.expireStaleSystemTaskLocks(nowSec());
+
+  const expired = await json(new Request("http://local/api/system-task/" + firstId, { headers: auth }), e);
+  const expiredTask = expired.body.data as Record<string, unknown>;
+  assertOriginalSystemTaskFields(expiredTask);
+  assert.equal(expiredTask.status, "failed");
+  assert.equal(expiredTask.error, "task lease expired");
+  assert.equal("active_key" in expiredTask, false);
+
+  const lockCount = await e.DB.prepare("SELECT COUNT(*) as c FROM system_task_locks WHERE task_id = ?")
+    .bind(firstId)
+    .first<{ c: number }>();
+  assert.equal(Number(lockCount?.c || 0), 0);
+
+  const current = await json(new Request("http://local/api/system-task/current?type=log_cleanup", { headers: auth }), e);
+  assert.equal(current.body.data, null);
+
+  const next = await json(
+    new Request("http://local/api/system-task/log-cleanup?target_timestamp=10", { method: "POST", headers: auth }),
+    e,
+  );
+  assert.equal(next.body.success, true, String(next.body.message));
+  const nextTask = next.body.data as Record<string, unknown>;
+  assert.notEqual(nextTask.task_id, firstId);
+  assert.equal(nextTask.status, "pending");
+  assert.equal(nextTask.active_key, SYSTEM_TASK_TYPE_LOG_CLEANUP);
+});
+
+test("original FinishSystemTask and UpdateSystemTaskState require the held lock", async () => {
+  const { store } = await boot();
+  const created = await store.createSystemTask(SYSTEM_TASK_TYPE_LOG_CLEANUP, { target_timestamp: 10, batch_size: 100 }, {
+    total: 0,
+    processed: 0,
+    progress: 0,
+    remaining: 0,
+  });
+  const taskId = String(created.id);
+  assert.ok(await store.claimSystemTask(taskId, "runner-a", SYSTEM_TASK_TYPE_LOG_CLEANUP, systemTaskLockUntil()));
+
+  await assert.rejects(
+    () => store.updateSystemTaskState(taskId, "runner-b", { progress: 10 }),
+    SystemTaskLockLostError,
+  );
+  await assert.rejects(
+    () => store.finishSystemTask(taskId, "runner-b", "succeeded", { deleted_count: 0 }, ""),
+    SystemTaskLockLostError,
+  );
+
+  await store.finishSystemTask(taskId, "runner-a", "succeeded", { deleted_count: 0 }, "");
+  const finished = await store.getSystemTask(taskId);
+  assert.equal(finished?.status, "succeeded");
+  assert.equal(finished?.locked_by, "runner-a");
+  assert.equal(finished?.active_key, null);
+
+  await assert.rejects(
+    () => store.renewSystemTaskLock(taskId, "runner-a", systemTaskLockUntil()),
+    SystemTaskLockLostError,
+  );
 });
