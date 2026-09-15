@@ -10,7 +10,7 @@ import { pickChannelKey } from "./select.js";
 import type { ChannelRow } from "./types.js";
 
 export const ADVANCED_CUSTOM_MODEL_LIST_PATH = "/v1/models";
-const ADVANCED_CUSTOM_BALANCE_PATH = "/v1/dashboard/billing/credit_grants";
+export const ADVANCED_CUSTOM_BALANCE_PATH = "/v1/dashboard/billing/credit_grants";
 const ADVANCED_CUSTOM_CONVERTERS = new Set([
   "none",
   "anthropic_messages_to_openai_chat_completions",
@@ -401,9 +401,21 @@ export function advancedCustomConfigFromSettings(settings: string | undefined | 
 
 /** Original `dto.AdvancedCustomConfig.ModelListRoute`. */
 export function advancedCustomModelListRoute(config: AdvancedCustomConfig | null | undefined): AdvancedCustomRoute | null {
+  return advancedCustomManagementRoute(config, ADVANCED_CUSTOM_MODEL_LIST_PATH);
+}
+
+/** Original `dto.AdvancedCustomConfig.BalanceRoute`. */
+export function advancedCustomBalanceRoute(config: AdvancedCustomConfig | null | undefined): AdvancedCustomRoute | null {
+  return advancedCustomManagementRoute(config, ADVANCED_CUSTOM_BALANCE_PATH);
+}
+
+function advancedCustomManagementRoute(
+  config: AdvancedCustomConfig | null | undefined,
+  incomingPath: string,
+): AdvancedCustomRoute | null {
   if (!config) return null;
   for (const route of config.advanced_routes || []) {
-    if (String(route.incoming_path || "").trim() === ADVANCED_CUSTOM_MODEL_LIST_PATH) return route;
+    if (String(route.incoming_path || "").trim() === incomingPath) return route;
   }
   return null;
 }
@@ -528,23 +540,36 @@ export type AdvancedCustomModelListRequest = {
   method: "GET";
 };
 
-/** Original `advancedcustom.Adaptor.BuildModelListRequest`. */
-export function buildAdvancedCustomModelListRequest(channel: ChannelRow): AdvancedCustomModelListRequest {
+/** Original `advancedcustom.Adaptor.buildManagementRequest`. */
+function buildAdvancedCustomManagementRequest(channel: ChannelRow, managementPath: string): AdvancedCustomModelListRequest {
   const config = advancedCustomConfigFromSettings(channel.settings);
   if (!config) throw new Error("advanced_custom is required");
   const invalid = validateAdvancedCustomConfig(config);
   if (invalid) throw invalid;
-  const route = advancedCustomModelListRoute(config);
-  if (!route) throw new Error(`advanced custom channel does not configure a ${ADVANCED_CUSTOM_MODEL_LIST_PATH} route`);
+  const route =
+    managementPath === ADVANCED_CUSTOM_BALANCE_PATH
+      ? advancedCustomBalanceRoute(config)
+      : advancedCustomModelListRoute(config);
+  if (!route) throw new Error(`advanced custom channel does not configure a ${managementPath} route`);
   const converter = String(route.converter || "").trim() || "none";
   if (converter !== "none") {
-    throw new Error(`converter ${JSON.stringify(converter)} does not support ${ADVANCED_CUSTOM_MODEL_LIST_PATH} requests`);
+    throw new Error(`converter ${JSON.stringify(converter)} does not support ${managementPath} requests`);
   }
   const apiKey = pickChannelKey(channel.key);
   const baseURL = String(channel.base_url || "").trim();
   const url = resolveAdvancedCustomUpstreamURL(String(route.upstream_path || "").trim(), baseURL);
   const applied = applyAdvancedCustomAuth(url, {}, route.auth, apiKey);
   return { url: applied.url, headers: applied.headers, body: null, method: "GET" };
+}
+
+/** Original `advancedcustom.Adaptor.BuildModelListRequest`. */
+export function buildAdvancedCustomModelListRequest(channel: ChannelRow): AdvancedCustomModelListRequest {
+  return buildAdvancedCustomManagementRequest(channel, ADVANCED_CUSTOM_MODEL_LIST_PATH);
+}
+
+/** Original `advancedcustom.Adaptor.BuildBalanceRequest`. */
+export function buildAdvancedCustomBalanceRequest(channel: ChannelRow): AdvancedCustomModelListRequest {
+  return buildAdvancedCustomManagementRequest(channel, ADVANCED_CUSTOM_BALANCE_PATH);
 }
 
 export type AdvancedCustomRelayTarget = {

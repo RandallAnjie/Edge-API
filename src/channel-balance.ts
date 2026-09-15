@@ -1,6 +1,17 @@
-import { nowSec, parseJson, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_AZURE, CHANNEL_TYPE_OPENROUTER, CHANNEL_TYPE_MOONSHOT, CHANNEL_TYPE_TASK_PLUGIN } from "./constants.js";
+import {
+  nowSec,
+  parseJson,
+  CHANNEL_TYPE_ADVANCED_CUSTOM,
+  CHANNEL_TYPE_OPENAI,
+  CHANNEL_TYPE_AZURE,
+  CHANNEL_TYPE_OPENROUTER,
+  CHANNEL_TYPE_MOONSHOT,
+  CHANNEL_TYPE_TASK_PLUGIN,
+} from "./constants.js";
 import { defaultBaseUrl } from "./catalog.js";
+import { buildAdvancedCustomBalanceRequest, goJSONSyntaxError } from "./channel-validate.js";
 import { apiFail, json } from "./http.js";
+import { applyFetchModelsHeaderOverrides } from "./upstream.js";
 import type { Store } from "./store.js";
 import type { ChannelRow } from "./types.js";
 
@@ -12,6 +23,9 @@ const CHANNEL_TYPE_SILICONFLOW = 40;
 const CHANNEL_TYPE_DEEPSEEK = 43;
 
 export type ChannelBalanceResult = { balance: number } | { raw_response: string };
+
+/** Original `controller.maxAdvancedCustomBalanceResponseBytes`. */
+const MAX_ADVANCED_CUSTOM_BALANCE_RESPONSE_BYTES = 256 << 10;
 
 function isMultiKey(ch: ChannelRow): boolean {
   const info = parseJson<Record<string, unknown>>(String(ch.channel_info || ""), {});
@@ -112,8 +126,201 @@ export async function queryChannelBalance(ch: ChannelRow): Promise<ChannelBalanc
       const base = customBase || defaultBaseUrl(ch.type) || "https://api.openai.com";
       return { balance: await openaiBillingBalance(base, key) };
     }
+    case CHANNEL_TYPE_ADVANCED_CUSTOM:
+      return fetchAdvancedCustomBalance(ch);
     default:
       throw new Error("尚未实现");
+  }
+}
+
+/** Original `controller.sanitizeFetchModelsError`. */
+function sanitizeFetchModelsError(err: unknown, key: string): Error {
+  let message = err instanceof Error ? err.message : String(err);
+  const trimmed = String(key || "").trim();
+  if (trimmed) {
+    message = message.split(trimmed).join("[REDACTED]");
+    message = message.split(encodeURIComponent(trimmed)).join("[REDACTED]");
+  }
+  return new Error(message);
+}
+
+/** Original `controller.sanitizeAdvancedCustomRequestError`. */
+function sanitizeAdvancedCustomRequestError(err: unknown, key: string, requestURL: string): Error {
+  let message = sanitizeFetchModelsError(err, key).message;
+  try {
+    const parsed = new URL(requestURL);
+    parsed.searchParams.forEach((secret) => {
+      if (!secret) return;
+      message = message.split(secret).join("[REDACTED]");
+      message = message.split(encodeURIComponent(secret)).join("[REDACTED]");
+    });
+  } catch {
+    /* original returns the already-sanitized error when the URL cannot be parsed */
+  }
+  const trimmed = String(key || "").trim();
+  if (trimmed) {
+    message = message.split(trimmed).join("[REDACTED]");
+    message = message.split(encodeURIComponent(trimmed)).join("[REDACTED]");
+  }
+  return new Error(message);
+}
+
+/** Original `common.GetJsonType`. */
+function goGetJsonType(data: string): string {
+  const trimmed = data.trim();
+  if (!trimmed) return "unknown";
+  switch (trimmed[0]) {
+    case "{":
+      return "object";
+    case "[":
+      return "array";
+    case '"':
+      return "string";
+    case "t":
+    case "f":
+      return "boolean";
+    case "n":
+      return "null";
+    default:
+      return "number";
+  }
+}
+
+/** Original `encoding/json.Indent` with prefix "" and indent "  " / `common.IndentJson`. */
+function goIndentJson(src: string): string {
+  let i = 0;
+  let depth = 0;
+  let out = "";
+  const n = src.length;
+  const skipSpace = () => {
+    while (i < n) {
+      const c = src.charCodeAt(i);
+      if (c === 32 || c === 9 || c === 10 || c === 13) i += 1;
+      else break;
+    }
+  };
+  skipSpace();
+  while (i < n) {
+    skipSpace();
+    if (i >= n) break;
+    const c = src[i];
+    if (c === '"') {
+      out += c;
+      i += 1;
+      while (i < n) {
+        const ch = src[i];
+        out += ch;
+        i += 1;
+        if (ch === "\\") {
+          if (i < n) {
+            out += src[i];
+            i += 1;
+          }
+        } else if (ch === '"') {
+          break;
+        }
+      }
+      continue;
+    }
+    if (c === "{" || c === "[") {
+      out += c;
+      i += 1;
+      skipSpace();
+      if (i < n && ((c === "{" && src[i] === "}") || (c === "[" && src[i] === "]"))) {
+        out += src[i];
+        i += 1;
+        continue;
+      }
+      depth += 1;
+      out += "\n" + "  ".repeat(depth);
+      continue;
+    }
+    if (c === "}" || c === "]") {
+      depth -= 1;
+      out += "\n" + "  ".repeat(Math.max(0, depth)) + c;
+      i += 1;
+      continue;
+    }
+    if (c === ",") {
+      out += ",\n" + "  ".repeat(depth);
+      i += 1;
+      continue;
+    }
+    if (c === ":") {
+      out += ": ";
+      i += 1;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+function jsonFieldRaw(objectSrc: string, field: string): string | null {
+  try {
+    const parsed = JSON.parse(objectSrc) as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(parsed, field)) return null;
+    return JSON.stringify(parsed[field]);
+  } catch {
+    return null;
+  }
+}
+
+/** Original `controller.fetchAdvancedCustomBalance`. */
+async function fetchAdvancedCustomBalance(ch: ChannelRow): Promise<ChannelBalanceResult> {
+  const key = String(ch.key || "").trim();
+  let target: { url: string; headers: Record<string, string> };
+  try {
+    target = buildAdvancedCustomBalanceRequest(ch);
+    applyFetchModelsHeaderOverrides(ch, key, target.headers);
+  } catch (e) {
+    throw sanitizeFetchModelsError(e, key);
+  }
+
+  let res: Response;
+  try {
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(target.headers)) {
+      if (name.toLowerCase() === "host") continue;
+      headers.set(name, value);
+    }
+    res = await fetch(target.url, { method: "GET", headers });
+  } catch (e) {
+    throw sanitizeAdvancedCustomRequestError(e, key, target.url);
+  }
+  if (res.status !== 200) throw new Error(`status code: ${res.status}`);
+
+  let body: Uint8Array;
+  try {
+    body = new Uint8Array(await res.arrayBuffer());
+  } catch (e) {
+    throw sanitizeAdvancedCustomRequestError(e, key, target.url);
+  }
+  if (body.byteLength > MAX_ADVANCED_CUSTOM_BALANCE_RESPONSE_BYTES) {
+    throw new Error(`balance response exceeds ${MAX_ADVANCED_CUSTOM_BALANCE_RESPONSE_BYTES} bytes`);
+  }
+  const raw = new TextDecoder().decode(body);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (err) {
+    throw new Error(`invalid balance JSON response: ${goJSONSyntaxError(raw, err)}`);
+  }
+  if (goGetJsonType(raw) === "object" && parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    const totalRaw = jsonFieldRaw(raw, "total_available");
+    if (obj.object === "credit_summary" && totalRaw != null && goGetJsonType(totalRaw) === "number") {
+      const balance = Number(obj.total_available);
+      if (Number.isFinite(balance) && balance >= 0) return { balance };
+    }
+  }
+
+  try {
+    return { raw_response: goIndentJson(raw) };
+  } catch (err) {
+    throw new Error(`invalid balance JSON response: ${goJSONSyntaxError(raw, err)}`);
   }
 }
 
