@@ -10,6 +10,7 @@ import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { criticalRateLimit } from "./critical-rate-limit.js";
 import { globalApiRateLimit } from "./global-api-rate-limit.js";
 import { globalWebRateLimit } from "./global-web-rate-limit.js";
+import { withRelayNotFoundWebCache, withSpaCacheHeaders, withWebCacheHeaders } from "./web-cache.js";
 import { searchRateLimit, searchRateLimitApplies } from "./search-rate-limit.js";
 import { userCriticalRateLimit, userCriticalRateLimitScope } from "./user-critical-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
@@ -743,7 +744,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
             if (await matchPluginOwnedPath(store, path)) return withCors(req, pluginMethodNotAllowed());
             const webLimited = await limitedGlobalWeb(env, req);
             if (webLimited) return webLimited;
-            return withCors(req, relayNotFound(req.method, path));
+            return withRelayNotFoundWebCache(withCors(req, relayNotFound(req.method, path)));
           }
           try {
             if (plugin.kind === "route") return withCors(req, await handleNativePluginRoute(req, env, ctx, plugin, store));
@@ -801,7 +802,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       if (path.startsWith("/v1") || path.startsWith("/api") || path.startsWith("/assets")) {
         const webLimited = await limitedGlobalWeb(env, req);
         if (webLimited) return webLimited;
-        return withCors(req, relayNotFound(req.method, path));
+        return withRelayNotFoundWebCache(withCors(req, relayNotFound(req.method, path)));
       }
     } catch (err) {
       hit("error");
@@ -818,7 +819,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
 
   if (env.ASSETS) {
     const res = await env.ASSETS.fetch(req);
-    if (res.status !== 404) return res;
+    if (res.status !== 404) return withWebCacheHeaders(req, res);
     if (req.method === "GET") {
       const skipSpa =
         path.startsWith("/api") ||
@@ -830,14 +831,15 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
         path.startsWith("/assets") ||
         path.startsWith("/dashboard/billing");
       if (!skipSpa) {
-        return env.ASSETS.fetch(new Request(new URL("/index.html", req.url), req));
+        const spa = await env.ASSETS.fetch(new Request(new URL("/index.html", req.url), req));
+        return withSpaCacheHeaders(spa);
       }
     }
   }
   if (path.startsWith("/v1") || path.startsWith("/api") || path.startsWith("/assets")) {
-    return withCors(req, relayNotFound(req.method, path));
+    return withRelayNotFoundWebCache(withCors(req, relayNotFound(req.method, path)));
   }
-  return new Response("Not Found", { status: 404 });
+  return withWebCacheHeaders(req, new Response("Not Found", { status: 404 }));
 }
 
 export { handleFetch };

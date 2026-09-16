@@ -126,6 +126,13 @@ Material changes from upstream:
   Extra-OK: OPTIONS 204 still runs before this limiter. Extra-OK: KV get/put is
   not Redis lua-atomic. Extra-OK: plugin-owned paths still skip this limiter
   because original `pluginDispatcher` runs first on NoRoute.
+  Original `middleware.Cache` on `SetWebRouter` NoRoute sets `Cache-Version` to
+  the original hardcoded SHA-256 and `Cache-Control` `no-cache` for RequestURI
+  `/` otherwise `max-age=604800`. SPA index fallback overwrites Cache-Control to
+  `no-cache` (Cache-Version remains). RelayNotFound overwrites Cache-Control to
+  `no-store, no-cache, must-revalidate, private, max-age=0` (Cache-Version remains).
+  Extra-OK: plugin-owned paths skip this middleware like original `pluginDispatcher`
+  first on NoRoute. Extra-OK: GlobalWebRateLimit 429 still Abort before Cache.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
