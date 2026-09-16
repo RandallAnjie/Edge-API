@@ -12,8 +12,24 @@ export type Handler<E = unknown> = (c: Context<E>) => Promise<Response> | Respon
 
 interface Route<E> {
   method: string;
+  path: string;
   parts: string[];
   handler: Handler<E>;
+}
+
+let auditRouter: Router<unknown> | null = null;
+
+/** Original gin `FullPath` for leftover `AccessTokenAudit` / `RecordAuditLog`. */
+export function setAuditRouter(router: Router<unknown>): void {
+  auditRouter = router;
+}
+
+/**
+ * Original gin `c.FullPath()` after a match. Unmatched NoRoute is empty
+ * (not the request URI, so path params never enter audit JSON).
+ */
+export function ginFullPath(method: string, pathname: string): string {
+  return auditRouter?.fullPathOf(method, pathname) ?? "";
 }
 
 function pathParts(path: string): string[] {
@@ -56,10 +72,25 @@ export class Router<E = unknown> {
   on(method: string, path: string, handler: Handler<E>): this {
     this.routes.push({
       method: method.toUpperCase(),
+      path,
       parts: pathParts(path),
       handler,
     });
     return this;
+  }
+
+  /** Original gin `Engine.FullPath` for the best-matching registered template. */
+  fullPathOf(method: string, pathname: string): string {
+    const parts = pathParts(pathname);
+    let best: { path: string; score: number } | null = null;
+    for (const r of this.routes) {
+      if (r.method !== method && r.method !== "*") continue;
+      const params = match(r.parts, parts);
+      if (!params) continue;
+      const score = r.parts.filter((p) => p.startsWith(":") || p === "*").length;
+      if (!best || score < best.score) best = { path: r.path, score };
+    }
+    return best?.path ?? "";
   }
 
   /** Original Gin groups are `/api/log/` but the React client often omits the trailing slash. */

@@ -1880,7 +1880,7 @@ export class Store {
     } = {},
   ): Promise<void> {
     const category = extra.category || type;
-    const action = extra.action || type;
+    const action = extra.action !== undefined ? extra.action : type;
     await this.db
       .prepare(
         `INSERT INTO audit_logs (
@@ -5291,7 +5291,7 @@ export function publicAudit(
     actor_role: Number(row.actor_role) || 0,
     created_at: Number(row.created_at),
     category: row.category || row.type || "",
-    action: row.action || row.type || "",
+    action: row.action == null ? String(row.type || "") : String(row.action),
     token_ref: row.token_ref || "",
     auth_method: row.auth_method || "",
     ip: row.ip || "",

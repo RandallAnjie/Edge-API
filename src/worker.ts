@@ -38,6 +38,7 @@ import { searchRateLimit, searchRateLimitApplies } from "./search-rate-limit.js"
 import { userCriticalRateLimit, userCriticalRateLimitScope } from "./user-critical-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
 import { adminRouter } from "./routes.js";
+import { setAuditRouter } from "./router.js";
 import {
   listModelsForAuth,
   playgroundRelay,
@@ -126,6 +127,7 @@ function isRegisteredMjRelay(method: string, path: string): boolean {
 }
 
 const api = adminRouter();
+setAuditRouter(api);
 
 const NOT_IMPLEMENTED = new Set([
   "POST /v1/images/variations",

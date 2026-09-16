@@ -19,6 +19,7 @@ import {
   extractRequestApiKeyParts,
   parseApiKey,
   hashRefreshSecret,
+  accessTokenFingerprint,
   parseAccessJwt,
   peekDashboardJwt,
   randomCharsKey,
@@ -58,9 +59,19 @@ import { Store, permissionsFor, publicUser } from "./store.js";
 import { containsGroupRatio, userUsableGroups } from "./dto.js";
 import { tokenModelLimitAllows } from "./ratio-setting.js";
 import type { AuthToken, Env, LoginSessionRow, SessionUser, TokenRow, UserRow } from "./types.js";
-import type { Context } from "./router.js";
+import { ginFullPath, type Context } from "./router.js";
 import { requireSecurityProof, type AuthIdentity, type VerificationOperation } from "./security.js";
 import { beginAdminAudit, recordLoginAudit } from "./admin-operation-audit.js";
+import { requestIdFor } from "./request-id.js";
+import {
+  TOKEN_OPERATION_AUDIT_MAX_BODY,
+  auditActorRole,
+  auditResponseSuccess,
+  truncateAuditUserAgent,
+} from "./token-operation-audit.js";
+
+/** Original `model.AuditCategoryAccessToken`. */
+export const AUDIT_CATEGORY_ACCESS_TOKEN = "access_token";
 
 export async function sessionSecret(env: Env, store: Store): Promise<string> {
   if (env.SESSION_SECRET) return env.SESSION_SECRET;
@@ -550,68 +561,76 @@ type PendingAccessAudit = {
   username: string;
   actorRole: number;
   tokenRef: string;
-  ip: string;
-  userAgent: string;
-  method: string;
-  route: string;
 };
 
 const pendingAccessAudits = new WeakMap<Request, PendingAccessAudit>();
 
+/**
+ * Original `middleware.beginAccessTokenAudit`. TokenRef is the generation
+ * fingerprint captured before handlers may rotate the PAT.
+ */
 export async function beginAccessTokenAudit(store: Store, req: Request, user: UserRow, token: string): Promise<void> {
+  void store;
   if (pendingAccessAudits.has(req)) return;
-  const { accessTokenFingerprint } = await import("./crypto.js");
-  const url = new URL(req.url);
   pendingAccessAudits.set(req, {
     userId: user.id,
     username: user.username,
     actorRole: user.role,
     tokenRef: await accessTokenFingerprint(token),
-    ip: clientIp(req),
-    userAgent: req.headers.get("user-agent") || "",
-    method: req.method,
-    route: url.pathname,
   });
 }
 
+/**
+ * Original `middleware.AccessTokenAudit`: probe Authorization before route
+ * auth. Internal dashboard JWTs (including expired / security-proof) are
+ * skipped via `ParseDashboardAccessToken`'s unverified iss/aud/token_use
+ * check. `ValidateAccessToken` does not require USER_ENABLED.
+ */
 export async function maybeBeginAccessTokenAudit(store: Store, req: Request, secret: string): Promise<void> {
-  const raw = bearerCredential(req);
+  void secret;
+  const raw = dashboardAuthorizationToken(req.headers.get("authorization") || "");
   if (!raw) return;
-  if (await verifyAccessJwt(raw, secret)) return;
-  if (splitRefreshToken(raw)) return;
-  if (raw.split(".").length === 2 && (await verifySession(raw, secret))) return;
+  if (peekDashboardJwt(raw)) return;
   const user = await store.getUserByField("access_token", raw);
-  if (!user || user.status !== USER_ENABLED) return;
+  if (!user || user.id <= 0) return;
   await beginAccessTokenAudit(store, req, user, raw);
 }
 
+/**
+ * Original `middleware.finishAccessTokenAudit` + `model.RecordAuditLog`.
+ * Action and Content stay empty; Route is gin FullPath (empty on NoRoute).
+ */
 export async function finishAccessTokenAudit(store: Store, req: Request, res: Response, requestId = ""): Promise<void> {
   const pending = pendingAccessAudits.get(req);
   if (!pending) return;
   pendingAccessAudits.delete(req);
-  let success = res.status < 400;
-  const ct = res.headers.get("content-type") || "";
-  if (success && ct.includes("json")) {
-    try {
-      const body = (await res.clone().json()) as { success?: boolean };
-      if (typeof body.success === "boolean") success = body.success && res.status < 400;
-    } catch {
-      /* body was not JSON */
-    }
+  let body = "";
+  try {
+    const buf = await res.clone().arrayBuffer();
+    const slice = buf.byteLength > TOKEN_OPERATION_AUDIT_MAX_BODY ? buf.slice(0, TOKEN_OPERATION_AUDIT_MAX_BODY) : buf;
+    body = new TextDecoder().decode(slice);
+  } catch {
+    /* original auditResponseWriter captures bytes written */
   }
-  await store.audit(pending.userId, pending.username, "access_token", pending.route, pending.ip, {
-    actor_role: pending.actorRole,
-    category: "access_token",
-    action: pending.route,
-    token_ref: pending.tokenRef,
-    auth_method: "access_token",
-    user_agent: pending.userAgent,
-    method: pending.method,
-    route: pending.route,
-    status: res.status,
-    success,
-    request_id: requestId,
-  });
+  const success = auditResponseSuccess(res.status, body);
+  const route = ginFullPath(req.method, new URL(req.url).pathname);
+  try {
+    await store.audit(pending.userId, pending.username, AUDIT_CATEGORY_ACCESS_TOKEN, "", clientIp(req), {
+      actor_role: auditActorRole(pending.actorRole),
+      category: AUDIT_CATEGORY_ACCESS_TOKEN,
+      action: "",
+      token_ref: pending.tokenRef,
+      auth_method: "access_token",
+      user_agent: truncateAuditUserAgent(req.headers.get("user-agent") || ""),
+      method: req.method,
+      route,
+      status: res.status,
+      success,
+      request_id: requestId || requestIdFor(req),
+    });
+  } catch {
+    /* original RecordAuditLog logs and continues */
+  }
 }
 
 export async function requirePermission(
