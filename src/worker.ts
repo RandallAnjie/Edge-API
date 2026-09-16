@@ -7,6 +7,7 @@ import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudi
 import { abortWithOpenAiMessage, apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
+import { applyDisableCache } from "./disable-cache.js";
 import { criticalRateLimit } from "./critical-rate-limit.js";
 import { globalApiRateLimit } from "./global-api-rate-limit.js";
 import { globalWebRateLimit } from "./global-web-rate-limit.js";
@@ -786,7 +787,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       }
       const c = ctxStore(routedReq, env, ctx);
       const routed = await api.dispatch(c);
-      if (routed) return withCors(req, routed);
+      if (routed) return withCors(req, applyDisableCache(req, routed));
 
       const plugin = await matchPluginRoute(store, req.method, path);
       if (plugin) {

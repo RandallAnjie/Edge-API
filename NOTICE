@@ -133,6 +133,13 @@ Material changes from upstream:
   `no-store, no-cache, must-revalidate, private, max-age=0` (Cache-Version remains).
   Extra-OK: plugin-owned paths skip this middleware like original `pluginDispatcher`
   first on NoRoute. Extra-OK: GlobalWebRateLimit 429 still Abort before Cache.
+  Original `middleware.DisableCache` on security/auth routes sets
+  `Cache-Control: no-store, no-cache, must-revalidate, private, max-age=0`,
+  `Pragma: no-cache`, and `Expires: 0` (oauth state/bind/wechat/telegram/:provider,
+  verify, login/refresh/logout/passkey/2FA, user self group including token/sessions,
+  token key/batch keys, channel key, audit). Extra-OK: GA/CT/UC abort still skip
+  this middleware like original route order. POST `/api/user/register` and
+  POST `/api/oauth/wechat/bind` stay off this middleware.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
