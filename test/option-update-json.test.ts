@@ -210,3 +210,69 @@ test("original UpdateOption QuotaForInviter/Invitee ApiErrorI18n gin.H omit data
   omitDataOk(okInvitee.body);
   assert.equal(await new Store(e.DB).option("QuotaForInvitee"), "1000000");
 });
+
+test("original UpdateOption OAuth enablement gin.H omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const store = new Store(e.DB);
+
+  async function put(key: string, value: string, extra: Record<string, string> = {}) {
+    return json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: { ...auth, ...extra },
+        body: JSON.stringify({ key, value }),
+      }),
+      e,
+    );
+  }
+
+  const github = await put("GitHubOAuthEnabled", "true");
+  omitData(github.body, "无法启用 GitHub OAuth，请先填入 GitHub Client Id 以及 GitHub Client Secret！");
+
+  const discord = await put("discord.enabled", "true");
+  omitData(discord.body, "无法启用 Discord OAuth，请先填入 Discord Client Id 以及 Discord Client Secret！");
+
+  const oidc = await put("oidc.enabled", "true");
+  omitData(oidc.body, "无法启用 OIDC 登录，请先填入 OIDC Client Id 以及 OIDC Client Secret！");
+
+  const linuxdo = await put("LinuxDOOAuthEnabled", "true");
+  omitData(linuxdo.body, "无法启用 LinuxDO OAuth，请先填入 LinuxDO Client Id 以及 LinuxDO Client Secret！");
+
+  const wechat = await put("WeChatAuthEnabled", "true");
+  omitData(wechat.body, "无法启用微信登录，请先填入微信登录相关配置信息！");
+
+  const turnstile = await put("TurnstileCheckEnabled", "true");
+  omitData(turnstile.body, "无法启用 Turnstile 校验，请先填入 Turnstile 校验相关配置信息！");
+
+  const theme = await put("theme.frontend", "classic");
+  omitData(theme.body, "Classic 前端已移除，主题只能设置为 default");
+
+  const ftp = await put("TaskPublicAddress", "ftp://media.example.com/tasks");
+  omitData(ftp.body, "task artifact base URL must use http or https");
+
+  const spaced = await put("TaskPublicAddress", " https://media.example.com");
+  omitData(spaced.body, "task artifact base URL must not contain surrounding whitespace");
+
+  const query = await put("TaskPublicAddress", "https://media.example.com/tasks?token=secret");
+  omitData(query.body, "task artifact base URL must not contain a query or fragment");
+
+  const userinfo = await put("TaskPublicAddress", "https://user:secret@media.example.com/tasks");
+  omitData(userinfo.body, "task artifact base URL must contain a host and no userinfo");
+
+  await store.setOption("GitHubClientId", "gh-client");
+  const githubOk = await put("GitHubOAuthEnabled", "true");
+  omitDataOk(githubOk.body);
+
+  const themeOk = await put("theme.frontend", "default");
+  omitDataOk(themeOk.body);
+
+  const addrOk = await put("TaskPublicAddress", "https://media.example.com/task-content");
+  omitDataOk(addrOk.body);
+
+  const telegram = await put("TelegramOAuthEnabled", "true");
+  assert.equal(telegram.body.success, false);
+  assert.equal(telegram.body.code, "TELEGRAM_OAUTH_NOT_CONFIGURED");
+  assert.equal("data" in telegram.body, false);
+});

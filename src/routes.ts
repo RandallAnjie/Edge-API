@@ -53,7 +53,7 @@ import {
   verifyPassword,
   decryptPassword,
 } from "./crypto.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, paymentComplianceRequiredMessage, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, paymentComplianceRequiredMessage, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
@@ -1414,6 +1414,52 @@ export function adminRouter(): Router<Env> {
     } else if (isPaymentComplianceOptionKey(key)) {
       return apiErrorMsg("合规确认字段不允许通过通用设置接口修改");
     }
+    if (key === "TaskPublicAddress" && value !== "") {
+      const err = validateTaskArtifactBaseURL(value);
+      if (err) return apiErrorMsg(err);
+    }
+    switch (key) {
+      case "GitHubOAuthEnabled":
+        if (value === "true" && !(await s.option("GitHubClientId"))) {
+          return apiErrorMsg("无法启用 GitHub OAuth，请先填入 GitHub Client Id 以及 GitHub Client Secret！");
+        }
+        break;
+      case "discord.enabled":
+        if (value === "true" && !(await s.option("discord.client_id"))) {
+          return apiErrorMsg("无法启用 Discord OAuth，请先填入 Discord Client Id 以及 Discord Client Secret！");
+        }
+        break;
+      case "oidc.enabled":
+        if (value === "true" && !(await s.option("oidc.client_id"))) {
+          return apiErrorMsg("无法启用 OIDC 登录，请先填入 OIDC Client Id 以及 OIDC Client Secret！");
+        }
+        break;
+      case "LinuxDOOAuthEnabled":
+        if (value === "true" && !(await s.option("LinuxDOClientId"))) {
+          return apiErrorMsg("无法启用 LinuxDO OAuth，请先填入 LinuxDO Client Id 以及 LinuxDO Client Secret！");
+        }
+        break;
+      case "EmailDomainRestrictionEnabled":
+        if (value === "true" && (await s.option("EmailDomainWhitelist")).split(",").length === 0) {
+          return apiErrorMsg("无法启用邮箱域名限制，请先填入限制的邮箱域名！");
+        }
+        break;
+      case "WeChatAuthEnabled":
+        if (value === "true" && !(await s.option("WeChatServerAddress"))) {
+          return apiErrorMsg("无法启用微信登录，请先填入微信登录相关配置信息！");
+        }
+        break;
+      case "TurnstileCheckEnabled":
+        if (value === "true" && !(await s.option("TurnstileSiteKey"))) {
+          return apiErrorMsg("无法启用 Turnstile 校验，请先填入 Turnstile 校验相关配置信息！");
+        }
+        break;
+      case "theme.frontend":
+        if (value !== "default") {
+          return apiErrorMsg("Classic 前端已移除，主题只能设置为 default");
+        }
+        break;
+    }
     if (isPasskeyDomainOption(key)) {
       try {
         const change = await updatePasskeyDomainOptions(s, await sessionSecret(c.env, s), { [key]: value }, false, "");
@@ -1434,11 +1480,15 @@ export function adminRouter(): Router<Env> {
       }
     }
     if (key === "TelegramOAuthEnabled" && value === "true" && !(await telegramSettingsConfigured(s))) {
-      return apiFailCode(ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, "TELEGRAM_OAUTH_NOT_CONFIGURED");
+      return json(200, {
+        success: false,
+        code: "TELEGRAM_OAUTH_NOT_CONFIGURED",
+        message: ERR_TELEGRAM_OAUTH_NOT_CONFIGURED,
+      });
     }
     if (key === "ModelRequestRateLimitGroup") {
       const err = checkModelRequestRateLimitGroup(value);
-      if (err) return apiFail(err);
+      if (err) return apiErrorMsg(err);
     }
     await s.setOption(key, value);
     return json(200, { success: true, message: "" });
@@ -1693,6 +1743,29 @@ function isPositiveOptionValue(value: string): boolean {
   if (/^[+-]?0[xX]/.test(trimmed)) return false;
   const n = Number(trimmed);
   return Number.isFinite(n) && n > 0;
+}
+
+/** Original `service.ValidateTaskArtifactBaseURL`. */
+function validateTaskArtifactBaseURL(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return "task artifact base URL is empty";
+  if (raw !== trimmed) return "task artifact base URL must not contain surrounding whitespace";
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return "task artifact base URL is invalid";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "task artifact base URL must use http or https";
+  }
+  if (!parsed.host || parsed.username || parsed.password) {
+    return "task artifact base URL must contain a host and no userinfo";
+  }
+  if (parsed.search || parsed.hash || raw.includes("?") || raw.includes("#")) {
+    return "task artifact base URL must not contain a query or fragment";
+  }
+  return null;
 }
 
 /** Original `c.ShouldBindJSON` into `model.Redemption`. */
