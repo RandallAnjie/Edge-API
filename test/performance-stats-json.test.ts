@@ -126,6 +126,54 @@ test("original GetPerformanceStats data keys match PerformanceStats JSON", async
   assert.equal(cache.current_memory_usage_bytes, 0);
 });
 
+test("original GetPerformanceStats gin.H omits message; clear/reset/gc omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const stats = await json(new Request("http://local/api/performance/stats", { headers: auth }), e);
+  assert.equal(stats.res.status, 200);
+  assert.equal(stats.body.success, true);
+  assert.equal("message" in stats.body, false);
+  assert.deepEqual(Object.keys(stats.body).sort(), ["data", "success"]);
+
+  const clear = await json(new Request("http://local/api/performance/disk_cache", { method: "DELETE", headers: auth }), e);
+  assert.equal(clear.body.success, true);
+  assert.equal(clear.body.message, "不活跃的磁盘缓存已清理");
+  assert.equal("data" in clear.body, false);
+  assert.deepEqual(Object.keys(clear.body).sort(), ["message", "success"]);
+
+  const reset = await json(new Request("http://local/api/performance/reset_stats", { method: "POST", headers: auth }), e);
+  assert.equal(reset.body.success, true);
+  assert.equal(reset.body.message, "统计信息已重置");
+  assert.equal("data" in reset.body, false);
+
+  const gc = await json(new Request("http://local/api/performance/gc", { method: "POST", headers: auth }), e);
+  assert.equal(gc.body.success, true);
+  assert.equal(gc.body.message, "GC 已执行");
+  assert.equal("data" in gc.body, false);
+
+  const logs = await json(new Request("http://local/api/performance/logs", { headers: auth }), e);
+  assert.equal(logs.body.success, true);
+  assert.equal(logs.body.message, "");
+  const logData = logs.body.data as { enabled: boolean; files: unknown };
+  assert.equal(logData.enabled, false);
+  assert.equal(logData.files, null);
+
+  const badMode = await json(new Request("http://local/api/performance/logs?mode=nope&value=1", { method: "DELETE", headers: auth }), e);
+  assert.equal(badMode.res.status, 200);
+  assert.equal(badMode.body.message, "invalid mode, must be by_count or by_days");
+  assert.equal("data" in badMode.body, false);
+
+  const badValue = await json(new Request("http://local/api/performance/logs?mode=by_count&value=1.5", { method: "DELETE", headers: auth }), e);
+  assert.equal(badValue.body.message, "invalid value, must be a positive integer");
+  assert.equal("data" in badValue.body, false);
+
+  const noDir = await json(new Request("http://local/api/performance/logs?mode=by_days&value=7", { method: "DELETE", headers: auth }), e);
+  assert.equal(noDir.body.message, "log directory not configured");
+  assert.equal("data" in noDir.body, false);
+});
+
 test("original TestStatus envelope JSON has StatsInfo only", async () => {
   resetSchemaFlag();
   const e = env();

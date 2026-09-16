@@ -1060,26 +1060,26 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(performanceStats(await loadPerformanceSetting(s)));
+    return json(200, { success: true, data: performanceStats(await loadPerformanceSetting(s)) });
   });
   r.delete("/api/performance/disk_cache", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(null, "不活跃的磁盘缓存已清理");
+    return json(200, { success: true, message: "不活跃的磁盘缓存已清理" });
   });
   r.post("/api/performance/reset_stats", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     resetMetrics();
-    return apiOk(null, "统计信息已重置");
+    return json(200, { success: true, message: "统计信息已重置" });
   });
   r.post("/api/performance/gc", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(null, "GC 已执行");
+    return json(200, { success: true, message: "GC 已执行" });
   });
   r.get("/api/performance/logs", async (c) => {
     const s = store(c);
@@ -1098,10 +1098,11 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const mode = c.url.searchParams.get("mode") || "";
-    const value = Number(c.url.searchParams.get("value") || 0);
-    if (mode !== "by_count" && mode !== "by_days") return apiFail("invalid mode, must be by_count or by_days");
-    if (!Number.isInteger(value) || value < 1) return apiFail("invalid value, must be a positive integer");
-    return apiFail("log directory not configured");
+    const valueStr = c.url.searchParams.get("value") || "";
+    if (mode !== "by_count" && mode !== "by_days") return apiErrorMsg("invalid mode, must be by_count or by_days");
+    const parsed = strconvAtoi(valueStr);
+    if (!parsed.ok || parsed.n < 1) return apiErrorMsg("invalid value, must be a positive integer");
+    return apiErrorMsg("log directory not configured");
   });
 
   r.get("/api/ratio_sync/channels", async (c) => {
