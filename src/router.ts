@@ -17,10 +17,10 @@ interface Route<E> {
   handler: Handler<E>;
 }
 
-let auditRouter: Router<unknown> | null = null;
+let auditRouter: { fullPathOf(method: string, pathname: string): string } | null = null;
 
 /** Original gin `FullPath` for leftover `AccessTokenAudit` / `RecordAuditLog`. */
-export function setAuditRouter(router: Router<unknown>): void {
+export function setAuditRouter(router: { fullPathOf(method: string, pathname: string): string }): void {
   auditRouter = router;
 }
 
