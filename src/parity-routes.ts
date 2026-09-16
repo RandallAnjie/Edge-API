@@ -960,14 +960,26 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const denied = await requirePaymentCompliance(s);
     if (denied) return denied;
-    const userId = Number(c.params.id);
-    const body = (await readJson(c.req)) as { plan_id?: number };
-    if (userId <= 0 || !body.plan_id) return apiFail("参数错误");
+    const userId = strconvAtoi(c.params.id);
+    if (!userId.ok || userId.n <= 0) return apiErrorMsg("无效的用户ID");
+    const parsedCreate = goUnmarshalJSON((await c.req.text()) || "");
+    if (
+      !parsedCreate.ok ||
+      parsedCreate.value === null ||
+      typeof parsedCreate.value !== "object" ||
+      Array.isArray(parsedCreate.value)
+    ) {
+      return apiErrorMsg("参数错误");
+    }
+    const body = parsedCreate.value as { plan_id?: number };
+    if (typeof body.plan_id !== "number" || !Number.isInteger(body.plan_id) || body.plan_id <= 0) {
+      return apiErrorMsg("参数错误");
+    }
     try {
-      const result = await s.adminBindSubscription(userId, Number(body.plan_id));
+      const result = await s.adminBindSubscription(userId.n, body.plan_id);
       return apiOk(result.message ? { message: result.message } : null);
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
   });
 

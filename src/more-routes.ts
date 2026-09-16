@@ -56,7 +56,7 @@ import {
   type AuthSessionIdentityJSON,
   type TelegramOAuthFlow,
 } from "./telegram-oauth.js";
-import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues, vendorRecordVersion } from "./dto.js";
+import { publicToken, verificationRequirements, publicUserLogs, exposedRatioConfig, enrichModelMeta, publicModelMeta, publicTopup, publicVendor, publicPrefill, publicTask, publicRedemption, validateMetadataValues, vendorRecordVersion, containsGroupRatio } from "./dto.js";
 import { billingCopies } from "./billing-setting.js";
 import { DEFAULT_MODEL_RATIO_JSON } from "./ratio-defaults.js";
 import { getModelPricingSnapshot, ModelPricingError, previewModelPricingConversion, previewModelPricingDescription, updateModelPricing, type ModelPricingChange } from "./model-pricing.js";
@@ -91,7 +91,7 @@ import {
   updateCustomOAuthProvider,
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
-import { parseChannelBatch } from "./channel-validate.js";
+import { goUnmarshalJSON, parseChannelBatch } from "./channel-validate.js";
 import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -127,6 +127,23 @@ function encodePrefillItems(items: unknown): string {
   if (items == null) return "";
   if (typeof items === "string") return items;
   return JSON.stringify(items);
+}
+
+/** Original `AdminCreateSubscriptionPlan` / `AdminUpdateSubscriptionPlan` ApiErrorMsg checks. */
+async function subscriptionPlanFieldError(s: Store, fields: Record<string, unknown>): Promise<Response | undefined> {
+  if (!String(fields.title || "").trim()) return apiErrorMsg("套餐标题不能为空");
+  if (Number(fields.price_amount) < 0) return apiErrorMsg("价格不能为负数");
+  if (Number(fields.price_amount) > 9999) return apiErrorMsg("价格不能超过9999");
+  if (Number(fields.max_purchase_per_user) < 0) return apiErrorMsg("购买上限不能为负数");
+  if (Number(fields.total_amount) < 0) return apiErrorMsg("总额度不能为负数");
+  const upgrade = String(fields.upgrade_group || "").trim();
+  if (upgrade && !(await containsGroupRatio(s, upgrade))) return apiErrorMsg("升级分组不存在");
+  const downgrade = String(fields.downgrade_group || "").trim();
+  if (downgrade && !(await containsGroupRatio(s, downgrade))) return apiErrorMsg("降级分组不存在");
+  if (String(fields.quota_reset_period) === "custom" && Number(fields.quota_reset_custom_seconds) <= 0) {
+    return apiErrorMsg("自定义重置周期需大于0秒");
+  }
+  return undefined;
 }
 
 async function passkeyLoginBeginSelection(
@@ -1417,7 +1434,16 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { billing_preference?: string };
+    const parsedPref = goUnmarshalJSON((await c.req.text()) || "");
+    if (
+      !parsedPref.ok ||
+      parsedPref.value === null ||
+      typeof parsedPref.value !== "object" ||
+      Array.isArray(parsedPref.value)
+    ) {
+      return apiErrorMsg("参数错误");
+    }
+    const body = parsedPref.value as { billing_preference?: string };
     const pref = normalizeBillingPreference(body.billing_preference);
     const user = await s.getUserById(u.id);
     const settings = parseJson<Record<string, unknown>>(user?.settings || "", {});
@@ -1432,23 +1458,34 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const denied = await requirePaymentCompliance(s);
     if (denied) return denied;
-    const body = (await readJson(c.req)) as { plan_id?: number };
-    if (!body.plan_id) return apiFail("参数错误");
-    const plan = await s.getPlan(Number(body.plan_id));
-    if (!plan || !publicPlan(plan).enabled) return apiFail("套餐未启用");
+    const parsedPay = goUnmarshalJSON((await c.req.text()) || "");
+    if (
+      !parsedPay.ok ||
+      parsedPay.value === null ||
+      typeof parsedPay.value !== "object" ||
+      Array.isArray(parsedPay.value)
+    ) {
+      return apiErrorMsg("参数错误");
+    }
+    const body = parsedPay.value as { plan_id?: number };
+    if (typeof body.plan_id !== "number" || !Number.isInteger(body.plan_id) || body.plan_id <= 0) {
+      return apiErrorMsg("参数错误");
+    }
+    const plan = await s.getPlan(body.plan_id);
+    if (!plan || !publicPlan(plan).enabled) return apiErrorMsg("套餐未启用");
     const published = publicPlan(plan);
-    if (published.allow_balance_pay === false) return apiFail("该套餐不允许使用余额兑换");
+    if (published.allow_balance_pay === false) return apiErrorMsg("该套餐不允许使用余额兑换");
     const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在");
+    if (!user) return apiErrorMsg("用户不存在");
     const quotaPerUnit = await s.optionNum("QuotaPerUnit", 500000);
     const price = Math.ceil(Number(published.price_amount || 0) * quotaPerUnit);
-    if (user.quota < price) return apiFail("余额不足");
+    if (user.quota < price) return apiErrorMsg("余额不足");
     if (price) await s.addQuota(u.id, -price);
     try {
       await s.createUserSubscriptionFromPlan(u.id, plan, "balance");
     } catch (err) {
       if (price) await s.addQuota(u.id, price);
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
     return apiOk(null);
   });
@@ -1466,13 +1503,18 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const denied = await requirePaymentCompliance(s);
     if (denied) return denied;
-    const body = (await readJson(c.req)) as Record<string, unknown>;
-    const fields = planFieldsFromBody(body);
-    if (!String(fields.title || "").trim()) return apiFail("套餐标题不能为空");
-    if (Number(fields.price_amount) < 0) return apiFail("价格不能为负数");
-    if (Number(fields.price_amount) > 9999) return apiFail("价格不能超过9999");
-    if (Number(fields.max_purchase_per_user) < 0) return apiFail("购买上限不能为负数");
-    if (Number(fields.total_amount) < 0) return apiFail("总额度不能为负数");
+    const parsedPlan = goUnmarshalJSON((await c.req.text()) || "");
+    if (
+      !parsedPlan.ok ||
+      parsedPlan.value === null ||
+      typeof parsedPlan.value !== "object" ||
+      Array.isArray(parsedPlan.value)
+    ) {
+      return apiErrorMsg("参数错误");
+    }
+    const fields = planFieldsFromBody(parsedPlan.value as Record<string, unknown>);
+    const fieldErr = await subscriptionPlanFieldError(s, fields);
+    if (fieldErr) return fieldErr;
     const id = await s.insertPlan(fields);
     const created = await s.getPlan(id);
     return apiOk(created ? publicPlan(created) : { id });
@@ -1484,13 +1526,22 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const denied = await requirePaymentCompliance(s);
     if (denied) return denied;
-    const id = Number(c.params.id);
-    if (id <= 0) return apiFail("无效的ID");
-    const body = (await readJson(c.req)) as Record<string, unknown>;
-    const fields = planFieldsFromBody(body);
-    if (!String(fields.title || "").trim()) return apiFail("套餐标题不能为空");
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok || id.n <= 0) return apiErrorMsg("无效的ID");
+    const parsedPlan = goUnmarshalJSON((await c.req.text()) || "");
+    if (
+      !parsedPlan.ok ||
+      parsedPlan.value === null ||
+      typeof parsedPlan.value !== "object" ||
+      Array.isArray(parsedPlan.value)
+    ) {
+      return apiErrorMsg("参数错误");
+    }
+    const fields = planFieldsFromBody(parsedPlan.value as Record<string, unknown>);
+    const fieldErr = await subscriptionPlanFieldError(s, fields);
+    if (fieldErr) return fieldErr;
     fields.updated_at = nowSec();
-    await s.updatePlan(id, fields);
+    await s.updatePlan(id.n, fields);
     return apiOk(null);
   });
 
@@ -1500,11 +1551,20 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const denied = await requirePaymentCompliance(s);
     if (denied) return denied;
-    const id = Number(c.params.id);
-    if (id <= 0) return apiFail("无效的ID");
-    const body = (await readJson(c.req)) as { enabled?: boolean | number };
-    if (body.enabled == null) return apiFail("参数错误");
-    await s.updatePlan(id, { enabled: body.enabled === false || body.enabled === 0 ? 0 : 1, updated_at: nowSec() });
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok || id.n <= 0) return apiErrorMsg("无效的ID");
+    const parsedStatus = goUnmarshalJSON((await c.req.text()) || "");
+    if (
+      !parsedStatus.ok ||
+      parsedStatus.value === null ||
+      typeof parsedStatus.value !== "object" ||
+      Array.isArray(parsedStatus.value) ||
+      typeof (parsedStatus.value as { enabled?: unknown }).enabled !== "boolean"
+    ) {
+      return apiErrorMsg("参数错误");
+    }
+    const body = parsedStatus.value as { enabled: boolean };
+    await s.updatePlan(id.n, { enabled: body.enabled ? 1 : 0, updated_at: nowSec() });
     return apiOk(null);
   });
 
@@ -1514,13 +1574,31 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const denied = await requirePaymentCompliance(s);
     if (denied) return denied;
-    const body = (await readJson(c.req)) as { user_id?: number; plan_id?: number };
-    if (!body.user_id || !body.plan_id) return apiFail("参数错误");
+    const parsedBind = goUnmarshalJSON((await c.req.text()) || "");
+    if (
+      !parsedBind.ok ||
+      parsedBind.value === null ||
+      typeof parsedBind.value !== "object" ||
+      Array.isArray(parsedBind.value)
+    ) {
+      return apiErrorMsg("参数错误");
+    }
+    const body = parsedBind.value as { user_id?: number; plan_id?: number };
+    if (
+      typeof body.user_id !== "number" ||
+      !Number.isInteger(body.user_id) ||
+      body.user_id <= 0 ||
+      typeof body.plan_id !== "number" ||
+      !Number.isInteger(body.plan_id) ||
+      body.plan_id <= 0
+    ) {
+      return apiErrorMsg("参数错误");
+    }
     try {
-      const result = await s.adminBindSubscription(Number(body.user_id), Number(body.plan_id));
+      const result = await s.adminBindSubscription(body.user_id, body.plan_id);
       return apiOk(result.message ? { message: result.message } : null);
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
   });
 
@@ -1528,37 +1606,36 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const userId = Number(c.params.id);
-    if (userId <= 0) return apiFail("无效的用户ID");
+    const userId = strconvAtoi(c.params.id);
+    if (!userId.ok || userId.n <= 0) return apiErrorMsg("无效的用户ID");
     const now = nowSec();
-    return apiOk((await s.listUserSubs(userId)).map((row) => wrapUserSubscription(row, now)));
+    return apiOk((await s.listUserSubs(userId.n)).map((row) => wrapUserSubscription(row, now)));
   });
 
   r.post("/api/subscription/admin/user_subscriptions/:id/invalidate", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const id = Number(c.params.id);
-    if (id <= 0) return apiFail("无效的订阅ID");
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok || id.n <= 0) return apiErrorMsg("无效的订阅ID");
     try {
-      const msg = await s.adminInvalidateUserSubscription(id);
+      const msg = await s.adminInvalidateUserSubscription(id.n);
       return apiOk(msg ? { message: msg } : null);
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
   });
-
   r.delete("/api/subscription/admin/user_subscriptions/:id", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const id = Number(c.params.id);
-    if (id <= 0) return apiFail("无效的订阅ID");
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok || id.n <= 0) return apiErrorMsg("无效的订阅ID");
     try {
-      const msg = await s.adminDeleteUserSubscription(id);
+      const msg = await s.adminDeleteUserSubscription(id.n);
       return apiOk(msg ? { message: msg } : null);
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
   });
 
