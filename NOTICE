@@ -101,6 +101,10 @@ Material changes from upstream:
   (memory uses the full window; KV/Redis uses TTL). KV is the Redis path;
   Redis/KV failure is empty HTTP 500 (not memory fallback, unlike
   `EmailVerificationRateLimit`). Extra-OK: KV get/put is not Redis lua-atomic.
+  Original `middleware.AnonymousRequestBodyLimit` is 512 KiB by default
+  (`ANONYMOUS_REQUEST_BODY_LIMIT_KB`; negative falls back to 512; `<= 0` disables)
+  on POST setup/login/register/reset/oauth-state, payment webhooks, and epay
+  notify/return. Too-large is empty HTTP 413; body read errors are empty HTTP 400.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

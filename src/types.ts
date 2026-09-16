@@ -83,6 +83,8 @@ export interface Env {
   GLOBAL_API_RATE_LIMIT?: string;
   /** Original `GLOBAL_API_RATE_LIMIT_DURATION` (`common.GlobalApiRateLimitDuration`, default 180). */
   GLOBAL_API_RATE_LIMIT_DURATION?: string;
+  /** Original `ANONYMOUS_REQUEST_BODY_LIMIT_KB` (`constant.AnonymousRequestBodyLimitKB`, default 512). `<= 0` disables. */
+  ANONYMOUS_REQUEST_BODY_LIMIT_KB?: string;
 }
 
 export interface ExecutionContextLike {

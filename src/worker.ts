@@ -6,6 +6,7 @@ import { nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, sessionSecret } from "./auth.js";
 import { abortWithOpenAiMessage, apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
+import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { criticalRateLimit } from "./critical-rate-limit.js";
 import { globalApiRateLimit } from "./global-api-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
@@ -749,11 +750,13 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
         }
       }
 
-      const c = ctxStore(req, env, ctx);
       const globalLimited = await globalApiRateLimit(env, req);
       if (globalLimited) return withCors(req, globalLimited);
       const limited = await criticalRateLimit(env, req);
       if (limited) return withCors(req, limited);
+      const bodyLimited = await anonymousRequestBodyLimit(env, req);
+      if (bodyLimited.error) return withCors(req, bodyLimited.error);
+      const c = ctxStore(bodyLimited.req, env, ctx);
       const routed = await api.dispatch(c);
       if (routed) return withCors(req, routed);
 
