@@ -93,6 +93,8 @@ export interface Env {
   GLOBAL_WEB_RATE_LIMIT_DURATION?: string;
   /** Original `ANONYMOUS_REQUEST_BODY_LIMIT_KB` (`constant.AnonymousRequestBodyLimitKB`, default 512). `<= 0` disables. */
   ANONYMOUS_REQUEST_BODY_LIMIT_KB?: string;
+  /** Original `MAX_REQUEST_BODY_MB` (`constant.MaxRequestBodyMB`, default 128). `<= 0` uses decompress middleware fallback 32. */
+  MAX_REQUEST_BODY_MB?: string;
   /** Original `SEARCH_RATE_LIMIT_ENABLE` (`common.SearchRateLimitEnable`, default true). */
   SEARCH_RATE_LIMIT_ENABLE?: string;
   /** Original `SEARCH_RATE_LIMIT` (`common.SearchRateLimitNum`, default 10). */

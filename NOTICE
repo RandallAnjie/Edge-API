@@ -158,6 +158,19 @@ Material changes from upstream:
   off instead of original FatalLog. Extra-OK: GA still runs first. Extra-OK:
   worker `withCors` still adds CORS headers (original api group has no CORS).
   Extra-OK: CT/DisableCache still skip on this Abort.
+  Original `middleware.DecompressRequestMiddleware` leftover empty HTTP 400
+  on `SetRelayRouter` `router.Use` (gzip/br/zstd). GET skips; `gzip.NewReader`
+  / `zstd.NewReader` fail is `AbortWithStatus(400)` empty (no body). `br`
+  has no open-fail path. `MaxRequestBodyMB` default 128 (`MAX_REQUEST_BODY_MB`);
+  middleware fallback is 32 when `<= 0`. Successful decompress deletes
+  `Content-Encoding`. Registered `/api` stays off this middleware (SetApiRouter
+  registers before `Engine.Use`). Extra-OK: worker buffers the decompressed
+  body and sets Content-Length. Extra-OK: Node/workerd `DecompressionStream`
+  may not support `br`/`zstd`; those encodings pass through instead of a fake
+  open-fail 400. Extra-OK: gzip inflate errors after a valid header are empty
+  400 (original would surface in `GetRequestBody`). Extra-OK: OPTIONS 204 still
+  runs before this middleware. Extra-OK: unmatched `/api` may still consume
+  GlobalAPIRateLimit before this 400.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

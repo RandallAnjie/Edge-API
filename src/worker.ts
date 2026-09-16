@@ -7,6 +7,7 @@ import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudi
 import { abortWithOpenAiMessage, apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
+import { decompressRequest } from "./decompress-request.js";
 import { applyDisableCache } from "./disable-cache.js";
 import { newApiVersion, requestIdFor, withRequestIdAndVersionHeaders } from "./request-id.js";
 import { sessionCookieOriginGuard } from "./session-cookie-origin.js";
@@ -689,6 +690,13 @@ async function limitedGlobalWeb(env: Env, req: Request): Promise<Response | null
   return limited ? withCors(req, limited) : null;
 }
 
+/** Original `DecompressRequestMiddleware` leftover empty HTTP 400. */
+async function limitedDecompress(env: Env, req: Request): Promise<{ req: Request; denied: Response | null }> {
+  const out = await decompressRequest(env, req);
+  if (out.error) return { req: out.req, denied: withCors(req, out.error) };
+  return { req: out.req, denied: null };
+}
+
 async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
   const requestId = requestIdFor(req);
   const res = await dispatchFetch(req, env, ctx);
@@ -742,6 +750,9 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
 
     try {
       if (isRelay && !path.startsWith("/v1/dashboard")) {
+        const unpacked = await limitedDecompress(env, req);
+        if (unpacked.denied) return unpacked.denied;
+        req = unpacked.req;
         if (!isRegisteredRelay(req.method, path)) {
           const plugin = await matchPluginRoute(store, req.method, path);
           if (!plugin) {
@@ -764,6 +775,12 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
           const msg = err instanceof Error ? err.message : String(err);
           return withCors(req, openaiError(500, msg, "internal_error"));
         }
+      }
+
+      if (path === "/pg" || path.startsWith("/pg/")) {
+        const unpacked = await limitedDecompress(env, req);
+        if (unpacked.denied) return unpacked.denied;
+        req = unpacked.req;
       }
 
       const globalLimited = await globalApiRateLimit(env, req);
@@ -793,6 +810,10 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       const c = ctxStore(routedReq, env, ctx);
       const routed = await api.dispatch(c);
       if (routed) return withCors(req, applyDisableCache(req, routed));
+
+      const noRouteUnpacked = await limitedDecompress(env, req);
+      if (noRouteUnpacked.denied) return noRouteUnpacked.denied;
+      req = noRouteUnpacked.req;
 
       const plugin = await matchPluginRoute(store, req.method, path);
       if (plugin) {
