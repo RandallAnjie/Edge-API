@@ -141,6 +141,166 @@ function encodePrefillItems(items: unknown): string {
   return JSON.stringify(items);
 }
 
+/** Original `controller.vendorAPIError` HTTP 400 gin.H `{success,message}` (no `data`). */
+function vendorAPIError(err: unknown): Response {
+  const message = err instanceof Error ? err.message : String(err);
+  return json(400, { success: false, message });
+}
+
+type PrefillGroupBound = {
+  id: number;
+  name: string;
+  type: string;
+  items: unknown;
+  description: string;
+  created_time: number;
+  updated_time: number;
+};
+
+type VendorBound = {
+  id: number;
+  name: string;
+  description: string;
+  icon: string;
+  status: number;
+  version: string;
+  created_time: number;
+  updated_time: number;
+  rec: Record<string, unknown>;
+};
+
+function bindJSONStringField(
+  rec: Record<string, unknown>,
+  key: string,
+  structName: string,
+  fail: (message: string) => Response,
+): string | Response {
+  if (!(key in rec) || rec[key] == null) return "";
+  if (typeof rec[key] !== "string") {
+    return fail(
+      `json: cannot unmarshal ${goJSONKind(rec[key])} into Go struct field ${structName}.${key} of type string`,
+    );
+  }
+  return rec[key] as string;
+}
+
+function bindJSONIntField(
+  rec: Record<string, unknown>,
+  key: string,
+  structName: string,
+  typeName: string,
+  fail: (message: string) => Response,
+): number | Response {
+  if (!(key in rec) || rec[key] == null) return 0;
+  if (typeof rec[key] !== "number" || !Number.isFinite(rec[key]) || !Number.isInteger(rec[key])) {
+    return fail(
+      `json: cannot unmarshal ${goJSONKind(rec[key])} into Go struct field ${structName}.${key} of type ${typeName}`,
+    );
+  }
+  return rec[key] as number;
+}
+
+/** Original `c.ShouldBindJSON` into `model.PrefillGroup`. Empty body is EOF; JSON `null` is a zero struct. */
+async function bindPrefillGroup(req: Request): Promise<PrefillGroupBound | Response> {
+  const fail = (message: string) => apiErrorMsg(message);
+  const raw = await req.text();
+  if (!raw.trim()) return fail("EOF");
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return fail(parsed.message);
+  const zero: PrefillGroupBound = {
+    id: 0,
+    name: "",
+    type: "",
+    items: null,
+    description: "",
+    created_time: 0,
+    updated_time: 0,
+  };
+  if (parsed.value === null) return zero;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return fail(`json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type model.PrefillGroup`);
+  }
+  const rec = parsed.value as Record<string, unknown>;
+  const id = bindJSONIntField(rec, "id", "PrefillGroup", "int", fail);
+  if (id instanceof Response) return id;
+  const name = bindJSONStringField(rec, "name", "PrefillGroup", fail);
+  if (name instanceof Response) return name;
+  const type = bindJSONStringField(rec, "type", "PrefillGroup", fail);
+  if (type instanceof Response) return type;
+  const description = bindJSONStringField(rec, "description", "PrefillGroup", fail);
+  if (description instanceof Response) return description;
+  const created_time = bindJSONIntField(rec, "created_time", "PrefillGroup", "int64", fail);
+  if (created_time instanceof Response) return created_time;
+  const updated_time = bindJSONIntField(rec, "updated_time", "PrefillGroup", "int64", fail);
+  if (updated_time instanceof Response) return updated_time;
+  return {
+    id,
+    name,
+    type,
+    items: "items" in rec ? rec.items : null,
+    description,
+    created_time,
+    updated_time,
+  };
+}
+
+/** Original `c.ShouldBindJSON` into `model.Vendor`. Empty body is EOF; JSON `null` is a zero struct. */
+async function bindVendor(req: Request): Promise<VendorBound | Response> {
+  const fail = (message: string) => vendorAPIError(message);
+  const raw = await req.text();
+  if (!raw.trim()) return fail("EOF");
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return fail(parsed.message);
+  const zero: VendorBound = {
+    id: 0,
+    name: "",
+    description: "",
+    icon: "",
+    status: 0,
+    version: "",
+    created_time: 0,
+    updated_time: 0,
+    rec: {},
+  };
+  if (parsed.value === null) return zero;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return fail(`json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type model.Vendor`);
+  }
+  const rec = parsed.value as Record<string, unknown>;
+  const id = bindJSONIntField(rec, "id", "Vendor", "int", fail);
+  if (id instanceof Response) return id;
+  const name = bindJSONStringField(rec, "name", "Vendor", fail);
+  if (name instanceof Response) return name;
+  const description = bindJSONStringField(rec, "description", "Vendor", fail);
+  if (description instanceof Response) return description;
+  const icon = bindJSONStringField(rec, "icon", "Vendor", fail);
+  if (icon instanceof Response) return icon;
+  const status = bindJSONIntField(rec, "status", "Vendor", "int", fail);
+  if (status instanceof Response) return status;
+  const version = bindJSONStringField(rec, "version", "Vendor", fail);
+  if (version instanceof Response) return version;
+  const created_time = bindJSONIntField(rec, "created_time", "Vendor", "int64", fail);
+  if (created_time instanceof Response) return created_time;
+  const updated_time = bindJSONIntField(rec, "updated_time", "Vendor", "int64", fail);
+  if (updated_time instanceof Response) return updated_time;
+  return { id, name, description, icon, status, version, created_time, updated_time, rec };
+}
+
+/** Original `AdminCompleteTopUp` ShouldBindJSON fail OR empty `TradeNo` → ApiErrorMsg `参数错误`. */
+async function bindAdminCompleteTopup(req: Request): Promise<{ trade_no: string } | Response> {
+  const invalid = () => apiErrorMsg("参数错误");
+  const raw = await req.text();
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  const rec = parsed.value as Record<string, unknown>;
+  if ("trade_no" in rec && rec.trade_no != null && typeof rec.trade_no !== "string") return invalid();
+  const trade_no = rec.trade_no == null ? "" : String(rec.trade_no);
+  if (!trade_no) return invalid();
+  return { trade_no };
+}
+
 /** Original `AdminCreateSubscriptionPlan` / `AdminUpdateSubscriptionPlan` ApiErrorMsg checks. */
 async function subscriptionPlanFieldError(s: Store, fields: Record<string, unknown>): Promise<Response | undefined> {
   if (!String(fields.title || "").trim()) return apiErrorMsg("套餐标题不能为空");
@@ -1016,7 +1176,7 @@ export function registerMore(r: Router<Env>): void {
       const { items, total } = await s.listTopups(u.id, q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
       return apiOk(pageData((items as Record<string, unknown>[]).map(publicTopup), total, q));
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 
@@ -1029,7 +1189,7 @@ export function registerMore(r: Router<Env>): void {
       const { items, total } = await s.listTopups(null, q.offset, q.page_size, c.url.searchParams.get("keyword") || "");
       return apiOk(pageData((items as Record<string, unknown>[]).map(publicTopup), total, q));
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 
@@ -1037,13 +1197,13 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { trade_no?: string };
-    if (!body.trade_no) return apiFail("参数错误");
+    const body = await bindAdminCompleteTopup(c.req);
+    if (isResponse(body)) return body;
     try {
       await s.manualCompleteTopUp(body.trade_no, clientIp(c.req));
       return apiOk(null);
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 
@@ -1785,55 +1945,68 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const type = c.url.searchParams.get("type") || "";
-    const items = ((await s.listPrefill(type)) as Record<string, unknown>[]).map(publicPrefill);
-    return apiOk(items);
+    try {
+      const items = ((await s.listPrefill(type)) as Record<string, unknown>[]).map(publicPrefill);
+      return apiOk(items);
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.post("/api/prefill_group/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { name?: string; type?: string; items?: unknown; description?: string };
-    if (!body.name || !body.type) return apiFail("组名称和类型不能为空");
-    if (await s.prefillNameTaken(body.name)) return apiFail("组名称已存在");
-    const items = encodePrefillItems(body.items);
-    const id = await s.insertPrefill(body.name, body.type, items, body.description || "");
-    const row = await s.getPrefill(id);
-    return apiOk(publicPrefill(row || { id, name: body.name, type: body.type, items }));
+    const body = await bindPrefillGroup(c.req);
+    if (isResponse(body)) return body;
+    if (!body.name || !body.type) return apiErrorMsg("组名称和类型不能为空");
+    try {
+      if (await s.prefillNameTaken(body.name)) return apiErrorMsg("组名称已存在");
+      const items = encodePrefillItems(body.items);
+      const id = await s.insertPrefill(body.name, body.type, items, body.description || "");
+      const row = await s.getPrefill(id);
+      return apiOk(publicPrefill(row || { id, name: body.name, type: body.type, items }));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.put("/api/prefill_group/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as {
-      id?: number;
-      name?: string;
-      type?: string;
-      items?: unknown;
-      description?: string;
-      created_time?: number;
-    };
-    if (!body.id) return apiFail("缺少组 ID");
-    if (body.name && (await s.prefillNameTaken(body.name, body.id))) return apiFail("组名称已存在");
-    await s.savePrefill({
-      id: body.id,
-      name: String(body.name || ""),
-      type: String(body.type || ""),
-      items: encodePrefillItems(body.items),
-      description: String(body.description || ""),
-      created_time: Number(body.created_time || 0),
-    });
-    const row = await s.getPrefill(body.id);
-    return apiOk(row ? publicPrefill(row) : null);
+    const body = await bindPrefillGroup(c.req);
+    if (isResponse(body)) return body;
+    if (!body.id) return apiErrorMsg("缺少组 ID");
+    try {
+      if (body.name && (await s.prefillNameTaken(body.name, body.id))) return apiErrorMsg("组名称已存在");
+      await s.savePrefill({
+        id: body.id,
+        name: String(body.name || ""),
+        type: String(body.type || ""),
+        items: encodePrefillItems(body.items),
+        description: String(body.description || ""),
+        created_time: Number(body.created_time || 0),
+      });
+      const row = await s.getPrefill(body.id);
+      return apiOk(row ? publicPrefill(row) : null);
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.delete("/api/prefill_group/:id", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.deletePrefill(Number(c.params.id));
-    return apiOk(null);
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiErrorMsg(id.message);
+    try {
+      await s.deletePrefill(id.n);
+      return apiOk(null);
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   async function searchVendorsResponse(c: C): Promise<Response> {
@@ -1841,15 +2014,19 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const found = await s.searchVendors({
-      keyword: c.url.searchParams.get("keyword") || "",
-      association: c.url.searchParams.get("association") || "",
-      offset: q.offset,
-      limit: q.page_size,
-    });
-    const counts = await s.vendorModelCounts();
-    const items = found.items.map((v) => publicVendor(v, counts[String(v.id || 0)] || 0));
-    return apiOk(pageData(items, found.total, q));
+    try {
+      const found = await s.searchVendors({
+        keyword: c.url.searchParams.get("keyword") || "",
+        association: c.url.searchParams.get("association") || "",
+        offset: q.offset,
+        limit: q.page_size,
+      });
+      const counts = await s.vendorModelCounts();
+      const items = found.items.map((v) => publicVendor(v, counts[String(v.id || 0)] || 0));
+      return apiOk(pageData(items, found.total, q));
+    } catch (e) {
+      return vendorAPIError(e);
+    }
   }
 
   r.get("/api/vendors/", searchVendorsResponse);
@@ -1859,67 +2036,86 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const v = await s.getVendor(Number(c.params.id));
-    if (!v) return apiFail("不存在");
-    const counts = await s.vendorModelCounts();
-    return apiOk(publicVendor(v, counts[String(v.id)] || 0));
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return vendorAPIError(id.message);
+    try {
+      const v = await s.getVendor(id.n);
+      if (!v) return vendorAPIError("record not found");
+      const counts = await s.vendorModelCounts();
+      return apiOk(publicVendor(v, counts[String(v.id)] || 0));
+    } catch (e) {
+      return vendorAPIError(e);
+    }
   });
 
   r.post("/api/vendors/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { name?: string; description?: string; icon?: string };
-    if (!body.name?.trim()) return json(400, { success: false, message: "vendor name is required" });
+    const body = await bindVendor(c.req);
+    if (isResponse(body)) return body;
+    if (!body.name.trim()) return vendorAPIError("vendor name is required");
     const name = body.name.trim();
-    const existing = ((await s.listVendors()) as { name: string }[]).some((v) => v.name.toLowerCase() === name.toLowerCase());
-    if (existing) return json(400, { success: false, message: "vendor name already exists" });
-    const id = await s.insertVendor(name, body.description, body.icon);
-    const v = await s.getVendor(id);
-    return apiOk(publicVendor(v || { id, name, description: body.description, icon: body.icon }));
+    try {
+      const existing = ((await s.listVendors()) as { name: string }[]).some((v) => v.name.toLowerCase() === name.toLowerCase());
+      if (existing) return vendorAPIError("vendor name already exists");
+      const id = await s.insertVendor(name, body.description, body.icon);
+      const v = await s.getVendor(id);
+      return apiOk(publicVendor(v || { id, name, description: body.description, icon: body.icon }));
+    } catch (e) {
+      return vendorAPIError(e);
+    }
   });
 
   r.put("/api/vendors/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number };
-    if (!body.id) return apiFail("缺少供应商 ID");
-    const existing = await s.getVendor(body.id);
-    if (!existing) return apiFail("不存在");
-    if (body.version && String(body.version) !== vendorRecordVersion(existing)) {
-      return json(409, {
-        success: false,
-        message: "vendor data changed; preview again before applying",
-        code: "VENDOR_CONFLICT",
-      });
+    const body = await bindVendor(c.req);
+    if (isResponse(body)) return body;
+    if (!body.id) return apiErrorMsg("缺少供应商 ID");
+    try {
+      const existing = await s.getVendor(body.id);
+      if (!existing) return vendorAPIError("record not found");
+      if (body.version && String(body.version) !== vendorRecordVersion(existing)) {
+        return json(409, {
+          success: false,
+          message: "vendor data changed; preview again before applying",
+          code: "VENDOR_CONFLICT",
+        });
+      }
+      const patch: Record<string, unknown> = { updated_time: nowSec() };
+      for (const k of ["name", "description", "icon", "status"] as const) {
+        if (k in body.rec && body.rec[k] != null) patch[k] = body.rec[k];
+      }
+      await s.updateVendor(body.id, patch);
+      const v = await s.getVendor(body.id);
+      return apiOk(v ? publicVendor(v) : null);
+    } catch (e) {
+      return vendorAPIError(e);
     }
-    const patch: Record<string, unknown> = { updated_time: nowSec() };
-    for (const k of ["name", "description", "icon", "status"]) if (body[k] != null) patch[k] = body[k];
-    await s.updateVendor(body.id, patch);
-    const v = await s.getVendor(body.id);
-    return apiOk(v ? publicVendor(v) : null);
   });
 
   r.delete("/api/vendors/:id", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const id = Number(c.params.id);
-    if (!(await s.getVendor(id))) {
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return vendorAPIError(id.message);
+    if (!(await s.getVendor(id.n))) {
       return json(400, { success: false, message: "vendor data changed; preview again before applying: source vendor does not exist" });
     }
     const counts = await s.vendorModelCounts();
-    const n = counts[String(id)] || 0;
+    const n = counts[String(id.n)] || 0;
     if (n > 0) {
       return json(409, {
         success: false,
         message: "vendors are still referenced by models; transfer or clear their assignments first",
         code: "VENDOR_REFERENCED",
-        reference_counts: { [String(id)]: n },
+        reference_counts: { [String(id.n)]: n },
       });
     }
-    await s.deleteVendor(id);
+    await s.deleteVendor(id.n);
     return apiOk(null);
   });
 
