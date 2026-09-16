@@ -12,7 +12,8 @@ import {
 import { bytesToHex, sha256Bytes } from "./crypto.js";
 import { endpointTypesForChannel, isImageGenerationModel, matchesName } from "./dto.js";
 import { listRoutingPlugins, type RoutingPlugin } from "./task-plugin-factory.js";
-import { pluginModelNames, pluginUsageForModel } from "./plugin-meta.js";
+import { asciiFoldModel, pluginModelNames, pluginUsageForModel } from "./plugin-meta.js";
+import { buildTaskAliasView, type TaskAliasTarget } from "./task-model-alias.js";
 import { defaultModelRatio } from "./ratio-defaults.js";
 import { formatMatchingModelName, resolveCompletionRatio } from "./ratio-setting.js";
 import { baseModelName } from "./reasoning.js";
@@ -571,6 +572,7 @@ function validateModelBillingExpr(
   variants: Record<string, string>,
   previousExpr: string | undefined,
   plugins: RoutingPlugin[],
+  aliasView: Map<string, TaskAliasTarget>,
 ): string | null {
   if (!expression.trim()) return "billing expression is required";
   const compiled = compileBillingExpr(expression);
@@ -583,6 +585,15 @@ function validateModelBillingExpr(
       const err = smokeTestTaskExpr(expression, schema);
       if (err) return `model ${name}: plugin ${plugin.key}: ${err.message}`;
     }
+    return null;
+  }
+  const target = aliasView.get(asciiFoldModel(name));
+  if (target) {
+    const plugin = plugins.find((item) => item.key === target.pluginKey);
+    const err = plugin
+      ? smokeTestTaskExpr(expression, pluginUsageForModel(plugin.meta, target.declared).usageSchema || {})
+      : smokeTestExpr(expression);
+    if (err) return `model ${name}: ${err.message}`;
     return null;
   }
   if (previousExpr !== expression || !usedUsageKeys(expression)) {
@@ -607,6 +618,7 @@ export async function validateBillingExprOption(store: Store, value: string): Pr
   if (!parsed.ok) return "计费表达式配置必须是模型到表达式的 JSON 对象: " + parsed.message;
   if (parsed.value === null) return null;
   const plugins = await listRoutingPlugins(store);
+  const aliasView = await buildTaskAliasView(store, plugins);
   const storedVariants = parseJson<Record<string, string>>(await store.option(PLUGIN_BILLING_EXPR_OPTION), {});
   const storedExprs = parseJson<Record<string, string>>(await store.option("billing_setting.billing_expr"), {});
   for (const modelName of Object.keys(parsed.value).sort()) {
@@ -619,6 +631,7 @@ export async function validateBillingExprOption(store: Store, value: string): Pr
       variants,
       Object.prototype.hasOwnProperty.call(storedExprs, modelName) ? storedExprs[modelName] : undefined,
       plugins,
+      aliasView,
     );
     if (err) return `模型 ${modelName} 的计费表达式无效: ${err}`;
   }

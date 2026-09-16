@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
+import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -131,9 +132,7 @@ test("original GetPricing alias JSON carries plugin usage schema and tail expr",
     "billing_setting.billing_mode",
     JSON.stringify({ "pricing-usage-model": "tiered_expr", "alias-own-expr": "tiered_expr" }),
   );
-  await putOption(
-    e,
-    auth,
+  await new Store(e.DB).setOption(
     "billing_setting.billing_expr",
     JSON.stringify({ "pricing-usage-model": `u("seconds")`, "alias-own-expr": `u("seconds") * 2` }),
   );
