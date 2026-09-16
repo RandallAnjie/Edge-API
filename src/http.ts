@@ -45,6 +45,30 @@ export function strconvAtoi(raw: string): { ok: true; n: number } | { ok: false;
   return { ok: false, message: `strconv.Atoi: parsing "${raw}": invalid syntax` };
 }
 
+const MAX_INT64 = 9223372036854775807n;
+const MIN_INT64 = -9223372036854775808n;
+
+/** Original `strconv.ParseInt(s, 10, 64)`. */
+export function strconvParseInt(raw: string): { ok: true; n: number } | { ok: false; message: string } {
+  if (!/^[+-]?\d+$/.test(raw)) {
+    return { ok: false, message: `strconv.ParseInt: parsing "${raw}": invalid syntax` };
+  }
+  try {
+    const n = BigInt(raw);
+    if (n > MAX_INT64 || n < MIN_INT64) {
+      return { ok: false, message: `strconv.ParseInt: parsing "${raw}": value out of range` };
+    }
+    return { ok: true, n: Number(n) };
+  } catch {
+    return { ok: false, message: `strconv.ParseInt: parsing "${raw}": invalid syntax` };
+  }
+}
+
+/** Original `common.ApiErrorMsg` gin.H (HTTP 200, no `data`). */
+export function apiErrorMsg(message: string): Response {
+  return json(200, { success: false, message });
+}
+
 /** Original `strconv.ParseBool` error string from `common.ApiError`. */
 export function strconvParseBool(raw: string): { ok: true; v: boolean } | { ok: false; message: string } {
   switch (raw) {
@@ -580,8 +604,8 @@ export function withCors(req: Request, res: Response): Response {
 export function parseUnixQuery(url: URL, name: string): number {
   const raw = url.searchParams.get(name);
   if (!raw) return 0;
-  const n = Number(raw);
-  return Number.isFinite(n) ? Math.trunc(n) : 0;
+  const parsed = strconvParseInt(raw);
+  return parsed.ok ? parsed.n : 0;
 }
 
 export function pageQuery(url: URL): PageQuery {

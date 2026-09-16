@@ -51,7 +51,7 @@ import {
   verifyPassword,
   decryptPassword,
 } from "./crypto.js";
-import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
@@ -1379,7 +1379,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const start = parseUnixQuery(c.url, "start_timestamp");
     const end = parseUnixQuery(c.url, "end_timestamp");
-    if (end - start > 2592000) return apiFail("时间跨度不能超过 1 个月");
+    if (end - start > 2592000) return apiErrorMsg("时间跨度不能超过 1 个月");
     return apiOk((await s.quotaDates(u.id, start, end)).map((row) => publicQuotaData(row as Record<string, unknown>)));
   });
 

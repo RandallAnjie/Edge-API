@@ -5,9 +5,25 @@ import { handleFetch } from "../src/worker.js";
 import worker from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { Store } from "../src/store.js";
+import { strconvParseInt } from "../src/http.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 void worker;
+
+test("original strconv.ParseInt base 10 bitSize 64", () => {
+  assert.deepEqual(strconvParseInt("1000"), { ok: true, n: 1000 });
+  assert.deepEqual(strconvParseInt("+1000"), { ok: true, n: 1000 });
+  assert.deepEqual(strconvParseInt("-1"), { ok: true, n: -1 });
+  assert.deepEqual(strconvParseInt("08"), { ok: true, n: 8 });
+  const decimal = strconvParseInt("1.5");
+  assert.equal(decimal.ok, false);
+  if (!decimal.ok) assert.equal(decimal.message, 'strconv.ParseInt: parsing "1.5": invalid syntax');
+  const sci = strconvParseInt("2e3");
+  assert.equal(sci.ok, false);
+  const overflow = strconvParseInt("9223372036854775808");
+  assert.equal(overflow.ok, false);
+  if (!overflow.ok) assert.equal(overflow.message, 'strconv.ParseInt: parsing "9223372036854775808": value out of range');
+});
 
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
@@ -330,6 +346,50 @@ test("original GetUserFlowQuotaDates rejects invalid start_timestamp JSON", asyn
   assert.equal(res.res.status, 200);
   assert.equal(res.body.success, false);
   assert.equal(res.body.message, "invalid start_timestamp");
+  assert.equal("data" in res.body, false);
+});
+
+test("original parseFlowQuotaTimeRange uses ParseInt and ApiErrorMsg gin.H", async () => {
+  const { e, auth } = await boot();
+
+  const decimal = await json(
+    new Request("http://local/api/data/flow/self?start_timestamp=1.5&end_timestamp=2000", { headers: auth }),
+    e,
+  );
+  assert.equal(decimal.res.status, 200);
+  assert.equal(decimal.body.success, false);
+  assert.equal(decimal.body.message, "invalid start_timestamp");
+  assert.equal("data" in decimal.body, false);
+  assert.deepEqual(Object.keys(decimal.body).sort(), ["message", "success"]);
+
+  const badEnd = await json(
+    new Request("http://local/api/data/flow?start_timestamp=1000&end_timestamp=2e3", { headers: auth }),
+    e,
+  );
+  assert.equal(badEnd.res.status, 200);
+  assert.equal(badEnd.body.message, "invalid end_timestamp");
+  assert.equal("data" in badEnd.body, false);
+
+  const range = await json(
+    new Request("http://local/api/data/flow?start_timestamp=2000&end_timestamp=1000", { headers: auth }),
+    e,
+  );
+  assert.equal(range.body.message, "invalid time range");
+  assert.equal("data" in range.body, false);
+
+  const span = await json(
+    new Request("http://local/api/data/flow/self?start_timestamp=1&end_timestamp=2592002", { headers: auth }),
+    e,
+  );
+  assert.equal(span.body.message, "时间跨度不能超过 1 个月");
+  assert.equal("data" in span.body, false);
+
+  const plus = await json(
+    new Request("http://local/api/data/flow?start_timestamp=%2B1000&end_timestamp=2000", { headers: auth }),
+    e,
+  );
+  assert.equal(plus.body.success, true, String(plus.body.message));
+  assert.ok(Array.isArray(plus.body.data));
 });
 
 test("original fillFlowChannelNames missing channel JSON", async () => {

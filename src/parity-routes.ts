@@ -58,7 +58,7 @@ import { bindVerificationOperation, issueSecurityProof, securityProofError } fro
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
 import { headerNavModulePublicOrUserAuth, isHeaderNavDenied } from "./header-nav.js";
-import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, payErr, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, payErr, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -1493,9 +1493,9 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const start = parseUnixQuery(c.url, "start_timestamp");
     const end = parseUnixQuery(c.url, "end_timestamp");
-    if (start <= 0) return apiFail("invalid start_timestamp");
-    if (end <= 0) return apiFail("invalid end_timestamp");
-    if (end < start) return apiFail("invalid time range");
+    if (start <= 0) return apiErrorMsg("invalid start_timestamp");
+    if (end <= 0) return apiErrorMsg("invalid end_timestamp");
+    if (end < start) return apiErrorMsg("invalid time range");
     return apiOk(
       (await s.flowQuotaDates(start, end, 0, c.url.searchParams.get("username") || "", u.role)).map(publicFlowQuotaData),
     );
@@ -1506,10 +1506,10 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const start = parseUnixQuery(c.url, "start_timestamp");
     const end = parseUnixQuery(c.url, "end_timestamp");
-    if (start <= 0) return apiFail("invalid start_timestamp");
-    if (end <= 0) return apiFail("invalid end_timestamp");
-    if (end < start) return apiFail("invalid time range");
-    if (end - start > 2592000) return apiFail("时间跨度不能超过 1 个月");
+    if (start <= 0) return apiErrorMsg("invalid start_timestamp");
+    if (end <= 0) return apiErrorMsg("invalid end_timestamp");
+    if (end < start) return apiErrorMsg("invalid time range");
+    if (end - start > 2592000) return apiErrorMsg("时间跨度不能超过 1 个月");
     return apiOk((await s.flowQuotaDates(start, end, u.id, "", ROLE_USER)).map(publicFlowQuotaData));
   });
 
