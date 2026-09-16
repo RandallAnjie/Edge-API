@@ -37,6 +37,8 @@ import {
   channelFieldsFromBody,
   expandAddChannelKeys,
   previewNonCustomChannel,
+  goJSONKind,
+  goUnmarshalJSON,
   validateChannel,
   validateChannelSettings,
   type AddChannelMode,
@@ -85,7 +87,7 @@ import { finishInsertUser } from "./user-insert.js";
 import { notifyAccountSecurityChange } from "./mail.js";
 import { isPasskeyDomainOption, PasskeyDomainError, passkeyDomainHttpError, updatePasskeyDomainOptions } from "./passkey-domains.js";
 import { checkModelRequestRateLimitGroup } from "./model-rate-limit.js";
-import type { Env, UserRow } from "./types.js";
+import type { Env, RedemptionRow, UserRow } from "./types.js";
 
 type C = Context<Env>;
 
@@ -1447,9 +1449,11 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const item = await s.getRedemption(Number(c.params.id));
-    if (!item) return apiFail("兑换码不存在");
-    return apiOk(publicRedemption(item));
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiErrorMsg(id.message);
+    const found = await redemptionById(s, id.n);
+    if (found instanceof Response) return found;
+    return apiOk(publicRedemption(found));
   });
 
   r.slash("POST", "/api/redemption/", async (c) => {
@@ -1458,21 +1462,23 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const denied = await requirePaymentCompliance(s);
     if (denied) return denied;
-    const body = (await readJson(c.req)) as { name?: string; quota?: number; count?: number; expired_time?: number };
+    const body = await bindRedemption(c.req);
+    if (body instanceof Response) return body;
     const name = String(body.name || "");
-    if (Array.from(name).length < 1 || Array.from(name).length > 20) return apiFail("兑换码名称长度必须在1-20之间");
-    const count = Number(body.count || 0);
-    if (count <= 0) return apiFail("兑换码个数必须大于0");
-    if (count > 100) return apiFail("一次兑换码批量生成的个数不能大于 100");
-    const quota = Number(body.quota || 0);
-    if (quota <= 0) return apiFail("redemption quota must be positive");
-    if (quota > MAX_WALLET_QUOTA) return apiFail(`wallet quota exceeds ${MAX_WALLET_QUOTA}`);
-    const expiredTime = Number(body.expired_time || 0);
-    if (expiredTime !== 0 && expiredTime < nowSec()) {
-      return apiFail(i18nPair(c.req, "过期时间不能早于当前时间", "Expiration time cannot be earlier than current time"));
+    if (Array.from(name).length < 1 || Array.from(name).length > 20) {
+      return apiErrorMsg(redemptionNameLengthMessage(c.req));
     }
+    const count = Number(body.count || 0);
+    if (count <= 0) return apiErrorMsg(redemptionCountPositiveMessage(c.req));
+    if (count > 100) return apiErrorMsg(redemptionCountMaxMessage(c.req));
+    const quotaErr = redemptionQuotaError(Number(body.quota || 0));
+    if (quotaErr) return quotaErr;
+    const expiredTime = Number(body.expired_time || 0);
+    const expiredErr = redemptionExpiredError(c.req, expiredTime);
+    if (expiredErr) return expiredErr;
+    const quota = Number(body.quota || 0);
     const keys: string[] = [];
-    for (let i = 0; i < Math.min(100, count); i++) {
+    for (let i = 0; i < count; i++) {
       const key = generateRedemptionKey();
       await s.insertRedemption({
         name,
@@ -1491,31 +1497,25 @@ export function adminRouter(): Router<Env> {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const statusOnly = c.url.searchParams.get("status_only") || "";
-    let body: { id?: number; name?: string; quota?: number; status?: number; expired_time?: number };
-    try {
-      body = (await readJson(c.req)) as { id?: number; name?: string; quota?: number; status?: number; expired_time?: number };
-    } catch {
-      return apiFail("无效的参数");
-    }
-    if (!body.id) return apiFail("id 为空！");
-    const clean = await s.getRedemption(body.id);
-    if (!clean) return apiFail("record not found");
+    const body = await bindRedemption(c.req);
+    if (body instanceof Response) return body;
+    const found = await redemptionById(s, Number(body.id || 0));
+    if (found instanceof Response) return found;
     const patch: Record<string, unknown> = {};
     if (statusOnly === "") {
       const quota = Number(body.quota ?? 0);
-      if (quota <= 0) return apiFail("redemption quota must be positive");
-      if (quota > MAX_WALLET_QUOTA) return apiFail(`wallet quota exceeds ${MAX_WALLET_QUOTA}`);
+      const quotaErr = redemptionQuotaError(quota);
+      if (quotaErr) return quotaErr;
       const expiredTime = Number(body.expired_time ?? 0);
-      if (expiredTime !== 0 && expiredTime < nowSec()) {
-        return apiFail(i18nPair(c.req, "过期时间不能早于当前时间", "Expiration time cannot be earlier than current time"));
-      }
-      patch.name = body.name ?? clean.name;
+      const expiredErr = redemptionExpiredError(c.req, expiredTime);
+      if (expiredErr) return expiredErr;
+      patch.name = body.name ?? found.name;
       patch.quota = quota;
       patch.expired_time = expiredTime;
     }
     if (statusOnly !== "") patch.status = body.status;
-    if (Object.keys(patch).length) await s.updateRedemption(body.id, patch);
-    const updated = await s.getRedemption(body.id);
+    if (Object.keys(patch).length) await s.updateRedemption(found.id, patch);
+    const updated = await s.getRedemption(found.id);
     return apiOk(updated ? publicRedemption(updated) : null);
   });
 
@@ -1523,8 +1523,12 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.deleteRedemption(Number(c.params.id));
-    return apiOk(null);
+    const parsed = strconvAtoi(c.params.id);
+    const id = parsed.ok ? parsed.n : 0;
+    const found = await redemptionById(s, id);
+    if (found instanceof Response) return found;
+    await s.deleteRedemption(found.id);
+    return json(200, { success: true, message: "" });
   });
 
   r.post("/api/user/topup", async (c) => {
@@ -1533,7 +1537,8 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const denied = await requirePaymentCompliance(s);
     if (denied) return denied;
-    const body = (await readJson(c.req)) as { key?: string };
+    const body = await bindTopUpRequest(c.req);
+    if (body instanceof Response) return body;
     const key = String(body.key || "").trim();
     try {
       const red = await s.getRedemptionByKey(key);
@@ -1551,7 +1556,7 @@ export function adminRouter(): Router<Env> {
       });
       return apiOk(red.quota);
     } catch {
-      return apiFail("兑换失败，请稍后重试");
+      return apiErrorMsg(redeemFailedMessage(c.req));
     }
   });
 
@@ -1641,6 +1646,73 @@ export function adminRouter(): Router<Env> {
   registerMore(r);
 
   return r;
+}
+
+/** Original `c.ShouldBindJSON` into `model.Redemption`. */
+async function bindRedemption(req: Request): Promise<Record<string, unknown> | Response> {
+  const raw = await req.text();
+  if (!raw.trim()) return apiErrorMsg("EOF");
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return apiErrorMsg(parsed.message);
+  if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return apiErrorMsg(`json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type model.Redemption`);
+  }
+  return parsed.value as Record<string, unknown>;
+}
+
+/** Original `c.ShouldBindJSON` into `controller.topUpRequest`. */
+async function bindTopUpRequest(req: Request): Promise<Record<string, unknown> | Response> {
+  const raw = await req.text();
+  if (!raw.trim()) return apiErrorMsg("EOF");
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return apiErrorMsg(parsed.message);
+  if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return apiErrorMsg(`json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type controller.topUpRequest`);
+  }
+  return parsed.value as Record<string, unknown>;
+}
+
+/** Original `model.GetRedemptionById` / `DeleteRedemptionById`. */
+async function redemptionById(s: Store, id: number): Promise<RedemptionRow | Response> {
+  if (id === 0) return apiErrorMsg("id 为空！");
+  const item = await s.getRedemption(id);
+  if (!item) return apiErrorMsg("record not found");
+  return item;
+}
+
+/** Original `i18n.MsgRedemptionNameLength`. */
+function redemptionNameLengthMessage(req: Request): string {
+  return i18nPair(req, "兑换码名称长度必须在1-20之间", "Redemption code name length must be between 1-20");
+}
+
+/** Original `i18n.MsgRedemptionCountPositive`. */
+function redemptionCountPositiveMessage(req: Request): string {
+  return i18nPair(req, "兑换码个数必须大于0", "Redemption code count must be greater than 0");
+}
+
+/** Original `i18n.MsgRedemptionCountMax`. */
+function redemptionCountMaxMessage(req: Request): string {
+  return i18nPair(req, "一次兑换码批量生成的个数不能大于 100", "Maximum 100 redemption codes can be generated at once");
+}
+
+/** Original `i18n.MsgRedemptionExpireTimeInvalid`. */
+function redemptionExpiredError(req: Request, expired: number): Response | null {
+  if (expired !== 0 && expired < nowSec()) {
+    return apiErrorMsg(i18nPair(req, "过期时间不能早于当前时间", "Expiration time cannot be earlier than current time"));
+  }
+  return null;
+}
+
+/** Original `redemption.Quota <= 0` / `common.ValidateWalletQuota`. */
+function redemptionQuotaError(quota: number): Response | null {
+  if (quota <= 0) return apiErrorMsg("redemption quota must be positive");
+  if (quota > MAX_WALLET_QUOTA) return apiErrorMsg(`wallet quota exceeds ${MAX_WALLET_QUOTA}`);
+  return null;
+}
+
+/** Original `i18n.MsgRedeemFailed`. */
+function redeemFailedMessage(req: Request): string {
+  return i18nPair(req, "兑换失败，请稍后重试", "Redemption failed, please try again later");
 }
 
 async function quotaDisplayAmount(s: Store, quota: number): Promise<number> {

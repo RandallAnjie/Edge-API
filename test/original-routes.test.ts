@@ -1192,7 +1192,7 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
     e,
   );
   assert.equal(badRedeem.body.success, false);
-  assert.equal(badRedeem.body.message, "兑换失败，请稍后重试");
+  assert.equal(badRedeem.body.message, "Redemption failed, please try again later");
 
   const created = await json(
     new Request("http://local/api/redemption/", {
