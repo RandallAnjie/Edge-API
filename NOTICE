@@ -179,6 +179,18 @@ Material changes from upstream:
   Extra-OK: JS `Error.message` is used like Go `%v` on `error`. Extra-OK:
   D1-missing stays worker `apiFail` 500 (not a panic). Extra-OK: RequestId and
   Version still wrap panic responses.
+  Original `middleware.SystemPerformanceCheck` leftover HTTP 503
+  `ToClaudeError` on `/v1/messages` prefix (`{error:{type,message}}`) else
+  `ToOpenAIError` (`{error:{message,type:new_api_error,param:"",code}}`) with
+  codes `system_cpu_overloaded` / `system_memory_overloaded` /
+  `system_disk_overloaded`. Enabled default true; CPU/Memory 90 Disk 95;
+  `int(usage) > threshold`. Applied on `/pg`, relay `/v1` (before TokenAuth),
+  MJ, Gemini POST `/v1beta/models`, POST `/v1/responses`; TokenAuth then check
+  on POST `/v1/video/generations` / `/v1/videos` and plugin routes. GET
+  `/v1/models` stays off. Extra-OK: workerd has no gopsutil so live usage
+  stays 0 unless tests inject status (default zeros never trip, matching
+  original pre-monitor). Extra-OK: MaskSensitiveInfo is a no-op on these
+  messages. Extra-OK: `/pg` still runs GA after this check.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

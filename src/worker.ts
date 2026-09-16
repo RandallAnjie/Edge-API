@@ -8,6 +8,11 @@ import { abortWithOpenAiMessage, apiFail, newApiPanicError, noAvailableChannelMe
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { decompressRequest } from "./decompress-request.js";
+import {
+  systemPerformanceCheck,
+  systemPerformanceCheckAppliesAfterAuth,
+  systemPerformanceCheckAppliesBeforeAuth,
+} from "./system-performance-check.js";
 import { applyDisableCache } from "./disable-cache.js";
 import { newApiVersion, requestIdFor, withRequestIdAndVersionHeaders } from "./request-id.js";
 import { sessionCookieOriginGuard } from "./session-cookie-origin.js";
@@ -228,6 +233,10 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
 
   const auth = await authenticateApiToken(ctxStore(req, env, ctx), store);
   if (auth instanceof Response) return auth;
+  if (systemPerformanceCheckAppliesAfterAuth(req.method, path) || !isRegisteredRelay(req.method, path)) {
+    const overloaded = await systemPerformanceCheck(store, path);
+    if (overloaded) return overloaded;
+  }
   return withModelRequestRateLimit(
     store,
     env,
@@ -697,6 +706,15 @@ async function limitedDecompress(env: Env, req: Request): Promise<{ req: Request
   return { req: out.req, denied: null };
 }
 
+/** Original `SystemPerformanceCheck` before TokenAuth on playground / relayV1 / MJ / Gemini. */
+async function limitedSystemPerformanceBeforeAuth(store: Store, req: Request, path: string): Promise<Response | null> {
+  if (!systemPerformanceCheckAppliesBeforeAuth(req.method, path) && !isRegisteredMjRelay(req.method, path)) {
+    return null;
+  }
+  const overloaded = await systemPerformanceCheck(store, path);
+  return overloaded ? withCors(req, overloaded) : null;
+}
+
 async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
   const requestId = requestIdFor(req);
   let res: Response;
@@ -774,6 +792,8 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
             return withCors(req, pluginRoutePanicError());
           }
         }
+        const beforeAuth = await limitedSystemPerformanceBeforeAuth(store, req, path);
+        if (beforeAuth) return beforeAuth;
         try {
           return withCors(req, await handleRelay(req, env, ctx));
         } catch (err) {
@@ -786,6 +806,8 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
         const unpacked = await limitedDecompress(env, req);
         if (unpacked.denied) return unpacked.denied;
         req = unpacked.req;
+        const playgroundOverload = await systemPerformanceCheck(store, path);
+        if (playgroundOverload) return withCors(req, playgroundOverload);
       }
 
       const globalLimited = await globalApiRateLimit(env, req);

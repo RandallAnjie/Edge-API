@@ -14,6 +14,7 @@ import {
 import { compilePlugin, HookError, type LoadedPlugin, type PluginEngine } from "./jsplugin.js";
 import { hit } from "./metrics.js";
 import { withModelRequestRateLimit } from "./model-rate-limit.js";
+import { systemPerformanceCheck } from "./system-performance-check.js";
 import { applyOriginTaskIntent, type ApplyOriginTaskIntentResult, taskPluginLegacyPlatforms } from "./origin-task.js";
 import type { MatchedPlugin } from "./plugin-dispatch.js";
 import { Store } from "./store.js";
@@ -831,6 +832,8 @@ export async function handleNativePluginRoute(
     store,
   );
   if (auth instanceof Response) return auth;
+  const overloaded = await systemPerformanceCheck(store, new URL(req.url).pathname);
+  if (overloaded) return overloaded;
   return withModelRequestRateLimit(store, env, req, auth, async () => {
     hit("relay");
     return executeNativePluginRoute({ req, env, store, auth, plugin, ctx });
