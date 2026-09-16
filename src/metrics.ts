@@ -1,3 +1,4 @@
+import { getDiskCacheStats, resetDiskCacheStats } from "./body-storage.js";
 import type { Store } from "./store.js";
 
 const state = {
@@ -59,6 +60,7 @@ export function resetMetrics(): void {
   state.relay = 0;
   state.errors = 0;
   state.lastReset = Date.now();
+  resetDiskCacheStats();
 }
 
 /** Original `middleware.GetStats` / `StatsInfo`. Internal `hit()` counters stay process-local. */
@@ -71,14 +73,15 @@ export function performanceStats(setting: PerformanceSettingView = DEFAULT_PERFO
     typeof performance !== "undefined" && "memory" in performance
       ? (performance as unknown as { memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number } }).memory
       : undefined;
+  const cache = getDiskCacheStats();
   return {
     cache_stats: {
-      active_disk_files: 0,
-      current_disk_usage_bytes: 0,
-      active_memory_buffers: 0,
-      current_memory_usage_bytes: 0,
-      disk_cache_hits: 0,
-      memory_cache_hits: 0,
+      active_disk_files: cache.activeDiskFiles,
+      current_disk_usage_bytes: cache.currentDiskUsageBytes,
+      active_memory_buffers: cache.activeMemoryBuffers,
+      current_memory_usage_bytes: cache.currentMemoryUsageBytes,
+      disk_cache_hits: cache.diskCacheHits,
+      memory_cache_hits: cache.memoryCacheHits,
       disk_cache_max_bytes: diskCacheSizeBytes(setting.disk_cache_max_size_mb),
       disk_cache_threshold_bytes: diskCacheSizeBytes(setting.disk_cache_threshold_mb),
     },

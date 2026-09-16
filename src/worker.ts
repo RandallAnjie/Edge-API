@@ -6,7 +6,7 @@ import { nowSec, USER_ENABLED } from "./constants.js";
 import { authenticateApiToken, cryptoSecret, finishAccessTokenAudit, maybeBeginAccessTokenAudit, readSession, sessionSecret } from "./auth.js";
 import { finishAdminAudit } from "./admin-operation-audit.js";
 import { beginTokenOperationAudit, finishTokenOperationAudit, tokenOperationAuditApplies } from "./token-operation-audit.js";
-import { abortWithOpenAiMessage, apiFail, newApiPanicError, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
+import { abortWithOpenAiMessage, apiFail, json, messageWithRequestId, newApiPanicError, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { rememberRequestTrustedProxies } from "./trusted-proxies.js";
 import {
   ARTIFACT_NOT_FOUND,
@@ -37,6 +37,14 @@ import { globalWebRateLimit } from "./global-web-rate-limit.js";
 import { withRelayNotFoundWebCache, withSpaCacheHeaders, withWebCacheHeaders } from "./web-cache.js";
 import { embedFolderExists, withIndexAnalytics } from "./index-analytics.js";
 import { emitSetUpLogger } from "./gin-logger.js";
+import {
+  emitBodyStorageCleanup,
+  getRequestBody,
+  isRequestBodyTooLargeError,
+  rememberBodyCleanupContext,
+  storageBytesToArrayBuffer,
+  ERROR_CODE_READ_REQUEST_BODY_FAILED,
+} from "./body-storage.js";
 import { searchRateLimit, searchRateLimitApplies } from "./search-rate-limit.js";
 import { userCriticalRateLimit, userCriticalRateLimitScope } from "./user-critical-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
@@ -459,7 +467,10 @@ async function handleRelayAfterAuth(
       let body: unknown = {};
       if (req.method !== "GET" && req.method !== "HEAD") {
         try {
-          body = await readJson(req);
+          const got = await getRelayBodyStorage(req, env);
+          if (!got.ok) return got.res;
+          const text = new TextDecoder().decode(got.bytes);
+          body = text ? JSON.parse(text) : {};
         } catch {
           body = {};
         }
@@ -494,8 +505,10 @@ async function handleRelayAfterAuth(
   let rawContentType: string | undefined;
   if (req.method !== "GET" && req.method !== "HEAD") {
     const ct = req.headers.get("content-type") || "";
+    const got = await getRelayBodyStorage(req, env);
+    if (!got.ok) return got.res;
     if (ct.includes("multipart/form-data")) {
-      rawBody = await req.arrayBuffer();
+      rawBody = storageBytesToArrayBuffer(got.bytes);
       rawContentType = ct;
       if (mode === "images") {
         let imageBody: Record<string, unknown>;
@@ -566,7 +579,8 @@ async function handleRelayAfterAuth(
       });
     }
     try {
-      body = await readJson(req);
+      const text = new TextDecoder().decode(got.bytes);
+      body = text ? JSON.parse(text) : {};
     } catch {
       return openaiError(400, "请求体必须是 JSON", "invalid_request");
     }
@@ -766,6 +780,33 @@ async function limitedDecompress(env: Env, req: Request): Promise<{ req: Request
   return { req: out.req, denied: null };
 }
 
+/**
+ * Original Relay `GetAndValidateRequest` / `GetBodyStorage` too-large:
+ * `NewErrorWithStatusCode(..., ErrorCodeReadRequestBodyFailed, 413)` then
+ * `ToOpenAIError` / Claude `{type:"error",error:ToClaudeError()}`.
+ * Extra-OK: generated RequestId is not appended (hop 314).
+ */
+function writeReadRequestBodyFailed(req: Request, err: unknown): Response {
+  const raw = err instanceof Error ? err.message : String(err);
+  const rid = req.headers.get("x-oneapi-request-id") || "";
+  const message = rid ? messageWithRequestId(raw, rid) : raw;
+  const path = new URL(req.url).pathname;
+  if (path.startsWith("/v1/messages")) {
+    return json(413, { type: "error", error: { type: "new_api_error", message } });
+  }
+  return openaiError(413, message, ERROR_CODE_READ_REQUEST_BODY_FAILED);
+}
+
+async function getRelayBodyStorage(req: Request, env: Env): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; res: Response }> {
+  try {
+    const storage = await getRequestBody(req, env);
+    return { ok: true, bytes: storage.bytes() };
+  } catch (err) {
+    if (isRequestBodyTooLargeError(err)) return { ok: false, res: writeReadRequestBodyFailed(req, err) };
+    throw err;
+  }
+}
+
 /** Original `SystemPerformanceCheck` before TokenAuth on playground / relayV1 / MJ / Gemini. */
 async function limitedSystemPerformanceBeforeAuth(
   store: Store,
@@ -782,46 +823,51 @@ async function limitedSystemPerformanceBeforeAuth(
 
 async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
   rememberRequestTrustedProxies(req, env);
+  rememberBodyCleanupContext(req, env);
   const inbound = req;
   const startedMs = performance.now();
   const requestId = requestIdFor(req);
   let res: Response;
   try {
-    res = await dispatchFetch(req, env, ctx);
-  } catch (err) {
-    hit("error");
-    res = withCors(req, newApiPanicError(err));
+    try {
+      res = await dispatchFetch(req, env, ctx);
+    } catch (err) {
+      hit("error");
+      res = withCors(req, newApiPanicError(err));
+    }
+    if (env.DB) {
+      const store = new Store(env.DB);
+      try {
+        await finishTokenOperationAudit(store, req, res, requestId);
+      } catch {
+        /* original RecordAuditLog logs and continues */
+      }
+      try {
+        await finishAdminAudit(store, req, res, requestId);
+      } catch {
+        /* original RecordAuditLog logs and continues */
+      }
+      try {
+        await finishAccessTokenAudit(store, req, res, requestId);
+      } catch {
+        /* audit must not fail the request */
+      }
+    }
+    res = await withGzipResponse(req, res);
+    res = withRequestIdAndVersionHeaders(res, requestId, newApiVersion(env));
+    const path = new URL(inbound.url).pathname;
+    emitSetUpLogger({
+      req: inbound,
+      env,
+      res,
+      requestId,
+      startedMs,
+      registeredRelay: isRegisteredRelay(inbound.method, path),
+    });
+    return res;
+  } finally {
+    emitBodyStorageCleanup(inbound);
   }
-  if (env.DB) {
-    const store = new Store(env.DB);
-    try {
-      await finishTokenOperationAudit(store, req, res, requestId);
-    } catch {
-      /* original RecordAuditLog logs and continues */
-    }
-    try {
-      await finishAdminAudit(store, req, res, requestId);
-    } catch {
-      /* original RecordAuditLog logs and continues */
-    }
-    try {
-      await finishAccessTokenAudit(store, req, res, requestId);
-    } catch {
-      /* audit must not fail the request */
-    }
-  }
-  res = await withGzipResponse(req, res);
-  res = withRequestIdAndVersionHeaders(res, requestId, newApiVersion(env));
-  const path = new URL(inbound.url).pathname;
-  emitSetUpLogger({
-    req: inbound,
-    env,
-    res,
-    requestId,
-    startedMs,
-    registeredRelay: isRegisteredRelay(inbound.method, path),
-  });
-  return res;
 }
 
 async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {

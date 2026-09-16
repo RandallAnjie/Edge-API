@@ -10,6 +10,7 @@
  * Extra-OK: invalid `TRUSTED_PROXIES` uses the compatibility defaults instead of
  * original `FatalLog`.
  */
+import { carryRequestBodyCleanup } from "./body-storage.js";
 import type { Env } from "./types.js";
 
 /** Original `common.defaultTrustedProxyCIDRs`. */
@@ -34,7 +35,7 @@ export function rememberRequestTrustedProxies(req: Request, env: Pick<Env, "TRUS
 /** Copy the bound env onto a reconstructed Request (body limit / decompress / redact). */
 export function carryRequestTrustedProxies(from: Request, to: Request): Request {
   if (requestTrustedProxies.has(from)) requestTrustedProxies.set(to, requestTrustedProxies.get(from));
-  return to;
+  return carryRequestBodyCleanup(from, to);
 }
 
 export type ResolveTrustedProxiesResult = {

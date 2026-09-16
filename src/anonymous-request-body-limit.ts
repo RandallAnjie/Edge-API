@@ -3,22 +3,20 @@
  * Default 512 KiB (`ANONYMOUS_REQUEST_BODY_LIMIT_KB`). `<= 0` disables.
  * Too-large is `AbortWithStatus(413)`; any other read error is `AbortWithStatus(400)`.
  */
+import {
+  ERR_REQUEST_BODY_TOO_LARGE,
+  RequestBodyTooLargeError,
+  isRequestBodyTooLargeError,
+  readLimitedBodyBytes,
+} from "./body-storage.js";
 import { envOrDefaultInt } from "./constants.js";
 import { carryRequestTrustedProxies } from "./trusted-proxies.js";
 import type { Env } from "./types.js";
 
+export { ERR_REQUEST_BODY_TOO_LARGE, RequestBodyTooLargeError, isRequestBodyTooLargeError };
+
 /** Original `common.defaultAnonymousRequestBodyLimitKB`. */
 export const DEFAULT_ANONYMOUS_REQUEST_BODY_LIMIT_KB = 512;
-
-/** Original `common.ErrRequestBodyTooLarge`. */
-export const ERR_REQUEST_BODY_TOO_LARGE = "request body too large";
-
-export class RequestBodyTooLargeError extends Error {
-  constructor() {
-    super(ERR_REQUEST_BODY_TOO_LARGE);
-    this.name = "RequestBodyTooLargeError";
-  }
-}
 
 function stripTrailingSlash(path: string): string {
   return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
@@ -72,55 +70,12 @@ export function writeRequestBodyReadFailed(): Response {
   return new Response(null, { status: 400 });
 }
 
-export function isRequestBodyTooLargeError(err: unknown): boolean {
-  return err instanceof RequestBodyTooLargeError;
-}
-
-function concatBytes(chunks: Uint8Array[], total: number): Uint8Array {
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
-}
-
 /**
  * Original `readAnonymousRequestBody`: `io.ReadAll(io.LimitReader(body, maxBytes+1))`.
  * Throws `RequestBodyTooLargeError` when the capped read exceeds `maxBytes`.
  */
 export async function readAnonymousRequestBody(body: ReadableStream<Uint8Array>, maxBytes: number): Promise<Uint8Array> {
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  const cap = maxBytes + 1;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value || value.byteLength === 0) continue;
-      const next = total + value.byteLength;
-      if (next > cap) {
-        const take = cap - total;
-        if (take > 0) chunks.push(value.subarray(0, take));
-        total = cap;
-        break;
-      }
-      chunks.push(value);
-      total = next;
-      if (total >= cap) break;
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      /* already closed or failed */
-    }
-  }
-  const data = concatBytes(chunks, total);
-  if (data.byteLength > maxBytes) throw new RequestBodyTooLargeError();
-  return data;
+  return readLimitedBodyBytes(body, maxBytes);
 }
 
 /** Original middleware replaces `c.Request.Body` with the buffered limited bytes. */
