@@ -45,6 +45,12 @@ import {
   storageBytesToArrayBuffer,
   ERROR_CODE_READ_REQUEST_BODY_FAILED,
 } from "./body-storage.js";
+import {
+  abortDistributeInvalidRequest,
+  distributeReadsJSONModel,
+  getModelFromRequest,
+  unmarshalBodyReusable,
+} from "./unmarshal-body-reusable.js";
 import { searchRateLimit, searchRateLimitApplies } from "./search-rate-limit.js";
 import { userCriticalRateLimit, userCriticalRateLimitScope } from "./user-critical-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
@@ -578,11 +584,15 @@ async function handleRelayAfterAuth(
         method: req.method,
       });
     }
+    if (distributeReadsJSONModel(path, ct)) {
+      const modelReq = getModelFromRequest(req, got.bytes);
+      if (!modelReq.ok) return abortDistributeInvalidRequest(req, modelReq.message);
+    }
     try {
-      const text = new TextDecoder().decode(got.bytes);
-      body = text ? JSON.parse(text) : {};
-    } catch {
-      return openaiError(400, "请求体必须是 JSON", "invalid_request");
+      body = unmarshalBodyReusable(got.bytes, ct);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return openaiError(400, message, "invalid_request");
     }
     if (isAudioRelayMode(mode)) {
       try {

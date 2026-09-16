@@ -132,6 +132,12 @@ import {
 import { Store, publicUser, stripChannelKey, parseChannelStatusFilter, ChannelListQueryError } from "./store.js";
 import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, publicUserLogs, dashboardListModels, channelListModels, publicOptions, publicQuotaData, manageUserView, publicMj, publicChannel, publicRedemption } from "./dto.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
+import {
+  abortDistributeInvalidRequest,
+  distributeReadsJSONModel,
+  getModelFromRequest,
+  unmarshalBodyReusable,
+} from "./unmarshal-body-reusable.js";
 import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
 import { headerNavModuleAuth, isHeaderNavDenied } from "./header-nav.js";
@@ -2047,7 +2053,13 @@ export function adminRouter(): Router<Env> {
     if (u.useAccessToken) return openaiError(500, "暂不支持使用 access token", "access_denied");
     const user = await s.getUserById(u.id);
     if (!user) return openaiError(500, "record not found", "query_data_error");
-    const body = await readJson(c.req);
+    const raw = new TextEncoder().encode(await c.req.text());
+    const ct = c.req.headers.get("content-type") || "";
+    if (distributeReadsJSONModel("/pg/chat/completions", ct)) {
+      const modelReq = getModelFromRequest(c.req, raw);
+      if (!modelReq.ok) return abortDistributeInvalidRequest(c.req, modelReq.message);
+    }
+    const body = unmarshalBodyReusable(raw, ct);
     return playgroundRelay(c.req, c.env, s, user, body, { waitUntil: c.waitUntil });
   });
 
