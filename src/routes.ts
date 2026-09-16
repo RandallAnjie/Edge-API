@@ -78,6 +78,7 @@ import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGr
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
+import { headerNavModuleAuth, isHeaderNavDenied } from "./header-nav.js";
 import { requirePaymentCompliance } from "./payments.js";
 import { storeLogQuota } from "./quota.js";
 import { finishInsertUser } from "./user-insert.js";
@@ -291,9 +292,12 @@ export function adminRouter(): Router<Env> {
 
   r.get("/api/pricing", async (c) => {
     const s = store(c);
-    const session = await readSession(c, s);
-    const pricing = await buildPricing(s, session?.group || "");
-    return apiOkExtra(pricing.data, {
+    const gate = await headerNavModuleAuth(c, s, "pricing");
+    if (isHeaderNavDenied(gate)) return gate;
+    const pricing = await buildPricing(s, gate?.group || "");
+    return json(200, {
+      success: true,
+      data: pricing.data,
       vendors: pricing.vendors,
       group_ratio: pricing.group_ratio,
       usable_group: pricing.usable_group,

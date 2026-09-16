@@ -67,8 +67,6 @@ function bucketLabel(bucket: number, layout: "hour" | "day"): string {
 function modelMeta(name: string, meta: Record<string, Meta>): Meta {
   const item = meta[name];
   if (item?.vendor) return item;
-  const slash = name.indexOf("/");
-  if (slash > 0) return { vendor: name.slice(0, slash), vendor_icon: "" };
   return { vendor: UNKNOWN, vendor_icon: "" };
 }
 

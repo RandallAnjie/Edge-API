@@ -68,6 +68,7 @@ import {
   updatePasskeyDomainOptions,
 } from "./passkey-domains.js";
 import { buildRankingsSnapshot } from "./rankings.js";
+import { headerNavModuleAuth, isHeaderNavDenied } from "./header-nav.js";
 import { requirePaymentCompliance } from "./payments.js";
 import {
   isActiveSubscription,
@@ -219,10 +220,12 @@ export function registerMore(r: Router<Env>): void {
   });
 
   r.get("/api/rankings", async (c) => {
+    const s = store(c);
+    const gate = await headerNavModuleAuth(c, s, "rankings");
+    if (isHeaderNavDenied(gate)) return gate;
     const period = c.url.searchParams.get("period") || "week";
     try {
-      const s = store(c);
-      return apiOk(await buildRankingsSnapshot(s, period));
+      return json(200, { success: true, data: await buildRankingsSnapshot(s, period) });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       const status = Number((e as { status?: number }).status || 400);

@@ -57,6 +57,7 @@ import { manageMultiKeys } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof, securityProofError } from "./security.js";
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
+import { headerNavModulePublicOrUserAuth, isHeaderNavDenied } from "./header-nav.js";
 import { apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, payErr, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -1982,16 +1983,20 @@ export function registerParity(r: Router<Env>): void {
   r.post("/api/subscription/waffo-pancake/pay", (c) => requestSubscriptionWaffoPancakePay(c));
 
   r.get("/api/perf-metrics", async (c) => {
+    const s = store(c);
+    const gate = await headerNavModulePublicOrUserAuth(c, s, "pricing");
+    if (isHeaderNavDenied(gate)) return gate;
     const model = c.url.searchParams.get("model");
     if (!model) return json(400, { success: false, message: "model is required" });
-    const s = store(c);
     const hours = Number(c.url.searchParams.get("hours") || 24);
-    return apiOk(await queryPerfMetrics(s, model, c.url.searchParams.get("group") || "", hours));
+    return json(200, { success: true, data: await queryPerfMetrics(s, model, c.url.searchParams.get("group") || "", hours) });
   });
   r.get("/api/perf-metrics/summary", async (c) => {
     const s = store(c);
+    const gate = await headerNavModulePublicOrUserAuth(c, s, "pricing");
+    if (isHeaderNavDenied(gate)) return gate;
     const hours = Number(c.url.searchParams.get("hours") || 24);
-    return apiOk(await queryPerfMetricsSummary(s, hours));
+    return json(200, { success: true, data: await queryPerfMetricsSummary(s, hours) });
   });
 
   r.get("/api/uptime/status", async (c) => {
