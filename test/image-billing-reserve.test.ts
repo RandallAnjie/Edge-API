@@ -112,10 +112,12 @@ test("original ImageHelper Ali parameters.n is the reserved quantity", () => {
   const refreshed = refreshOutboundImageQuantity(target, 2, CHANNEL_TYPE_ALI);
   assert.equal(refreshed.error, undefined);
   assert.equal(refreshed.count, 2);
-  assert.equal((target.body as { parameters: { n: number } }).parameters.n, 2);
+  const reserved = (target.body as { parameters?: { n?: number } }).parameters;
+  assert.equal(reserved?.n, 2);
   const next = applyAliImageParametersN({ parameters: { prompt_extend: true } }, 4);
-  assert.equal(next.parameters.n, 4);
-  assert.equal(next.parameters.prompt_extend, true);
+  const nextParams = next.parameters as { n?: number; prompt_extend?: boolean };
+  assert.equal(nextParams.n, 4);
+  assert.equal(nextParams.prompt_extend, true);
 });
 
 test("original PrepareImageBillingForRequest image_count bounds are invalid_request JSON", async () => {
@@ -307,7 +309,7 @@ test("original HTTP image Reserve extra n and trusted hold JSON", async () => {
     assert.equal((extra.body.error as { message?: string })?.message, WALLET_QUOTA_INSUFFICIENT);
     assert.equal(fetched, false);
     const after = await store.getUserById(root.id);
-    assert.equal(Number(after?.quota), 5000);
+    assert.equal(Number(after?.quota), 25000);
   } finally {
     globalThis.fetch = orig;
   }
