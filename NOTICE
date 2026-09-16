@@ -117,6 +117,15 @@ Material changes from upstream:
   user ID is empty HTTP 401. Redis/KV failure is empty HTTP 500. Extra-OK:
   unauthenticated search routes skip the leftover empty 401 so requireUser JSON
   still runs. GET `/api/log/search` stays AdminAuth-only and is not on this limiter.
+  Original `middleware.GlobalWebRateLimit` is on by default
+  (`GLOBAL_WEB_RATE_LIMIT_ENABLE`, 120 req / 180s, mark `GW`, IP-keyed) on
+  `SetWebRouter` NoRoute (SPA/static, unmatched `/api` `/v1` `/assets`). Deny is
+  empty HTTP 429 + `Retry-After` (memory uses the full window; KV/Redis uses TTL).
+  Redis/KV failure is empty HTTP 500 (not memory fallback). Registered `/api`,
+  relay `/v1` (except unmatched), dashboard billing, and `/pg` stay off this limiter.
+  Extra-OK: OPTIONS 204 still runs before this limiter. Extra-OK: KV get/put is
+  not Redis lua-atomic. Extra-OK: plugin-owned paths still skip this limiter
+  because original `pluginDispatcher` runs first on NoRoute.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

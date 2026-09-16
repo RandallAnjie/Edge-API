@@ -9,6 +9,7 @@ import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugi
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { criticalRateLimit } from "./critical-rate-limit.js";
 import { globalApiRateLimit } from "./global-api-rate-limit.js";
+import { globalWebRateLimit } from "./global-web-rate-limit.js";
 import { searchRateLimit, searchRateLimitApplies } from "./search-rate-limit.js";
 import { userCriticalRateLimit, userCriticalRateLimitScope } from "./user-critical-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
@@ -678,6 +679,12 @@ async function relayJson(
   });
 }
 
+/** Original `SetWebRouter` NoRoute `GlobalWebRateLimit` leftover empty HTTP 429. */
+async function limitedGlobalWeb(env: Env, req: Request): Promise<Response | null> {
+  const limited = await globalWebRateLimit(env, req);
+  return limited ? withCors(req, limited) : null;
+}
+
 async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
   const res = await dispatchFetch(req, env, ctx);
   if (env.DB) {
@@ -734,6 +741,8 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
           const plugin = await matchPluginRoute(store, req.method, path);
           if (!plugin) {
             if (await matchPluginOwnedPath(store, path)) return withCors(req, pluginMethodNotAllowed());
+            const webLimited = await limitedGlobalWeb(env, req);
+            if (webLimited) return webLimited;
             return withCors(req, relayNotFound(req.method, path));
           }
           try {
@@ -790,6 +799,8 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       }
       if (await matchPluginOwnedPath(store, path)) return withCors(req, pluginMethodNotAllowed());
       if (path.startsWith("/v1") || path.startsWith("/api") || path.startsWith("/assets")) {
+        const webLimited = await limitedGlobalWeb(env, req);
+        if (webLimited) return webLimited;
         return withCors(req, relayNotFound(req.method, path));
       }
     } catch (err) {
@@ -801,6 +812,9 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       return withCors(req, apiFail(msg, null, 500));
     }
   }
+
+  const webLimited = await limitedGlobalWeb(env, req);
+  if (webLimited) return webLimited;
 
   if (env.ASSETS) {
     const res = await env.ASSETS.fetch(req);
