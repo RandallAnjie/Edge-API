@@ -1018,29 +1018,54 @@ export function apiFailInvalidParams(req: Request): Response {
   return apiErrorMsg(i18nPair(req, "无效的参数", "Invalid parameters"));
 }
 
+/** Original `middleware.CORS` `AllowMethods` after `cors.DefaultConfig`. */
+export const CORS_ALLOW_METHODS = "GET,POST,PUT,DELETE,OPTIONS";
+/** Original `cors.DefaultConfig` `MaxAge` `12 * time.Hour`. */
+export const CORS_MAX_AGE_SECONDS = "43200";
+
+function requestHost(req: Request): string {
+  return req.headers.get("host") || new URL(req.url).host;
+}
+
+/**
+ * Original `gin-contrib/cors` v1.7.2 `applyCors`: empty Origin and
+ * same-origin `http(s)://`+Host are not CORS requests.
+ */
+export function corsApplies(req: Request): boolean {
+  const origin = req.headers.get("origin") || "";
+  if (!origin) return false;
+  const host = requestHost(req);
+  if (origin === "http://" + host || origin === "https://" + host) return false;
+  return true;
+}
+
+/**
+ * Original `generateNormalHeaders` / `generatePreflightHeaders` for
+ * `AllowAllOrigins` + `AllowCredentials` + original AllowMethods/AllowHeaders.
+ * AllowAllOrigins does not set `Vary`.
+ */
 export function corsHeaders(req: Request): Headers {
   const h = new Headers();
-  h.set("access-control-allow-origin", req.headers.get("origin") || "*");
-  h.set("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  h.set(
-    "access-control-allow-headers",
-    req.headers.get("access-control-request-headers") ||
-      "authorization,content-type,x-api-key,x-goog-api-key,anthropic-version,openai-organization,mj-api-secret,x-security-proof",
-  );
   h.set("access-control-allow-credentials", "true");
-  h.set("access-control-max-age", "86400");
+  h.set("access-control-allow-origin", "*");
+  if (req.method === "OPTIONS") {
+    h.set("access-control-allow-methods", CORS_ALLOW_METHODS);
+    h.set("access-control-allow-headers", "*");
+    h.set("access-control-max-age", CORS_MAX_AGE_SECONDS);
+  }
   return h;
 }
 
+/** Original `middleware.CORS` leftover headers when `applyCors` runs. */
 export function withCors(req: Request, res: Response): Response {
+  if (!corsApplies(req)) return res;
+  const c = corsHeaders(req);
   const ws = (res as Response & { webSocket?: unknown }).webSocket;
   if (res.status === 101 || ws) {
-    const c = corsHeaders(req);
     c.forEach((v, k) => res.headers.set(k, v));
     return res;
   }
   const headers = new Headers(res.headers);
-  const c = corsHeaders(req);
   c.forEach((v, k) => headers.set(k, v));
   return new Response(res.body, { status: res.status, headers });
 }

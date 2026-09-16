@@ -518,8 +518,19 @@ Material changes from upstream:
   language takes effect on the next request. TokenAuthReadOnly banned /
   missing-user errors stay header-only (original sets `id` after those
   checks). Extra-OK: hop 323 vendor.create/delete fallback tests stay
-  unchanged. Extra-OK: AUTH `writeAuthSessionError` stays `http.StatusText`
+  unchanged.   Extra-OK: AUTH `writeAuthSessionError` stays `http.StatusText`
   (`Unauthorized`). requireUser/requireAdmin/requireRoot stay unchanged.
+  Original `middleware.CORS` leftover `github.com/gin-contrib/cors` v1.7.2
+  headers (`AllowAllOrigins` + `AllowCredentials`, methods
+  `GET,POST,PUT,DELETE,OPTIONS`, headers `*`, Max-Age `43200`). Empty Origin
+  and same-origin `http(s)://`+Host skip like `applyCors`. Preflight OPTIONS
+  gets methods/headers/max-age; normal responses only origin `*` +
+  credentials. Extra-OK: hop 323 vendor.create/delete fallback tests stay
+  unchanged. Extra-OK: OPTIONS 204 still runs first. Extra-OK: worker may
+  still attach CORS on registered `/api` when Origin is cross-site
+  (`SetApiRouter` registers before `Engine.Use(CORS)`).
+  requireUser/requireAdmin/requireRoot and UserAuth `AUTH_UNAUTHORIZED`
+  StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
