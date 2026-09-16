@@ -100,7 +100,7 @@ import { getTaskPluginMarketplaceSources } from "./option-defaults.js";
 import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
 import { SYSTEM_INSTANCE_STALE_AFTER_SECONDS, listSystemInstanceResponses } from "./system-instance.js";
 import { lazySystemTaskRun, runPendingLogCleanupSystemTask, startLogCleanupTask } from "./system-task.js";
-import { fetchUpstreamRatios, validateFetchRequest } from "./ratio-sync.js";
+import { fetchUpstreamRatios, validateFetchRequest, type ChannelRowLike } from "./ratio-sync.js";
 import { compilePlugin, dryRunPlugin, UnknownMetaFieldError } from "./jsplugin.js";
 import { decodeIconDataURI } from "./jsplugin-icon.js";
 import { currentRoutingGeneration, preflightRoutingConflict, routingMetaFromRecord } from "./jsplugin-preflight.js";
@@ -1213,7 +1213,7 @@ export function registerParity(r: Router<Env>): void {
       const status = Number((err as { status?: number }).status || 400);
       return json(status, { success: false, message: err instanceof Error ? err.message : "请求参数格式错误" });
     }
-    let channels = [];
+    let channels: ChannelRowLike[] = [];
     if (req.upstreams?.length) {
       for (const ustr of req.upstreams) {
         if (!ustr.id) continue;
