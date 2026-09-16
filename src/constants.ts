@@ -349,6 +349,7 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   TelegramBotToken: "",
   TurnstileCheckEnabled: "false",
   TurnstileSiteKey: "",
+  TurnstileSecretKey: "",
   LinuxDOMinimumTrustLevel: "0",
   BatchUpdateEnabled: "false",
   DrawingEnabled: "true",

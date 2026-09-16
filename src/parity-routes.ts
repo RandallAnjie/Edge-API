@@ -1168,13 +1168,17 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const channels = await s.allChannels();
-    const data = channels
-      .filter((ch) => ch.base_url)
-      .map((ch) => ({ id: ch.id, name: ch.name, base_url: ch.base_url, status: ch.status, type: ch.type }));
-    data.push({ id: -100, name: "官方倍率预设", base_url: "https://basellm.github.io", status: 1, type: 0 });
-    data.push({ id: -101, name: "models.dev 价格预设", base_url: "https://models.dev", status: 1, type: 0 });
-    return apiOk(data);
+    try {
+      const channels = await s.allChannels();
+      const data = channels
+        .filter((ch) => ch.base_url)
+        .map((ch) => ({ id: ch.id, name: ch.name, base_url: ch.base_url, status: ch.status, type: ch.type }));
+      data.push({ id: -100, name: "官方倍率预设", base_url: "https://basellm.github.io", status: 1, type: 0 });
+      data.push({ id: -101, name: "models.dev 价格预设", base_url: "https://models.dev", status: 1, type: 0 });
+      return apiOk(data);
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
   r.post("/api/ratio_sync/fetch", async (c) => {
     const s = store(c);
@@ -1542,7 +1546,11 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await listSystemInstanceResponses(s, c.env));
+    try {
+      return apiOk(await listSystemInstanceResponses(s, c.env));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
   r.delete("/api/system-info/stale-instances", async (c) => {
     const s = store(c);
@@ -1674,7 +1682,11 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    return apiOk(await s.getMissingModels());
+    try {
+      return json(200, { success: true, data: await s.getMissingModels() });
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
   r.get("/api/models/sync_upstream/preview", async (c) => {
     const s = store(c);

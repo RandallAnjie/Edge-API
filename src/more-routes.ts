@@ -100,6 +100,7 @@ import {
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { goJSONKind, goUnmarshalJSON, parseChannelBatch, readChannelTagJSON } from "./channel-validate.js";
 import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, passkeyCredentialId, readJson, strconvAtoi, strconvParseBool, userCannotDeleteRootUserMessage, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
+import { turnstileCheck } from "./turnstile.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -497,6 +498,8 @@ export function registerMore(r: Router<Env>): void {
 
   r.get("/api/verification", async (c) => {
     const s = store(c);
+    const turnstileDenied = await turnstileCheck(s, c.req);
+    if (turnstileDenied) return turnstileDenied;
     const validated = await validateAccountEmail(s, c.url.searchParams.get("email") || "");
     if (!validated.ok) {
       // Original `writeSecurityOperationError` for `ErrAccountEmailInvalid` / Restricted.
@@ -523,6 +526,8 @@ export function registerMore(r: Router<Env>): void {
 
   r.get("/api/reset_password", async (c) => {
     const s = store(c);
+    const turnstileDenied = await turnstileCheck(s, c.req);
+    if (turnstileDenied) return turnstileDenied;
     const email = normalizeEmail(c.url.searchParams.get("email") || "");
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return apiFailInvalidParams(c.req);
     const user = await s.getUserByEmail(email);
@@ -1689,13 +1694,17 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listRedemptions(
-      q.offset,
-      q.page_size,
-      c.url.searchParams.get("keyword") || "",
-      c.url.searchParams.get("status") || "",
-    );
-    return apiOk(pageData(items.map(publicRedemption), total, q));
+    try {
+      const { items, total } = await s.listRedemptions(
+        q.offset,
+        q.page_size,
+        c.url.searchParams.get("keyword") || "",
+        c.url.searchParams.get("status") || "",
+      );
+      return apiOk(pageData(items.map(publicRedemption), total, q));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.post("/api/redemption/batch", async (c) => {
@@ -2410,8 +2419,12 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    await s.setOption("ModelRatio", DEFAULT_MODEL_RATIO_JSON);
-    return apiOk(null, "重置模型倍率成功");
+    try {
+      await s.setOption("ModelRatio", DEFAULT_MODEL_RATIO_JSON);
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
+    return json(200, { success: true, message: "重置模型倍率成功" });
   });
 
   r.get("/api/verify/methods", async (c) => {

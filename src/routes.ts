@@ -101,6 +101,7 @@ import {
   writeSecurityOperationError,
 } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
+import { turnstileCheck } from "./turnstile.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -378,6 +379,8 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/user/login", async (c) => {
     const s = store(c);
+    const turnstileDenied = await turnstileCheck(s, c.req);
+    if (turnstileDenied) return turnstileDenied;
     if (!(await s.optionBool("PasswordLoginEnabled", true))) {
       return apiErrorMsg(userPasswordLoginDisabledMessage(c.req));
     }
@@ -444,6 +447,8 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/user/register", async (c) => {
     const s = store(c);
+    const turnstileDenied = await turnstileCheck(s, c.req);
+    if (turnstileDenied) return turnstileDenied;
     if (!(await s.optionBool("RegisterEnabled", true))) {
       return apiErrorMsg(userRegisterDisabledMessage(c.req));
     }
@@ -649,6 +654,8 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
+    const turnstileDenied = await turnstileCheck(s, c.req);
+    if (turnstileDenied) return turnstileDenied;
     if (!(await s.optionBool("checkin_setting.enabled", false))) return apiErrorMsg("签到功能未启用");
     const user = await s.getUserById(u.id);
     if (!user) return apiErrorMsg("record not found");
@@ -986,18 +993,23 @@ export function adminRouter(): Router<Env> {
     const statusFilter = parseChannelStatusFilter(c.url.searchParams.get("status") || "");
     const typeParsed = strconvAtoi(c.url.searchParams.get("type") || "");
     const typeFilter = c.url.searchParams.get("type") && typeParsed.ok ? typeParsed.n : undefined;
-    const { items, total, type_counts } = await s.listChannels({
-      offset: q.offset,
-      limit: q.page_size,
-      group: c.url.searchParams.get("group") || undefined,
-      status: statusFilter < 0 ? undefined : statusFilter,
-      type: typeFilter,
-      tag_mode: queryParseBool(c.url, "tag_mode"),
-      sort_by: c.url.searchParams.get("sort_by") || undefined,
-      sort_order: c.url.searchParams.get("sort_order") || undefined,
-      id_sort: queryParseBool(c.url, "id_sort"),
-    });
-    return apiOk(pageData(items.map(stripChannelKey), total, q, { type_counts }));
+    const tagMode = queryParseBool(c.url, "tag_mode");
+    try {
+      const { items, total, type_counts } = await s.listChannels({
+        offset: q.offset,
+        limit: q.page_size,
+        group: c.url.searchParams.get("group") || undefined,
+        status: statusFilter < 0 ? undefined : statusFilter,
+        type: typeFilter,
+        tag_mode: tagMode,
+        sort_by: c.url.searchParams.get("sort_by") || undefined,
+        sort_order: c.url.searchParams.get("sort_order") || undefined,
+        id_sort: queryParseBool(c.url, "id_sort"),
+      });
+      return apiOk(pageData(items.map(stripChannelKey), total, q, { type_counts }));
+    } catch {
+      return apiErrorMsg(tagMode ? "获取标签失败，请稍后重试" : "获取渠道数量失败，请稍后重试");
+    }
   });
 
   r.get("/api/channel/search", async (c) => {
@@ -1008,15 +1020,20 @@ export function adminRouter(): Router<Env> {
     const statusFilter = parseChannelStatusFilter(c.url.searchParams.get("status") || "");
     const typeParsed = strconvAtoi(c.url.searchParams.get("type") || "");
     const typeFilter = c.url.searchParams.get("type") && typeParsed.ok ? typeParsed.n : -1;
-    let channelData = await s.searchChannels({
-      keyword: c.url.searchParams.get("keyword") || "",
-      group: c.url.searchParams.get("group") || "",
-      model: c.url.searchParams.get("model") || "",
-      id_sort: queryParseBool(c.url, "id_sort"),
-      sort_by: c.url.searchParams.get("sort_by") || undefined,
-      sort_order: c.url.searchParams.get("sort_order") || undefined,
-      tag_mode: queryParseBool(c.url, "tag_mode"),
-    });
+    let channelData;
+    try {
+      channelData = await s.searchChannels({
+        keyword: c.url.searchParams.get("keyword") || "",
+        group: c.url.searchParams.get("group") || "",
+        model: c.url.searchParams.get("model") || "",
+        id_sort: queryParseBool(c.url, "id_sort"),
+        sort_by: c.url.searchParams.get("sort_by") || undefined,
+        sort_order: c.url.searchParams.get("sort_order") || undefined,
+        tag_mode: queryParseBool(c.url, "tag_mode"),
+      });
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
     if (statusFilter === CHANNEL_ENABLED) {
       channelData = channelData.filter((ch) => Number(ch.status) === CHANNEL_ENABLED);
     } else if (statusFilter === 0) {
@@ -1705,8 +1722,12 @@ export function adminRouter(): Router<Env> {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const q = pageQuery(c.url);
-    const { items, total } = await s.listRedemptions(q.offset, q.page_size);
-    return apiOk(pageData(items.map(publicRedemption), total, q));
+    try {
+      const { items, total } = await s.listRedemptions(q.offset, q.page_size);
+      return apiOk(pageData(items.map(publicRedemption), total, q));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/redemption/:id", async (c) => {
