@@ -847,6 +847,27 @@ export function channelFieldsFromBody(ch: Record<string, unknown>): Partial<Chan
   };
 }
 
+/** Original `controller.ChannelTag` ShouldBindJSON (`Tag string`). Empty body is EOF; JSON `null` is a zero struct. */
+export async function readChannelTagJSON(
+  req: Request,
+): Promise<{ ok: true; tag: string; rec: Record<string, unknown> } | { ok: false; eofOrType: boolean }> {
+  const text = await req.text();
+  if (!text) return { ok: false, eofOrType: true };
+  let body: unknown;
+  try {
+    body = JSON.parse(text) as unknown;
+  } catch {
+    return { ok: false, eofOrType: true };
+  }
+  if (body === null) return { ok: false, eofOrType: false };
+  if (typeof body !== "object" || Array.isArray(body)) return { ok: false, eofOrType: true };
+  const rec = body as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(rec, "tag")) return { ok: false, eofOrType: false };
+  if (typeof rec.tag !== "string") return { ok: false, eofOrType: true };
+  if (!rec.tag) return { ok: false, eofOrType: false };
+  return { ok: true, tag: rec.tag, rec };
+}
+
 /** Original `controller.ChannelBatch` ShouldBindJSON (`ids []int`, `tag *string`). */
 export function parseChannelBatch(
   body: unknown,

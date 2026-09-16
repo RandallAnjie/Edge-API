@@ -1,5 +1,5 @@
 import { parseJson } from "./constants.js";
-import { apiFail, apiOk, json } from "./http.js";
+import { apiErrorMsg, apiOk, json } from "./http.js";
 import type { ChannelRow } from "./types.js";
 
 /** Original `model.Channel.GetKeys`. */
@@ -126,7 +126,7 @@ export type MultiKeyManageRequest = {
 /** Original `controller.ManageMultiKeys`. */
 export function manageMultiKeys(ch: ChannelRow, request: MultiKeyManageRequest): Response | { patch: { key?: string; channel_info: string }; response: Response } {
   const info = parseChannelInfo(String(ch.channel_info || ""));
-  if (!info.is_multi_key) return apiFail("该渠道不是多密钥模式");
+  if (!info.is_multi_key) return apiErrorMsg("该渠道不是多密钥模式");
   const keys = channelKeys(ch.key);
   const size = info.multi_key_size > 0 ? info.multi_key_size : keys.length;
   const action = String(request.action || "");
@@ -174,17 +174,17 @@ export function manageMultiKeys(ch: ChannelRow, request: MultiKeyManageRequest):
       });
     }
     case "disable_key": {
-      if (request.key_index == null) return apiFail("未指定要禁用的密钥索引");
+      if (request.key_index == null) return apiErrorMsg("未指定要禁用的密钥索引");
       const keyIndex = Number(request.key_index);
-      if (keyIndex < 0 || keyIndex >= size) return apiFail("密钥索引超出范围");
+      if (keyIndex < 0 || keyIndex >= size) return apiErrorMsg("密钥索引超出范围");
       const next = { ...info, multi_key_status_list: statusMap(info), multi_key_disabled_time: timeMap(info), multi_key_disabled_reason: reasonMap(info) };
       next.multi_key_status_list![String(keyIndex)] = 2;
       return { patch: { channel_info: stringifyChannelInfo(next) }, response: json(200, { success: true, message: "密钥已禁用" }) };
     }
     case "enable_key": {
-      if (request.key_index == null) return apiFail("未指定要启用的密钥索引");
+      if (request.key_index == null) return apiErrorMsg("未指定要启用的密钥索引");
       const keyIndex = Number(request.key_index);
-      if (keyIndex < 0 || keyIndex >= size) return apiFail("密钥索引超出范围");
+      if (keyIndex < 0 || keyIndex >= size) return apiErrorMsg("密钥索引超出范围");
       const statuses = statusMap(info);
       const times = timeMap(info);
       const reasons = reasonMap(info);
@@ -216,14 +216,14 @@ export function manageMultiKeys(ch: ChannelRow, request: MultiKeyManageRequest):
           disabledCount += 1;
         }
       }
-      if (disabledCount === 0) return apiFail("没有可禁用的密钥");
+      if (disabledCount === 0) return apiErrorMsg("没有可禁用的密钥");
       const next = { ...info, multi_key_status_list: statuses, multi_key_disabled_time: times, multi_key_disabled_reason: reasons };
       return { patch: { channel_info: stringifyChannelInfo(next) }, response: json(200, { success: true, message: `已禁用 ${disabledCount} 个密钥` }) };
     }
     case "delete_key": {
-      if (request.key_index == null) return apiFail("未指定要删除的密钥索引");
+      if (request.key_index == null) return apiErrorMsg("未指定要删除的密钥索引");
       const keyIndex = Number(request.key_index);
-      if (keyIndex < 0 || keyIndex >= size) return apiFail("密钥索引超出范围");
+      if (keyIndex < 0 || keyIndex >= size) return apiErrorMsg("密钥索引超出范围");
       const remaining: string[] = [];
       const newStatus: Record<string, number> = {};
       const newTime: Record<string, number> = {};
@@ -240,7 +240,7 @@ export function manageMultiKeys(ch: ChannelRow, request: MultiKeyManageRequest):
         if (r) newReason[String(newIndex)] = r;
         newIndex += 1;
       }
-      if (!remaining.length) return apiFail("不能删除最后一个密钥");
+      if (!remaining.length) return apiErrorMsg("不能删除最后一个密钥");
       const next: ChannelInfo = {
         ...info,
         multi_key_size: remaining.length,
@@ -273,7 +273,7 @@ export function manageMultiKeys(ch: ChannelRow, request: MultiKeyManageRequest):
         }
         newIndex += 1;
       }
-      if (deletedCount === 0) return apiFail("没有需要删除的自动禁用密钥");
+      if (deletedCount === 0) return apiErrorMsg("没有需要删除的自动禁用密钥");
       const next: ChannelInfo = {
         ...info,
         multi_key_size: remaining.length,
@@ -287,7 +287,7 @@ export function manageMultiKeys(ch: ChannelRow, request: MultiKeyManageRequest):
       };
     }
     default:
-      return apiFail("不支持的操作");
+      return apiErrorMsg("不支持的操作");
   }
 }
 

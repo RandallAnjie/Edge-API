@@ -92,7 +92,8 @@ test("POST /api/channel/batch/tag ShouldBindJSON matches original ChannelBatch e
     assert.equal(res.res.status, 200, String(c.body));
     assert.equal(res.body.success, false, String(c.body));
     assert.equal(res.body.message, "参数错误", String(c.body));
-    assert.equal(res.body.data, null, String(c.body));
+    assert.equal("data" in res.body, false, String(c.body));
+    assert.deepEqual(Object.keys(res.body).sort(), ["message", "success"], String(c.body));
   }
 });
 
@@ -167,6 +168,8 @@ test("POST /api/channel/batch ShouldBindJSON matches original DeleteChannelBatch
   );
   assert.equal(bad.body.success, false);
   assert.equal(bad.body.message, "参数错误");
+  assert.equal("data" in bad.body, false);
+  assert.deepEqual(Object.keys(bad.body).sort(), ["message", "success"]);
   const ok = await json(
     new Request("http://local/api/channel/batch", {
       method: "POST",

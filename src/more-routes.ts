@@ -98,7 +98,7 @@ import {
   updateCustomOAuthProvider,
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
-import { goJSONKind, goUnmarshalJSON, parseChannelBatch } from "./channel-validate.js";
+import { goJSONKind, goUnmarshalJSON, parseChannelBatch, readChannelTagJSON } from "./channel-validate.js";
 import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, passkeyCredentialId, readJson, strconvAtoi, strconvParseBool, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -1477,14 +1477,14 @@ export function registerMore(r: Router<Env>): void {
     try {
       body = await readJson(c.req);
     } catch {
-      return apiFail("参数错误");
+      return apiErrorMsg("参数错误");
     }
     const parsed = parseChannelBatch(body);
-    if (!parsed.ok) return apiFail("参数错误");
+    if (!parsed.ok) return apiErrorMsg("参数错误");
     try {
       return apiOk(await s.deleteChannelsBatch(parsed.ids));
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 
@@ -1492,10 +1492,10 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { tag?: string };
-    if (!body.tag) return apiFail("参数错误");
-    await s.setChannelsByTag(body.tag, CHANNEL_ENABLED);
-    return apiOk(null);
+    const bound = await readChannelTagJSON(c.req);
+    if (!bound.ok) return apiErrorMsg("参数错误");
+    await s.setChannelsByTag(bound.tag, CHANNEL_ENABLED);
+    return json(200, { success: true, message: "" });
   });
 
   r.get("/api/redemption/search", async (c) => {

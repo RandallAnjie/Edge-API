@@ -138,15 +138,19 @@ test("original FetchOllamaVersion error JSON messages", async () => {
     assert.equal(status.res.status, 200);
     assert.equal(status.body.success, false);
     assert.equal(status.body.message, "获取Ollama版本失败: 查询版本失败 503: down");
+    assert.equal("data" in status.body, false);
+    assert.deepEqual(Object.keys(status.body).sort(), ["message", "success"]);
 
     mode = "empty";
     const empty = await json(new Request("http://local/api/channel/ollama/version/" + id, { headers: auth }), e);
     assert.equal(empty.body.message, "获取Ollama版本失败: 未返回版本信息");
+    assert.equal("data" in empty.body, false);
 
     mode = "invalid";
     const invalid = await json(new Request("http://local/api/channel/ollama/version/" + id, { headers: auth }), e);
     assert.equal(invalid.body.success, false);
     assert.match(String(invalid.body.message), /^获取Ollama版本失败: 解析响应失败: /);
+    assert.equal("data" in invalid.body, false);
   } finally {
     globalThis.fetch = origFetch;
   }

@@ -218,16 +218,20 @@ test("original UpdateChannelBalance AIProxy/DeepSeek/Moonshot error JSON message
     assert.equal(aiproxy.body.success, false);
     assert.equal(aiproxy.body.message, "code: 7, message: token invalid");
     assert.equal(aiproxy.body.balance, undefined);
+    assert.equal("data" in aiproxy.body, false);
+    assert.deepEqual(Object.keys(aiproxy.body).sort(), ["message", "success"]);
 
     const deepseek = await json(new Request("http://local/api/channel/update_balance/" + deepseekId, { headers: auth }), e);
     assert.equal(deepseek.body.success, false);
     assert.equal(deepseek.body.message, "currency CNY not found");
     assert.equal(deepseek.body.balance, undefined);
+    assert.equal("data" in deepseek.body, false);
 
     const moonshot = await json(new Request("http://local/api/channel/update_balance/" + moonshotId, { headers: auth }), e);
     assert.equal(moonshot.body.success, false);
     assert.equal(moonshot.body.message, "failed to update moonshot balance, status: false, code: 1, scode: X");
     assert.equal(moonshot.body.balance, undefined);
+    assert.equal("data" in moonshot.body, false);
   } finally {
     globalThis.fetch = origFetch;
   }

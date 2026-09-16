@@ -100,6 +100,8 @@ test("original EditTagChannels / GetTagModels / EnableTagChannels JSON fields", 
   );
   assert.equal(emptyTag.body.success, false);
   assert.equal(emptyTag.body.message, "tag不能为空");
+  assert.equal("data" in emptyTag.body, false);
+  assert.deepEqual(Object.keys(emptyTag.body).sort(), ["message", "success"]);
 
   const edited = await json(
     new Request("http://local/api/channel/tag", {
@@ -116,6 +118,8 @@ test("original EditTagChannels / GetTagModels / EnableTagChannels JSON fields", 
   );
   assert.equal(edited.body.success, true, String(edited.body.message));
   assert.equal(edited.body.message, "");
+  assert.equal("data" in edited.body, false);
+  assert.deepEqual(Object.keys(edited.body).sort(), ["message", "success"]);
   const savedLong = await store.getChannel(longId);
   assert.equal(savedLong?.model_mapping, JSON.stringify({ "gpt-alias": "gpt-4o" }));
   assert.equal(savedLong?.models, "x,y,z,");
@@ -133,6 +137,8 @@ test("original EditTagChannels / GetTagModels / EnableTagChannels JSON fields", 
   );
   assert.equal(enabled.body.success, true);
   assert.equal(enabled.body.message, "");
+  assert.equal("data" in enabled.body, false);
+  assert.deepEqual(Object.keys(enabled.body).sort(), ["message", "success"]);
   assert.equal(Number((await store.getChannel(shortId))?.status), CHANNEL_ENABLED);
   assert.equal(Number((await store.getChannel(longId))?.status), CHANNEL_ENABLED);
 });
@@ -167,6 +173,8 @@ test("original fetchCodexChannelWhamData JSON refreshes on 401 and returns upstr
   assert.equal(badKey.body.success, false);
   assert.equal(badKey.body.message, "解析凭证失败，请检查渠道配置");
   assert.equal(badKey.body.upstream_status, undefined);
+  assert.equal("data" in badKey.body, false);
+  assert.deepEqual(Object.keys(badKey.body).sort(), ["message", "success"]);
 
   let usageAuth = "";
   let refreshGrant = "";
@@ -324,7 +332,132 @@ test("original RefreshCodexChannelCredential JSON fields", async () => {
     );
     assert.equal(missing.body.success, false);
     assert.equal(missing.body.message, "刷新凭证失败，请稍后重试");
+    assert.equal("data" in missing.body, false);
+    assert.deepEqual(Object.keys(missing.body).sort(), ["message", "success"]);
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+test("original DisableTagChannels / EnableTagChannels / EditTagChannels leftover gin.H omit data", async () => {
+  const { e, auth, store } = await boot();
+  const id = await addChannel(e, auth, {
+    name: "tag-omit",
+    type: 1,
+    key: "sk-omit",
+    models: "gpt-4o",
+    group: "default",
+    tag: "prod",
+  });
+
+  const omitData = (body: Record<string, unknown>, message: string) => {
+    assert.equal(body.success, false);
+    assert.equal(body.message, message);
+    assert.equal("data" in body, false);
+    assert.deepEqual(Object.keys(body).sort(), ["message", "success"]);
+  };
+
+  for (const path of ["/api/channel/tag/disabled", "/api/channel/tag/enabled"] as const) {
+    for (const c of [
+      { body: "not-json" },
+      { body: JSON.stringify([]) },
+      { body: JSON.stringify({}) },
+      { body: JSON.stringify({ tag: 1 }) },
+      { body: JSON.stringify({ tag: null }) },
+      { body: JSON.stringify({ tag: "" }) },
+      { body: JSON.stringify(null) },
+      { body: "" },
+    ]) {
+      const res = await json(
+        new Request("http://local" + path, {
+          method: "POST",
+          headers: auth,
+          body: c.body,
+        }),
+        e,
+      );
+      assert.equal(res.res.status, 200, path + " " + String(c.body));
+      omitData(res.body, "参数错误");
+    }
+  }
+
+  const putNull = await json(
+    new Request("http://local/api/channel/tag", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify(null),
+    }),
+    e,
+  );
+  omitData(putNull.body, "tag不能为空");
+
+  const putType = await json(
+    new Request("http://local/api/channel/tag", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ tag: 1 }),
+    }),
+    e,
+  );
+  omitData(putType.body, "参数错误");
+
+  const putEmpty = await json(
+    new Request("http://local/api/channel/tag", { method: "PUT", headers: auth, body: "" }),
+    e,
+  );
+  omitData(putEmpty.body, "参数错误");
+
+  const putBadJson = await json(
+    new Request("http://local/api/channel/tag", { method: "PUT", headers: auth, body: "not-json" }),
+    e,
+  );
+  omitData(putBadJson.body, "参数错误");
+
+  const disabled = await json(
+    new Request("http://local/api/channel/tag/disabled", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ tag: "prod" }),
+    }),
+    e,
+  );
+  assert.equal(disabled.res.status, 200);
+  assert.equal(disabled.body.success, true);
+  assert.equal(disabled.body.message, "");
+  assert.equal("data" in disabled.body, false);
+  assert.deepEqual(Object.keys(disabled.body).sort(), ["message", "success"]);
+  assert.equal(Number((await store.getChannel(id))?.status), CHANNEL_MANUAL_DISABLED);
+});
+
+test("original fetchCodexChannelWhamData leftover gin.H omit data", async () => {
+  const { e, auth } = await boot();
+  const openaiId = await addChannel(e, auth, {
+    name: "not-codex",
+    type: 1,
+    key: "sk-openai",
+    models: "gpt-4o",
+    group: "default",
+  });
+
+  const omitData = (body: Record<string, unknown>, message: string) => {
+    assert.equal(body.success, false);
+    assert.equal(body.message, message);
+    assert.equal("data" in body, false);
+    assert.deepEqual(Object.keys(body).sort(), ["message", "success"]);
+  };
+
+  const invalidId = await json(new Request("http://local/api/channel/abc/codex/usage", { headers: auth }), e);
+  omitData(invalidId.body, 'invalid channel id: strconv.Atoi: parsing "abc": invalid syntax');
+
+  const missing = await json(new Request("http://local/api/channel/999999/codex/usage", { headers: auth }), e);
+  omitData(missing.body, "record not found");
+
+  const wrongType = await json(new Request("http://local/api/channel/" + openaiId + "/codex/usage", { headers: auth }), e);
+  omitData(wrongType.body, "channel type is not Codex");
+
+  const refreshInvalid = await json(
+    new Request("http://local/api/channel/abc/codex/refresh", { method: "POST", headers: auth }),
+    e,
+  );
+  omitData(refreshInvalid.body, 'invalid channel id: strconv.Atoi: parsing "abc": invalid syntax');
 });

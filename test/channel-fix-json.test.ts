@@ -68,8 +68,8 @@ test("POST /api/channel/fix TryLock matches original FixAbility ApiError JSON", 
     assert.equal(busy.res.status, 200);
     assert.equal(busy.body.success, false);
     assert.equal(busy.body.message, "已经有一个修复任务在运行中，请稍后再试");
-    assert.equal(busy.body.data, null);
-    assert.equal("error" in busy.body, false);
+    assert.equal("data" in busy.body, false);
+    assert.deepEqual(Object.keys(busy.body).sort(), ["message", "success"]);
   } finally {
     unlockChannelFix();
   }

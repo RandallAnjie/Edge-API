@@ -10,7 +10,7 @@ import {
 } from "./constants.js";
 import { defaultBaseUrl } from "./catalog.js";
 import { buildAdvancedCustomBalanceRequest, goJSONSyntaxError } from "./channel-validate.js";
-import { apiFail, json } from "./http.js";
+import { apiErrorMsg, json } from "./http.js";
 import { applyFetchModelsHeaderOverrides } from "./upstream.js";
 import type { Store } from "./store.js";
 import type { ChannelRow } from "./types.js";
@@ -413,7 +413,7 @@ export async function updateOneChannelBalance(store: Store, ch: ChannelRow): Pro
     if (message === "Task Plugin channels do not support balance queries" || message === "多密钥渠道不支持余额查询") {
       return json(200, { success: false, message });
     }
-    return apiFail(message);
+    return apiErrorMsg(message);
   }
 }
 

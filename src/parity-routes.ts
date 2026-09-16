@@ -105,7 +105,7 @@ import { decodeIconDataURI } from "./jsplugin-icon.js";
 import { currentRoutingGeneration, preflightRoutingConflict, routingMetaFromRecord } from "./jsplugin-preflight.js";
 import { validateV1Meta } from "./jsplugin-validate.js";
 import { getTaskPluginListRuntime, getTaskPluginRuntimeStatus, syncTaskPluginsOnce } from "./task-plugin-sync.js";
-import { goJSONKind, goUnmarshalJSON, parseChannelBatch } from "./channel-validate.js";
+import { goJSONKind, goUnmarshalJSON, parseChannelBatch, readChannelTagJSON } from "./channel-validate.js";
 import { rpFromRequest } from "./passkey.js";
 import { passkeyDomainHttpError, passkeySettingsSnapshot, selectPasskeyBeginRpIDs } from "./passkey-domains.js";
 import { calcNextResetTime, publicPlan } from "./subscription.js";
@@ -697,9 +697,9 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const id = strconvAtoi(c.params.id);
-    if (!id.ok) return apiFail(id.message);
+    if (!id.ok) return apiErrorMsg(id.message);
     const ch = await s.getChannel(id.n);
-    if (!ch) return apiFail("record not found");
+    if (!ch) return apiErrorMsg("record not found");
     return updateOneChannelBalance(s, ch);
   });
 
@@ -707,18 +707,19 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { tag?: string };
-    if (!body.tag) return apiFail("参数错误");
-    await s.setChannelsByTag(body.tag, CHANNEL_MANUAL_DISABLED);
-    return apiOk(null);
+    const bound = await readChannelTagJSON(c.req);
+    if (!bound.ok) return apiErrorMsg("参数错误");
+    await s.setChannelsByTag(bound.tag, CHANNEL_MANUAL_DISABLED);
+    return json(200, { success: true, message: "" });
   });
 
   r.put("/api/channel/tag", async (c) => {
     const s = store(c);
     const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
-    let body: {
-      tag?: string;
+    const bound = await readChannelTagJSON(c.req);
+    if (!bound.ok) return apiErrorMsg(bound.eofOrType ? "参数错误" : "tag不能为空");
+    const body = bound.rec as {
       new_tag?: string;
       model_mapping?: string;
       models?: string;
@@ -729,12 +730,6 @@ export function registerParity(r: Router<Env>): void {
       param_override?: string;
       header_override?: string;
     };
-    try {
-      body = (await readJson(c.req)) as typeof body;
-    } catch {
-      return apiFail("参数错误");
-    }
-    if (!body.tag) return apiFail("tag不能为空");
     if ((body.param_override != null || body.header_override != null) && u.role < 100) {
       const user = await s.getUserById(u.id);
       const roleKey = user ? roleKeyForSystemRole(user.role) : "";
@@ -744,23 +739,23 @@ export function registerParity(r: Router<Env>): void {
         ? canWithPolicies(user, "channel", "sensitive_write", userPolicies, rolePolicies)
         : false;
       if (!allowed) {
-        return apiFail(i18nPair(c.req, "无权进行此操作，权限不足", "Unauthorized, insufficient privileges"));
+        return apiErrorMsg(i18nPair(c.req, "无权进行此操作，权限不足", "Unauthorized, insufficient privileges"));
       }
     }
     if (body.param_override != null) {
       const trimmed = String(body.param_override).trim();
-      if (trimmed && !isJsonValue(trimmed)) return apiFail("参数覆盖必须是合法的 JSON 格式");
+      if (trimmed && !isJsonValue(trimmed)) return apiErrorMsg("参数覆盖必须是合法的 JSON 格式");
       body.param_override = trimmed;
     }
     if (body.header_override != null) {
       const trimmed = String(body.header_override).trim();
-      if (trimmed && !isJsonValue(trimmed)) return apiFail("请求头覆盖必须是合法的 JSON 格式");
+      if (trimmed && !isJsonValue(trimmed)) return apiErrorMsg("请求头覆盖必须是合法的 JSON 格式");
       body.header_override = trimmed;
     }
-    const channels = await s.channelsByTag(body.tag);
+    const channels = await s.channelsByTag(bound.tag);
     for (const ch of channels) {
       const patch: Record<string, unknown> = {};
-      if (body.new_tag != null && body.new_tag !== body.tag) patch.tag = body.new_tag;
+      if (body.new_tag != null && body.new_tag !== bound.tag) patch.tag = body.new_tag;
       if (body.model_mapping != null) patch.model_mapping = body.model_mapping;
       if (body.models != null && body.models !== "") patch.models = body.models;
       if (body.group != null && body.group !== "") patch.group = body.group;
@@ -771,7 +766,7 @@ export function registerParity(r: Router<Env>): void {
       if (body.header_override != null) patch.header_override = body.header_override;
       if (Object.keys(patch).length) await s.updateChannel(ch.id, patch);
     }
-    return apiOk(null);
+    return json(200, { success: true, message: "" });
   });
 
   r.post("/api/channel/fix", async (c) => {
@@ -781,7 +776,7 @@ export function registerParity(r: Router<Env>): void {
     try {
       return apiOk(await s.fixAbilities());
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 
@@ -790,7 +785,7 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const id = strconvAtoi(c.params.id);
-    if (!id.ok) return apiFail(`invalid channel id: ${id.message}`);
+    if (!id.ok) return apiErrorMsg(`invalid channel id: ${id.message}`);
     try {
       const { oauth, channel } = await refreshCodexChannelCredential(s, id.n);
       return json(200, {
@@ -807,7 +802,7 @@ export function registerParity(r: Router<Env>): void {
         },
       });
     } catch {
-      return apiFail("刷新凭证失败，请稍后重试");
+      return apiErrorMsg("刷新凭证失败，请稍后重试");
     }
   });
 
@@ -833,7 +828,7 @@ export function registerParity(r: Router<Env>): void {
       const version = await fetchOllamaVersion(ollamaChannelBaseURL(ch), ollamaFirstKey(ch));
       return apiOk({ version });
     } catch (err) {
-      return apiFail(`获取Ollama版本失败: ${err instanceof Error ? err.message : String(err)}`);
+      return apiErrorMsg(`获取Ollama版本失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 
@@ -845,14 +840,14 @@ export function registerParity(r: Router<Env>): void {
     try {
       body = await readJson(c.req);
     } catch {
-      return apiFail("参数错误");
+      return apiErrorMsg("参数错误");
     }
     const parsed = parseChannelBatch(body);
-    if (!parsed.ok) return apiFail("参数错误");
+    if (!parsed.ok) return apiErrorMsg("参数错误");
     try {
       await s.batchSetChannelTag(parsed.ids, parsed.tag);
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
     return apiOk(parsed.ids.length);
   });
@@ -890,7 +885,7 @@ export function registerParity(r: Router<Env>): void {
       status?: number;
     };
     const ch = await s.getChannel(Number(body.channel_id));
-    if (!ch) return apiFail("渠道不存在");
+    if (!ch) return apiErrorMsg("渠道不存在");
     if (body.action === "delete_key" || body.action === "delete_disabled_keys") {
       const allowed = await requirePermission(c, s, "channel", "sensitive_write");
       if (isResponse(allowed)) return allowed;
@@ -2494,26 +2489,26 @@ async function fetchCodexWham(c: C, kind: "usage" | "reset-credits" | "reset"): 
   const u = await requireChannel(c, s, permission);
   if (isResponse(u)) return u;
   const id = strconvAtoi(c.params.id);
-  if (!id.ok) return apiFail(`invalid channel id: ${id.message}`);
+  if (!id.ok) return apiErrorMsg(`invalid channel id: ${id.message}`);
   const ch = await s.getChannel(id.n);
-  if (!ch) return apiFail("channel not found");
-  if (ch.type !== 57) return apiFail("channel type is not Codex");
+  if (!ch) return apiErrorMsg("record not found");
+  if (ch.type !== 57) return apiErrorMsg("channel type is not Codex");
   const info = parseJson<Record<string, unknown>>(String(ch.channel_info || ""), {});
-  if (info.is_multi_key || info.IsMultiKey) return apiFail("multi-key channel is not supported");
+  if (info.is_multi_key || info.IsMultiKey) return apiErrorMsg("multi-key channel is not supported");
   let oauth: ReturnType<typeof parseCodexOAuthKeyStrict>;
   try {
     oauth = parseCodexOAuthKeyStrict(ch.key);
   } catch {
-    return apiFail("解析凭证失败，请检查渠道配置");
+    return apiErrorMsg("解析凭证失败，请检查渠道配置");
   }
   let accessToken = String(oauth.access_token || "").trim();
   const accountID = String(oauth.account_id || "").trim();
-  if (!accessToken) return apiFail("codex channel: access_token is required");
-  if (!accountID) return apiFail("codex channel: account_id is required");
+  if (!accessToken) return apiErrorMsg("codex channel: access_token is required");
+  if (!accountID) return apiErrorMsg("codex channel: account_id is required");
   const failMsg =
     kind === "usage" ? "获取用量信息失败，请稍后重试" : kind === "reset-credits" ? "获取重置次数详情失败，请稍后重试" : "重置用量失败，请稍后重试";
   const base = String(ch.base_url || "").trim().replace(/\/+$/, "");
-  if (!base) return apiFail(failMsg);
+  if (!base) return apiErrorMsg(failMsg);
   const path =
     kind === "usage"
       ? "/backend-api/wham/usage"
@@ -2540,7 +2535,7 @@ async function fetchCodexWham(c: C, kind: "usage" | "reset-credits" | "reset"): 
   try {
     fetched = await callWham(accessToken);
   } catch {
-    return apiFail(failMsg);
+    return apiErrorMsg(failMsg);
   }
 
   if ((fetched.status === 401 || fetched.status === 403) && String(oauth.refresh_token || "").trim()) {
@@ -2560,7 +2555,7 @@ async function fetchCodexWham(c: C, kind: "usage" | "reset-credits" | "reset"): 
       try {
         fetched = await callWham(refreshedToken);
       } catch {
-        return apiFail(failMsg);
+        return apiErrorMsg(failMsg);
       }
     }
   }
