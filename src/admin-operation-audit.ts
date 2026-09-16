@@ -392,3 +392,60 @@ export async function recordManageAudit(
   }
   markAuditLogged(req);
 }
+
+/**
+ * Original `controller.manageUserQuota` operation audit (success and failure).
+ * English Content from templates on success; failed writes use
+ * `Failed user quota adjustment`. Includes `other.audit_info` with empty Path.
+ */
+export async function recordQuotaManageAudit(
+  store: Store,
+  req: Request,
+  user: SessionUser,
+  action: string,
+  params: Record<string, unknown>,
+  success: boolean,
+  status = 200,
+): Promise<void> {
+  const pending = pendingByReq.get(req);
+  const url = new URL(req.url);
+  const matched = pending ?? matchAdminAuditRoute(req.method, url.pathname, {});
+  const authMethod = user.useAccessToken ? "access_token" : "session";
+  const content = success ? auditContentEN(action, params) : "Failed user quota adjustment";
+  const op: { action: string; params?: Record<string, unknown> } = { action };
+  if (Object.keys(params).length) op.params = params;
+  try {
+    await store.audit(user.id, user.username, AUDIT_CATEGORY_OPERATION, content, clientIp(req), {
+      actor_role: auditActorRole(user.role),
+      category: AUDIT_CATEGORY_OPERATION,
+      action,
+      token_ref: "",
+      auth_method: authMethod,
+      user_agent: truncateAuditUserAgent(req.headers.get("user-agent") || ""),
+      method: req.method,
+      route: matched.route,
+      status,
+      success,
+      request_id: requestIdFor(req),
+      other: JSON.stringify({
+        op,
+        admin_info: {
+          admin_id: user.id,
+          admin_username: user.username,
+          admin_role: auditActorRole(user.role),
+          auth_method: authMethod,
+        },
+        audit_info: {
+          method: req.method,
+          route: matched.route,
+          path: "",
+          status,
+          success,
+        },
+      }),
+    });
+  } catch {
+    /* original RecordAuditLog logs and continues */
+  }
+  markAuditLogged(req);
+}

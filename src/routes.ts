@@ -12,6 +12,7 @@ import {
   DEFAULT_GROUP_RATIO,
   DEFAULT_TOKEN_QUOTA,
   MAX_WALLET_QUOTA,
+  LOG_TOPUP,
   canManageTargetRole,
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   CHANNEL_TYPE_TASK_PLUGIN,
@@ -102,7 +103,7 @@ import {
 } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import { turnstileCheck } from "./turnstile.js";
-import { markAuditLogged, recordManageAudit } from "./admin-operation-audit.js";
+import { markAuditLogged, recordManageAudit, recordQuotaManageAudit, auditContentEN } from "./admin-operation-audit.js";
 import {
   setTokenAuditSucceeded,
   snapshotTokenAuditFields,
@@ -145,7 +146,8 @@ import { parseHTTPStatusCodeRanges } from "./status-code-ranges.js";
 import { TOOL_PRICE_OPTION_KEY, validateToolPricesJSON } from "./tool-price.js";
 import { PLUGIN_BILLING_EXPR_OPTION, validateBillingExprOption, validatePluginBillingExprOption } from "./model-pricing.js";
 import { validateConsoleSettings } from "./console-setting.js";
-import type { Env, RedemptionRow, TokenRow, UserRow } from "./types.js";
+import { requestIdFor } from "./request-id.js";
+import type { Env, RedemptionRow, SessionUser, TokenRow, UserRow } from "./types.js";
 
 type C = Context<Env>;
 
@@ -793,18 +795,7 @@ export function adminRouter(): Router<Env> {
     const bound = bindManageRequest(c.req, await c.req.text());
     if (bound instanceof Response) return bound;
     if (bound.action === "add_quota") {
-      const mode = bound.mode;
-      const value = bound.value;
-      if (mode !== "add" && mode !== "subtract" && mode !== "override") return apiFailInvalidParams(c.req);
-      if (mode !== "override" && value <= 0) return apiErrorMsg(userQuotaChangeZeroMessage(c.req));
-      const quotaTarget = await s.getUserById(bound.id, { includeDeleted: true });
-      if (!quotaTarget) return apiErrorMsg(userNotExistsMessage(c.req));
-      if (!canManageTargetRole(u.role, quotaTarget.role)) return apiErrorMsg(userNoPermissionHigherLevelMessage(c.req));
-      if (mode === "override") await s.updateUser(quotaTarget.id, { quota: value });
-      else await s.addQuota(quotaTarget.id, mode === "subtract" ? -value : value);
-      await s.audit(u.id, u.username, "user.manage", `${bound.action} user ${quotaTarget.username}`, clientIp(c.req));
-      markAuditLogged(c.req);
-      return apiOk(null);
+      return manageUserQuota(s, c, u, bound);
     }
     const target = await s.getUserById(bound.id, { includeDeleted: true });
     if (!target) return apiErrorMsg(userNotExistsMessage(c.req));
@@ -2248,6 +2239,94 @@ function bindAdminUser(req: Request, raw: string): AdminUser | Response {
 }
 
 type ManageRequest = { id: number; action: string; value: number; mode: string };
+
+/** Original `controller.manageUserQuota` leftover operation audit JSON (success and failure). */
+async function manageUserQuota(s: Store, c: C, u: SessionUser, req: ManageRequest): Promise<Response> {
+  const params: Record<string, unknown> = {
+    target_user_id: req.id,
+    mode: req.mode,
+    requested_quota: req.value,
+  };
+  let action = "generic";
+  if (req.mode === "add") action = "user.quota_add";
+  else if (req.mode === "subtract") action = "user.quota_subtract";
+  else if (req.mode === "override") action = "user.quota_override";
+  else {
+    params.action = "add_quota";
+    params.method = c.req.method;
+    params.route = "/api/user/manage";
+  }
+  let success = false;
+  let res: Response | undefined;
+  try {
+    if (action === "generic") {
+      params.failure_reason = "invalid_parameters";
+      res = apiFailInvalidParams(c.req);
+      return res;
+    }
+    if (action !== "user.quota_override" && req.value <= 0) {
+      params.failure_reason = "invalid_parameters";
+      res = apiErrorMsg(userQuotaChangeZeroMessage(c.req));
+      return res;
+    }
+    if (req.value > MAX_WALLET_QUOTA || req.value < -MAX_WALLET_QUOTA) {
+      params.failure_reason = "quota_limit_exceeded";
+      res = apiErrorMsg("wallet quota limit exceeded");
+      return res;
+    }
+    const target = await s.getUserById(req.id);
+    if (!target) {
+      params.failure_reason = "target_not_found";
+      res = apiErrorMsg(userNotExistsMessage(c.req));
+      return res;
+    }
+    if (u.role !== ROLE_ROOT && u.role <= target.role) {
+      params.failure_reason = "permission_denied";
+      res = apiErrorMsg(userNoPermissionHigherLevelMessage(c.req));
+      return res;
+    }
+    const before = Number(target.quota || 0);
+    if (before > MAX_WALLET_QUOTA || before < -MAX_WALLET_QUOTA) {
+      params.failure_reason = "quota_limit_exceeded";
+      res = apiErrorMsg("wallet quota limit exceeded");
+      return res;
+    }
+    let after = req.value;
+    if (req.mode === "add") after = before + req.value;
+    else if (req.mode === "subtract") after = before - req.value;
+    if (!Number.isSafeInteger(after) || after > MAX_WALLET_QUOTA || after < -MAX_WALLET_QUOTA) {
+      params.failure_reason = "quota_limit_exceeded";
+      res = apiErrorMsg("wallet quota limit exceeded");
+      return res;
+    }
+    if (after !== before) await s.updateUser(target.id, { quota: after });
+    params.target_username = target.username;
+    params.from = before;
+    params.to = after;
+    if (req.mode !== "override") params.quota = req.value;
+    success = true;
+    await s.insertLog({
+      user_id: target.id,
+      username: target.username,
+      type: LOG_TOPUP,
+      content: auditContentEN(action, params),
+      request_id: requestIdFor(c.req),
+      other: JSON.stringify({
+        op: { action, params },
+        admin_info: {
+          admin_id: u.id,
+          admin_username: u.username,
+          admin_role: u.role,
+          auth_method: u.useAccessToken ? "access_token" : "session",
+        },
+      }),
+    });
+    res = json(200, { success: true, message: "" });
+    return res;
+  } finally {
+    await recordQuotaManageAudit(s, c.req, u, action, params, success, res?.status ?? 200);
+  }
+}
 
 /** Original `common.DecodeJson` into `controller.ManageRequest`. Any decode error is `MsgInvalidParams`. JSON `null` is a zero struct. */
 function bindManageRequest(req: Request, raw: string): ManageRequest | Response {

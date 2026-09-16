@@ -272,12 +272,19 @@ Material changes from upstream:
   `auditContentTemplates`, `other.op` + `other.admin_info` (no `audit_info`),
   gin FullPath on `route` (`/api/user/:id`, `/api/user/:id/bindings/:binding_type`),
   then `markAuditLogged`. Failed writes still use generic `finishAdminAudit`.
-  Extra-OK: ManageUser `add_quota` still uses the informal `s.audit` path
-  (original `manageUserQuota` leftover including failed-request
-  `audit_info` is a later hop). Extra-OK: hop 323 vendor.create/delete
-  fallback tests stay unchanged. Extra-OK: audit write failure must not
-  fail the request. requireUser/requireAdmin/requireRoot and UserAuth
+  Extra-OK: hop 323 vendor.create/delete fallback tests stay unchanged.
+  Extra-OK: audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.manageUserQuota` leftover operation audit-log JSON
+  on ManageUser `add_quota` (success and failure). Actions
+  `user.quota_add` / `user.quota_subtract` / `user.quota_override` / `generic`;
+  failed Content is `Failed user quota adjustment`; `other.audit_info.Path`
+  is empty. Success is `{success:true,message:""}` with no `data` and also
+  writes `RecordLogWithAdminInfo` LogTypeTopup. Extra-OK: hop 323
+  vendor.create/delete fallback tests stay unchanged. Extra-OK: audit
+  write failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
