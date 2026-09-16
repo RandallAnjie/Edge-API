@@ -99,7 +99,7 @@ import {
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { goJSONKind, goUnmarshalJSON, parseChannelBatch, readChannelTagJSON } from "./channel-validate.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, passkeyCredentialId, readJson, strconvAtoi, strconvParseBool, userCannotDeleteRootUserMessage, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
+import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, passkeyCredentialId, readJson, strconvAtoi, strconvParseBool, userCannotDeleteRootUserMessage, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -410,6 +410,36 @@ async function pingDb(db: Env["DB"]): Promise<void> {
   lastDbPingMs = Date.now();
 }
 
+/** Original `controller.UniversalVerify` DecodeJson into `service.VerificationInput`. */
+function bindUniversalVerify(raw: unknown):
+  | { ok: true; body: { method: string; scope: string; context?: unknown; code: string; password: string } }
+  | { ok: false } {
+  const parsed = raw === null ? {} : raw;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false };
+  const rec = parsed as Record<string, unknown>;
+  const strField = (key: string): string | null => {
+    if (!(key in rec) || rec[key] == null) return "";
+    return typeof rec[key] === "string" ? rec[key] : null;
+  };
+  const method = strField("method");
+  const scope = strField("scope");
+  const code = strField("code");
+  const password = strField("password");
+  const passwordEncrypted = strField("password_encrypted");
+  const encryptionKeyId = strField("encryption_key_id");
+  if (
+    method === null ||
+    scope === null ||
+    code === null ||
+    password === null ||
+    passwordEncrypted === null ||
+    encryptionKeyId === null
+  ) {
+    return { ok: false };
+  }
+  return { ok: true, body: { method, scope, context: rec.context, code, password } };
+}
+
 export function registerMore(r: Router<Env>): void {
   r.get("/api/status/test", async (c) => {
     const s = store(c);
@@ -651,7 +681,7 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在");
+    if (!user) return apiErrorMsg("用户不存在");
     if (Number(user.totp_enabled) !== 1) {
       return writeSecurityOperationError("TWOFA_NOT_ENABLED", ERR_TWOFA_NOT_ENABLED);
     }
@@ -675,7 +705,7 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在");
+    if (!user) return apiErrorMsg("用户不存在");
     if (Number(user.totp_enabled) !== 1) {
       return writeSecurityOperationError("TWOFA_NOT_ENABLED", ERR_TWOFA_NOT_ENABLED);
     }
@@ -1268,7 +1298,7 @@ export function registerMore(r: Router<Env>): void {
       const bound = await bindVerificationOperation(secret, { scope: body.scope || "", context: body.context });
       if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
       const user = await s.getUserById(identity.userId);
-      if (!user) return apiFail("用户不存在");
+      if (!user) return apiErrorMsg("用户不存在");
       const providerUserId = await getBoundOAuthUserId(s, user, provider);
       if (!providerUserId) {
         return writeSecurityOperationError(
@@ -2389,7 +2419,7 @@ export function registerMore(r: Router<Env>): void {
     const identity = await dashboardIdentity(c, s);
     if (!identity) return json(401, { success: false, message: "当前认证方式不支持安全验证" });
     const user = await s.getUserById(identity.userId);
-    if (!user) return apiFail("用户不存在");
+    if (!user) return apiErrorMsg("用户不存在");
     const scope = c.url.searchParams.get("scope") || "";
     const reqs = await verificationRequirements(s, user, scope);
     if (!reqs.ok) return apiFailCode(reqs.message, reqs.code, reqs.status);
@@ -2400,15 +2430,19 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const identity = await dashboardIdentity(c, s);
     if (!identity) return json(401, { success: false, message: "当前认证方式不支持安全验证" });
-    const body = (await readJson(c.req)) as {
-      method?: string;
-      scope?: string;
-      context?: unknown;
-      code?: string;
-      password?: string;
-    };
+    let parsed: unknown;
+    try {
+      const raw = await c.req.text();
+      if (!raw.trim()) return apiErrorMsg("参数错误");
+      parsed = JSON.parse(raw);
+    } catch {
+      return apiErrorMsg("参数错误");
+    }
+    const boundBody = bindUniversalVerify(parsed);
+    if (!boundBody.ok) return apiErrorMsg("参数错误");
+    const body = boundBody.body;
     const user = await s.getUserById(identity.userId);
-    if (!user) return apiFail("用户不存在");
+    if (!user) return apiErrorMsg("用户不存在");
     const method = body.method === "totp" ? "2fa" : body.method || "";
     const scope = body.scope || "";
     const secret = await sessionSecret(c.env, s);
@@ -2497,7 +2531,7 @@ async function tokenUsage(c: C): Promise<Response> {
   }
   const tokenKey = parts[1].startsWith("sk-") ? parts[1].slice(3) : parts[1];
   const token = await s.getTokenByKey(tokenKey);
-  if (!token) return apiFail(tokenGetInfoFailedMessage(c.req));
+  if (!token) return apiErrorMsg(tokenGetInfoFailedMessage(c.req));
   const remain = Number(token.remain_quota || 0);
   const used = Number(token.used_quota || 0);
   const expiredAt = token.expired_time === -1 ? 0 : token.expired_time;

@@ -1,7 +1,7 @@
 import { generateAffCode, generateTokenKey } from "./crypto.js";
 import { hmacSha256Hex, sha256Bytes, timingSafeEqualStr } from "./crypto.js";
 import { nowSec, randomHex, ROLE_USER, USER_ENABLED } from "./constants.js";
-import { apiErrorMsg, apiFail, apiOk, i18nPair, json, OAuthI18nError, writeSecurityOperationError } from "./http.js";
+import { apiErrorMsg, apiOk, i18nPair, json, OAuthI18nError, writeSecurityOperationError } from "./http.js";
 import { ERR_TELEGRAM_ACCOUNT_NOT_BOUND } from "./telegram-oauth.js";
 import { notifyAccountSecurityChange, normalizeEmail } from "./mail.js";
 import { authUnauthorized, setupLogin } from "./auth.js";
@@ -462,7 +462,7 @@ async function findOrCreateOAuthUser(
   if (profile.provider_id) await store.upsertUserOAuthBinding(id, profile.provider_id, profile.id);
   await finishInsertUser(store, id, inviterId);
   const created = await store.getUserById(id);
-  if (!created) return apiFail("用户不存在");
+  if (!created) return apiErrorMsg("用户不存在");
   return created;
 }
 
@@ -557,11 +557,11 @@ export async function verifyTelegramLogin(store: Store, params: URLSearchParams)
 
 export function paymentDisabled(c: Context<Env>): Response {
   void c;
-  return apiFail("支付方式未配置。请在系统设置中填写 Stripe / Epay / Creem / Waffo 密钥后启用在线充值。");
+  return apiErrorMsg("支付方式未配置。请在系统设置中填写 Stripe / Epay / Creem / Waffo 密钥后启用在线充值。");
 }
 
 export function pluginDisabled(): Response {
-  return apiFail("该能力需要对应配置；边缘运行时已提供等价接口，请检查插件是否已上传或部署密钥是否已设置");
+  return apiErrorMsg("该能力需要对应配置；边缘运行时已提供等价接口，请检查插件是否已上传或部署密钥是否已设置");
 }
 
 export { apiOk };
