@@ -152,12 +152,17 @@ test("original ListSystemInstances stale status, delete JSON, and other projecti
   assert.equal(rows[0].node_name, "edge-api");
 
   const denyOnline = await json(new Request("http://local/api/system-info/instances/edge-api", { method: "DELETE", headers: auth }), e);
+  assert.equal(denyOnline.res.status, 200);
   assert.equal(denyOnline.body.success, false);
   assert.equal(denyOnline.body.message, "instance is not stale or no longer exists");
+  assert.equal("data" in denyOnline.body, false);
+  assert.deepEqual(Object.keys(denyOnline.body).sort(), ["message", "success"]);
 
   const missingName = await json(new Request("http://local/api/system-info/instances/%20", { method: "DELETE", headers: auth }), e);
+  assert.equal(missingName.res.status, 200);
   assert.equal(missingName.body.success, false);
   assert.equal(missingName.body.message, "node name is required");
+  assert.equal("data" in missingName.body, false);
 
   const deleteOne = await json(new Request("http://local/api/system-info/instances/stale-node", { method: "DELETE", headers: auth }), e);
   assert.equal(deleteOne.body.success, true);

@@ -1474,9 +1474,9 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const nodeName = String(c.params.node_name || "").trim();
-    if (!nodeName) return apiFail("node name is required");
+    if (!nodeName) return apiErrorMsg("node name is required");
     const deleted = await s.deleteStaleSystemInstance(nodeName, nowSec(), SYSTEM_INSTANCE_STALE_AFTER_SECONDS);
-    if (!deleted) return apiFail("instance is not stale or no longer exists");
+    if (!deleted) return apiErrorMsg("instance is not stale or no longer exists");
     return apiOk({ deleted_count: 1 });
   });
 
