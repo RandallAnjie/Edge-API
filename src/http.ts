@@ -1114,14 +1114,7 @@ export async function readJson(req: Request): Promise<unknown> {
   return JSON.parse(text);
 }
 
-export function clientIp(req: Request): string {
-  return (
-    req.headers.get("cf-connecting-ip") ||
-    req.headers.get("x-real-ip") ||
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    ""
-  );
-}
+export { ginClientIP as clientIp, rememberRequestTrustedProxies, carryRequestTrustedProxies } from "./trusted-proxies.js";
 
 export function cookieGet(req: Request, name: string): string | null {
   const raw = req.headers.get("cookie") || "";

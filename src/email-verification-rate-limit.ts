@@ -114,7 +114,7 @@ function tooMany(message: string): Response {
  * `env.KV` is the Redis path (same binding used by ModelRequestRateLimit).
  */
 export async function emailVerificationRateLimit(env: Env, req: Request): Promise<Response | null> {
-  const ip = clientIp(req);
+  const ip = clientIp(req, env);
   if (env.KV) {
     try {
       const taken = await redisFixedWindowTake(

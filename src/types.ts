@@ -107,6 +107,8 @@ export interface Env {
   SESSION_COOKIE_SECURE?: string;
   /** Original `SESSION_COOKIE_TRUSTED_URL` (`common.SessionCookieTrustedURLs`, comma-separated https origins). */
   SESSION_COOKIE_TRUSTED_URL?: string;
+  /** Original `TRUSTED_PROXIES` (`common.ResolveTrustedProxies`; blank uses loopback/RFC1918/ULA). */
+  TRUSTED_PROXIES?: string;
   /** Original `CRYPTO_SECRET` (`common.CryptoSecret`; empty falls back to SessionSecret). */
   CRYPTO_SECRET?: string;
   /** Original `TASK_ARTIFACT_INVALID_RATE_LIMIT_PER_MINUTE` (default 60). */

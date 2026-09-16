@@ -6,6 +6,7 @@
  * fallback 32 when `<= 0`. `Header.Del("Content-Encoding")` after decompress.
  */
 import { envOrDefaultInt, MAX_REQUEST_BODY_MB } from "./constants.js";
+import { carryRequestTrustedProxies } from "./trusted-proxies.js";
 import type { Env } from "./types.js";
 
 /** Original `constant.MaxRequestBodyMB` default from `MAX_REQUEST_BODY_MB`. */
@@ -97,7 +98,7 @@ export function replaceDecompressedRequest(req: Request, body: Uint8Array): Requ
   headers.set("content-length", String(body.byteLength));
   const copy = new ArrayBuffer(body.byteLength);
   new Uint8Array(copy).set(body);
-  return new Request(req.url, { method: req.method, headers, body: copy });
+  return carryRequestTrustedProxies(req, new Request(req.url, { method: req.method, headers, body: copy }));
 }
 
 /**

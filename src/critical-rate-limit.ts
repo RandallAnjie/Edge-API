@@ -188,7 +188,7 @@ export async function takeKeyedRateLimit(
  * Redis/KV failure is empty HTTP 500 (no memory fallback).
  */
 export async function takeIpRateLimit(env: Env, req: Request, mark: string, maxRequestNum: number, duration: number): Promise<Response | null> {
-  const ip = clientIp(req);
+  const ip = clientIp(req, env);
   return takeKeyedRateLimit(env, redisIPRateLimitKey(mark, ip), `${mark}${ip}`, maxRequestNum, duration);
 }
 

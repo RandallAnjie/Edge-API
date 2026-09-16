@@ -178,7 +178,7 @@ export async function issueSession(
 }> {
   const secret = await sessionSecret(env, store);
   const existing = existingSid ? await store.getSession(existingSid) : null;
-  const ip = (req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || "").slice(0, 64);
+  const ip = clientIp(req, env).slice(0, 64);
   const ua = (req.headers.get("user-agent") || "").slice(0, 512);
   const exp = nowSec() + SESSION_TTL_SEC;
   const authVersion = Number(user.auth_version || 1) || 1;
@@ -366,7 +366,7 @@ export async function refreshLoginSession(
   const nextSecret = await deriveNextRefreshSecret(secret, parsed.sid, parsed.secret);
   const nextHash = await hashRefreshSecret(secret, nextSecret);
   const now = nowSec();
-  const ip = (req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || "").slice(0, 64);
+  const ip = clientIp(req, env).slice(0, 64);
   const ua = (req.headers.get("user-agent") || "").slice(0, 512);
 
   if (sess.refresh_hash && sess.refresh_hash === nextHash) {
@@ -724,7 +724,7 @@ export async function authenticateApiToken(c: Context<Env>, store: Store): Promi
   }
   const allowIps = tokenIpLimits(token.allow_ips);
   if (allowIps.length) {
-    const ip = clientIp(c.req);
+    const ip = clientIp(c.req, c.env);
     if (!parseIP(ip)) {
       return tokenAuthAbort(c.req, 403, "无法解析客户端 IP 地址");
     }

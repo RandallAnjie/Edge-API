@@ -8,6 +8,7 @@
 import { envOrDefaultInt } from "./constants.js";
 import { hmacSha256Raw, timingSafeEqualStr } from "./crypto.js";
 import { clientIp, json } from "./http.js";
+import { carryRequestTrustedProxies } from "./trusted-proxies.js";
 import type { Env } from "./types.js";
 
 /** Original `service.TaskArtifactAccessQueryParameter`. */
@@ -238,7 +239,7 @@ export function popTaskArtifactAccessQuery(rawQuery: string): TaskArtifactAccess
 function cloneRequestQuery(req: Request, rawQuery: string): Request {
   const url = new URL(req.url);
   url.search = rawQuery;
-  return new Request(url, req);
+  return carryRequestTrustedProxies(req, new Request(url, req));
 }
 
 /** Original `SetUpLogger` `redactTaskArtifactAccessQuery()`. */

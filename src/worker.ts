@@ -7,6 +7,7 @@ import { authenticateApiToken, cryptoSecret, finishAccessTokenAudit, maybeBeginA
 import { finishAdminAudit } from "./admin-operation-audit.js";
 import { beginTokenOperationAudit, finishTokenOperationAudit, tokenOperationAuditApplies } from "./token-operation-audit.js";
 import { abortWithOpenAiMessage, apiFail, newApiPanicError, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
+import { rememberRequestTrustedProxies } from "./trusted-proxies.js";
 import {
   ARTIFACT_NOT_FOUND,
   ARTIFACT_NOT_FOUND_MESSAGE,
@@ -778,6 +779,7 @@ async function limitedSystemPerformanceBeforeAuth(
 }
 
 async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
+  rememberRequestTrustedProxies(req, env);
   const requestId = requestIdFor(req);
   let res: Response;
   try {

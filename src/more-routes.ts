@@ -1247,7 +1247,7 @@ export function registerMore(r: Router<Env>): void {
     const body = await bindAdminCompleteTopup(c.req);
     if (isResponse(body)) return body;
     try {
-      await s.manualCompleteTopUp(body.trade_no, clientIp(c.req));
+      await s.manualCompleteTopUp(body.trade_no, clientIp(c.req, c.env));
       return apiOk(null);
     } catch (e) {
       return apiErrorMsg(e instanceof Error ? e.message : String(e));

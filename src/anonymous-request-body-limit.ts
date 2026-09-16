@@ -4,6 +4,7 @@
  * Too-large is `AbortWithStatus(413)`; any other read error is `AbortWithStatus(400)`.
  */
 import { envOrDefaultInt } from "./constants.js";
+import { carryRequestTrustedProxies } from "./trusted-proxies.js";
 import type { Env } from "./types.js";
 
 /** Original `common.defaultAnonymousRequestBodyLimitKB`. */
@@ -128,7 +129,7 @@ export function replaceRequestBody(req: Request, body: Uint8Array): Request {
   headers.set("content-length", String(body.byteLength));
   const copy = new ArrayBuffer(body.byteLength);
   new Uint8Array(copy).set(body);
-  return new Request(req.url, { method: req.method, headers, body: copy });
+  return carryRequestTrustedProxies(req, new Request(req.url, { method: req.method, headers, body: copy }));
 }
 
 /**
