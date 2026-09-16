@@ -323,6 +323,38 @@ export function apiFailCode(message: string, code: string, status = 200, data: u
   return json(status, { success: false, message, code, data });
 }
 
+/** Original `net/http.StatusText` used by `controller.writeAuthSessionError`. */
+export function httpStatusText(status: number): string {
+  switch (status) {
+    case 400:
+      return "Bad Request";
+    case 401:
+      return "Unauthorized";
+    case 403:
+      return "Forbidden";
+    case 404:
+      return "Not Found";
+    case 409:
+      return "Conflict";
+    case 429:
+      return "Too Many Requests";
+    case 500:
+      return "Internal Server Error";
+    default:
+      return "";
+  }
+}
+
+/** Original `controller.writeSecurityOperationError` known-code gin.H (omits `data`). */
+export function writeSecurityOperationError(code: string, message: string, status = 200): Response {
+  return json(status, { success: false, code, message });
+}
+
+/** Original `controller.writeAuthSessionError` gin.H (omits `data`). */
+export function writeAuthSessionError(status: number, code: string): Response {
+  return json(status, { success: false, code, message: httpStatusText(status) });
+}
+
 /** Original Stripe/Epay/Creem/Waffo gin.H `{message, data}` (and optional `url`) — omits `success`. */
 export function payOk(data: unknown, extra: Record<string, unknown> = {}): Response {
   return json(200, { message: "success", data, ...extra });

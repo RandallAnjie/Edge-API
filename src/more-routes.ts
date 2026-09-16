@@ -93,7 +93,7 @@ import {
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { goJSONKind, goUnmarshalJSON, parseChannelBatch } from "./channel-validate.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool, userEmailAlreadyTakenMessage, userPasswordResetLinkInvalidMessage } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool, userEmailAlreadyTakenMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -1149,14 +1149,34 @@ export function registerMore(r: Router<Env>): void {
       if (forbidden) return forbidden;
       if (intent === "verify") {
         if (!identity) return json(401, { success: false, message: "绑定操作需要登录" });
-        const expected = payload.verification?.provider_user_id || "";
-        if (!profile.id || profile.id !== expected) {
-          return apiFail("The OAuth account does not match the account linked to your profile.");
+        const verification = payload.verification;
+        // Original `FinishOAuthVerification` → `ErrAuthTokenInvalid` → `writeAuthSessionError`.
+        if (
+          !verification ||
+          !verification.context_hash ||
+          verification.auth_version !== identity.userAuthVersion ||
+          verification.session_version !== identity.sessionVersion
+        ) {
+          return writeAuthSessionError(401, "AUTH_UNAUTHORIZED");
+        }
+        const user = await s.getUserById(identity.userId);
+        const expected = user ? await getBoundOAuthUserId(s, user, provider) : "";
+        if (!expected) {
+          return writeSecurityOperationError(
+            "SECURITY_METHOD_UNAVAILABLE",
+            "This verification method is currently unavailable.",
+          );
+        }
+        if (!profile.id || profile.id !== expected || profile.id !== (verification.provider_user_id || "")) {
+          return writeSecurityOperationError(
+            "OAUTH_ACCOUNT_MISMATCH",
+            "The OAuth account does not match the account linked to your profile.",
+          );
         }
         const secret = await sessionSecret(c.env, s);
         const proof = await issueSecurityProof(s, secret, identity, "oauth", {
-          scope: payload.verification?.scope || "",
-          contextHash: payload.verification?.context_hash || "",
+          scope: verification.scope || "",
+          contextHash: verification.context_hash,
         });
         return apiOk(proof);
       }
@@ -1238,7 +1258,8 @@ export function registerMore(r: Router<Env>): void {
     } catch (e) {
       if (e instanceof OAuthAccessDeniedError) return apiErrorMsg(e.message);
       if (e instanceof OAuthI18nError) return apiErrorMsg(i18nPair(c.req, e.zh, e.en));
-      return apiFail(e instanceof Error ? e.message : String(e));
+      // Original `handleOAuthError` default → `writeSecurityOperationError` unknown → `writeAuthSessionError`.
+      return writeAuthSessionError(500, "AUTH_INTERNAL_ERROR");
     }
   });
 
