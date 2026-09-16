@@ -5,6 +5,7 @@
  * `ContextKeyAuditLogged` so this fallback is skipped.
  */
 import { clientIp } from "./http.js";
+import { requestIdFor } from "./request-id.js";
 import type { Store } from "./store.js";
 import {
   TOKEN_OPERATION_AUDIT_MAX_BODY,
@@ -266,4 +267,127 @@ export async function finishAdminAudit(
       },
     ),
   });
+}
+
+/**
+ * Original `controller.auditContentTemplates`. Unregistered actions fall back
+ * to the action string itself (`auditContentEN`).
+ */
+export const AUDIT_CONTENT_TEMPLATES: Record<string, string> = {
+  "user.create": "Created user ${username} (role ${role})",
+  "user.update": "Updated user ${username} (ID: ${id})",
+  "user.delete": "Deleted user ${username} (ID: ${id})",
+  "user.account_delete": "Account deletion",
+  "user.manage": "Performed ${action} on user ${username} (ID: ${id})",
+  "user.quota_add": "Increased user quota by ${quota}",
+  "user.quota_subtract": "Decreased user quota by ${quota}",
+  "user.quota_override": "Overrode user quota from ${from} to ${to}",
+  "user.binding_clear": "Cleared ${bindingType} binding for user ${username}",
+  "user.2fa_disable": "Force-disabled two-factor authentication for the user",
+  "user.passkey_register": "Registered a passkey",
+  "access_token.generate": "Generated a system access token",
+  "access_token.revoke": "Revoked the system access token",
+  "user.2fa_setup": "Started two-factor authentication setup",
+  "user.2fa_enable": "Enabled two-factor authentication",
+  "user.2fa_disable_self": "Disabled two-factor authentication",
+  "user.2fa_backup_codes": "Regenerated two-factor backup codes",
+  "user.security_verify": "Completed security verification",
+  "user.password_change": "Account password change",
+  "user.binding_start": "Account binding request",
+  "user.binding_bind": "Account binding",
+  "user.binding_unbind": "Account unlinking",
+  "user.email_binding_resend": "Email confirmation code resend",
+  "user.passkey_delete": "Deleted a passkey",
+  "user.reset_passkey": "Reset the user passkey",
+  "option.update": "Updated system setting ${key}",
+  "option.passkey_domains": "Updated Passkey domains: removed ${domains}; affected ${known}; unknown ${unknown}",
+  "option.passkey_domains_confirmed":
+    "Confirmed removal of Passkey domains: ${domains}; affected ${known}; unknown ${unknown}",
+  "option.passkey_domains_blocked":
+    "Passkey domain change blocked: ${domains}; affected ${known}; unknown ${unknown}",
+  "option.passkey_domains_failed": "Passkey domain update failed",
+  "channel.create": "Created channel ${name} (type ${type}, count ${count})",
+  "channel.update": "Updated channel ${name} (ID: ${id})",
+  "channel.delete": "Deleted channel ${name} (ID: ${id})",
+  "channel.delete_batch": "Batch deleted ${count} channels",
+  "channel.delete_disabled": "Deleted all disabled channels (${count})",
+  "channel.key_view": "Viewed channel key ${name} (ID: ${id})",
+  "channel.tag_disable": "Disabled channels with tag ${tag}",
+  "channel.tag_enable": "Enabled channels with tag ${tag}",
+  "channel.tag_edit": "Edited channels with tag ${tag}",
+  "channel.tag_batch_set": "Batch set tag for ${count} channels",
+  "channel.copy": "Copied channel (source ID: ${sourceId}) to ${name} (new ID: ${id})",
+  "channel.multi_key_manage": "Multi-key management ${action} on channel (ID: ${id})",
+  "channel.upstream_apply": "Applied upstream model changes to channel (ID: ${id})",
+  "channel.upstream_apply_all": "Applied upstream model changes to ${count} channels",
+  "redemption.create": "Created ${count} redemption codes named ${name} (${quota} each)",
+  "redemption.delete_batch": "Batch deleted ${count} redemption codes",
+  "subscription.plan_reset": "Reset active subscriptions for plan ${plan_id}",
+  "subscription.user_plan_reset": "Reset active plan ${plan_id} subscriptions for user ${target_user_id}",
+};
+
+/** Original `controller.auditContentEN` (`os.Expand` `${name}` from params). */
+export function auditContentEN(action: string, params: Record<string, unknown> = {}): string {
+  const tmpl = AUDIT_CONTENT_TEMPLATES[action];
+  if (!tmpl) return action;
+  return tmpl.replace(/\$\{([^{}]+)\}/g, (_, key: string) => {
+    if (Object.prototype.hasOwnProperty.call(params, key)) return String(params[key]);
+    return "";
+  });
+}
+
+function encodeManageAuditOther(action: string, params: Record<string, unknown>, user: SessionUser): string {
+  const op: { action: string; params?: Record<string, unknown> } = { action };
+  if (Object.keys(params).length) op.params = params;
+  const authMethod = user.useAccessToken ? "access_token" : "session";
+  return JSON.stringify({
+    op,
+    admin_info: {
+      admin_id: user.id,
+      admin_username: user.username,
+      admin_role: auditActorRole(user.role),
+      auth_method: authMethod,
+    },
+  });
+}
+
+/**
+ * Original `controller.recordManageAudit` / `recordManageAuditFor`.
+ * Writes category `operation` with English Content, `other.op` + `other.admin_info`
+ * (no `audit_info`), Status 200 / Success true, then `markAuditLogged`.
+ */
+export async function recordManageAudit(
+  store: Store,
+  req: Request,
+  user: SessionUser,
+  action: string,
+  params: Record<string, unknown> = {},
+  targetUserId = 0,
+): Promise<void> {
+  const merged: Record<string, unknown> = { ...params };
+  if (!("target_user_id" in merged) && targetUserId > 0 && targetUserId !== user.id) {
+    merged.target_user_id = targetUserId;
+  }
+  const url = new URL(req.url);
+  const matched = matchAdminAuditRoute(req.method, url.pathname);
+  const authMethod = user.useAccessToken ? "access_token" : "session";
+  try {
+    await store.audit(user.id, user.username, AUDIT_CATEGORY_OPERATION, auditContentEN(action, merged), clientIp(req), {
+      actor_role: auditActorRole(user.role),
+      category: AUDIT_CATEGORY_OPERATION,
+      action,
+      token_ref: "",
+      auth_method: authMethod,
+      user_agent: truncateAuditUserAgent(req.headers.get("user-agent") || ""),
+      method: req.method,
+      route: matched.route,
+      status: 200,
+      success: true,
+      request_id: requestIdFor(req),
+      other: encodeManageAuditOther(action, merged, user),
+    });
+  } catch {
+    /* original RecordAuditLog logs and continues */
+  }
+  markAuditLogged(req);
 }

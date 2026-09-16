@@ -253,6 +253,18 @@ Material changes from upstream:
   Extra-OK: requireProof-before-requireRoot routes (channel key) begin
   the fallback only after RootAuth succeeds. requireUser/requireAdmin/requireRoot
   and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` / `recordManageAuditFor` leftover
+  operation audit-log JSON on handler success (UpdateOption `option.update`,
+  CreateUser `user.create`, AddRedemption `redemption.create`). English
+  Content from `auditContentTemplates` (`os.Expand` `${name}`), category
+  `operation`, `other.op` + `other.admin_info` (no `audit_info`), Status 200
+  Success true, then `markAuditLogged` so the AdminAuth fallback is skipped.
+  Failed writes (empty option key, empty username) still use generic
+  `finishAdminAudit`. Extra-OK: hop 323 vendor.create/delete fallback tests
+  stay on `auditRouteActions` (original vendor handlers use
+  `vendor.metadata.save`). Extra-OK: audit write failure must not fail the
+  request. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

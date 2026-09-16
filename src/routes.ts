@@ -102,7 +102,7 @@ import {
 } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import { turnstileCheck } from "./turnstile.js";
-import { markAuditLogged } from "./admin-operation-audit.js";
+import { markAuditLogged, recordManageAudit } from "./admin-operation-audit.js";
 import {
   setTokenAuditSucceeded,
   snapshotTokenAuditFields,
@@ -745,6 +745,7 @@ export function adminRouter(): Router<Env> {
       aff_code: generateAffCode(),
     });
     await finishInsertUser(s, id, 0);
+    await recordManageAudit(s, c.req, u, "user.create", { username, role }, id);
     return json(200, { success: true, message: "" });
   });
 
@@ -1787,6 +1788,7 @@ export function adminRouter(): Router<Env> {
       if (err) return apiErrorMsg(err);
     }
     await s.setOption(key, value);
+    await recordManageAudit(s, c.req, u, "option.update", { key });
     return json(200, { success: true, message: "" });
   });
 
@@ -1847,6 +1849,11 @@ export function adminRouter(): Router<Env> {
       });
       keys.push(key);
     }
+    await recordManageAudit(s, c.req, u, "redemption.create", {
+      name,
+      count,
+      quota: await storeLogQuota(s, quota),
+    });
     return apiOk(keys);
   });
 
