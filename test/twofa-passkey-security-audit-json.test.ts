@@ -130,7 +130,6 @@ function assertNilParamSecurity(row: AuditItem, action: string, method: string, 
   assert.equal(row.username, "root");
   assert.equal(row.content, content);
   assert.deepEqual(row.other.op, { action });
-  assert.equal(row.other.op?.params, undefined);
   assert.equal(row.other.admin_info, undefined);
   assert.equal(row.other.audit_info, undefined);
 }
