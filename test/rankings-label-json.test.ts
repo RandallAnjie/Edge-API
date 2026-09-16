@@ -94,4 +94,5 @@ test("original GetRankings history labels use rankingBucketLabel JSON", async ()
   const hourBucket = Math.trunc(created / 3600) * 3600;
   assert.equal(todayPoint.ts, rankingBucketTs(hourBucket));
   assert.equal(todayPoint.label, rankingBucketLabel(hourBucket, "15:04"));
+  assert.notEqual(todayPoint.ts, rankingBucketTs(created));
 });

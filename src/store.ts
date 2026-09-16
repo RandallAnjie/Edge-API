@@ -3111,15 +3111,17 @@ export class Store {
   }
 
   async rankingBuckets(start: number, end: number, bucketSize: number): Promise<{ model_name: string; bucket: number; tokens: number }[]> {
-    const size = bucketSize > 0 ? bucketSize : 3600;
+    const size = Number.isFinite(bucketSize) && bucketSize > 0 ? Math.trunc(bucketSize) : 3600;
+    // Original SQLite `rankingBucketExpr` inlines `%d` so integer/integer truncates; bound JS numbers are REAL.
+    const expr = `(created_at / ${size}) * ${size}`;
     const { results } = await this.db
       .prepare(
-        `SELECT model_name, (created_at / ?) * ? as bucket, SUM(token_used) as tokens
+        `SELECT model_name, ${expr} as bucket, SUM(token_used) as tokens
          FROM quota_data WHERE model_name <> '' AND created_at >= ? AND created_at <= ?
-         GROUP BY model_name, (created_at / ?) * ?
+         GROUP BY model_name, ${expr}
          HAVING SUM(token_used) > 0 ORDER BY bucket ASC`,
       )
-      .bind(size, size, start, end, size, size)
+      .bind(start, end)
       .all<{ model_name: string; bucket: number; tokens: number }>();
     return results;
   }
