@@ -17,6 +17,7 @@ import { relayErrorHandler } from "../src/http.js";
 import { taskPluginSyncRevision } from "../src/dto.js";
 import type { ChannelRow, Env, ExecutionContextLike } from "../src/types.js";
 import { generateWaffoTestKeyPair } from "./waffo-keys.js";
+import { mergeModelRatio } from "./merge-model-ratio.js";
 import {
   ORIGINAL_COMMENTED_ROUTES,
   ORIGINAL_GIN_ROUTE_COUNT,
@@ -5020,6 +5021,9 @@ test("original auto-group selection, playground group, affinity TTL/usage cache,
   resetSchemaFlag();
   const e = env();
   const { auth, login } = await boot(e);
+  await mergeModelRatio(new Store(e.DB), {
+    "auto-select-model": 1,
+  });
   const loginData = login.body.data as Record<string, unknown>;
   assert.equal(loginData.token_type, "Bearer");
   assert.equal(typeof loginData.access_token, "string");
@@ -5316,7 +5320,11 @@ test("original TokenAuth group checks, admin channel pin, and token model limits
   resetSchemaFlag();
   const e = env();
   const { auth } = await boot(e);
-
+  await mergeModelRatio(new Store(e.DB), {
+    "pin-model": 1,
+    "claude-3-7-sonnet": 1.5,
+    "claude-3-7-sonnet-thinking": 1.5,
+  });
   const ghostTk = await json(
     new Request("http://local/api/token/", {
       method: "POST",

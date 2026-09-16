@@ -732,15 +732,15 @@ export async function testChannel(
     } catch {
       actualImageCount = 0;
     }
-    const tiered = await resolveRelayTieredQuota(store, originModel, group, billingUsage, isClaude, {
+    const tiered = await resolveRelayTieredQuota(store, billingModelName, group, billingUsage, isClaude, {
       relayMode: mode,
       imageBody: built.body,
       channelType: channel.type,
       actualImageCount,
       snapshot: tieredSnapshot,
     });
-    const price = await textConsumePriceData(store, originModel, group, user.group);
-    const audioLog = await audioConsumeLogRatios(store, originModel);
+    const price = await textConsumePriceData(store, billingModelName, group, user.group);
+    const audioLog = await audioConsumeLogRatios(store, billingModelName);
     const details = billingUsage.prompt_tokens_details || {};
     const outDetails = billingUsage.completion_tokens_details || {};
     const clientFormat = built.kind === "anthropic" ? "anthropic" : built.kind === "gemini" ? "gemini" : "openai";
@@ -760,7 +760,7 @@ export async function testChannel(
       originModelName: originModel,
     });
     const toolUsage = createToolUsageState({
-      model: originModel,
+      model: billingModelName,
       toolPrices: decodeToolPricesJSON(await store.option(TOOL_PRICE_OPTION_KEY)),
       relayMode: mode,
       requestTools: built.body.tools,
@@ -777,7 +777,7 @@ export async function testChannel(
     const textSummary = useAudioOther
       ? null
       : await calculateTextQuotaFromStore(store, {
-          model: originModel,
+          model: billingModelName,
           group,
           userGroup: user.group,
           usage: billingUsage,
@@ -796,7 +796,7 @@ export async function testChannel(
           inputAudioTokens: Number(details.audio_tokens || 0),
           outputTextTokens: Number(outDetails.text_tokens || 0),
           outputAudioTokens: Number(outDetails.audio_tokens || 0),
-          modelName: originModel,
+          modelName: billingModelName,
           usePrice: price.usePrice,
           modelPrice: price.modelPrice,
           modelRatio: price.modelRatio,
@@ -828,7 +828,7 @@ export async function testChannel(
     } else if (audioQuota) {
       quota = audioQuota.quota;
     } else {
-      quota = await computeQuota(store, originModel, group, usage.prompt, usage.completion);
+      quota = await computeQuota(store, billingModelName, group, usage.prompt, usage.completion);
     }
     if (useAudioOther) {
       const totalTokens = Number(billingUsage.prompt_tokens || 0) + Number(billingUsage.completion_tokens || 0);
@@ -856,6 +856,7 @@ export async function testChannel(
       group,
       other: consumeLogOther({
         model: originModel,
+        billingModel: billingModelName,
         group,
         groupRatio: price.groupRatio,
         modelRatio: price.modelRatio,

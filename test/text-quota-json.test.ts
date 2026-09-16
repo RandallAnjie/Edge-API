@@ -11,6 +11,7 @@ import {
   hasCustomModelRatio,
   mergeToolSurchargeItems,
 } from "../src/text-quota.js";
+import { mergeModelRatio } from "./merge-model-ratio.js";
 import {
   BUILD_IN_TOOL_FILE_SEARCH,
   BUILD_IN_TOOL_GOOGLE_SEARCH,
@@ -575,7 +576,8 @@ test("original GetToolPriceForModel longest prefix and zero terminal JSON", () =
 test("original search-preview HTTP tool_surcharges consume-log JSON", async () => {
   resetSchemaFlag();
   const e = env();
-  const { auth } = await boot(e);
+  const { auth, store } = await boot(e);
+  await mergeModelRatio(store, { "gpt-4o-search-preview": 1 });
   await createChannel(e, auth, { name: "search-preview", models: "gpt-4o-search-preview" });
   const sk = await createSk(e, auth);
   const { row, other } = await chatLog(e, auth, sk, "gpt-4o-search-preview", {

@@ -354,6 +354,16 @@ export async function resolveBillingModelNameFromStore(
   return matched && matched !== origin ? matched : origin;
 }
 
+/**
+ * Original PostText `RecordConsumeLog` `logModel` gizmo rewrite of `GetBillingModelName()`.
+ * PostAudio and TestChannel skip this rewrite.
+ */
+export function consumeLogModelName(billingModelName: string): string {
+  if (billingModelName.startsWith("gpt-4-gizmo")) return "gpt-4-gizmo-*";
+  if (billingModelName.startsWith("gpt-4o-gizmo")) return "gpt-4o-gizmo-*";
+  return billingModelName;
+}
+
 /** Original `helper.ModelPriceHelper` reject when ratio/price/tiered expr is missing. */
 export async function modelPriceHelperReject(
   store: Store,

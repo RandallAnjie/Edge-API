@@ -148,6 +148,17 @@ test("original TestChannel ModelPriceHelper is JSON-before-Convert* and uses bil
     );
     assert.equal(billingAlias.body.success, true, String(billingAlias.body.message));
     assert.ok(seen.some((url) => url.includes("/v1/chat/completions")));
+    const aliasLogs = await json(new Request("http://local/api/log/?type=2&token_name=" + encodeURIComponent("模型测试"), { headers: auth }), e);
+    const aliasItems = ((aliasLogs.body.data as { items?: Record<string, unknown>[] })?.items || []).filter(
+      (row) => row.model_name === "gemini-2.5-flash@thinking:on",
+    );
+    assert.equal(aliasItems.length >= 1, true, JSON.stringify(aliasLogs.body));
+    const aliasOther =
+      aliasItems[0].other && typeof aliasItems[0].other === "object"
+        ? (aliasItems[0].other as Record<string, unknown>)
+        : (JSON.parse(String(aliasItems[0].other)) as Record<string, unknown>);
+    assert.equal(aliasOther.model_ratio, 0.15);
+    assert.equal((aliasOther.admin_info as Record<string, unknown>).billing_model, "gemini-2.5-flash");
 
     await store.setOption("SelfUseModeEnabled", "true");
     seen.length = 0;

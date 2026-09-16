@@ -4,7 +4,9 @@ import { CHANNEL_TYPE_DEEPSEEK, CHANNEL_TYPE_MINIMAX, CHANNEL_TYPE_MOONSHOT, CHA
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
+import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
+import { mergeModelRatio } from "./merge-model-ratio.js";
 
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
@@ -52,6 +54,21 @@ async function boot() {
     e,
   );
   const sk = (tk.body.data as { key: string }).key;
+  await mergeModelRatio(new Store(e.DB), {
+    "deepseek-v3-thinking": 1,
+    "deepseek-v3": 1,
+    "doubao-pro": 1,
+    "doubao-pro-plan": 1,
+    "grok-2-search": 1,
+    "grok-3-mini-high": 1,
+    "grok-3-mini": 1,
+    "grok-3": 1,
+    "grok-2-image": 1,
+    "deepseek-v4-pro-max": 1,
+    "deepseek-v4-flash-none": 1,
+    "kimi-k2.5": 1,
+    "abab6.5s-chat": 1,
+  });
   return { e, auth, sk };
 }
 

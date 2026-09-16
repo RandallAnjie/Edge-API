@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultModelRatio } from "../src/ratio-defaults.js";
 import {
+  consumeLogModelName,
   hasPriceOrRatioEntry,
   modelPriceNotConfiguredMessage,
   resolveBillingModelName,
@@ -66,4 +67,8 @@ test("original CanonicalBillingModelNames / resolveBillingModelName JSON", () =>
 
   assert.match(modelPriceNotConfiguredMessage("fail-me", ROLE_ADMIN), /Model fail-me price not configured/);
   assert.match(modelPriceNotConfiguredMessage("fail-me", ROLE_USER), /has not been priced by the administrator/);
+
+  assert.equal(consumeLogModelName("gpt-4-gizmo-abc"), "gpt-4-gizmo-*");
+  assert.equal(consumeLogModelName("gpt-4o-gizmo-xyz"), "gpt-4o-gizmo-*");
+  assert.equal(consumeLogModelName("gemini-2.5-flash"), "gemini-2.5-flash");
 });

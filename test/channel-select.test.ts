@@ -9,6 +9,7 @@ import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike, TokenRow } from "../src/types.js";
+import { mergeModelRatio } from "./merge-model-ratio.js";
 
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
@@ -193,6 +194,7 @@ test("original ChannelSatisfiesFilters drops type-58 on unmatched path and type-
   );
   const token = (login.body.data as { access_token: string }).access_token;
   const auth = { authorization: "Bearer " + token, "content-type": "application/json" };
+  await mergeModelRatio(new Store(e.DB), { "filter-model": 1 });
 
   const custom = await json(
     new Request("http://local/api/channel/", {

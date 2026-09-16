@@ -144,7 +144,15 @@ import {
   type ChannelAttemptError,
 } from "./channel-error.js";
 import type { OriginTaskRef } from "./origin-task.js";
-import { remainingOk, textConsumePriceData, audioConsumeLogRatios, computeQuota } from "./quota.js";
+import {
+  remainingOk,
+  textConsumePriceData,
+  audioConsumeLogRatios,
+  computeQuota,
+  consumeLogModelName,
+  modelPriceHelperReject,
+  resolveBillingModelNameFromStore,
+} from "./quota.js";
 import {
   calculateTextQuotaFromStore,
   composeTieredTextQuota,
@@ -1437,6 +1445,7 @@ type SettleLogExtra = {
   toolUsage?: ToolUsageState;
   paramOverrideAudit?: string[];
   streamStatus?: StreamStatus;
+  billingModelName?: string;
 };
 
 async function settle(
@@ -1459,6 +1468,8 @@ async function settle(
     extra.claudeWebSearchRequests = extra.toolUsage.claudeWebSearchRequests || undefined;
     extra.geminiGoogleSearchCall = extra.toolUsage.geminiGoogleSearchCall || undefined;
   }
+  const originModel = model;
+  const billingName = extra.billingModelName || originModel;
   const billingUsage =
     extra.billingUsage ||
     billingUsageFromOpenAICounts({
@@ -1468,7 +1479,7 @@ async function settle(
       promptCacheHitTokens: extra.promptCacheHitTokens || 0,
     });
   const isClaude = extra.clientFormat === "anthropic" || billingUsage.usage_semantic === "anthropic";
-  const tiered = await resolveRelayTieredQuota(store, model, auth.usingGroup, billingUsage, isClaude, {
+  const tiered = await resolveRelayTieredQuota(store, billingName, auth.usingGroup, billingUsage, isClaude, {
     relayMode: extra.relayMode,
     imageBody: extra.imageBody,
     channelType: extra.imageChannelType,
@@ -1478,8 +1489,8 @@ async function settle(
     request: extra.billingRequestInput,
     preConsumedQuota: extra.tieredSnapshot?.estimatedQuotaAfterGroup,
   });
-  const price = await textConsumePriceData(store, model, auth.usingGroup, auth.user.group);
-  const audioLog = await audioConsumeLogRatios(store, model);
+  const price = await textConsumePriceData(store, billingName, auth.usingGroup, auth.user.group);
+  const audioLog = await audioConsumeLogRatios(store, billingName);
   const details = billingUsage.prompt_tokens_details || {};
   const outDetails = billingUsage.completion_tokens_details || {};
   const cacheCreationTokens = cacheCreationTokensTotal(details);
@@ -1493,12 +1504,12 @@ async function settle(
     audioOutput: outDetails.audio_tokens,
     finalRequestFormat,
     containsAudioRatios: audioLog.containsAudioRatios,
-    originModelName: model,
+    originModelName: originModel,
   });
   const textSummary = useAudioOther
     ? null
     : await calculateTextQuotaFromStore(store, {
-        model,
+        model: billingName,
         group: auth.usingGroup,
         userGroup: auth.user.group,
         usage: billingUsage,
@@ -1518,7 +1529,7 @@ async function settle(
         inputAudioTokens: Number(details.audio_tokens || 0),
         outputTextTokens: Number(outDetails.text_tokens || 0),
         outputAudioTokens: Number(outDetails.audio_tokens || 0),
-        modelName: model,
+        modelName: billingName,
         usePrice: price.usePrice,
         modelPrice: price.modelPrice,
         modelRatio: price.modelRatio,
@@ -1550,7 +1561,7 @@ async function settle(
   } else if (audioQuota) {
     quota = audioQuota.quota;
   } else {
-    quota = await computeQuota(store, model, auth.usingGroup, prompt, completion);
+    quota = await computeQuota(store, billingName, auth.usingGroup, prompt, completion);
   }
   if (useAudioOther) {
     const totalTokens = Number(billingUsage.prompt_tokens || 0) + Number(billingUsage.completion_tokens || 0);
@@ -1559,9 +1570,10 @@ async function settle(
     }
   }
   const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
+  const logModel = useAudioOther ? billingName : consumeLogModelName(billingName);
   if (ok && quota > 0) {
     await store.consumeQuota(auth.user.id, auth.token.id, channel.id, quota);
-    await store.bumpQuotaData(auth.user, model, quota, prompt + completion, {
+    await store.bumpQuotaData(auth.user, logModel, quota, prompt + completion, {
       useGroup: auth.usingGroup,
       tokenId: auth.token.id,
       channelId: channel.id,
@@ -1573,7 +1585,7 @@ async function settle(
     content,
     username: auth.user.username,
     token_name: auth.token.name,
-    model_name: model,
+    model_name: logModel,
     quota,
     prompt_tokens: textSummary ? textSummary.promptTokens : prompt,
     completion_tokens: completion,
@@ -1586,7 +1598,8 @@ async function settle(
     request_id: requestId,
     upstream_request_id: extra.upstreamRequestId || "",
     other: consumeLogOther({
-      model,
+      model: originModel,
+      billingModel: billingName,
       group: auth.usingGroup,
       groupRatio: price.groupRatio,
       modelRatio: price.modelRatio,
@@ -1727,6 +1740,17 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   const usedChannel: string[] = [];
   const requestStarted = Date.now();
 
+  const convertSettings = await reasoningSettingsFromStore(store);
+  const billingModelName = await resolveBillingModelNameFromStore(store, model, convertSettings);
+  const priceReject = await modelPriceHelperReject(
+    store,
+    model,
+    Number(auth.user.role || 0),
+    auth.user.settings,
+    convertSettings,
+  );
+  if (priceReject) return openaiError(400, priceReject, "model_price_error");
+
   const tokenMeta = getTokenCountMeta({
     mode,
     clientFormat,
@@ -1750,7 +1774,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     const maxTokens = tokenMeta.maxTokens || Number(asObj(opts.body).max_tokens || asObj(opts.body).max_completion_tokens || 0);
     tieredSnapshot = await captureTieredBillingSnapshot(
       store,
-      model,
+      billingModelName,
       auth.usingGroup,
       promptEst,
       { maxTokens },
@@ -1774,7 +1798,6 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   let lastStatus = 502;
 
   const retryTimes = selectParam.retryTimes;
-  const convertSettings = await reasoningSettingsFromStore(store);
   const chatResponsesPolicy = parseJson<ChatCompletionsToResponsesPolicy>(
     await store.option("global.chat_completions_to_responses_policy"),
     { enabled: false, all_channels: true },
@@ -2182,8 +2205,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       requestHeaders: requestHeadersFrom(opts.req),
       tieredSnapshot: tieredSnapshot || undefined,
       billingRequestInput,
+      billingModelName,
       toolUsage: createToolUsageState({
-        model,
+        model: billingModelName,
         toolPrices,
         relayMode: viaResponses ? "responses" : mode,
         requestTools: asObj(opts.body).tools,
