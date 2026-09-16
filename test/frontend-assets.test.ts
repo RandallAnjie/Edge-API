@@ -11,6 +11,10 @@ test("public ASSETS are the original QuantumNous new-api TanStack build", () => 
   assert.match(index, /id="root"/);
   assert.match(index, /New API/);
   assert.match(index, /\/static\/js\/index\./);
+  assert.match(index, /<!--umami-->/);
+  assert.match(index, /<!--Google Analytics-->/);
+  assert.doesNotMatch(index, /Umami QuantumNous/);
+  assert.doesNotMatch(index, /Google Analytics QuantumNous/);
   assert.doesNotMatch(index, /id="app"/);
   assert.doesNotMatch(index, /\/app\.js/);
   assert.ok(existsSync(join(root, "public/logo.png")));

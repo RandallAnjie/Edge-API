@@ -49,12 +49,14 @@ test("original Cache leftover no-cache on / and max-age on static ASSETS", async
   resetSchemaFlag();
   const e = env(createMemoryD1(), {
     ASSETS: assetsFrom({
-      "/": "<html>root</html>",
+      "/": "<html>root-static-must-not-serve</html>",
+      "/index.html": "<html>root</html>",
       "/static/js/index.js": "console.log(1)",
     }),
   });
   const root = await send(new Request("http://local/"), e);
   assert.equal(root.res.status, 200, root.text);
+  assert.equal(root.text, "<html>root</html>");
   assert.equal(root.res.headers.get("cache-control"), "no-cache");
   assert.equal(root.res.headers.get("cache-version"), WEB_CACHE_VERSION);
 

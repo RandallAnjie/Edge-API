@@ -35,6 +35,7 @@ import { criticalRateLimit } from "./critical-rate-limit.js";
 import { globalApiRateLimit } from "./global-api-rate-limit.js";
 import { globalWebRateLimit } from "./global-web-rate-limit.js";
 import { withRelayNotFoundWebCache, withSpaCacheHeaders, withWebCacheHeaders } from "./web-cache.js";
+import { embedFolderExists, withIndexAnalytics } from "./index-analytics.js";
 import { searchRateLimit, searchRateLimitApplies } from "./search-rate-limit.js";
 import { userCriticalRateLimit, userCriticalRateLimitScope } from "./user-critical-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
@@ -972,8 +973,11 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
   if (webLimited) return webLimited;
 
   if (env.ASSETS) {
-    const res = await env.ASSETS.fetch(req);
-    if (res.status !== 404) return withWebCacheHeaders(req, res);
+    // Original embedFileSystem.Open("/") returns ErrNotExist so `/` uses IndexPage.
+    if (embedFolderExists(path)) {
+      const res = await env.ASSETS.fetch(req);
+      if (res.status !== 404) return withWebCacheHeaders(req, res);
+    }
     if (req.method === "GET") {
       const skipSpa =
         path.startsWith("/api") ||
@@ -986,7 +990,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
         path.startsWith("/dashboard/billing");
       if (!skipSpa) {
         const spa = await env.ASSETS.fetch(new Request(new URL("/index.html", req.url), req));
-        return withSpaCacheHeaders(spa);
+        return withSpaCacheHeaders(await withIndexAnalytics(spa, env));
       }
     }
   }

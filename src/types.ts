@@ -109,6 +109,12 @@ export interface Env {
   SESSION_COOKIE_TRUSTED_URL?: string;
   /** Original `TRUSTED_PROXIES` (`common.ResolveTrustedProxies`; blank uses loopback/RFC1918/ULA). */
   TRUSTED_PROXIES?: string;
+  /** Original `UMAMI_WEBSITE_ID` (`InjectUmamiAnalytics`; empty skips the script). */
+  UMAMI_WEBSITE_ID?: string;
+  /** Original `UMAMI_SCRIPT_URL` (default `https://analytics.umami.is/script.js`). */
+  UMAMI_SCRIPT_URL?: string;
+  /** Original `GOOGLE_ANALYTICS_ID` (`InjectGoogleAnalytics`; empty skips gtag). */
+  GOOGLE_ANALYTICS_ID?: string;
   /** Original `CRYPTO_SECRET` (`common.CryptoSecret`; empty falls back to SessionSecret). */
   CRYPTO_SECRET?: string;
   /** Original `TASK_ARTIFACT_INVALID_RATE_LIMIT_PER_MINUTE` (default 60). */
