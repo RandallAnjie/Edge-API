@@ -239,6 +239,13 @@ async function vendorOperationPreview(s: Store, operation: VendorOp): Promise<Re
   return { action, sources, target, models: modelsOut, version };
 }
 
+/** Original GetPerfMetrics / GetPerfMetricsSummary `strconv.Atoi` hours (default 24). */
+function perfMetricsHours(raw: string | null): number {
+  if (!raw) return 24;
+  const parsed = strconvAtoi(raw);
+  return parsed.ok ? parsed.n : 24;
+}
+
 function originalPageInfo(url: URL): { page: number; pageSize: number } {
   const p = url.searchParams.get("p");
   let page = p != null && /^-?\d+$/.test(p) ? Number(p) : 0;
@@ -882,18 +889,22 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const tag = c.url.searchParams.get("tag") || "";
     if (!tag) return json(400, { success: false, message: "tag不能为空" });
-    const channels = await s.channelsByTag(tag);
-    let longest = "";
-    let maxLen = 0;
-    for (const ch of channels) {
-      if (!ch.models) continue;
-      const parts = String(ch.models).split(",");
-      if (parts.length > maxLen) {
-        maxLen = parts.length;
-        longest = ch.models;
+    try {
+      const channels = await s.channelsByTag(tag);
+      let longest = "";
+      let maxLen = 0;
+      for (const ch of channels) {
+        if (!ch.models) continue;
+        const parts = String(ch.models).split(",");
+        if (parts.length > maxLen) {
+          maxLen = parts.length;
+          longest = ch.models;
+        }
       }
+      return apiOk(longest);
+    } catch (e) {
+      return json(500, { success: false, message: e instanceof Error ? e.message : String(e) });
     }
-    return apiOk(longest);
   });
 
   r.post("/api/channel/multi_key/manage", async (c) => {
@@ -1202,17 +1213,25 @@ export function registerParity(r: Router<Env>): void {
       const status = Number((err as { status?: number }).status || 400);
       return json(status, { success: false, message: err instanceof Error ? err.message : "请求参数格式错误" });
     }
-    const ids = [...(req.channel_ids || [])];
-    if (req.channel_id) ids.push(req.channel_id);
-    for (const ustr of req.upstreams || []) if (ustr.id) ids.push(Number(ustr.id));
-    const channels = [];
-    try {
-      for (const id of ids) {
-        const ch = await s.getChannel(Number(id));
-        if (ch) channels.push(ch);
+    let channels = [];
+    if (req.upstreams?.length) {
+      for (const ustr of req.upstreams) {
+        if (!ustr.id) continue;
+        try {
+          const ch = await s.getChannel(Number(ustr.id));
+          if (ch) channels.push(ch);
+        } catch {
+          /* original OpenRouter GetChannelById failure is per-upstream, not 查询渠道失败 */
+        }
       }
-    } catch {
-      return json(500, { success: false, message: "查询渠道失败" });
+    } else if ((req.channel_ids && req.channel_ids.length > 0) || req.channel_id) {
+      try {
+        const ids = [...(req.channel_ids || [])];
+        if (req.channel_id) ids.push(req.channel_id);
+        channels = await s.getChannelsByIds(ids.map(Number));
+      } catch {
+        return json(500, { success: false, message: "查询渠道失败" });
+      }
     }
     const modelRatio = parseJson(await s.option("ModelRatio"), {});
     const modelPrice = parseJson(await s.option("ModelPrice"), {});
@@ -2100,15 +2119,23 @@ export function registerParity(r: Router<Env>): void {
     if (isHeaderNavDenied(gate)) return gate;
     const model = c.url.searchParams.get("model");
     if (!model) return json(400, { success: false, message: "model is required" });
-    const hours = Number(c.url.searchParams.get("hours") || 24);
-    return json(200, { success: true, data: await queryPerfMetrics(s, model, c.url.searchParams.get("group") || "", hours) });
+    const hours = perfMetricsHours(c.url.searchParams.get("hours"));
+    try {
+      return json(200, { success: true, data: await queryPerfMetrics(s, model, c.url.searchParams.get("group") || "", hours) });
+    } catch (e) {
+      return json(500, { success: false, message: e instanceof Error ? e.message : String(e) });
+    }
   });
   r.get("/api/perf-metrics/summary", async (c) => {
     const s = store(c);
     const gate = await headerNavModulePublicOrUserAuth(c, s, "pricing");
     if (isHeaderNavDenied(gate)) return gate;
-    const hours = Number(c.url.searchParams.get("hours") || 24);
-    return json(200, { success: true, data: await queryPerfMetricsSummary(s, hours) });
+    const hours = perfMetricsHours(c.url.searchParams.get("hours"));
+    try {
+      return json(200, { success: true, data: await queryPerfMetricsSummary(s, hours) });
+    } catch (e) {
+      return json(500, { success: false, message: e instanceof Error ? e.message : String(e) });
+    }
   });
 
   r.get("/api/uptime/status", async (c) => {

@@ -1475,6 +1475,24 @@ const COMPLETION_RATIO_META_OPTION_KEYS = [
   "AudioCompletionRatio",
 ];
 
+/**
+ * Original `common.Marshal` of GetOptions billing copies.
+ * Failure is leftover HTTP 500 gin.H `{success:false,message}` (no `data`).
+ */
+export const optionMarshal = {
+  map(values: Record<string, string>): string {
+    return JSON.stringify(values);
+  },
+};
+
+function completionRatioMetaValue(meta: Record<string, { ratio: number; locked: boolean }>): string {
+  try {
+    return JSON.stringify(meta);
+  } catch {
+    return "{}";
+  }
+}
+
 export function publicOptions(options: { key: string; value: string }[]): { key: string; value: string }[] {
   const optionValues: Record<string, string> = {};
   const all: Record<string, string> = {};
@@ -1500,9 +1518,9 @@ export function publicOptions(options: { key: string; value: string }[]): { key:
     modelRatio: parseJson(all.ModelRatio || "{}", {}),
     modelPrice: parseJson(all.ModelPrice || "{}", {}),
   });
-  out.push({ key: "billing_setting.billing_mode", value: JSON.stringify(billing.billing_mode) });
-  out.push({ key: "billing_setting.billing_expr", value: JSON.stringify(billing.billing_expr) });
-  out.push({ key: "CompletionRatioMeta", value: JSON.stringify(meta) });
+  out.push({ key: "billing_setting.billing_mode", value: optionMarshal.map(billing.billing_mode) });
+  out.push({ key: "billing_setting.billing_expr", value: optionMarshal.map(billing.billing_expr) });
+  out.push({ key: "CompletionRatioMeta", value: completionRatioMetaValue(meta) });
   return out;
 }
 

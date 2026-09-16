@@ -403,10 +403,18 @@ async function handlePasskeyDomainUpdate(
   }
 }
 
+/** Original `model.PingDB` leftover HTTP 503 gin.H (no `data`). */
+export const MSG_DB_CONNECTION_FAILED = "数据库连接失败";
+
 /** Original `model.PingDB` 10s throttle. */
 let lastDbPingMs = 0;
 
-async function pingDb(db: Env["DB"]): Promise<void> {
+/** Reset PingDB throttle (tests). */
+export function resetDbPingThrottle(): void {
+  lastDbPingMs = 0;
+}
+
+export async function pingDb(db: Env["DB"]): Promise<void> {
   if (Date.now() - lastDbPingMs < 10_000) return;
   await db.prepare("SELECT 1").first();
   lastDbPingMs = Date.now();
@@ -450,7 +458,7 @@ export function registerMore(r: Router<Env>): void {
     try {
       await pingDb(c.env.DB);
     } catch {
-      return json(503, { success: false, message: "数据库连接失败" });
+      return json(503, { success: false, message: MSG_DB_CONNECTION_FAILED });
     }
     return json(200, {
       success: true,

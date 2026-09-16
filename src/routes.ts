@@ -1544,7 +1544,12 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return apiOk(publicOptions(await s.allOptions()));
+    const options = await s.allOptions();
+    try {
+      return apiOk(publicOptions(options));
+    } catch (e) {
+      return json(500, { success: false, message: e instanceof Error ? e.message : String(e) });
+    }
   });
 
   r.slash("PUT", "/api/option/", async (c) => {
