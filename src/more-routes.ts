@@ -102,7 +102,7 @@ import { goJSONKind, goUnmarshalJSON, parseChannelBatch, readChannelTagJSON } fr
 import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, passkeyCredentialId, readJson, strconvAtoi, strconvParseBool, userCannotDeleteRootUserMessage, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import { turnstileCheck } from "./turnstile.js";
 import { applyTokenBatchAuditParams, setTokenAuditSucceeded, tokenAuditParams } from "./token-operation-audit.js";
-import { markAuditLogged } from "./admin-operation-audit.js";
+import { markAuditLogged, recordManageAudit } from "./admin-operation-audit.js";
 import { emailVerificationRateLimit } from "./email-verification-rate-limit.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -1704,7 +1704,9 @@ export function registerMore(r: Router<Env>): void {
     const parsed = parseChannelBatch(body);
     if (!parsed.ok) return apiErrorMsg("参数错误");
     try {
-      return apiOk(await s.deleteChannelsBatch(parsed.ids));
+      const count = await s.deleteChannelsBatch(parsed.ids);
+      await recordManageAudit(s, c.req, u, "channel.delete_batch", { count });
+      return apiOk(count);
     } catch (e) {
       return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }

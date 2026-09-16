@@ -1347,6 +1347,7 @@ export function adminRouter(): Router<Env> {
     const ch = await s.getChannel(id.n);
     const changed = Boolean(ch) && Number(ch!.status) !== status;
     if (changed) await s.updateChannel(id.n, { status });
+    await recordManageAudit(s, c.req, u, "channel.status_update", { id: id.n, status, changed });
     return apiOk(changed);
   });
 
@@ -1371,6 +1372,11 @@ export function adminRouter(): Router<Env> {
       await s.updateChannel(id, { status });
       changedCount += 1;
     }
+    await recordManageAudit(s, c.req, u, "channel.status_update_batch", {
+      count: changedCount,
+      total: body.ids.length,
+      status,
+    });
     return apiOk(changedCount);
   });
 
@@ -1379,6 +1385,7 @@ export function adminRouter(): Router<Env> {
     const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
     const n = await s.deleteDisabledChannels();
+    await recordManageAudit(s, c.req, u, "channel.delete_disabled", { count: n });
     return apiOk(n);
   });
 

@@ -314,6 +314,17 @@ Material changes from upstream:
   vendor.create/delete fallback tests stay unchanged. Extra-OK: audit
   write failure must not fail the request. requireUser/requireAdmin/requireRoot
   and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on UpdateChannelStatus `channel.status_update`, BatchUpdateChannelStatus
+  `channel.status_update_batch`, DeleteDisabledChannel `channel.delete_disabled`,
+  and DeleteChannelBatch `channel.delete_batch`. Status actions have no
+  `auditContentTemplates` entry so Content is the action string; params are
+  `{id,status,changed}` / `{count,total,status}`. Delete-disabled/batch
+  English templates use `${count}`. Failed invalid-id/empty-ids still use
+  generic `finishAdminAudit`. Extra-OK: hop 323 vendor.create/delete
+  fallback tests stay unchanged. Extra-OK: audit write failure must not
+  fail the request. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
