@@ -105,6 +105,12 @@ Material changes from upstream:
   (`ANONYMOUS_REQUEST_BODY_LIMIT_KB`; negative falls back to 512; `<= 0` disables)
   on POST setup/login/register/reset/oauth-state, payment webhooks, and epay
   notify/return. Too-large is empty HTTP 413; body read errors are empty HTTP 400.
+  Original `middleware.UserCriticalRateLimit` shares CriticalRateLimit enable/num/
+  duration (20 req / 1200s) and is user-id keyed (`UC:{scope}`) after UserAuth
+  on email-bind, verify, user token, passkey register/verify, aff_transfer, and
+  2FA setup/enable. Deny is empty HTTP 429 + `Retry-After`. Missing user ID is
+  empty HTTP 401. Redis/KV failure is empty HTTP 500. Extra-OK: unauthenticated
+  UC routes skip the leftover empty 401 so UserAuth/requireUser JSON still runs.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

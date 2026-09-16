@@ -3,12 +3,13 @@ import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
 import { runPendingMidjourneyPoll } from "./midjourney-poll.js";
 import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
 import { nowSec } from "./constants.js";
-import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, sessionSecret } from "./auth.js";
+import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, readSession, sessionSecret } from "./auth.js";
 import { abortWithOpenAiMessage, apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { criticalRateLimit } from "./critical-rate-limit.js";
 import { globalApiRateLimit } from "./global-api-rate-limit.js";
+import { userCriticalRateLimit, userCriticalRateLimitScope } from "./user-critical-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
 import { adminRouter } from "./routes.js";
 import {
@@ -756,7 +757,16 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       if (limited) return withCors(req, limited);
       const bodyLimited = await anonymousRequestBodyLimit(env, req);
       if (bodyLimited.error) return withCors(req, bodyLimited.error);
-      const c = ctxStore(bodyLimited.req, env, ctx);
+      const routedReq = bodyLimited.req;
+      const ucScope = userCriticalRateLimitScope(req.method, path);
+      if (ucScope) {
+        const session = await readSession(ctxStore(routedReq, env, ctx), store);
+        if (session) {
+          const ucLimited = await userCriticalRateLimit(env, session.id, ucScope);
+          if (ucLimited) return withCors(req, ucLimited);
+        }
+      }
+      const c = ctxStore(routedReq, env, ctx);
       const routed = await api.dispatch(c);
       if (routed) return withCors(req, routed);
 
