@@ -297,6 +297,23 @@ Material changes from upstream:
   tests stay unchanged. Extra-OK: audit write failure must not fail the
   request. requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on UpdateChannel `channel.update`, DeleteChannel `channel.delete`,
+  CopyChannel `channel.copy`, and GetChannelKey `channel.key_view`. English
+  Content from `auditContentTemplates`; `changed_fields` compares the
+  post-reload stored models/group/type/base_url (and key only when
+  non-empty and different) and never includes `name`; `base_url_source=
+  plugin_default` uses the REQUEST type/BaseURL (omitted type is 0, not
+  plugin). Delete uses `strconv.Atoi` ignore-err (invalid → 0) and still
+  audits missing channels with empty `name`. Copy params are
+  `sourceId`/`id`/`name` (clone name). Key view params are `{id,name}`
+  after RootAuth+CT+proof; the key is never stored in audit JSON. Failed
+  PUT `status` still uses generic `finishAdminAudit`. Extra-OK: Delete
+  success `data:null` (original omits `data`). Extra-OK: GetChannelKey
+  invalid-id stays 400 `SECURITY_CONTEXT_INVALID`. Extra-OK: hop 323
+  vendor.create/delete fallback tests stay unchanged. Extra-OK: audit
+  write failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

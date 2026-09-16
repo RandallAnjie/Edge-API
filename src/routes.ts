@@ -1160,8 +1160,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const ch = await s.getChannel(channelId);
     if (!ch) return apiErrorMsg(i18nPair(c.req, "渠道不存在", "Channel does not exist"));
-    await s.audit(u.id, u.username, "channel.key_view", `view channel key ${ch.name}`, clientIp(c.req));
-    markAuditLogged(c.req);
+    await recordManageAudit(s, c.req, u, "channel.key_view", { id: channelId, name: ch.name });
     return apiOk({ key: ch.key }, "获取成功");
   });
 
@@ -1301,6 +1300,21 @@ export function adminRouter(): Router<Env> {
     }
     await s.updateChannel(id, patch);
     const updated = await s.getChannel(id);
+    const changedFields: string[] = [];
+    if (String(updated?.models || "") !== String(origin.models || "")) changedFields.push("models");
+    if (String(updated?.group || "") !== String(origin.group || "")) changedFields.push("group");
+    if (Number(updated?.type) !== Number(origin.type)) changedFields.push("type");
+    if (String(updated?.base_url || "") !== String(origin.base_url || "")) changedFields.push("base_url");
+    if (String(updated?.key || "") !== "" && String(updated?.key) !== String(origin.key)) changedFields.push("key");
+    const updateAudit: Record<string, unknown> = {
+      id,
+      name: updated?.name ?? "",
+      changed_fields: changedFields,
+    };
+    const baseURLFromPluginDefault =
+      Number(ch.type) === CHANNEL_TYPE_TASK_PLUGIN && !String(ch.base_url ?? "").trim();
+    if (baseURLFromPluginDefault) updateAudit.base_url_source = "plugin_default";
+    await recordManageAudit(s, c.req, u, "channel.update", updateAudit);
     return apiOk(updated ? publicChannel(updated, false) : null);
   });
 
@@ -1308,7 +1322,11 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
-    await s.deleteChannel(Number(c.params.id));
+    const parsedId = Number(c.params.id);
+    const id = Number.isInteger(parsedId) ? parsedId : 0;
+    const existing = await s.getChannel(id);
+    await s.deleteChannel(id);
+    await recordManageAudit(s, c.req, u, "channel.delete", { id, name: existing?.name ?? "" });
     return apiOk(null);
   });
 
@@ -1380,18 +1398,22 @@ export function adminRouter(): Router<Env> {
     const settingsErr = validateChannelSettings(origin);
     if (settingsErr) return apiErrorMsg("Failed to copy channel: invalid channel settings");
     try {
+      const cloneName = origin.name + suffix;
       const cloneId = await s.insertChannel({
         ...origin,
         id: undefined as unknown as number,
-        name: origin.name + suffix,
+        name: cloneName,
         created_time: nowSec(),
         test_time: 0,
         response_time: 0,
         balance: resetBalance ? "0" : origin.balance,
         used_quota: resetBalance ? 0 : origin.used_quota,
       });
-      await s.audit(u.id, u.username, "channel.copy", `copy channel ${origin.name}`, clientIp(c.req));
-      markAuditLogged(c.req);
+      await recordManageAudit(s, c.req, u, "channel.copy", {
+        sourceId: parsedId.n,
+        id: cloneId,
+        name: cloneName,
+      });
       return apiOk({ id: cloneId });
     } catch {
       return apiErrorMsg("复制渠道失败，请稍后重试");
