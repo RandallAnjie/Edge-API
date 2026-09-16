@@ -37,6 +37,7 @@ import {
   oauthInvalidCodeMessage,
   oauthNotEnabledMessage,
   oauthProviderDisplayName,
+  oauthProviderIsEnabled,
   oauthProviderKnown,
   OAuthI18nError,
   OAuthAccessDeniedError,
@@ -1078,10 +1079,13 @@ export function registerMore(r: Router<Env>): void {
       return consumed === "ok" ? null : stateInvalid();
     };
 
+    if (!(await oauthProviderIsEnabled(s, provider))) {
+      return apiErrorMsg(oauthNotEnabledMessage(c.req, await oauthProviderDisplayName(s, provider)));
+    }
     if (errorCode) {
       const forbidden = await consumeOrForbidden();
       if (forbidden) return forbidden;
-      return apiFail(c.url.searchParams.get("error_description") || errorCode);
+      return apiErrorMsg(c.url.searchParams.get("error_description") || errorCode);
     }
 
     const finishBind = async (profile: OAuthProfile): Promise<Response> => {
@@ -1094,7 +1098,7 @@ export function registerMore(r: Router<Env>): void {
       );
       if (profile.field === "telegram_id") {
         const taken = await s.getUserByField("telegram_id", profile.id, { includeDeleted: true });
-        if (taken) return apiFail(alreadyBound);
+        if (taken) return apiErrorMsg(alreadyBound);
         const bound = await s.bindTelegramForSession(identity, profile.id);
         if (bound === "already_claimed") {
           return apiFailCode(ERR_TELEGRAM_BIND_ALREADY_BOUND, "TELEGRAM_BIND_ALREADY_BOUND");
@@ -1110,7 +1114,7 @@ export function registerMore(r: Router<Env>): void {
         const legacy = profile.extra?.legacy_id || "";
         const legacyTaken =
           legacy && !profile.provider_id ? await s.getUserByField(profile.field, legacy, { includeDeleted: true }) : null;
-        if (taken || legacyTaken) return apiFail(alreadyBound);
+        if (taken || legacyTaken) return apiErrorMsg(alreadyBound);
         const bound = profile.provider_id
           ? await s.bindCustomOAuthForSession(identity, profile.provider_id, profile.id)
           : await s.bindUserColumnForSession(identity, profile.field, profile.id);
@@ -1167,23 +1171,13 @@ export function registerMore(r: Router<Env>): void {
       );
     };
 
-    const denyIfDisabled = async (optKey: string): Promise<Response | null> => {
-      if (!(await s.optionBool(optKey, false))) {
-        return apiFail(oauthNotEnabledMessage(c.req, await oauthProviderDisplayName(s, provider)));
-      }
-      if (!code) return apiFail(oauthInvalidCodeMessage(c.req));
-      return null;
-    };
-
     try {
       if (provider === "github") {
-        const denied = await denyIfDisabled("GitHubOAuthEnabled");
-        if (denied) return denied;
+        if (!code) return apiErrorMsg(oauthInvalidCodeMessage(c.req));
         return finish(await exchangeGithub(await s.option("GitHubClientId"), await s.option("GitHubClientSecret"), code));
       }
       if (provider === "discord") {
-        const denied = await denyIfDisabled("DiscordOAuthEnabled");
-        if (denied) return denied;
+        if (!code) return apiErrorMsg(oauthInvalidCodeMessage(c.req));
         return finish(
           await exchangeDiscord({
             clientId: await s.option("DiscordClientId"),
@@ -1194,8 +1188,7 @@ export function registerMore(r: Router<Env>): void {
         );
       }
       if (provider === "linuxdo") {
-        const denied = await denyIfDisabled("LinuxDOOAuthEnabled");
-        if (denied) return denied;
+        if (!code) return apiErrorMsg(oauthInvalidCodeMessage(c.req));
         return finish(
           await exchangeLinuxDO({
             clientId: await s.option("LinuxDOClientId"),
@@ -1209,8 +1202,7 @@ export function registerMore(r: Router<Env>): void {
         );
       }
       if (provider === "oidc") {
-        const denied = await denyIfDisabled("OIDCAuthEnabled");
-        if (denied) return denied;
+        if (!code) return apiErrorMsg(oauthInvalidCodeMessage(c.req));
         return finish(
           await exchangeOidc({
             tokenUrl: await s.option("OIDCTokenEndpoint"),
@@ -1237,18 +1229,15 @@ export function registerMore(r: Router<Env>): void {
         }
       }
       if (provider === "wechat") {
-        return apiFail("请使用 /api/oauth/wechat");
+        return apiErrorMsg("请使用 /api/oauth/wechat");
       }
       const custom = await s.getOAuthProvider(provider);
       if (!custom) return json(400, { success: false, message: i18nPair(c.req, "未知的 OAuth 提供商", "Unknown OAuth provider") });
-      if (!Number(custom.enabled)) {
-        return apiFail(oauthNotEnabledMessage(c.req, await oauthProviderDisplayName(s, provider)));
-      }
-      if (!code) return apiFail(oauthInvalidCodeMessage(c.req));
+      if (!code) return apiErrorMsg(oauthInvalidCodeMessage(c.req));
       return finish(await exchangeCustom(custom, code, customOAuthRedirectUri(await s.option("ServerAddress"), provider)));
     } catch (e) {
-      if (e instanceof OAuthAccessDeniedError) return apiFail(e.message);
-      if (e instanceof OAuthI18nError) return apiFail(i18nPair(c.req, e.zh, e.en));
+      if (e instanceof OAuthAccessDeniedError) return apiErrorMsg(e.message);
+      if (e instanceof OAuthI18nError) return apiErrorMsg(i18nPair(c.req, e.zh, e.en));
       return apiFail(e instanceof Error ? e.message : String(e));
     }
   });

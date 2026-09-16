@@ -193,6 +193,8 @@ test("original HandleOAuth github bind JSON is session-bound and consumes only a
     );
     assert.equal(taken.body.success, false);
     assert.equal(taken.body.message, "This GitHub account has already been bound");
+    assert.equal("data" in taken.body, false);
+    assert.deepEqual(Object.keys(taken.body).sort(), ["message", "success"]);
     assert.equal(JSON.stringify(taken.body).includes("ACCOUNT_ALREADY_BOUND"), false);
     assert.equal((await store.getUserById(1))?.github_id, "7");
 
@@ -207,6 +209,7 @@ test("original HandleOAuth github bind JSON is session-bound and consumes only a
     );
     assert.equal(legacy.body.success, false);
     assert.equal(legacy.body.message, "该 GitHub 账户已被绑定");
+    assert.equal("data" in legacy.body, false);
   } finally {
     globalThis.fetch = origFetch;
   }

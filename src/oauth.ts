@@ -1,7 +1,7 @@
 import { generateAffCode, generateTokenKey } from "./crypto.js";
 import { hmacSha256Hex, sha256Bytes, timingSafeEqualStr } from "./crypto.js";
 import { nowSec, randomHex, ROLE_USER, USER_ENABLED } from "./constants.js";
-import { apiFail, apiFailCode, apiOk, i18nPair, json, OAuthI18nError } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiOk, i18nPair, json, OAuthI18nError } from "./http.js";
 import { ERR_TELEGRAM_ACCOUNT_NOT_BOUND } from "./telegram-oauth.js";
 import { notifyAccountSecurityChange, normalizeEmail } from "./mail.js";
 import { authUnauthorized, setupLogin } from "./auth.js";
@@ -58,6 +58,17 @@ export async function oauthProviderKnown(store: Store, name: string): Promise<bo
   if (BUILTIN_OAUTH.has(name)) return true;
   const custom = await store.getOAuthProvider(name);
   return Boolean(custom);
+}
+
+/** Original `oauth.Provider.IsEnabled` used by `HandleOAuth` before the provider `error` query. */
+export async function oauthProviderIsEnabled(store: Store, name: string): Promise<boolean> {
+  if (name === "github") return store.optionBool("GitHubOAuthEnabled", false);
+  if (name === "discord") return store.optionBool("DiscordOAuthEnabled", false);
+  if (name === "linuxdo") return store.optionBool("LinuxDOOAuthEnabled", false);
+  if (name === "oidc") return store.optionBool("OIDCAuthEnabled", false);
+  if (name === "telegram") return store.optionBool("TelegramOAuthEnabled", false);
+  const custom = await store.getOAuthProvider(name);
+  return Boolean(custom && Number(custom.enabled));
 }
 
 export async function getBoundOAuthUserId(store: Store, user: UserRow, provider: string): Promise<string> {
@@ -384,7 +395,7 @@ async function findOrCreateOAuthUser(
     const user = await fillLiveOAuthUser(store, profile, profile.id);
     if (!user) {
       if (oauthFillReturnsRecordNotFound(profile)) return authUnauthorized();
-      return apiFail(i18nPair(req, "用户已注销", "User has been deleted"));
+      return apiErrorMsg(i18nPair(req, "用户已注销", "User has been deleted"));
     }
     return user;
   }
@@ -406,7 +417,7 @@ async function findOrCreateOAuthUser(
   }
 
   if (!(await store.optionBool("RegisterEnabled", true))) {
-    return apiFail(
+    return apiErrorMsg(
       i18nPair(req, "管理员关闭了新用户注册", "New user registration has been disabled by administrator"),
     );
   }
@@ -424,7 +435,7 @@ async function findOrCreateOAuthUser(
   if (profile.email) {
     email = normalizeEmail(profile.email);
     if (email && (await store.getUserByEmail(email, { includeDeleted: true }))) {
-      return apiFail(i18nPair(req, "邮箱地址已被占用", "Email address is already in use"));
+      return apiErrorMsg(i18nPair(req, "邮箱地址已被占用", "Email address is already in use"));
     }
   }
 
@@ -468,12 +479,12 @@ export async function loginOrBindOAuth(
     if (!existingUser) return json(401, { success: false, message: "绑定操作需要登录" });
     if (profile.provider_id) {
       if (await store.oauthBindingTaken(profile.provider_id, profile.id, existingUser.id)) {
-        return apiFail("该 OAuth 账号已被绑定");
+        return apiErrorMsg("该 OAuth 账号已被绑定");
       }
       await store.upsertUserOAuthBinding(existingUser.id, profile.provider_id, profile.id);
     } else {
       const taken = await store.getUserByField(profile.field, profile.id, { includeDeleted: true });
-      if (taken && taken.id !== existingUser.id) return apiFail("该 OAuth 账号已被绑定");
+      if (taken && taken.id !== existingUser.id) return apiErrorMsg("该 OAuth 账号已被绑定");
       await store.updateUser(existingUser.id, { [profile.field]: profile.id });
     }
     const notification_warning = await notifyAccountSecurityChange(store, existingUser.email || "", "OAuth account linked");
@@ -482,7 +493,7 @@ export async function loginOrBindOAuth(
   const user = await findOrCreateOAuthUser(store, req, profile, affiliateCode);
   if (user instanceof Response) return user;
   if (user.status !== USER_ENABLED) {
-    return apiFail(i18nPair(req, "用户已被封禁", "User has been banned"));
+    return apiErrorMsg(i18nPair(req, "用户已被封禁", "User has been banned"));
   }
   return setupLogin(store, env, user, req, oauthLoginMethod(profile));
 }

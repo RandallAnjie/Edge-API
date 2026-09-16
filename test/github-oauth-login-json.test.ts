@@ -33,6 +33,13 @@ function setCookies(res: Response): string[] {
   return single ? [single] : [];
 }
 
+function omitData(body: Record<string, unknown>, message: string) {
+  assert.equal(body.success, false);
+  assert.equal(body.message, message);
+  assert.equal("data" in body, false);
+  assert.deepEqual(Object.keys(body).sort(), ["message", "success"]);
+}
+
 async function boot(e: Env) {
   await json(
     new Request("http://local/api/setup", {
@@ -98,10 +105,16 @@ test("original HandleOAuth github login JSON matches findOrCreateOAuthUser", asy
   }
 
   try {
+    const unknown = await json(new Request("http://local/api/oauth/not-a-provider"), e);
+    assert.equal(unknown.res.status, 400);
+    omitData(unknown.body, "Unknown OAuth provider");
+    const missingState = await json(new Request("http://local/api/oauth/github"), e);
+    assert.equal(missingState.res.status, 403);
+    omitData(missingState.body, "State parameter is empty or mismatched");
+
     const disabledFlow = await startLogin();
     const disabled = await callback(disabledFlow, "disabled-code");
-    assert.equal(disabled.body.success, false);
-    assert.equal(disabled.body.message, "GitHub login and registration has not been enabled by administrator");
+    omitData(disabled.body, "GitHub login and registration has not been enabled by administrator");
     const zhDisabledFlow = await startLogin();
     const zhDisabled = await json(
       new Request(
@@ -110,39 +123,62 @@ test("original HandleOAuth github login JSON matches findOrCreateOAuthUser", asy
       ),
       e,
     );
-    assert.equal(zhDisabled.body.message, "管理员未开启通过 GitHub 登录以及注册");
+    omitData(zhDisabled.body, "管理员未开启通过 GitHub 登录以及注册");
+
+    const errorWhileDisabledFlow = await startLogin();
+    const errorWhileDisabled = await json(
+      new Request(
+        `http://local/api/oauth/github?state=${encodeURIComponent(errorWhileDisabledFlow)}&error=access_denied`,
+      ),
+      e,
+    );
+    omitData(errorWhileDisabled.body, "GitHub login and registration has not been enabled by administrator");
 
     await store.setOption("GitHubOAuthEnabled", "true");
 
+    const providerErrorFlow = await startLogin();
+    const providerError = await json(
+      new Request(
+        `http://local/api/oauth/github?state=${encodeURIComponent(providerErrorFlow)}&error=access_denied`,
+      ),
+      e,
+    );
+    omitData(providerError.body, "access_denied");
+    const providerErrorDescFlow = await startLogin();
+    const providerErrorDesc = await json(
+      new Request(
+        `http://local/api/oauth/github?state=${encodeURIComponent(providerErrorDescFlow)}&error=access_denied&error_description=${encodeURIComponent("User cancelled")}`,
+      ),
+      e,
+    );
+    omitData(providerErrorDesc.body, "User cancelled");
+
     const emptyCodeFlow = await startLogin();
     const emptyCode = await json(new Request(`http://local/api/oauth/github?state=${encodeURIComponent(emptyCodeFlow)}`), e);
-    assert.equal(emptyCode.body.success, false);
-    assert.equal(emptyCode.body.message, "Invalid authorization code");
+    omitData(emptyCode.body, "Invalid authorization code");
     const zhCode = await json(
       new Request(`http://local/api/oauth/github?state=${encodeURIComponent(emptyCodeFlow)}`, {
         headers: { "accept-language": "zh-CN" },
       }),
       e,
     );
-    assert.equal(zhCode.body.message, "无效的授权码");
+    omitData(zhCode.body, "无效的授权码");
 
     const tokenFlow = await startLogin();
     grants.set("bad-token", { id: 42, login: "octocat", failToken: true });
     const tokenFail = await callback(tokenFlow, "bad-token");
-    assert.equal(tokenFail.body.success, false);
-    assert.equal(tokenFail.body.message, "Failed to get token from GitHub, please check settings");
+    omitData(tokenFail.body, "Failed to get token from GitHub, please check settings");
     const still = await e.DB.prepare("SELECT consumed_at FROM auth_flows WHERE token = ?")
       .bind(tokenFlow)
       .first<{ consumed_at: number }>();
     assert.equal(Number(still?.consumed_at || 0), 0);
     const zhToken = await callback(tokenFlow, "bad-token", { "accept-language": "zh-CN" });
-    assert.equal(zhToken.body.message, "GitHub 获取 Token 失败，请检查设置");
+    omitData(zhToken.body, "GitHub 获取 Token 失败，请检查设置");
 
     grants.set("empty-user", { id: 0, login: "" });
     const emptyUserFlow = await startLogin();
     const emptyUser = await callback(emptyUserFlow, "empty-user");
-    assert.equal(emptyUser.body.success, false);
-    assert.equal(emptyUser.body.message, "GitHub returned empty user info, please check settings");
+    omitData(emptyUser.body, "GitHub returned empty user info, please check settings");
 
     grants.set("ok-octocat", { id: 42, login: "octocat", name: "The Octocat", email: "octocat@github.com" });
     const created = await callback(tokenFlow, "ok-octocat");
@@ -195,35 +231,32 @@ test("original HandleOAuth github login JSON matches findOrCreateOAuthUser", asy
     grants.set("deleted", { id: 999, login: "deleteduser" });
     const deletedFlow = await startLogin();
     const deleted = await callback(deletedFlow, "deleted");
-    assert.equal(deleted.body.success, false);
-    assert.equal(deleted.body.message, "User has been deleted");
+    omitData(deleted.body, "User has been deleted");
     const zhDeletedFlow = await startLogin();
     grants.set("deleted-zh", { id: 999, login: "deleteduser" });
     const zhDeleted = await callback(zhDeletedFlow, "deleted-zh", { "accept-language": "zh-CN" });
-    assert.equal(zhDeleted.body.message, "用户已注销");
+    omitData(zhDeleted.body, "用户已注销");
 
     grants.set("closed", { id: 1001, login: "newbie" });
     const closedFlow = await startLogin();
     const closed = await callback(closedFlow, "closed");
-    assert.equal(closed.body.success, false);
-    assert.equal(closed.body.message, "New user registration has been disabled by administrator");
+    omitData(closed.body, "New user registration has been disabled by administrator");
     grants.set("closed-zh", { id: 1001, login: "newbie" });
     const zhClosedFlow = await startLogin();
     const zhClosed = await callback(zhClosedFlow, "closed-zh", { "accept-language": "zh-CN" });
-    assert.equal(zhClosed.body.message, "管理员关闭了新用户注册");
+    omitData(zhClosed.body, "管理员关闭了新用户注册");
 
     await store.setOption("RegisterEnabled", "true");
     await store.insertUser({ username: "mailowner", aff_code: "mail1", email: "taken@example.com" });
     grants.set("mail", { id: 2002, login: "mailuser", email: "taken@example.com" });
     const mailFlow = await startLogin();
     const mailTaken = await callback(mailFlow, "mail");
-    assert.equal(mailTaken.body.success, false);
-    assert.equal(mailTaken.body.message, "Email address is already in use");
+    omitData(mailTaken.body, "Email address is already in use");
     assert.equal(JSON.stringify(mailTaken.body).includes("EMAIL_ALREADY_TAKEN"), false);
     const zhMailFlow = await startLogin();
     grants.set("mail-zh", { id: 2002, login: "mailuser", email: "taken@example.com" });
     const zhMail = await callback(zhMailFlow, "mail-zh", { "accept-language": "zh-CN" });
-    assert.equal(zhMail.body.message, "邮箱地址已被占用");
+    omitData(zhMail.body, "邮箱地址已被占用");
 
     await store.insertUser({ username: "legacy", aff_code: "legacy", github_id: "legacylogin" });
     grants.set("legacy", { id: 555, login: "legacylogin" });
@@ -238,12 +271,11 @@ test("original HandleOAuth github login JSON matches findOrCreateOAuthUser", asy
     grants.set("banned", { id: 666, login: "banneduser" });
     const bannedFlow = await startLogin();
     const banned = await callback(bannedFlow, "banned");
-    assert.equal(banned.body.success, false);
-    assert.equal(banned.body.message, "User has been banned");
+    omitData(banned.body, "User has been banned");
     grants.set("banned-zh", { id: 666, login: "banneduser" });
     const zhBannedFlow = await startLogin();
     const zhBanned = await callback(zhBannedFlow, "banned-zh", { "accept-language": "zh-CN" });
-    assert.equal(zhBanned.body.message, "用户已被封禁");
+    omitData(zhBanned.body, "用户已被封禁");
 
     const pkUser = await store.insertUser({ username: "pkuser", aff_code: "ghpk", github_id: "777" });
     await store.insertPasskey(pkUser, "cred-github", "pubkey", "device", "example.com");

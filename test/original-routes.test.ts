@@ -2707,13 +2707,17 @@ test("original TestChannel, UpdateSelf, video, OAuth, and subscription return JS
   const unknownOauth = await json(new Request("http://local/api/oauth/not-a-provider"), e);
   assert.equal(unknownOauth.res.status, 400);
   assert.equal(unknownOauth.body.message, "Unknown OAuth provider");
+  assert.equal("data" in unknownOauth.body, false);
   const zhUnknown = await json(new Request("http://local/api/oauth/not-a-provider", { headers: { "accept-language": "zh-CN" } }), e);
   assert.equal(zhUnknown.body.message, "未知的 OAuth 提供商");
+  assert.equal("data" in zhUnknown.body, false);
   const oauthState = await json(new Request("http://local/api/oauth/github"), e);
   assert.equal(oauthState.res.status, 403);
   assert.equal(oauthState.body.message, "State parameter is empty or mismatched");
+  assert.equal("data" in oauthState.body, false);
   const zhState = await json(new Request("http://local/api/oauth/github", { headers: { "accept-language": "zh-CN" } }), e);
   assert.equal(zhState.body.message, "state 参数为空或不匹配");
+  assert.equal("data" in zhState.body, false);
 
   const epayReturn = await json(new Request("http://local/api/subscription/epay/return"), e);
   assert.equal(epayReturn.res.status, 302);
