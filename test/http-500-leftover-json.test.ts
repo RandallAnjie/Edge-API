@@ -4,6 +4,7 @@ import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { optionMarshal } from "../src/dto.js";
+import { publicContentMarshal } from "../src/http.js";
 import { MSG_DB_CONNECTION_FAILED, resetDbPingThrottle } from "../src/more-routes.js";
 import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
@@ -150,5 +151,25 @@ test("original TestStatus leftover ping-fail gin.H HTTP 503 omits data", async (
   } finally {
     e.DB.prepare = origPrepare;
     resetDbPingThrottle();
+  }
+});
+
+test("original serveRevalidatedJSON leftover marshal gin.H HTTP 500 omits data", async () => {
+  const { e } = await boot();
+  const orig = publicContentMarshal.json;
+  publicContentMarshal.json = () => {
+    throw new Error("json: unsupported type");
+  };
+  try {
+    for (const path of ["/api/notice", "/api/about", "/api/home_page_content", "/api/user-agreement", "/api/privacy-policy"]) {
+      const res = await json(new Request("http://local" + path), e);
+      assert.equal(res.res.status, 500, path);
+      omitData(res.body, "json: unsupported type");
+    }
+    const matched = await json(new Request("http://local/api/notice", { headers: { "if-none-match": 'W/"abc"' } }), e);
+    assert.equal(matched.res.status, 500);
+    omitData(matched.body, "json: unsupported type");
+  } finally {
+    publicContentMarshal.json = orig;
   }
 });

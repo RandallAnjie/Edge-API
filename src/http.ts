@@ -678,9 +678,25 @@ function etagMatches(ifNoneMatch: string, etag: string): boolean {
   return false;
 }
 
+/**
+ * Original `common.Marshal` of `publicContentResponse`.
+ * Failure is leftover HTTP 500 gin.H `{success:false,message}` (no `data`).
+ */
+export const publicContentMarshal = {
+  json(body: { success: boolean; message: string; data: string }): string {
+    return JSON.stringify(body);
+  },
+};
+
 /** Original GetNotice/GetAbout/GetHomePageContent/GetUserAgreement/GetPrivacyPolicy. */
 export async function serveRevalidatedJSON(req: Request, content: string): Promise<Response> {
   const data = content ?? "";
+  let encoded: string;
+  try {
+    encoded = publicContentMarshal.json({ success: true, message: "", data });
+  } catch (e) {
+    return json(500, { success: false, message: e instanceof Error ? e.message : String(e) });
+  }
   const digest = await sha256Bytes(new TextEncoder().encode(`${PUBLIC_CONTENT_ETAG_NS}\0${data}`));
   const etag = `W/"${bytesToHex(digest)}"`;
   const headers: Record<string, string> = {
@@ -692,7 +708,7 @@ export async function serveRevalidatedJSON(req: Request, content: string): Promi
   if (etagMatches(req.headers.get("if-none-match") || "", etag)) {
     return new Response(null, { status: 304, headers });
   }
-  return new Response(JSON.stringify({ success: true, message: "", data }), { status: 200, headers });
+  return new Response(encoded, { status: 200, headers });
 }
 
 /** Original `controller.videoProxyError`. */
