@@ -368,8 +368,9 @@ export async function recordManageAudit(
   if (!("target_user_id" in merged) && targetUserId > 0 && targetUserId !== user.id) {
     merged.target_user_id = targetUserId;
   }
+  const pending = pendingByReq.get(req);
   const url = new URL(req.url);
-  const matched = matchAdminAuditRoute(req.method, url.pathname);
+  const matched = pending ?? matchAdminAuditRoute(req.method, url.pathname, {});
   const authMethod = user.useAccessToken ? "access_token" : "session";
   try {
     await store.audit(user.id, user.username, AUDIT_CATEGORY_OPERATION, auditContentEN(action, merged), clientIp(req), {

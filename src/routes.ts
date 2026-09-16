@@ -782,6 +782,7 @@ export function adminRouter(): Router<Env> {
     }
     await s.updateUser(bound.id, patch);
     if (bound.password) await s.bumpAuthVersion(bound.id);
+    await recordManageAudit(s, c.req, u, "user.update", { username: target.username, id: bound.id }, bound.id);
     return json(200, { success: true, message: "" });
   });
 
@@ -819,8 +820,7 @@ export function adminRouter(): Router<Env> {
       case "delete":
         if (target.role === ROLE_ROOT) return apiErrorMsg(userCannotDeleteRootUserMessage(c.req));
         await s.softDeleteUser(target.id);
-        await s.audit(u.id, u.username, "user.manage", `${bound.action} user ${target.username}`, clientIp(c.req));
-        markAuditLogged(c.req);
+        await recordManageAudit(s, c.req, u, "user.manage", { action: bound.action, username: target.username, id: target.id }, target.id);
         return json(200, { success: true, message: "" });
       case "promote":
         if (u.role < ROLE_ROOT) return apiErrorMsg(userAdminCannotPromoteMessage(c.req));
@@ -835,8 +835,7 @@ export function adminRouter(): Router<Env> {
       default:
         return apiFailInvalidParams(c.req);
     }
-    await s.audit(u.id, u.username, "user.manage", `${bound.action} user ${target.username}`, clientIp(c.req));
-    markAuditLogged(c.req);
+    await recordManageAudit(s, c.req, u, "user.manage", { action: bound.action, username: target.username, id: target.id }, target.id);
     const fresh = await s.getUserById(target.id);
     return apiOk(manageUserView(fresh?.role ?? target.role, fresh?.status ?? target.status));
   });
@@ -852,6 +851,7 @@ export function adminRouter(): Router<Env> {
     if (!canManageTargetRole(u.role, target.role)) return apiErrorMsg(userNoPermissionHigherLevelMessage(c.req));
     if (target.role === ROLE_ROOT) return apiErrorMsg(userCannotDeleteRootUserMessage(c.req));
     await s.deleteUser(target.id);
+    await recordManageAudit(s, c.req, u, "user.delete", { username: target.username, id: target.id }, target.id);
     return json(200, { success: true, message: "" });
   });
 

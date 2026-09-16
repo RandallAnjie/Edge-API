@@ -59,7 +59,7 @@ import { bindVerificationOperation, issueSecurityProof, securityProofError } fro
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
 import { headerNavModulePublicOrUserAuth, isHeaderNavDenied } from "./header-nav.js";
-import { markAuditLogged } from "./admin-operation-audit.js";
+import { markAuditLogged, recordManageAudit } from "./admin-operation-audit.js";
 import { emailVerificationRateLimit } from "./email-verification-rate-limit.js";
 import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, strconvParseInt, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
@@ -714,6 +714,7 @@ export function registerParity(r: Router<Env>): void {
     const col = map[bindingType];
     if (!col) return apiErrorMsg("invalid binding type");
     await s.updateUser(id.n, { [col]: "" });
+    await recordManageAudit(s, c.req, u, "user.binding_clear", { bindingType, username: user.username }, user.id);
     return json(200, { success: true, message: "success" });
   });
 
