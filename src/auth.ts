@@ -199,27 +199,27 @@ export async function issueSession(
 }
 
 export function authUnauthorized(): Response {
-  return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized", data: null });
+  return writeAuthSessionError(401, "AUTH_UNAUTHORIZED");
 }
 
 export function authTokenExpired(): Response {
-  return json(401, { success: false, code: "AUTH_TOKEN_EXPIRED", message: "Unauthorized", data: null });
+  return writeAuthSessionError(401, "AUTH_TOKEN_EXPIRED");
 }
 
 export function authSessionRevoked(): Response {
-  return json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized", data: null });
+  return writeAuthSessionError(401, "AUTH_SESSION_REVOKED");
 }
 
 export function authUserDisabled(): Response {
-  return json(401, { success: false, code: "AUTH_USER_DISABLED", message: "Unauthorized", data: null });
+  return writeAuthSessionError(401, "AUTH_USER_DISABLED");
 }
 
 export function authSessionMismatch(): Response {
-  return json(409, { success: false, code: "AUTH_SESSION_MISMATCH", message: "Conflict", data: null });
+  return writeAuthSessionError(409, "AUTH_SESSION_MISMATCH");
 }
 
 export function authRefreshRace(): Response {
-  return json(409, { success: false, code: "AUTH_REFRESH_RACE", message: "Conflict", data: null });
+  return writeAuthSessionError(409, "AUTH_REFRESH_RACE");
 }
 
 export function authSessionLimit(): Response {
@@ -330,14 +330,14 @@ export async function refreshLoginSession(
   const secret = await sessionSecret(env, store);
   const sess = await store.getSession(parsed.sid);
   if (!sess || sess.revoked || (sess.expires_at > 0 && sess.expires_at < nowSec())) {
-    return { ok: false, response: json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized", data: null }) };
+    return { ok: false, response: authSessionRevoked() };
   }
   const user = await store.getUserById(sess.user_id);
   if (!user || user.status !== USER_ENABLED) return { ok: false, response: authUnauthorized() };
   const authVersion = Number(user.auth_version || 1) || 1;
   if (Number(sess.user_auth_version || 1) !== authVersion) {
     await store.revokeSession(sess.sid, user.id);
-    return { ok: false, response: json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized", data: null }) };
+    return { ok: false, response: authSessionRevoked() };
   }
 
   const currentHash = await hashRefreshSecret(secret, parsed.secret);
@@ -358,7 +358,7 @@ export async function refreshLoginSession(
   if (sess.refresh_hash && sess.refresh_hash !== currentHash) {
     if (sess.last_refresh_hash === currentHash) {
       await store.revokeSession(sess.sid, user.id);
-      return { ok: false, response: json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized", data: null }) };
+      return { ok: false, response: authSessionRevoked() };
     }
     return { ok: false, response: authUnauthorized() };
   }
