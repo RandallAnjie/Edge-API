@@ -123,10 +123,17 @@ function memoryQueues(env: Env): Map<string, number[]> {
   return q;
 }
 
-/** Original `memoryRateLimiter` keyed per worker `Env`. */
-export function memoryCriticalRateLimitRequest(env: Env, clientIP: string, maxRequestNum: number, duration: number, nowSec = Math.floor(Date.now() / 1000)): boolean {
+/** Original `memoryRateLimiter` key `mark + c.ClientIP()`, keyed per worker `Env`. */
+export function memoryIpRateLimitRequest(
+  env: Env,
+  mark: string,
+  clientIP: string,
+  maxRequestNum: number,
+  duration: number,
+  nowSec = Math.floor(Date.now() / 1000),
+): boolean {
   const store = memoryQueues(env);
-  const key = memoryCriticalRateLimitKey(clientIP);
+  const key = `${mark}${clientIP}`;
   const cur = store.get(key);
   if (!cur) {
     store.set(key, [nowSec]);
@@ -137,6 +144,30 @@ export function memoryCriticalRateLimitRequest(env: Env, clientIP: string, maxRe
   return next.allowed;
 }
 
+/** Original `memoryRateLimiter` keyed per worker `Env` for mark `CT`. */
+export function memoryCriticalRateLimitRequest(env: Env, clientIP: string, maxRequestNum: number, duration: number, nowSec = Math.floor(Date.now() / 1000)): boolean {
+  return memoryIpRateLimitRequest(env, CRITICAL_RATE_LIMIT_MARK, clientIP, maxRequestNum, duration, nowSec);
+}
+
+/**
+ * Original `redisRateLimiter` / `memoryRateLimiter` leftover empty HTTP 429.
+ * Redis/KV failure is empty HTTP 500 (no memory fallback).
+ */
+export async function takeIpRateLimit(env: Env, req: Request, mark: string, maxRequestNum: number, duration: number): Promise<Response | null> {
+  const ip = clientIp(req);
+  if (env.KV) {
+    try {
+      const taken = await redisFixedWindowTake(env.KV, redisIPRateLimitKey(mark, ip), maxRequestNum, duration);
+      if (taken.allowed) return null;
+      return writeRateLimited(taken.ttlSeconds);
+    } catch {
+      return writeRateLimitCheckFailed();
+    }
+  }
+  if (!memoryIpRateLimitRequest(env, mark, ip, maxRequestNum, duration)) return writeRateLimited(duration);
+  return null;
+}
+
 /**
  * Original `CriticalRateLimit` on login/register/reset/oauth/pay/token-key/etc.
  * `env.KV` is the Redis path (same binding as ModelRequestRateLimit).
@@ -145,18 +176,5 @@ export async function criticalRateLimit(env: Env, req: Request): Promise<Respons
   const url = new URL(req.url);
   if (!criticalRateLimitApplies(req.method, url.pathname)) return null;
   if (!criticalRateLimitEnabled(env)) return null;
-  const maxRequestNum = criticalRateLimitNum(env);
-  const duration = criticalRateLimitDuration(env);
-  const ip = clientIp(req);
-  if (env.KV) {
-    try {
-      const taken = await redisFixedWindowTake(env.KV, redisIPRateLimitKey(CRITICAL_RATE_LIMIT_MARK, ip), maxRequestNum, duration);
-      if (taken.allowed) return null;
-      return writeRateLimited(taken.ttlSeconds);
-    } catch {
-      return writeRateLimitCheckFailed();
-    }
-  }
-  if (!memoryCriticalRateLimitRequest(env, ip, maxRequestNum, duration)) return writeRateLimited(duration);
-  return null;
+  return takeIpRateLimit(env, req, CRITICAL_RATE_LIMIT_MARK, criticalRateLimitNum(env), criticalRateLimitDuration(env));
 }

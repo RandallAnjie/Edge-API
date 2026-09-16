@@ -151,12 +151,15 @@ test("original CriticalRateLimit Redis/KV leftover empty HTTP 429 Retry-After", 
 });
 
 test("original CriticalRateLimit Redis/KV failure is empty HTTP 500", async () => {
+  const m = new Map<string, string>();
   const boom: KVNamespace = {
-    async get() {
-      throw new Error("Redis client is not initialized");
+    async get(key) {
+      if (key.includes(":ip:CT:")) throw new Error("Redis client is not initialized");
+      return m.get(key) ?? null;
     },
-    async put() {
-      throw new Error("Redis client is not initialized");
+    async put(key, value) {
+      if (key.includes(":ip:CT:")) throw new Error("Redis client is not initialized");
+      m.set(key, value);
     },
   };
   resetSchemaFlag();

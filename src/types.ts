@@ -77,6 +77,12 @@ export interface Env {
   CRITICAL_RATE_LIMIT?: string;
   /** Original `CRITICAL_RATE_LIMIT_DURATION` (`common.CriticalRateLimitDuration`, default 1200). */
   CRITICAL_RATE_LIMIT_DURATION?: string;
+  /** Original `GLOBAL_API_RATE_LIMIT_ENABLE` (`common.GlobalApiRateLimitEnable`, default true). */
+  GLOBAL_API_RATE_LIMIT_ENABLE?: string;
+  /** Original `GLOBAL_API_RATE_LIMIT` (`common.GlobalApiRateLimitNum`, default 360). */
+  GLOBAL_API_RATE_LIMIT?: string;
+  /** Original `GLOBAL_API_RATE_LIMIT_DURATION` (`common.GlobalApiRateLimitDuration`, default 180). */
+  GLOBAL_API_RATE_LIMIT_DURATION?: string;
 }
 
 export interface ExecutionContextLike {

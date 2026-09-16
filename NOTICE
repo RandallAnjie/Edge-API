@@ -88,6 +88,14 @@ Material changes from upstream:
   Distributor empty-channel OpenAI errors use original `ErrorCodeModelNotFound`
   (`model_not_found`, HTTP 503, `type: new_api_error`). Extra-OK: task-plugin and
   Midjourney fallbacks may still surface `no_available_channel`.
+  Original `middleware.GlobalAPIRateLimit` is on by default
+  (`GLOBAL_API_RATE_LIMIT_ENABLE`, 360 req / 180s, mark `GA`, IP-keyed) on the
+  `/api` group and dashboard billing (`/dashboard/billing/*`,
+  `/v1/dashboard/billing/*`). Deny is empty HTTP 429 + `Retry-After` (memory uses
+  the full window; KV/Redis uses TTL). Redis/KV failure is empty HTTP 500 (not
+  memory fallback). Relay `/v1` (except dashboard billing) is not on this limiter.
+  Extra-OK: unmatched `/api` 404s also consume the budget. Extra-OK: KV get/put
+  is not Redis lua-atomic.
   Original `middleware.CriticalRateLimit` is on by default (`CRITICAL_RATE_LIMIT_ENABLE`,
   20 req / 1200s, mark `CT`, IP-keyed). Deny is empty HTTP 429 + `Retry-After`
   (memory uses the full window; KV/Redis uses TTL). KV is the Redis path;
