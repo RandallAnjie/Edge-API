@@ -8,12 +8,15 @@ import { clientIp } from "./http.js";
 import { requestIdFor } from "./request-id.js";
 import type { Store } from "./store.js";
 import {
+  AUDIT_CATEGORY_SECURITY,
   TOKEN_OPERATION_AUDIT_MAX_BODY,
   auditActorRole,
   auditResponseSuccess,
   truncateAuditUserAgent,
 } from "./token-operation-audit.js";
 import type { SessionUser } from "./types.js";
+
+export { AUDIT_CATEGORY_SECURITY };
 
 /** Original `auditResponseWriter.maxSize`. */
 export const ADMIN_OPERATION_AUDIT_MAX_BODY = TOKEN_OPERATION_AUDIT_MAX_BODY;
@@ -448,4 +451,157 @@ export async function recordQuotaManageAudit(
     /* original RecordAuditLog logs and continues */
   }
   markAuditLogged(req);
+}
+
+export type PasskeyDomainAuditChange = {
+  removed_rp_ids: string[];
+  affected_credentials: number;
+  unknown_credentials: number;
+  previous_rp_id: string;
+  effective_rp_id: string;
+};
+
+/** Original `errors.Is(err, model.ErrPasskeyDomainRemovalConfirmation)`. */
+function isPasskeyDomainRemovalConfirmation(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  return (err as { code?: string }).code === "PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED";
+}
+
+const securityErrorCodeByReq = new WeakMap<Request, string>();
+
+/** Original `c.Set("security_error_code")` for `recordUserSecurityAudit`. */
+export function setSecurityErrorCode(req: Request, code: string): void {
+  if (code) securityErrorCodeByReq.set(req, code);
+}
+
+/**
+ * Original `controller.recordPasskeyDomainAudit`. Category `operation` with
+ * English Content, `other.op` + `other.admin_info` + `other.audit_info`
+ * (Method/Route/Path=FullPath, Status=Writer.Status, Success=err==nil),
+ * then `markAuditLogged`. Preview callers skip this helper.
+ */
+export async function recordPasskeyDomainAudit(
+  store: Store,
+  req: Request,
+  user: SessionUser,
+  change: PasskeyDomainAuditChange | null | undefined,
+  confirmedInput: boolean,
+  err: unknown,
+  status: number,
+): Promise<void> {
+  const ok = err == null;
+  const confirmed = Boolean(confirmedInput && ok && change && change.removed_rp_ids.length > 0);
+  const params: Record<string, unknown> = { success: ok, confirmed };
+  if (change) {
+    params.domains = change.removed_rp_ids.join(", ");
+    params.removed_rp_ids = change.removed_rp_ids;
+    params.known = change.affected_credentials;
+    params.unknown = change.unknown_credentials;
+    params.previous_rp_id = change.previous_rp_id;
+    params.effective_rp_id = change.effective_rp_id;
+  }
+  let action = "option.passkey_domains";
+  if (isPasskeyDomainRemovalConfirmation(err)) action = "option.passkey_domains_blocked";
+  else if (err != null) action = "option.passkey_domains_failed";
+  else if (confirmed) action = "option.passkey_domains_confirmed";
+  const pending = pendingByReq.get(req);
+  const url = new URL(req.url);
+  const matched = pending ?? matchAdminAuditRoute(req.method, url.pathname, {});
+  const authMethod = user.useAccessToken ? "access_token" : "session";
+  const adminInfo = {
+    admin_id: user.id,
+    admin_username: user.username,
+    admin_role: auditActorRole(user.role),
+    auth_method: authMethod,
+  };
+  const auditInfo = {
+    method: req.method,
+    route: matched.route,
+    path: matched.route,
+    status,
+    success: ok,
+  };
+  try {
+    await store.audit(user.id, user.username, AUDIT_CATEGORY_OPERATION, auditContentEN(action, params), clientIp(req), {
+      actor_role: auditActorRole(user.role),
+      category: AUDIT_CATEGORY_OPERATION,
+      action,
+      token_ref: "",
+      auth_method: authMethod,
+      user_agent: truncateAuditUserAgent(req.headers.get("user-agent") || ""),
+      method: req.method,
+      route: matched.route,
+      status,
+      success: ok,
+      request_id: requestIdFor(req),
+      other: encodeAdminAuditOther(action, params, adminInfo, auditInfo),
+    });
+  } catch {
+    /* original RecordAuditLog logs and continues */
+  }
+  markAuditLogged(req);
+}
+
+/**
+ * Original `controller.recordUserSecurityAudit`. Category `security` (adminInfo
+ * nil), no `admin_info`. `audit_info` only when params has a bool `success`.
+ * `AuditLog.TokenRef` stays empty; fingerprint belongs in `other.op.params`.
+ * Does not `markAuditLogged` (UserAuth has no AdminAuth fallback).
+ */
+export async function recordUserSecurityAudit(
+  store: Store,
+  req: Request,
+  user: SessionUser,
+  action: string,
+  params: Record<string, unknown> | null = null,
+): Promise<void> {
+  const merged: Record<string, unknown> = params ? { ...params } : {};
+  const code = securityErrorCodeByReq.get(req);
+  if (code) merged.code = code;
+  const pending = pendingByReq.get(req);
+  const url = new URL(req.url);
+  const matched = pending ?? matchAdminAuditRoute(req.method, url.pathname, {});
+  let auditInfo:
+    | {
+        method: string;
+        route: string;
+        path: string;
+        status: number;
+        success: boolean;
+      }
+    | undefined;
+  if (typeof merged.success === "boolean") {
+    auditInfo = {
+      method: req.method,
+      route: matched.route,
+      path: matched.route,
+      status: 200,
+      success: merged.success,
+    };
+  }
+  const authMethod = user.useAccessToken ? "access_token" : "session";
+  const op: { action: string; params?: Record<string, unknown> } = { action };
+  if (Object.keys(merged).length) op.params = merged;
+  const other: Record<string, unknown> = { op };
+  if (auditInfo) other.audit_info = auditInfo;
+  const success = auditInfo ? auditInfo.success : true;
+  const status = auditInfo ? auditInfo.status : 200;
+  try {
+    await store.audit(user.id, user.username, AUDIT_CATEGORY_SECURITY, auditContentEN(action, merged), clientIp(req), {
+      actor_role: auditActorRole(user.role),
+      category: AUDIT_CATEGORY_SECURITY,
+      action,
+      token_ref: "",
+      auth_method: authMethod,
+      user_agent: truncateAuditUserAgent(req.headers.get("user-agent") || ""),
+      method: req.method,
+      route: matched.route,
+      status,
+      success,
+      request_id: requestIdFor(req),
+      other: JSON.stringify(other),
+    });
+  } catch {
+    /* original RecordAuditLog logs and continues */
+  }
 }

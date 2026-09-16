@@ -390,6 +390,29 @@ Material changes from upstream:
   Extra-OK: audit write failure must not fail the request.
   requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordPasskeyDomainAudit` leftover operation audit-log
+  JSON on UpdatePasskeyDomains and UpdateOption passkey-domain keys
+  (`option.passkey_domains` / `_confirmed` / `_blocked` / `_failed`).
+  English Content from `auditContentTemplates`, category `operation`,
+  `other.op` + `other.admin_info` + `other.audit_info` (Method/Route/Path
+  = gin FullPath `/api/option/passkey/domains` or `/api/option/`,
+  Status=`Writer.Status` after `writePasskeyDomainSettingsError`,
+  Success=`err==nil`), then `markAuditLogged`. Preview does not call
+  `recordPasskeyDomainAudit`. Params are `success`/`confirmed` plus
+  `domains` (joined RemovedRPIDs) / `removed_rp_ids` / `known` / `unknown`
+  / `previous_rp_id` / `effective_rp_id` when change is non-nil.
+  Original `controller.recordUserSecurityAudit` leftover security audit-log
+  JSON on GenerateAccessToken `access_token.generate` (GET and POST
+  `/api/user/token`) and RevokeAccessToken `access_token.revoke` (only when
+  fingerprint ref != ""). Category `security`, no `admin_info`, no
+  `audit_info` (params lack a bool `success`), Status 200 Success true,
+  `AuditLog.TokenRef` empty, fingerprint only in `other.op.params.token_ref`,
+  `auth_method` session/access_token from gin. Failed empty PUT
+  `/api/option/passkey/domains` still uses generic `finishAdminAudit`.
+  Extra-OK: hop 323 vendor.create/delete fallback tests stay unchanged.
+  Extra-OK: audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

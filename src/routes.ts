@@ -103,7 +103,7 @@ import {
 } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import { turnstileCheck } from "./turnstile.js";
-import { markAuditLogged, recordManageAudit, recordQuotaManageAudit, auditContentEN } from "./admin-operation-audit.js";
+import { recordManageAudit, recordPasskeyDomainAudit, recordQuotaManageAudit, auditContentEN } from "./admin-operation-audit.js";
 import {
   setTokenAuditSucceeded,
   snapshotTokenAuditFields,
@@ -1788,21 +1788,13 @@ export function adminRouter(): Router<Env> {
     if (isPasskeyDomainOption(key)) {
       try {
         const change = await updatePasskeyDomainOptions(s, await sessionSecret(c.env, s), { [key]: value }, false, "");
+        await recordPasskeyDomainAudit(s, c.req, u, change, false, null, 200);
         return apiOk(change);
       } catch (e) {
-        if (e instanceof PasskeyDomainError) {
-          await s.audit(u.id, u.username, "option", e.code === "PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED" ? "option.passkey_domains_blocked" : "option.passkey_domains_failed", clientIp(c.req), {
-            actor_role: u.role,
-            category: "operation",
-            action: e.code === "PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED" ? "option.passkey_domains_blocked" : "option.passkey_domains_failed",
-            method: "PUT",
-            route: "/api/option/",
-            status: e.status,
-            success: false,
-          });
-          markAuditLogged(c.req);
-        }
-        return passkeyDomainHttpError(e, c.req);
+        const res = passkeyDomainHttpError(e, c.req);
+        const change = e instanceof PasskeyDomainError ? e.change : undefined;
+        await recordPasskeyDomainAudit(s, c.req, u, change, false, e, res.status);
+        return res;
       }
     }
     if (key === "TelegramOAuthEnabled" && value === "true" && !(await telegramSettingsConfigured(s))) {

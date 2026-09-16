@@ -102,7 +102,7 @@ import { goJSONKind, goUnmarshalJSON, parseChannelBatch, readChannelTagJSON } fr
 import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, passkeyCredentialId, readJson, strconvAtoi, strconvParseBool, userCannotDeleteRootUserMessage, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import { turnstileCheck } from "./turnstile.js";
 import { applyTokenBatchAuditParams, setTokenAuditSucceeded, tokenAuditParams } from "./token-operation-audit.js";
-import { markAuditLogged, recordManageAudit } from "./admin-operation-audit.js";
+import { recordManageAudit, recordPasskeyDomainAudit, recordUserSecurityAudit } from "./admin-operation-audit.js";
 import { emailVerificationRateLimit } from "./email-verification-rate-limit.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -130,7 +130,7 @@ import {
 import { httpStats } from "./metrics.js";
 import { Store, publicUser } from "./store.js";
 import { storeLogQuota } from "./quota.js";
-import type { Env, UserRow } from "./types.js";
+import type { Env, SessionUser, UserRow } from "./types.js";
 
 type C = Context<Env>;
 
@@ -354,7 +354,7 @@ function loginPasskeyStringField(body: Record<string, unknown>, key: string): { 
 async function handlePasskeyDomainUpdate(
   c: C,
   s: Store,
-  u: { id: number; username: string; role: number },
+  u: SessionUser,
   values: Record<string, string>,
   preview: boolean,
   confirmation: string,
@@ -363,47 +363,16 @@ async function handlePasskeyDomainUpdate(
   try {
     const change = await updatePasskeyDomainOptions(s, secret, values, preview, confirmation);
     if (!preview) {
-      const confirmed = confirmation !== "" && change.removed_rp_ids.length > 0;
-      await s.audit(u.id, u.username, "option", confirmed ? "option.passkey_domains_confirmed" : "option.passkey_domains", clientIp(c.req), {
-        actor_role: u.role,
-        category: "operation",
-        action: confirmed ? "option.passkey_domains_confirmed" : "option.passkey_domains",
-        method: c.req.method,
-        route: c.url.pathname,
-        status: 200,
-        success: true,
-        other: JSON.stringify({
-          confirmed,
-          removed_rp_ids: change.removed_rp_ids,
-          known: change.affected_credentials,
-          unknown: change.unknown_credentials,
-          previous_rp_id: change.previous_rp_id,
-          effective_rp_id: change.effective_rp_id,
-        }),
-      });
-      markAuditLogged(c.req);
+      await recordPasskeyDomainAudit(s, c.req, u, change, confirmation !== "", null, 200);
     }
     return apiOk(change);
   } catch (e) {
-    if (e instanceof PasskeyDomainError && !preview) {
-      await s.audit(u.id, u.username, "option", e.code === "PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED" ? "option.passkey_domains_blocked" : "option.passkey_domains_failed", clientIp(c.req), {
-        actor_role: u.role,
-        category: "operation",
-        action: e.code === "PASSKEY_RP_ID_REMOVAL_CONFIRMATION_REQUIRED" ? "option.passkey_domains_blocked" : "option.passkey_domains_failed",
-        method: c.req.method,
-        route: c.url.pathname,
-        status: e.status,
-        success: false,
-        other: JSON.stringify({
-          confirmed: false,
-          removed_rp_ids: e.change?.removed_rp_ids || [],
-          known: e.change?.affected_credentials || 0,
-          unknown: e.change?.unknown_credentials || 0,
-        }),
-      });
-      markAuditLogged(c.req);
+    const res = passkeyDomainHttpError(e, c.req);
+    if (!preview) {
+      const change = e instanceof PasskeyDomainError ? e.change : undefined;
+      await recordPasskeyDomainAudit(s, c.req, u, change, confirmation !== "", e, res.status);
     }
-    return passkeyDomainHttpError(e, c.req);
+    return res;
   }
 }
 
@@ -837,7 +806,12 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
+    const existing = await s.getUserById(u.id);
+    const ref = await accessTokenFingerprint(existing?.access_token || "");
     await s.updateUser(u.id, { access_token: "", access_token_created_at: 0 });
+    if (ref) {
+      await recordUserSecurityAudit(s, c.req, u, "access_token.revoke", { token_ref: ref });
+    }
     return apiOk(null);
   });
 
@@ -2550,15 +2524,8 @@ async function generateUserAccessToken(c: C): Promise<Response> {
   if (isResponse(u)) return u;
   const token = newAccessToken();
   await s.updateUser(u.id, { access_token: token, access_token_created_at: nowSec() });
-  await s.audit(u.id, u.username, "security", "access_token.generate", clientIp(c.req), {
-    actor_role: u.role,
-    category: "security",
-    action: "access_token.generate",
+  await recordUserSecurityAudit(s, c.req, u, "access_token.generate", {
     token_ref: await accessTokenFingerprint(token),
-    auth_method: "session",
-    method: "POST",
-    route: "/api/user/token",
-    success: true,
   });
   return apiOk(token);
 }
