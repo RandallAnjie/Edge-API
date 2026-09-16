@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
+import { describe, test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { ensureSchema, resetSchemaFlag } from "../src/schema.js";
@@ -13,8 +13,8 @@ import {
   ZERO_SYSTEM_STATUS,
   checkSystemPerformance,
   formatUsagePercent,
-  resetSystemStatus,
-  setSystemStatus,
+  setSystemStatusForDb,
+  resetSystemStatusForDb,
   systemPerformanceCheckAppliesAfterAuth,
   systemPerformanceCheckAppliesBeforeAuth,
   systemPerformanceCheckExempt,
@@ -46,15 +46,11 @@ async function send(req: Request, e: Env) {
   return { res, body, text };
 }
 
-function cpuOverload(n = 91) {
-  setSystemStatus({ cpuUsage: n, memoryUsage: 0, diskUsage: 0 });
+function cpuOverload(db: object, n = 91) {
+  setSystemStatusForDb(db, { cpuUsage: n, memoryUsage: 0, diskUsage: 0 });
 }
 
-describe("original SystemPerformanceCheck leftover HTTP 503", { concurrency: false }, () => {
-  afterEach(() => {
-    resetSystemStatus();
-  });
-
+describe("original SystemPerformanceCheck leftover HTTP 503", () => {
   test("original SystemPerformanceCheck constants, applies, ToOpenAIError/ToClaudeError, zeros never trip", async () => {
     assert.equal(NEW_API_ERROR_TYPE, "new_api_error");
     assert.equal(SYSTEM_CPU_OVERLOADED, "system_cpu_overloaded");
@@ -107,15 +103,15 @@ describe("original SystemPerformanceCheck leftover HTTP 503", { concurrency: fal
     const db = createMemoryD1();
     await ensureSchema(db);
     const store = new Store(db);
-    assert.equal(await checkSystemPerformance(store), null);
-    setSystemStatus({ cpuUsage: 90.9, memoryUsage: 0, diskUsage: 0 });
-    assert.equal(await checkSystemPerformance(store), null);
+    assert.equal(await checkSystemPerformance(store, db), null);
+    setSystemStatusForDb(db, { cpuUsage: 90.9, memoryUsage: 0, diskUsage: 0 });
+    assert.equal(await checkSystemPerformance(store, db), null);
   });
 
   test("original SystemPerformanceCheck leftover HTTP 503 OpenAI vs Claude before TokenAuth", async () => {
     resetSchemaFlag();
     const e = env();
-    cpuOverload(91);
+    cpuOverload(e.DB!);
     const expectedMessage = "system cpu overloaded (current: 91.0%, threshold: 90%)";
 
     const chat = await send(new Request("http://local/v1/chat/completions", { method: "POST" }), e);
@@ -147,7 +143,7 @@ describe("original SystemPerformanceCheck leftover HTTP 503", { concurrency: fal
   test("original SystemPerformanceCheck stays off models/api/unmatched and TokenAuth-first on video POST", async () => {
     resetSchemaFlag();
     const e = env();
-    cpuOverload(91);
+    cpuOverload(e.DB!);
 
     const models = await send(new Request("http://local/v1/models"), e);
     assert.notEqual(models.res.status, 503, models.text);
@@ -175,12 +171,12 @@ describe("original SystemPerformanceCheck leftover HTTP 503", { concurrency: fal
     await ensureSchema(db);
     const store = new Store(db);
     await store.setOption("performance_setting.monitor_enabled", "false");
-    cpuOverload(99);
+    cpuOverload(db, 99);
     const disabled = await send(new Request("http://local/v1/chat/completions", { method: "POST" }), e);
     assert.notEqual(disabled.res.status, 503, disabled.text);
 
     await store.setOption("performance_setting.monitor_enabled", "true");
-    setSystemStatus({ cpuUsage: 0, memoryUsage: 91, diskUsage: 99 });
+    setSystemStatusForDb(db, { cpuUsage: 0, memoryUsage: 91, diskUsage: 99 });
     const memory = await send(new Request("http://local/v1/chat/completions", { method: "POST" }), e);
     assert.equal(memory.res.status, 503, memory.text);
     assert.deepEqual(memory.body, {
@@ -192,7 +188,7 @@ describe("original SystemPerformanceCheck leftover HTTP 503", { concurrency: fal
       },
     });
 
-    setSystemStatus({ cpuUsage: 0, memoryUsage: 0, diskUsage: 96 });
+    setSystemStatusForDb(db, { cpuUsage: 0, memoryUsage: 0, diskUsage: 96 });
     const disk = await send(new Request("http://local/v1/chat/completions", { method: "POST" }), e);
     assert.equal(disk.res.status, 503, disk.text);
     assert.equal((disk.body.error as { code: string }).code, SYSTEM_DISK_OVERLOADED);
@@ -201,11 +197,11 @@ describe("original SystemPerformanceCheck leftover HTTP 503", { concurrency: fal
       "system disk overloaded (current: 96.0%, threshold: 95%)",
     );
 
-    resetSystemStatus();
+    resetSystemStatusForDb(db);
     const zeros = await send(new Request("http://local/v1/chat/completions", { method: "POST" }), e);
     assert.notEqual(zeros.res.status, 503, zeros.text);
 
-    cpuOverload(91);
+    cpuOverload(db);
     const options = await send(new Request("http://local/v1/chat/completions", { method: "OPTIONS" }), e);
     assert.equal(options.res.status, 204, options.text);
     assert.equal(options.text, "");

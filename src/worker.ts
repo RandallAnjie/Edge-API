@@ -234,7 +234,7 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
   const auth = await authenticateApiToken(ctxStore(req, env, ctx), store);
   if (auth instanceof Response) return auth;
   if (systemPerformanceCheckAppliesAfterAuth(req.method, path) || !isRegisteredRelay(req.method, path)) {
-    const overloaded = await systemPerformanceCheck(store, path);
+    const overloaded = await systemPerformanceCheck(store, path, env.DB);
     if (overloaded) return overloaded;
   }
   return withModelRequestRateLimit(
@@ -707,11 +707,16 @@ async function limitedDecompress(env: Env, req: Request): Promise<{ req: Request
 }
 
 /** Original `SystemPerformanceCheck` before TokenAuth on playground / relayV1 / MJ / Gemini. */
-async function limitedSystemPerformanceBeforeAuth(store: Store, req: Request, path: string): Promise<Response | null> {
+async function limitedSystemPerformanceBeforeAuth(
+  store: Store,
+  req: Request,
+  path: string,
+  db: Env["DB"],
+): Promise<Response | null> {
   if (!systemPerformanceCheckAppliesBeforeAuth(req.method, path) && !isRegisteredMjRelay(req.method, path)) {
     return null;
   }
-  const overloaded = await systemPerformanceCheck(store, path);
+  const overloaded = await systemPerformanceCheck(store, path, db);
   return overloaded ? withCors(req, overloaded) : null;
 }
 
@@ -792,7 +797,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
             return withCors(req, pluginRoutePanicError());
           }
         }
-        const beforeAuth = await limitedSystemPerformanceBeforeAuth(store, req, path);
+        const beforeAuth = await limitedSystemPerformanceBeforeAuth(store, req, path, env.DB);
         if (beforeAuth) return beforeAuth;
         try {
           return withCors(req, await handleRelay(req, env, ctx));
@@ -806,7 +811,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
         const unpacked = await limitedDecompress(env, req);
         if (unpacked.denied) return unpacked.denied;
         req = unpacked.req;
-        const playgroundOverload = await systemPerformanceCheck(store, path);
+        const playgroundOverload = await systemPerformanceCheck(store, path, env.DB);
         if (playgroundOverload) return withCors(req, playgroundOverload);
       }
 

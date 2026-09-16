@@ -3,7 +3,7 @@
  * `/v1/messages` prefix uses `ToClaudeError`; every other path uses `ToOpenAIError`.
  * `common.GetSystemStatus` starts at zeros until gopsutil `StartSystemMonitor`;
  * `int(usage) > threshold` so default zeros never trip. Extra-OK: workerd has
- * no gopsutil, so live usage stays 0 unless tests inject `setSystemStatus`.
+ * no gopsutil, so live usage stays 0 unless tests inject `setSystemStatusForDb`.
  */
 import { json } from "./http.js";
 import { loadPerformanceSetting } from "./metrics.js";
@@ -29,24 +29,25 @@ export type SystemStatus = {
 
 export const ZERO_SYSTEM_STATUS: SystemStatus = { cpuUsage: 0, memoryUsage: 0, diskUsage: 0 };
 
-let latestSystemStatus: SystemStatus = { ...ZERO_SYSTEM_STATUS };
+const injectedByDb = new WeakMap<object, SystemStatus>();
 
-/** Original `common.GetSystemStatus`. */
-export function getSystemStatus(): SystemStatus {
-  return latestSystemStatus;
+/** Original `common.GetSystemStatus` (zeros unless a test injects on this D1). */
+export function getSystemStatus(db?: object | null): SystemStatus {
+  if (db && injectedByDb.has(db)) return injectedByDb.get(db)!;
+  return ZERO_SYSTEM_STATUS;
 }
 
 /** Test hook for original `latestSystemStatus.Store` (gopsutil is Extra-OK absent). */
-export function setSystemStatus(status: SystemStatus): void {
-  latestSystemStatus = {
+export function setSystemStatusForDb(db: object, status: SystemStatus): void {
+  injectedByDb.set(db, {
     cpuUsage: status.cpuUsage,
     memoryUsage: status.memoryUsage,
     diskUsage: status.diskUsage,
-  };
+  });
 }
 
-export function resetSystemStatus(): void {
-  latestSystemStatus = { ...ZERO_SYSTEM_STATUS };
+export function resetSystemStatusForDb(db: object): void {
+  injectedByDb.delete(db);
 }
 
 export type SystemPerformanceError = {
@@ -146,14 +147,14 @@ function overloadedMessage(kind: "cpu" | "memory" | "disk", current: number, thr
  * Original `checkSystemPerformance`. Thresholds and enable come from
  * `performance_setting` (`MonitorEnabled` default true, CPU/Memory 90, Disk 95).
  */
-export async function checkSystemPerformance(store: Store): Promise<SystemPerformanceError | null> {
+export async function checkSystemPerformance(store: Store, db?: object | null): Promise<SystemPerformanceError | null> {
   const setting = await loadPerformanceSetting(store);
   if (!setting.monitor_enabled) return null;
 
   const cpuThreshold = usageInt(setting.monitor_cpu_threshold);
   const memoryThreshold = usageInt(setting.monitor_memory_threshold);
   const diskThreshold = usageInt(setting.monitor_disk_threshold);
-  const status = getSystemStatus();
+  const status = getSystemStatus(db);
 
   if (cpuThreshold > 0 && usageInt(status.cpuUsage) > cpuThreshold) {
     return {
@@ -202,8 +203,8 @@ export function writeSystemPerformanceError(path: string, err: SystemPerformance
   return json(err.statusCode, { error: toOpenAIPerformanceError(err) });
 }
 
-export async function systemPerformanceCheck(store: Store, path: string): Promise<Response | null> {
-  const err = await checkSystemPerformance(store);
+export async function systemPerformanceCheck(store: Store, path: string, db?: object | null): Promise<Response | null> {
+  const err = await checkSystemPerformance(store, db);
   if (!err) return null;
   return writeSystemPerformanceError(path, err);
 }

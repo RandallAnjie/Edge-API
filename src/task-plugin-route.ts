@@ -832,7 +832,7 @@ export async function handleNativePluginRoute(
     store,
   );
   if (auth instanceof Response) return auth;
-  const overloaded = await systemPerformanceCheck(store, new URL(req.url).pathname);
+  const overloaded = await systemPerformanceCheck(store, new URL(req.url).pathname, env.DB);
   if (overloaded) return overloaded;
   return withModelRequestRateLimit(store, env, req, auth, async () => {
     hit("relay");
