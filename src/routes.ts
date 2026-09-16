@@ -89,6 +89,7 @@ import { isPasskeyDomainOption, PasskeyDomainError, passkeyDomainHttpError, upda
 import { checkModelRequestRateLimitGroup } from "./model-rate-limit.js";
 import { parseHTTPStatusCodeRanges } from "./status-code-ranges.js";
 import { TOOL_PRICE_OPTION_KEY, validateToolPricesJSON } from "./tool-price.js";
+import { PLUGIN_BILLING_EXPR_OPTION, validateBillingExprOption, validatePluginBillingExprOption } from "./model-pricing.js";
 import type { Env, RedemptionRow, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -1505,6 +1506,16 @@ export function adminRouter(): Router<Env> {
       case "AutomaticRetryStatusCodes": {
         const parsed = parseHTTPStatusCodeRanges(value);
         if (!parsed.ok) return apiErrorMsg(parsed.message);
+        break;
+      }
+      case "billing_setting.billing_expr": {
+        const err = await validateBillingExprOption(s, value);
+        if (err) return apiErrorMsg(err);
+        break;
+      }
+      case PLUGIN_BILLING_EXPR_OPTION: {
+        const err = await validatePluginBillingExprOption(s, value);
+        if (err) return apiErrorMsg(err);
         break;
       }
     }

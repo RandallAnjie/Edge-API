@@ -1,5 +1,6 @@
 import { BILLING_MODE_RATIO, BILLING_MODE_TIERED_EXPR, BUILTIN_BILLING_EXPR, getBuiltinBillingExpr } from "./billing-setting.js";
-import { smokeTestExpr } from "./billing-expr.js";
+import { compileBillingExpr, smokeTestExpr, smokeTestTaskExpr, usedUsageKeys } from "./billing-expr.js";
+import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import {
   CHANNEL_ENABLED,
   CHANNEL_TYPE_ALI,
@@ -10,7 +11,7 @@ import {
 } from "./constants.js";
 import { bytesToHex, sha256Bytes } from "./crypto.js";
 import { endpointTypesForChannel, isImageGenerationModel, matchesName } from "./dto.js";
-import { listRoutingPlugins } from "./task-plugin-factory.js";
+import { listRoutingPlugins, type RoutingPlugin } from "./task-plugin-factory.js";
 import { pluginModelNames, pluginUsageForModel } from "./plugin-meta.js";
 import { defaultModelRatio } from "./ratio-defaults.js";
 import { formatMatchingModelName, resolveCompletionRatio } from "./ratio-setting.js";
@@ -501,6 +502,143 @@ export async function getModelPricingSnapshot(store: Store, names: string[]): Pr
     options[key] = JSON.stringify(values[key]);
   }
   return { entries, options, empty_version: await modelPricingVersion({}) };
+}
+
+/** Original `encoding/json` into `map[string]string`. JSON `null` is a nil map. */
+export function parseStringStringMap(
+  jsonStr: string,
+): { ok: true; value: Record<string, string> | null } | { ok: false; message: string } {
+  const parsed = goUnmarshalJSON(jsonStr);
+  if (!parsed.ok) return parsed;
+  if (parsed.value === null) return { ok: true, value: null };
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return {
+      ok: false,
+      message: `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type map[string]string`,
+    };
+  }
+  const out: Record<string, string> = {};
+  for (const [name, entry] of Object.entries(parsed.value as Record<string, unknown>)) {
+    if (entry === null) {
+      out[name] = "";
+      continue;
+    }
+    if (typeof entry !== "string") {
+      return { ok: false, message: `json: cannot unmarshal ${goJSONKind(entry)} into Go value of type string` };
+    }
+    out[name] = entry;
+  }
+  return { ok: true, value: out };
+}
+
+function pluginsByModel(plugins: RoutingPlugin[], model: string): RoutingPlugin[] {
+  return plugins
+    .filter((plugin) => pluginModelNames(plugin.meta).includes(model))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+function pluginDeclaresModel(plugin: RoutingPlugin | undefined, model: string): plugin is RoutingPlugin {
+  return Boolean(plugin && pluginModelNames(plugin.meta).includes(model));
+}
+
+/** Original `model.validateModelPricing` plugin-variant branch. */
+function validatePluginBillingVariants(
+  name: string,
+  variants: Record<string, string>,
+  previousVariants: Record<string, string>,
+  plugins: RoutingPlugin[],
+): string | null {
+  for (const [pluginKey, pluginExpr] of Object.entries(variants)) {
+    if (typeof pluginExpr !== "string" || !pluginExpr.trim()) {
+      return `model ${name}: plugin ${pluginKey}: billing expression is required`;
+    }
+    const plugin = plugins.find((item) => item.key === pluginKey);
+    if (!pluginDeclaresModel(plugin, name)) {
+      if (previousVariants[pluginKey] === pluginExpr) continue;
+      return `model ${name}: plugin ${pluginKey} does not declare this model`;
+    }
+    const schema = pluginUsageForModel(plugin.meta, name).usageSchema || {};
+    const err = smokeTestTaskExpr(pluginExpr, schema);
+    if (err) return `model ${name}: plugin ${pluginKey}: ${err.message}`;
+  }
+  return null;
+}
+
+/** Original `model.validateModelPricing` `billing_setting.billing_expr` branch. */
+function validateModelBillingExpr(
+  name: string,
+  expression: string,
+  variants: Record<string, string>,
+  previousExpr: string | undefined,
+  plugins: RoutingPlugin[],
+): string | null {
+  if (!expression.trim()) return "billing expression is required";
+  const compiled = compileBillingExpr(expression);
+  if (compiled) return `model ${name}: ${compiled.message}`;
+  const matching = pluginsByModel(plugins, name);
+  if (matching.length) {
+    for (const plugin of matching) {
+      if (Object.prototype.hasOwnProperty.call(variants, plugin.key)) continue;
+      const schema = pluginUsageForModel(plugin.meta, name).usageSchema || {};
+      const err = smokeTestTaskExpr(expression, schema);
+      if (err) return `model ${name}: plugin ${plugin.key}: ${err.message}`;
+    }
+    return null;
+  }
+  if (previousExpr !== expression || !usedUsageKeys(expression)) {
+    const err = smokeTestExpr(expression);
+    if (err) return `model ${name}: ${err.message}`;
+  }
+  return null;
+}
+
+function storedPluginVariantsForModel(stored: Record<string, string>, model: string): Record<string, string> {
+  const variants: Record<string, string> = {};
+  for (const [key, expression] of Object.entries(stored)) {
+    const split = splitPluginBillingExprKey(key);
+    if (split && split.model === model) variants[split.plugin] = expression;
+  }
+  return variants;
+}
+
+/** Original `UpdateOption` `billing_setting.billing_expr` ApiErrorMsg. */
+export async function validateBillingExprOption(store: Store, value: string): Promise<string | null> {
+  const parsed = parseStringStringMap(value);
+  if (!parsed.ok) return "计费表达式配置必须是模型到表达式的 JSON 对象: " + parsed.message;
+  if (parsed.value === null) return null;
+  const plugins = await listRoutingPlugins(store);
+  const storedVariants = parseJson<Record<string, string>>(await store.option(PLUGIN_BILLING_EXPR_OPTION), {});
+  const storedExprs = parseJson<Record<string, string>>(await store.option("billing_setting.billing_expr"), {});
+  for (const modelName of Object.keys(parsed.value).sort()) {
+    const variants = storedPluginVariantsForModel(storedVariants, modelName);
+    const variantErr = validatePluginBillingVariants(modelName, variants, variants, plugins);
+    if (variantErr) return `模型 ${modelName} 的计费表达式无效: ${variantErr}`;
+    const err = validateModelBillingExpr(
+      modelName,
+      parsed.value[modelName],
+      variants,
+      Object.prototype.hasOwnProperty.call(storedExprs, modelName) ? storedExprs[modelName] : undefined,
+      plugins,
+    );
+    if (err) return `模型 ${modelName} 的计费表达式无效: ${err}`;
+  }
+  return null;
+}
+
+/** Original `UpdateOption` `billing_setting.plugin_billing_expr` ApiErrorMsg. */
+export async function validatePluginBillingExprOption(store: Store, value: string): Promise<string | null> {
+  const parsed = parseStringStringMap(value);
+  if (!parsed.ok || parsed.value === null) return "plugin billing expressions must be a JSON object";
+  const plugins = await listRoutingPlugins(store);
+  const storedVariants = parseJson<Record<string, string>>(await store.option(PLUGIN_BILLING_EXPR_OPTION), {});
+  for (const [key, expression] of Object.entries(parsed.value)) {
+    const split = splitPluginBillingExprKey(key);
+    if (!split) return "invalid plugin billing expression key: " + key;
+    const previous = storedPluginVariantsForModel(storedVariants, split.model);
+    const err = validatePluginBillingVariants(split.model, { [split.plugin]: expression }, previous, plugins);
+    if (err) return err;
+  }
+  return null;
 }
 
 function validatePricing(name: string, values: PricingValues): string | null {

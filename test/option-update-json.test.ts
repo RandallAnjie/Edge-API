@@ -426,3 +426,70 @@ test("original UpdateOption gemini/claude/tool-price gin.H omit data", async () 
   omitDataOk(pricesOk.body);
   assert.equal(await store.option("tool_price_setting.prices"), JSON.stringify({ priced_fn: 5 }));
 });
+
+test("original UpdateOption billing_expr and plugin billing gin.H omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const store = new Store(e.DB);
+
+  async function put(key: string, value: string) {
+    return json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ key, value }),
+      }),
+      e,
+    );
+  }
+
+  const exprArr = await put("billing_setting.billing_expr", "[]");
+  omitData(
+    exprArr.body,
+    "计费表达式配置必须是模型到表达式的 JSON 对象: json: cannot unmarshal array into Go value of type map[string]string",
+  );
+
+  const exprNum = await put("billing_setting.billing_expr", JSON.stringify({ m: 1 }));
+  omitData(
+    exprNum.body,
+    "计费表达式配置必须是模型到表达式的 JSON 对象: json: cannot unmarshal number into Go value of type string",
+  );
+
+  const exprEmpty = await put("billing_setting.billing_expr", JSON.stringify({ m: "" }));
+  omitData(exprEmpty.body, "模型 m 的计费表达式无效: billing expression is required");
+
+  const exprCompile = await put("billing_setting.billing_expr", JSON.stringify({ m: `tier("base",` }));
+  assert.equal(exprCompile.body.success, false);
+  assert.equal("data" in exprCompile.body, false);
+  assert.match(String(exprCompile.body.message), /^模型 m 的计费表达式无效: model m: expr compile error:/);
+
+  const exprUsage = await put("billing_setting.billing_expr", JSON.stringify({ m: `u("mode") == "std" ? 1 : 2` }));
+  omitData(
+    exprUsage.body,
+    "模型 m 的计费表达式无效: model m: expression references usage keys [mode] but the model has no task plugin usage schema",
+  );
+
+  const exprOk = await put("billing_setting.billing_expr", JSON.stringify({ "gpt-test": "p * 2 + c * 8" }));
+  omitDataOk(exprOk.body);
+  assert.equal(await store.option("billing_setting.billing_expr"), JSON.stringify({ "gpt-test": "p * 2 + c * 8" }));
+
+  const pluginArr = await put("billing_setting.plugin_billing_expr", "[]");
+  omitData(pluginArr.body, "plugin billing expressions must be a JSON object");
+
+  const pluginNull = await put("billing_setting.plugin_billing_expr", "null");
+  omitData(pluginNull.body, "plugin billing expressions must be a JSON object");
+
+  const pluginKey = await put("billing_setting.plugin_billing_expr", JSON.stringify({ bad: "p * 1" }));
+  omitData(pluginKey.body, "invalid plugin billing expression key: bad");
+
+  const pluginMissing = await put(
+    "billing_setting.plugin_billing_expr",
+    JSON.stringify({ "probe::gpt-test": "p * 1" }),
+  );
+  omitData(pluginMissing.body, "model gpt-test: plugin probe does not declare this model");
+
+  const pluginOk = await put("billing_setting.plugin_billing_expr", "{}");
+  omitDataOk(pluginOk.body);
+  assert.equal(await store.option("billing_setting.plugin_billing_expr"), "{}");
+});

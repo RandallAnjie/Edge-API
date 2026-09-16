@@ -92,20 +92,19 @@ test("original GetPricing billing_plugin_variants JSON matches updatePricing", a
   const expression = `tier("base", u("seconds") * 0.4)`;
   const betaExpr = `tier("beta", u("credits") * 2)`;
 
-  for (const spec of [
-    { key: "pricing-alpha", field: "seconds", unit: "second" },
-    { key: "pricing-beta", field: "credits", unit: "credit" },
-  ]) {
+  async function uploadPlugin(key: string, field: string, unit: string) {
     const uploaded = await json(
       new Request("http://local/api/plugin/task", {
         method: "POST",
         headers: auth,
-        body: JSON.stringify({ source: pricingUsagePluginSource(spec.key, spec.field, spec.unit) }),
+        body: JSON.stringify({ source: pricingUsagePluginSource(key, field, unit) }),
       }),
       e,
     );
     assert.equal(uploaded.body.success, true, String(uploaded.body.message));
   }
+
+  await uploadPlugin("pricing-alpha", "seconds", "second");
 
   const channel = await json(
     new Request("http://local/api/channel/", {
@@ -129,6 +128,7 @@ test("original GetPricing billing_plugin_variants JSON matches updatePricing", a
   await putOption(e, auth, "billing_setting.billing_mode", JSON.stringify({ "pricing-usage-model": "tiered_expr" }));
   await putOption(e, auth, "billing_setting.billing_expr", JSON.stringify({ "pricing-usage-model": expression }));
   await putOption(e, auth, "billing_setting.plugin_billing_expr", "{}");
+  await uploadPlugin("pricing-beta", "credits", "credit");
 
   const shared = await pricingItem(e, auth, "pricing-usage-model");
   const variants = shared.item.billing_plugin_variants as PricingVariant[];
