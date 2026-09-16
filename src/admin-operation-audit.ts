@@ -555,7 +555,7 @@ export async function recordUserSecurityAudit(
   action: string,
   params: Record<string, unknown> | null = null,
   routeParams: Record<string, string> = {},
-  status = 200,
+  writerStatus = 200,
 ): Promise<void> {
   const merged: Record<string, unknown> = params ? { ...params } : {};
   const code = securityErrorCodeByReq.get(req);
@@ -577,7 +577,7 @@ export async function recordUserSecurityAudit(
       method: req.method,
       route: matched.route,
       path: matched.route,
-      status,
+      status: writerStatus,
       success: merged.success,
     };
   }
