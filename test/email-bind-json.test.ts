@@ -49,6 +49,11 @@ async function boot(e: Env) {
   return { token, auth, login };
 }
 
+let bindIp = 1;
+function bindHeaders(base: Record<string, string> = {}): Record<string, string> {
+  return { ...base, "cf-connecting-ip": `203.0.113.${bindIp++}` };
+}
+
 async function passwordProof(e: Env, auth: Record<string, string>, scope: string, extra: Record<string, unknown> = {}) {
   const r = await json(
     new Request("http://local/api/verify", {
@@ -108,7 +113,7 @@ test("original EmailBindStart/Finish JSON: EmailBindingData, old_code, hashed co
     const badJson = await json(
       new Request("http://local/api/oauth/email/bind/start", {
         method: "POST",
-        headers: auth,
+        headers: bindHeaders(auth),
         body: "{",
       }),
       e,
@@ -120,7 +125,7 @@ test("original EmailBindStart/Finish JSON: EmailBindingData, old_code, hashed co
     const invalid = await json(
       new Request("http://local/api/oauth/email/bind/start", {
         method: "POST",
-        headers: auth,
+        headers: bindHeaders(auth),
         body: JSON.stringify({ email: "not-an-email" }),
       }),
       e,
@@ -133,7 +138,7 @@ test("original EmailBindStart/Finish JSON: EmailBindingData, old_code, hashed co
     const started = await json(
       new Request("http://local/api/oauth/email/bind/start", {
         method: "POST",
-        headers: { ...auth, "X-Security-Proof": proof.proof_token },
+        headers: bindHeaders({ ...auth, "X-Security-Proof": proof.proof_token }),
         body: JSON.stringify({ email: "New@Example.com" }),
       }),
       e,
@@ -170,7 +175,7 @@ test("original EmailBindStart/Finish JSON: EmailBindingData, old_code, hashed co
     const tooSoon = await json(
       new Request("http://local/api/oauth/email/bind/resend", {
         method: "POST",
-        headers: auth,
+        headers: bindHeaders(auth),
         body: JSON.stringify({ flow_token: data.flow_token }),
       }),
       e,
@@ -236,7 +241,7 @@ test("original EmailBindStart/Finish JSON: EmailBindingData, old_code, hashed co
     const taken = await json(
       new Request("http://local/api/oauth/email/bind/start", {
         method: "POST",
-        headers: { ...auth, "X-Security-Proof": takenProof.proof_token },
+        headers: bindHeaders({ ...auth, "X-Security-Proof": takenProof.proof_token }),
         body: JSON.stringify({ email: "taken@example.com" }),
       }),
       e,
@@ -250,7 +255,7 @@ test("original EmailBindStart/Finish JSON: EmailBindingData, old_code, hashed co
     const replace = await json(
       new Request("http://local/api/oauth/email/bind/start", {
         method: "POST",
-        headers: { ...auth, "X-Security-Proof": replaceProof.proof_token },
+        headers: bindHeaders({ ...auth, "X-Security-Proof": replaceProof.proof_token }),
         body: JSON.stringify({ email: "next@example.com" }),
       }),
       e,

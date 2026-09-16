@@ -59,6 +59,7 @@ import { bindVerificationOperation, issueSecurityProof, securityProofError } fro
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
 import { headerNavModulePublicOrUserAuth, isHeaderNavDenied } from "./header-nav.js";
+import { emailVerificationRateLimit } from "./email-verification-rate-limit.js";
 import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, strconvParseInt, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -325,6 +326,8 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const identity = await dashboardIdentity(c, s);
     if (!identity) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    const limited = await emailVerificationRateLimit(c.env, c.req);
+    if (limited) return limited;
     let body: { email?: unknown };
     try {
       body = (await readJson(c.req)) as { email?: unknown };
@@ -385,6 +388,8 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const identity = await dashboardIdentity(c, s);
     if (!identity) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    const limited = await emailVerificationRateLimit(c.env, c.req);
+    if (limited) return limited;
     let body: { flow_token?: unknown };
     try {
       body = (await readJson(c.req)) as { flow_token?: unknown };

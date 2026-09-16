@@ -101,6 +101,7 @@ import { registerParity, sessionViews } from "./parity-routes.js";
 import { goJSONKind, goUnmarshalJSON, parseChannelBatch, readChannelTagJSON } from "./channel-validate.js";
 import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, passkeyCredentialId, readJson, strconvAtoi, strconvParseBool, userCannotDeleteRootUserMessage, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import { turnstileCheck } from "./turnstile.js";
+import { emailVerificationRateLimit } from "./email-verification-rate-limit.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -497,6 +498,8 @@ export function registerMore(r: Router<Env>): void {
   });
 
   r.get("/api/verification", async (c) => {
+    const limited = await emailVerificationRateLimit(c.env, c.req);
+    if (limited) return limited;
     const s = store(c);
     const turnstileDenied = await turnstileCheck(s, c.req);
     if (turnstileDenied) return turnstileDenied;

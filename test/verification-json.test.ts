@@ -71,6 +71,11 @@ const RESET_EN = "Password reset link is invalid or has expired";
 const RESET_ZH_CN = "重置链接非法或已过期";
 const RESET_ZH_TW = "重置連結非法或已過期";
 
+let verificationIp = 1;
+function verificationHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return { "cf-connecting-ip": `198.51.100.${verificationIp++}`, ...extra };
+}
+
 test("original SendEmailVerification writeSecurityOperationError / ApiErrorI18n gin.H omit data", async () => {
   resetSchemaFlag();
   const e = env();
@@ -78,13 +83,16 @@ test("original SendEmailVerification writeSecurityOperationError / ApiErrorI18n 
   const store = new Store(e.DB);
   await e.DB.prepare("UPDATE users SET email = ? WHERE id = 1").bind("taken@example.com").run();
 
-  const invalid = await json(new Request("http://local/api/verification?email=not-an-email"), e);
+  const invalid = await json(new Request("http://local/api/verification?email=not-an-email", { headers: verificationHeaders() }), e);
   assert.equal(invalid.res.status, 200);
   securityOp(invalid.body, "EMAIL_ADDRESS_REJECTED", "Please enter a valid email address");
 
   await store.setOption("EmailDomainWhitelist", "allowed.example");
   await store.setOption("EmailDomainRestrictionEnabled", "true");
-  const restricted = await json(new Request("http://local/api/verification?email=user@blocked.example"), e);
+  const restricted = await json(
+    new Request("http://local/api/verification?email=user@blocked.example", { headers: verificationHeaders() }),
+    e,
+  );
   securityOp(
     restricted.body,
     "EMAIL_ADDRESS_REJECTED",
@@ -92,20 +100,26 @@ test("original SendEmailVerification writeSecurityOperationError / ApiErrorI18n 
   );
   await store.setOption("EmailDomainRestrictionEnabled", "false");
 
-  const taken = await json(new Request("http://local/api/verification?email=taken@example.com"), e);
+  const taken = await json(
+    new Request("http://local/api/verification?email=taken@example.com", { headers: verificationHeaders() }),
+    e,
+  );
   omitData(taken.body, TAKEN_EN);
   const takenZh = await json(
-    new Request("http://local/api/verification?email=taken@example.com", { headers: { "accept-language": "zh-CN" } }),
+    new Request("http://local/api/verification?email=taken@example.com", { headers: verificationHeaders({ "accept-language": "zh-CN" }) }),
     e,
   );
   omitData(takenZh.body, TAKEN_ZH_CN);
   const takenTw = await json(
-    new Request("http://local/api/verification?email=taken@example.com", { headers: { "accept-language": "zh-TW" } }),
+    new Request("http://local/api/verification?email=taken@example.com", { headers: verificationHeaders({ "accept-language": "zh-TW" }) }),
     e,
   );
   omitData(takenTw.body, TAKEN_ZH_TW);
 
-  const unconfigured = await json(new Request("http://local/api/verification?email=new@example.com"), e);
+  const unconfigured = await json(
+    new Request("http://local/api/verification?email=new@example.com", { headers: verificationHeaders() }),
+    e,
+  );
   omitData(unconfigured.body, "邮件未配置");
 
   await store.setOption("ResendApiKey", "re_test");
@@ -115,7 +129,10 @@ test("original SendEmailVerification writeSecurityOperationError / ApiErrorI18n 
     return origFetch(input as RequestInfo, undefined);
   };
   try {
-    const sent = await json(new Request("http://local/api/verification?email=fresh@example.com"), e);
+    const sent = await json(
+      new Request("http://local/api/verification?email=fresh@example.com", { headers: verificationHeaders() }),
+      e,
+    );
     omitDataOk(sent.body);
   } finally {
     globalThis.fetch = origFetch;

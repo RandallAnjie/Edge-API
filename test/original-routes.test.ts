@@ -2161,14 +2161,23 @@ test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch,
       }),
       e,
     );
-    const invalidEmail = await json(new Request("http://local/api/verification?email=not-an-email"), e);
+    const invalidEmail = await json(
+      new Request("http://local/api/verification?email=not-an-email", { headers: { "cf-connecting-ip": "198.51.100.11" } }),
+      e,
+    );
     assert.equal(invalidEmail.body.success, false);
     assert.equal(invalidEmail.body.code, "EMAIL_ADDRESS_REJECTED");
     assert.equal(invalidEmail.body.message, "Please enter a valid email address");
     await e.DB.prepare("UPDATE users SET email = ? WHERE id = 1").bind("taken@example.com").run();
-    const taken = await json(new Request("http://local/api/verification?email=taken@example.com"), e);
+    const taken = await json(
+      new Request("http://local/api/verification?email=taken@example.com", { headers: { "cf-connecting-ip": "198.51.100.12" } }),
+      e,
+    );
     assert.equal(taken.body.message, "Email address is already in use");
-    const sent = await json(new Request("http://local/api/verification?email=new@example.com"), e);
+    const sent = await json(
+      new Request("http://local/api/verification?email=new@example.com", { headers: { "cf-connecting-ip": "198.51.100.13" } }),
+      e,
+    );
     assert.equal(sent.body.success, true, String(sent.body.message));
     assert.equal(sent.body.message, "");
 
