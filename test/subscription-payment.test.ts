@@ -125,6 +125,7 @@ test("original SubscriptionRequestEpay pay/notify/return JSON", async () => {
   );
   assert.equal(missing.body.success, false);
   assert.equal(missing.body.message, "参数错误");
+  assert.equal("data" in missing.body, false);
 
   const unknownPlan = await json(
     new Request("http://local/api/subscription/epay/pay", {
@@ -135,6 +136,7 @@ test("original SubscriptionRequestEpay pay/notify/return JSON", async () => {
     e,
   );
   assert.equal(unknownPlan.body.message, "record not found");
+  assert.equal("data" in unknownPlan.body, false);
 
   const badMethod = await json(
     new Request("http://local/api/subscription/epay/pay", {
@@ -145,6 +147,7 @@ test("original SubscriptionRequestEpay pay/notify/return JSON", async () => {
     e,
   );
   assert.equal(badMethod.body.message, "支付方式不存在");
+  assert.equal("data" in badMethod.body, false);
 
   const cheapId = await createPlan(e, auth, {
     title: "Cheap",
@@ -162,6 +165,7 @@ test("original SubscriptionRequestEpay pay/notify/return JSON", async () => {
     e,
   );
   assert.equal(cheap.body.message, "套餐金额过低");
+  assert.equal("data" in cheap.body, false);
 
   const disabledId = await createPlan(e, auth, {
     title: "Off",
@@ -180,6 +184,7 @@ test("original SubscriptionRequestEpay pay/notify/return JSON", async () => {
     e,
   );
   assert.equal(disabled.body.message, "套餐未启用");
+  assert.equal("data" in disabled.body, false);
 
   const pay = await json(
     new Request("http://local/api/subscription/epay/pay", {

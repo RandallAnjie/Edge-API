@@ -5,7 +5,7 @@ import {
   formatWaffoPancakeAmount,
   waffoPancakeBuyerIdentityFromUserId,
 } from "./waffo-pancake.js";
-import { apiFail, payErr, payOk, paymentReturnPath, readJson } from "./http.js";
+import { apiErrorMsg, payErr, payOk, paymentReturnPath, readJson } from "./http.js";
 import {
   creemCheckoutApiUrl,
   requirePaymentCompliance,
@@ -90,9 +90,9 @@ function epayOk(): Response {
 }
 
 async function loadPlanOrError(s: Store, planId: number): Promise<Record<string, unknown> | Response> {
-  if (planId <= 0) return apiFail("参数错误");
+  if (planId <= 0) return apiErrorMsg("参数错误");
   const plan = await s.getPlan(planId);
-  if (!plan) return apiFail("record not found");
+  if (!plan) return apiErrorMsg("record not found");
   return plan;
 }
 
@@ -101,11 +101,11 @@ async function rejectDisabledOrCapped(
   userId: number,
   plan: Record<string, unknown>,
 ): Promise<Response | null> {
-  if (!Number(plan.enabled)) return apiFail("套餐未启用");
+  if (!Number(plan.enabled)) return apiErrorMsg("套餐未启用");
   const maxPurchase = Number(plan.max_purchase_per_user || 0);
   if (maxPurchase > 0) {
     const count = await s.countUserSubscriptionsByPlan(userId, Number(plan.id || 0));
-    if (count >= maxPurchase) return apiFail("已达到该套餐购买上限");
+    if (count >= maxPurchase) return apiErrorMsg("已达到该套餐购买上限");
   }
   return null;
 }
@@ -128,12 +128,12 @@ export async function requestSubscriptionEpay(c: C): Promise<Response> {
   const plan = planOrErr;
   const capped = await rejectDisabledOrCapped(s, u.id, plan);
   if (capped) return capped;
-  if (moneyOf(plan) < 0.01) return apiFail("套餐金额过低");
+  if (moneyOf(plan) < 0.01) return apiErrorMsg("套餐金额过低");
   const methods = parseJson<{ type?: string }[]>(await s.option("PayMethods"), []);
   const method = String(body.payment_method || "");
-  if (!containsPayMethod(methods, method)) return apiFail("支付方式不存在");
+  if (!containsPayMethod(methods, method)) return apiErrorMsg("支付方式不存在");
   const client = await epayClient(s);
-  if (!client) return apiFail("当前管理员未配置支付信息");
+  if (!client) return apiErrorMsg("当前管理员未配置支付信息");
   const base = await callbackAddress(s);
   const tradeNo = `SUBUSR${u.id}NO${randomCharsKey(6)}${nowSec()}`;
   try {
@@ -147,7 +147,7 @@ export async function requestSubscriptionEpay(c: C): Promise<Response> {
       status: "pending",
     });
   } catch {
-    return apiFail("创建订单失败");
+    return apiErrorMsg("创建订单失败");
   }
   const params: Record<string, string> = {
     pid: client.pid,
@@ -213,12 +213,12 @@ export async function requestSubscriptionStripePay(c: C): Promise<Response> {
   const plan = planOrErr;
   const capped = await rejectDisabledOrCapped(s, u.id, plan);
   if (capped) return capped;
-  if (!String(plan.stripe_price_id || "").trim()) return apiFail("该套餐未配置 StripePriceId");
+  if (!String(plan.stripe_price_id || "").trim()) return apiErrorMsg("该套餐未配置 StripePriceId");
   const secret = await stripeSecret(s);
-  if (!secret.startsWith("sk_") && !secret.startsWith("rk_")) return apiFail("Stripe 未配置或密钥无效");
-  if (!(await s.option("StripeWebhookSecret"))) return apiFail("Stripe Webhook 未配置");
+  if (!secret.startsWith("sk_") && !secret.startsWith("rk_")) return apiErrorMsg("Stripe 未配置或密钥无效");
+  if (!(await s.option("StripeWebhookSecret"))) return apiErrorMsg("Stripe Webhook 未配置");
   const user = await s.getUserById(u.id);
-  if (!user) return apiFail("用户不存在");
+  if (!user) return apiErrorMsg("用户不存在");
   const reference = `sub-stripe-ref-${user.id}-${Date.now()}-${randomCharsKey(4)}`;
   const referenceId = "sub_ref_" + (await sha1Hex(reference));
   const server = await s.option("ServerAddress");
@@ -283,14 +283,14 @@ export async function requestSubscriptionCreemPay(c: C): Promise<Response> {
   const planId = Number(body.plan_id || 0);
   if (planId <= 0) return payErr("参数错误");
   const plan = await s.getPlan(planId);
-  if (!plan) return apiFail("record not found");
+  if (!plan) return apiErrorMsg("record not found");
   const capped = await rejectDisabledOrCapped(s, u.id, plan);
   if (capped) return capped;
-  if (!String(plan.creem_product_id || "").trim()) return apiFail("该套餐未配置 CreemProductId");
+  if (!String(plan.creem_product_id || "").trim()) return apiErrorMsg("该套餐未配置 CreemProductId");
   const testMode = await s.optionBool("CreemTestMode", false);
-  if (!(await s.option("CreemWebhookSecret")) && !testMode) return apiFail("Creem Webhook 未配置");
+  if (!(await s.option("CreemWebhookSecret")) && !testMode) return apiErrorMsg("Creem Webhook 未配置");
   const user = await s.getUserById(u.id);
-  if (!user) return apiFail("用户不存在");
+  if (!user) return apiErrorMsg("用户不存在");
   const reference = "sub-creem-ref-" + randomCharsKey(6);
   const referenceId = "sub_ref_" + (await sha1Hex(reference + new Date().toString() + user.username));
   try {
@@ -342,12 +342,12 @@ export async function requestSubscriptionWaffoPancakePay(c: C): Promise<Response
   const plan = planOrErr;
   const capped = await rejectDisabledOrCapped(s, u.id, plan);
   if (capped) return capped;
-  if (!String(plan.waffo_pancake_product_id || "").trim()) return apiFail("该套餐未配置 WaffoPancakeProductId");
+  if (!String(plan.waffo_pancake_product_id || "").trim()) return apiErrorMsg("该套餐未配置 WaffoPancakeProductId");
   const merchant = (await s.option("WaffoPancakeMerchantID")) || "";
   const privateKey = (await s.option("WaffoPancakePrivateKey")) || "";
-  if (!merchant.trim() || !privateKey.trim()) return apiFail("Waffo Pancake 未配置或密钥无效");
+  if (!merchant.trim() || !privateKey.trim()) return apiErrorMsg("Waffo Pancake 未配置或密钥无效");
   const user = await s.getUserById(u.id);
-  if (!user) return apiFail("用户不存在");
+  if (!user) return apiErrorMsg("用户不存在");
   const tradeNo = `WAFFO_PANCAKE_SUB-${user.id}-${Date.now()}-${getRandomString(6)}`;
   try {
     await s.insertSubscriptionOrder({

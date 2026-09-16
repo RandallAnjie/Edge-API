@@ -30,6 +30,14 @@ function payErrEnvelope(body: Record<string, unknown>, data: unknown) {
   assert.deepEqual(Object.keys(body).sort(), ["data", "message"]);
 }
 
+/** Original `common.ApiErrorMsg` / `ApiError` gin.H omits `data`. */
+function apiErrorMsgEnvelope(body: Record<string, unknown>, message: string) {
+  assert.equal(body.success, false);
+  assert.equal(body.message, message);
+  assert.equal("data" in body, false);
+  assert.deepEqual(Object.keys(body).sort(), ["message", "success"]);
+}
+
 /** Original topup gin.H `{message:"success", data}` omits `success`. */
 function payOkEnvelope(body: Record<string, unknown>, extraKeys: string[] = []) {
   assert.equal(body.message, "success");
@@ -152,13 +160,70 @@ test("original subscription pay gin.H omit success on checkout envelopes", async
   assert.match(String(epay.body.url), /^https:\/\/epay\.example\/submit\.php\?/);
 
   const stripe = await post(e, auth, "/api/subscription/stripe/pay", { plan_id: planId });
-  assert.equal(stripe.body.success, false);
-  assert.equal(stripe.body.message, "该套餐未配置 StripePriceId");
+  apiErrorMsgEnvelope(stripe.body, "该套餐未配置 StripePriceId");
 
   const creemBind = await post(e, auth, "/api/subscription/creem/pay", {});
   payErrEnvelope(creemBind.body, "参数错误");
 
   const pancakeFail = await post(e, auth, "/api/subscription/waffo-pancake/pay", { plan_id: planId });
-  assert.equal(pancakeFail.body.success, false);
-  assert.equal(pancakeFail.body.message, "该套餐未配置 WaffoPancakeProductId");
+  apiErrorMsgEnvelope(pancakeFail.body, "该套餐未配置 WaffoPancakeProductId");
 });
+
+test("original subscription pay ApiErrorMsg gin.H omit data", async () => {
+  const { e, auth, store } = await boot();
+  const compliance = await post(e, auth, "/api/option/payment_compliance", { confirmed: true });
+  assert.equal(compliance.body.success, true, String(compliance.body.message));
+  const created = await post(e, auth, "/api/subscription/admin/plans", {
+    plan: {
+      title: "VIP Month",
+      total_amount: 1000,
+      duration_unit: "day",
+      duration_value: 30,
+      price_amount: 9.9,
+      upgrade_group: "vip",
+    },
+  });
+  assert.equal(created.body.success, true, String(created.body.message));
+  const planId = Number((created.body.data as { id?: number }).id || 0);
+
+  const missing = await post(e, auth, "/api/subscription/epay/pay", {});
+  apiErrorMsgEnvelope(missing.body, "参数错误");
+
+  const unknownPlan = await post(e, auth, "/api/subscription/epay/pay", { plan_id: 99999, payment_method: "alipay" });
+  apiErrorMsgEnvelope(unknownPlan.body, "record not found");
+
+  const unconfigured = await post(e, auth, "/api/subscription/epay/pay", { plan_id: planId, payment_method: "alipay" });
+  apiErrorMsgEnvelope(unconfigured.body, "当前管理员未配置支付信息");
+
+  await store.setOption("PayAddress", "https://epay.example/submit.php");
+  await store.setOption("EpayId", "1001");
+  await store.setOption("EpayKey", "epay-secret");
+  const badMethod = await post(e, auth, "/api/subscription/epay/pay", { plan_id: planId, payment_method: "not-a-method" });
+  apiErrorMsgEnvelope(badMethod.body, "支付方式不存在");
+
+  const cheap = await post(e, auth, "/api/subscription/admin/plans", {
+    plan: { title: "Cheap", total_amount: 10, duration_unit: "day", duration_value: 1, price_amount: 0.001 },
+  });
+  const cheapId = Number((cheap.body.data as { id?: number }).id || 0);
+  const cheapPay = await post(e, auth, "/api/subscription/epay/pay", { plan_id: cheapId, payment_method: "alipay" });
+  apiErrorMsgEnvelope(cheapPay.body, "套餐金额过低");
+
+  const off = await post(e, auth, "/api/subscription/admin/plans", {
+    plan: { title: "Off", total_amount: 10, duration_unit: "day", duration_value: 1, price_amount: 1, enabled: false },
+  });
+  const offId = Number((off.body.data as { id?: number }).id || 0);
+  const disabled = await post(e, auth, "/api/subscription/epay/pay", { plan_id: offId, payment_method: "alipay" });
+  apiErrorMsgEnvelope(disabled.body, "套餐未启用");
+
+  const stripeSecret = await post(e, auth, "/api/subscription/stripe/pay", {
+    plan_id: planId,
+  });
+  apiErrorMsgEnvelope(stripeSecret.body, "该套餐未配置 StripePriceId");
+
+  const creemMissing = await post(e, auth, "/api/subscription/creem/pay", { plan_id: 99999 });
+  apiErrorMsgEnvelope(creemMissing.body, "record not found");
+
+  const creemProduct = await post(e, auth, "/api/subscription/creem/pay", { plan_id: planId });
+  apiErrorMsgEnvelope(creemProduct.body, "该套餐未配置 CreemProductId");
+});
+
