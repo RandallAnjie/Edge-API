@@ -60,6 +60,7 @@ import {
   apiFailInvalidParams,
   apiOk,
   apiOkExtra,
+  authInsufficientPrivilegeMessage,
   clientIp,
   databaseErrorMessage,
   i18nPair,
@@ -1024,9 +1025,9 @@ export function adminRouter(): Router<Env> {
     const u = await requireChannel(c, s, "read");
     if (isResponse(u)) return u;
     const id = strconvAtoi(c.params.id);
-    if (!id.ok) return apiFail(id.message);
+    if (!id.ok) return apiErrorMsg(id.message);
     const ch = await s.getChannel(id.n);
-    if (!ch) return apiFail("record not found");
+    if (!ch) return apiErrorMsg("record not found");
     return apiOk(stripChannelKey(ch));
   });
 
@@ -1041,7 +1042,7 @@ export function adminRouter(): Router<Env> {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const ch = await s.getChannel(channelId);
-    if (!ch) return apiFail(i18nPair(c.req, "渠道不存在", "Channel does not exist"));
+    if (!ch) return apiErrorMsg(i18nPair(c.req, "渠道不存在", "Channel does not exist"));
     await s.audit(u.id, u.username, "channel.key_view", `view channel key ${ch.name}`, clientIp(c.req));
     return apiOk({ key: ch.key }, "获取成功");
   });
@@ -1050,23 +1051,23 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown>;
-    const ch = (body.channel || body) as Record<string, unknown>;
-    if (!ch.name) return apiFail("渠道名称不能为空");
+    const bound = bindAddChannelRequest(c.req, await c.req.text());
+    if (bound instanceof Response) return bound;
+    const { rec: body, ch } = bound;
     const type = Number(ch.type || 1);
-    const wrapped = body.channel != null;
+    const wrapped = body.channel != null && typeof body.channel === "object" && !Array.isArray(body.channel);
     const originalShaped = wrapped || "mode" in body;
-    const modeRaw = String(body.mode || "");
-    if (originalShaped && modeRaw !== "single" && modeRaw !== "batch" && modeRaw !== "multi_to_single") {
-      return apiFail("不支持的添加模式");
-    }
-    const mode = (modeRaw || "single") as AddChannelMode;
+    const modeRaw = typeof body.mode === "string" ? body.mode : "";
     if (type === CHANNEL_TYPE_TASK_PLUGIN && !(await canTaskPluginBind(s, u))) {
-      return apiFail("task plugin channels require the task_plugin.bind permission");
+      return apiErrorMsg("task plugin channels require the task_plugin.bind permission");
     }
     const fields = channelFieldsFromBody(ch);
     const err = validateChannel(fields, true);
-    if (err) return apiFail(err.message);
+    if (err) return apiErrorMsg(err.message);
+    if (originalShaped && modeRaw !== "single" && modeRaw !== "batch" && modeRaw !== "multi_to_single") {
+      return apiErrorMsg("不支持的添加模式");
+    }
+    const mode = (modeRaw || "single") as AddChannelMode;
     let expanded;
     try {
       expanded = expandAddChannelKeys(
@@ -1074,7 +1075,7 @@ export function adminRouter(): Router<Env> {
         mode,
       );
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
     const prefixName = Boolean(body.batch_add_set_key_prefix_2_name) && expanded.keys.length > 1;
     let id = 0;
@@ -1108,20 +1109,20 @@ export function adminRouter(): Router<Env> {
     try {
       body = (await readJson(c.req)) as Record<string, unknown>;
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
     const requestData = body;
     const ch = ((body.channel && typeof body.channel === "object" ? body.channel : body) as Record<string, unknown>);
-    if ("status" in requestData || "status" in ch) return apiFail("无效的参数");
+    if ("status" in requestData || "status" in ch) return apiFailInvalidParams(c.req);
     const id = Number(ch.id);
-    if (!id) return apiFail("无效的参数");
+    if (!id) return apiFailInvalidParams(c.req);
     const origin = await s.getChannel(id);
-    if (!origin) return apiFail("record not found");
+    if (!origin) return apiErrorMsg("record not found");
     if (Number(ch.type) === 61 && !(await canTaskPluginBind(s, u))) {
-      return apiFail("task plugin channels require the task_plugin.bind permission");
+      return apiErrorMsg("task plugin channels require the task_plugin.bind permission");
     }
     if (channelHasSensitiveChanges(ch, origin, requestData) && !(await canChannelSensitiveWrite(s, u))) {
-      return apiFail("无权进行此操作，权限不足");
+      return apiErrorMsg(authInsufficientPrivilegeMessage(c.req));
     }
     const info = parseChannelInfo(String(origin.channel_info || ""));
     const multiKeyMode = String(ch.multi_key_mode || "");
@@ -1239,17 +1240,17 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireChannel(c, s, "sensitive_write");
     if (isResponse(u)) return u;
-    const id = Number(c.params.id);
-    if (!Number.isInteger(id)) return apiFail("invalid id");
-    const origin = await s.getChannel(id);
-    if (!origin) return apiFail("获取渠道信息失败，请稍后重试");
+    const parsedId = strconvAtoi(c.params.id);
+    if (!parsedId.ok) return apiErrorMsg("invalid id");
+    const origin = await s.getChannel(parsedId.n);
+    if (!origin) return apiErrorMsg("获取渠道信息失败，请稍后重试");
     if (origin.type === CHANNEL_TYPE_TASK_PLUGIN && !(await canTaskPluginBind(s, u))) {
-      return apiFail("task plugin channels require the task_plugin.bind permission");
+      return apiErrorMsg("task plugin channels require the task_plugin.bind permission");
     }
     const suffix = c.url.searchParams.get("suffix") ?? "_复制";
     const resetBalance = parseGoBool(c.url.searchParams.get("reset_balance"), true);
     const settingsErr = validateChannelSettings(origin);
-    if (settingsErr) return apiFail("Failed to copy channel: invalid channel settings");
+    if (settingsErr) return apiErrorMsg("Failed to copy channel: invalid channel settings");
     try {
       const cloneId = await s.insertChannel({
         ...origin,
@@ -1264,7 +1265,7 @@ export function adminRouter(): Router<Env> {
       await s.audit(u.id, u.username, "channel.copy", `copy channel ${origin.name}`, clientIp(c.req));
       return apiOk({ id: cloneId });
     } catch {
-      return apiFail("复制渠道失败，请稍后重试");
+      return apiErrorMsg("复制渠道失败，请稍后重试");
     }
   });
 
@@ -1273,9 +1274,9 @@ export function adminRouter(): Router<Env> {
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const id = strconvAtoi(c.params.id);
-    if (!id.ok) return apiFail(id.message);
+    if (!id.ok) return apiErrorMsg(id.message);
     const ch = await s.getChannel(id.n);
-    if (!ch) return apiFail("record not found");
+    if (!ch) return apiErrorMsg("record not found");
     const result = await testChannel(s, ch, {
       model: c.url.searchParams.get("model") || "",
       endpointType: c.url.searchParams.get("endpoint_type") || "",
@@ -1294,14 +1295,14 @@ export function adminRouter(): Router<Env> {
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
     const id = strconvAtoi(c.params.id);
-    if (!id.ok) return apiFail(id.message);
+    if (!id.ok) return apiErrorMsg(id.message);
     const ch = await s.getChannel(id.n);
-    if (!ch) return apiFail("record not found");
+    if (!ch) return apiErrorMsg("record not found");
     try {
       const models = await fetchUpstreamModels(ch, s);
       return apiOk(models);
     } catch (e) {
-      return apiFail(`获取模型列表失败: ${e instanceof Error ? e.message : String(e)}`);
+      return apiErrorMsg(`获取模型列表失败: ${e instanceof Error ? e.message : String(e)}`);
     }
   });
 
@@ -1333,7 +1334,7 @@ export function adminRouter(): Router<Env> {
         try {
           channel = await buildAdvancedCustomModelPreviewChannel(body, (id) => s.getChannel(id));
         } catch (e) {
-          return apiFail(e instanceof Error ? e.message : String(e));
+          return apiErrorMsg(e instanceof Error ? e.message : String(e));
         }
       } else {
         channel = previewNonCustomChannel(body, defaultBaseUrl(type));
@@ -1341,7 +1342,7 @@ export function adminRouter(): Router<Env> {
       const models = await fetchUpstreamModels(channel, s);
       return apiOk(models);
     } catch (e) {
-      return apiFail(`获取模型列表失败: ${e instanceof Error ? e.message : String(e)}`);
+      return apiErrorMsg(`获取模型列表失败: ${e instanceof Error ? e.message : String(e)}`);
     }
   });
 
@@ -1892,6 +1893,33 @@ function bindJSONStringOn(req: Request, rec: Record<string, unknown>, key: strin
   if (!(key in rec) || rec[key] == null) return "";
   if (typeof rec[key] !== "string") return apiFailInvalidParams(req);
   return rec[key] as string;
+}
+
+/** Original `c.ShouldBindJSON` into `controller.AddChannelRequest`. Empty body is EOF; JSON `null` is a zero struct. */
+function bindAddChannelRequest(
+  req: Request,
+  raw: string,
+): { rec: Record<string, unknown>; ch: Record<string, unknown> } | Response {
+  void req;
+  if (!raw.trim()) return apiErrorMsg("EOF");
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return apiErrorMsg(parsed.message);
+  if (parsed.value === null) return { rec: {}, ch: {} };
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return apiErrorMsg(
+      `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type controller.AddChannelRequest`,
+    );
+  }
+  const rec = parsed.value as Record<string, unknown>;
+  if ("mode" in rec && rec.mode != null && typeof rec.mode !== "string") {
+    return apiErrorMsg(`json: cannot unmarshal ${goJSONKind(rec.mode)} into Go value of type string`);
+  }
+  if ("channel" in rec && rec.channel != null && (typeof rec.channel !== "object" || Array.isArray(rec.channel))) {
+    return apiErrorMsg(`json: cannot unmarshal ${goJSONKind(rec.channel)} into Go value of type model.Channel`);
+  }
+  const wrapped = rec.channel != null && typeof rec.channel === "object" && !Array.isArray(rec.channel);
+  const ch = (wrapped ? rec.channel : rec) as Record<string, unknown>;
+  return { rec, ch };
 }
 
 /** Original `common.DecodeJson` into `controller.LoginRequest`. Any decode error is `MsgInvalidParams`. JSON `null` is a zero struct. */

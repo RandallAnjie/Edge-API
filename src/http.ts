@@ -391,6 +391,18 @@ export function tokenInvalidMessage(req: Request): string {
   }
 }
 
+/** Original `i18n.MsgAuthInsufficientPrivilege`. */
+export function authInsufficientPrivilegeMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "無權進行此操作，權限不足";
+    case "zh-CN":
+      return "无权进行此操作，权限不足";
+    default:
+      return "Unauthorized, insufficient privileges";
+  }
+}
+
 /** Original `i18n.MsgAuthUserBanned`. */
 export function userBannedMessage(req: Request): string {
   switch (i18nLang(req)) {

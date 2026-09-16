@@ -2206,7 +2206,7 @@ test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch,
     e,
   );
   assert.equal(statusPut.body.success, false);
-  assert.equal(statusPut.body.message, "无效的参数");
+  assert.equal(statusPut.body.message, "Invalid parameters");
   const before = await json(new Request("http://local/api/channel/" + chId, { headers: auth }), e);
   const beforeInfo = (before.body.data as { channel_info: { is_multi_key: boolean; multi_key_size: number } }).channel_info;
   assert.equal(beforeInfo.is_multi_key, true);
@@ -2265,7 +2265,7 @@ test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch,
     e,
   );
   assert.equal(sensitive.body.success, false);
-  assert.equal(sensitive.body.message, "无权进行此操作，权限不足");
+  assert.equal(sensitive.body.message, "Unauthorized, insufficient privileges");
 
   const proof = await passwordProof(e, auth, "access_token.generate");
   const issued = await json(
