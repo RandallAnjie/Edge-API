@@ -110,31 +110,6 @@ async function twoFAProof(e: Env, auth: Record<string, string>, scope: string, s
   return r.body.data as { proof_token: string };
 }
 
-async function enableTwoFA(e: Env, auth: Record<string, string>): Promise<{ secret: string; auth: Record<string, string> }> {
-  const proof = await passwordProof(e, auth, "2fa.setup");
-  const setup = await json(
-    new Request("http://local/api/user/2fa/setup", {
-      method: "POST",
-      headers: { ...auth, "X-Security-Proof": proof.proof_token },
-    }),
-    e,
-  );
-  const started = setup.body.data as { secret: string; flow_token: string };
-  const en = await json(
-    new Request("http://local/api/user/2fa/enable", {
-      method: "POST",
-      headers: auth,
-      body: JSON.stringify({ code: await totpCode(started.secret), flow_token: started.flow_token }),
-    }),
-    e,
-  );
-  assert.equal(en.body.success, true, String(en.body.message));
-  return {
-    secret: started.secret,
-    auth: { authorization: "Bearer " + (en.body.data as { access_token: string }).access_token, "content-type": "application/json" },
-  };
-}
-
 test("original Passkey disabled gin.H omits data before proof", async () => {
   resetSchemaFlag();
   const e = env();
@@ -251,12 +226,15 @@ test("original PasskeyRegisterFinish / PasskeyDelete authRotationData gin.H omit
   const status = await json(new Request("http://local/api/user/passkey", { headers: nextAuth }), e);
   assert.equal((status.body.data as { enabled: boolean }).enabled, true);
 
-  const twoFA = await enableTwoFA(e, nextAuth);
-  const delProof = await twoFAProof(e, twoFA.auth, "passkey.delete", twoFA.secret);
+  const store = new Store(e.DB);
+  const root = await store.getUserByUsername("root");
+  assert.ok(root);
+  await store.updateUser(root.id, { totp_enabled: 1, totp_secret: "JBSWY3DPEHPK3PXP" });
+  const delProof = await twoFAProof(e, nextAuth, "passkey.delete", "JBSWY3DPEHPK3PXP");
   const deleted = await json(
     new Request("http://local/api/user/passkey", {
       method: "DELETE",
-      headers: { ...twoFA.auth, "X-Security-Proof": delProof.proof_token },
+      headers: { ...nextAuth, "X-Security-Proof": delProof.proof_token },
     }),
     e,
   );
