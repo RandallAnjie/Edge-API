@@ -1748,7 +1748,13 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { locale?: string; source_version?: string; selections?: { model_name: string; record_version: string; create?: boolean; fields?: string[] }[] };
     try {
-      return apiOk(await applyMetadataSync(s, body));
+      const result = await applyMetadataSync(s, body);
+      await recordManageAudit(s, c.req, u, "model.metadata.sync", {
+        created_models: result.created_models,
+        updated_models: result.updated_models,
+        created_vendors: result.created_vendors,
+      });
+      return apiOk(result);
     } catch (e) {
       const status = Number((e as { status?: number }).status || 200);
       const message = e instanceof Error ? e.message : String(e);

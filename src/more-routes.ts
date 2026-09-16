@@ -2388,6 +2388,7 @@ export function registerMore(r: Router<Env>): void {
     const body = (await readJson(c.req)) as { changes?: ModelPricingChange[] };
     try {
       const names = await updateModelPricing(s, body.changes || []);
+      await recordManageAudit(s, c.req, u, "model.pricing.update", { models: names });
       return apiOk({ updated_models: names });
     } catch (e) {
       const err = e as ModelPricingError;

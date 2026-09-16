@@ -376,6 +376,20 @@ Material changes from upstream:
   tests stay unchanged. Extra-OK: audit write failure must not fail the
   request. requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on UpdateModelPricingConfig `model.pricing.update` (`{models}` from
+  request change names; no `auditContentTemplates` entry so Content is the
+  action string) and SyncUpstreamModels `model.metadata.sync`
+  (`created_models` / `updated_models` / `created_vendors`). Category
+  `operation`, `other.op` + `other.admin_info` (no `audit_info`), Status
+  200 Success true, then `markAuditLogged`. Failed empty PATCH
+  `/api/option/model_pricing` still uses generic `finishAdminAudit`. Failed
+  empty POST `/api/models/sync_upstream` still uses `auditRouteActions`
+  `model.sync_upstream` fallback (`POST /api/models/sync_upstream`).
+  Extra-OK: hop 323 vendor.create/delete fallback tests stay unchanged.
+  Extra-OK: audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
