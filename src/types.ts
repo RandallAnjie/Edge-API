@@ -249,6 +249,8 @@ export interface SessionUser {
   sid?: string;
   userAuthVersion?: number;
   sessionVersion?: number;
+  /** Original `c.GetBool("use_access_token")` after dashboard PAT auth. */
+  useAccessToken?: boolean;
 }
 
 export interface AuthToken {

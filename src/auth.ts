@@ -394,10 +394,10 @@ async function sessionUserFromAccess(store: Store, secret: string, raw: string, 
   const user = await store.getUserByField("access_token", raw);
   if (!user || user.status !== USER_ENABLED) return null;
   if (req) await beginAccessTokenAudit(store, req, user, raw);
-  return toSessionUser(user, "");
+  return toSessionUser(user, "", Number(user.auth_version || 1) || 1, 1, true);
 }
 
-function toSessionUser(user: UserRow, sid: string, uv = 0, sv = 0): SessionUser {
+function toSessionUser(user: UserRow, sid: string, uv = 0, sv = 0, useAccessToken = false): SessionUser {
   return {
     id: user.id,
     username: user.username,
@@ -412,6 +412,7 @@ function toSessionUser(user: UserRow, sid: string, uv = 0, sv = 0): SessionUser 
     sid,
     userAuthVersion: uv || Number(user.auth_version || 1) || 1,
     sessionVersion: sv || 1,
+    useAccessToken,
   };
 }
 
@@ -477,7 +478,7 @@ async function classifyDashboardCredential(c: Context<Env>, store: Store): Promi
   await beginAccessTokenAudit(store, c.req, patUser, raw);
   const user = await store.getUserById(patUser.id);
   if (!user) return { kind: "error", response: writeDashboardAuthError("revoked") };
-  return { kind: "user", user: toSessionUser(user, "", Number(user.auth_version || 1) || 1, 1) };
+  return { kind: "user", user: toSessionUser(user, "", Number(user.auth_version || 1) || 1, 1, true) };
 }
 
 /** Original `middleware.TryUserAuth`. */

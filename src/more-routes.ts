@@ -1531,14 +1531,18 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const auth = await authenticateTokenReadOnly(c, s);
     if (auth instanceof Response) return auth;
-    if (!auth.token.id) return apiFail("无效的令牌");
-    const { items } = await s.listLogs({
-      offset: 0,
-      limit: MAX_RECENT_ITEMS,
-      tokenId: auth.token.id,
-      order: "id",
-    });
-    return apiOk(publicUserLogs(items, 0));
+    if (!auth.token.id) return apiErrorMsg("无效的令牌");
+    try {
+      const { items } = await s.listLogs({
+        offset: 0,
+        limit: MAX_RECENT_ITEMS,
+        tokenId: auth.token.id,
+        order: "id",
+      });
+      return apiOk(publicUserLogs(items, 0));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/subscription/plans", async (c) => {

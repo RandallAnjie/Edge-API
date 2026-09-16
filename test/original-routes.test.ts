@@ -756,6 +756,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
   const searchLogs = await json(new Request("http://local/api/log/search", { headers: auth }), e);
   assert.equal(searchLogs.body.success, false);
   assert.equal(searchLogs.body.message, "该接口已废弃");
+  assert.equal("data" in searchLogs.body, false);
 
   const creemUnconfigured = await json(
     new Request("http://local/api/user/creem/pay", {
@@ -2694,7 +2695,8 @@ test("original TestChannel, UpdateSelf, video, OAuth, and subscription return JS
     e,
   );
   assert.equal(sidebar.body.success, true, String(sidebar.body.message));
-  assert.equal(sidebar.body.message, "更新成功");
+  assert.equal(sidebar.body.message, "Update successful");
+  assert.equal(sidebar.body.data, null);
   const lang = await json(
     new Request("http://local/api/user/self", {
       method: "PUT",
@@ -2704,7 +2706,8 @@ test("original TestChannel, UpdateSelf, video, OAuth, and subscription return JS
     e,
   );
   assert.equal(lang.body.success, true);
-  assert.equal(lang.body.message, "更新成功");
+  assert.equal(lang.body.message, "Update successful");
+  assert.equal(lang.body.data, null);
   const self = await json(new Request("http://local/api/user/self", { headers: auth }), e);
   assert.ok(String((self.body.data as { sidebar_modules?: string }).sidebar_modules || "").includes("chat"));
 

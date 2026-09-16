@@ -64,7 +64,9 @@ import {
   clientIp,
   databaseErrorMessage,
   i18nPair,
+  invalidInputMessage,
   json,
+  openaiError,
   pageData,
   pageQuery,
   parseUnixQuery,
@@ -74,6 +76,7 @@ import {
   serveRevalidatedJSON,
   strconvAtoi,
   strconvParseBool,
+  updateSuccessMessage,
   userAdminCannotPromoteMessage,
   userAlreadyAdminMessage,
   userAlreadyCommonMessage,
@@ -94,6 +97,8 @@ import {
   userRegisterDisabledMessage,
   userUsernameOrPasswordErrorMessage,
   userVerificationCodeErrorMessage,
+  writeAuthSessionError,
+  writeSecurityOperationError,
 } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import type { Context } from "./router.js";
@@ -512,37 +517,61 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Record<string, unknown>;
+    const body = bindUpdateSelfMap(c.req, await c.req.text());
+    if (body instanceof Response) return body;
     const passwordValue = body.password;
     const passwordRequested = passwordValue != null && (typeof passwordValue !== "string" || passwordValue !== "");
     if ("sidebar_modules" in body && !passwordRequested) {
       const user = await s.getUserById(u.id);
-      if (!user) return apiFail("用户不存在");
+      if (!user) return apiErrorMsg("record not found");
       const settings = parseJson<Record<string, unknown>>(user.settings || "", {});
       if (typeof body.sidebar_modules === "string") settings.sidebar_modules = body.sidebar_modules;
       await s.updateUser(u.id, { settings: JSON.stringify(settings) });
-      return apiOk(null, "更新成功");
+      return json(200, { success: true, message: updateSuccessMessage(c.req), data: null });
     }
     if ("language" in body && !passwordRequested) {
       const user = await s.getUserById(u.id);
-      if (!user) return apiFail("用户不存在");
+      if (!user) return apiErrorMsg("record not found");
       const settings = parseJson<Record<string, unknown>>(user.settings || "", {});
       if (typeof body.language === "string") settings.language = body.language;
       await s.updateUser(u.id, { settings: JSON.stringify(settings) });
-      return apiOk(null, "更新成功");
+      return json(200, { success: true, message: updateSuccessMessage(c.req), data: null });
     }
+    const username = bindJSONStringOn(c.req, body, "username");
+    if (username instanceof Response) return username;
+    const password = bindJSONStringOn(c.req, body, "password");
+    if (password instanceof Response) return password;
+    const displayName = bindJSONStringOn(c.req, body, "display_name");
+    if (displayName instanceof Response) return displayName;
+    const email = bindJSONStringOn(c.req, body, "email");
+    if (email instanceof Response) return email;
+    const remark = bindJSONStringOn(c.req, body, "remark");
+    if (remark instanceof Response) return remark;
+    const originalPassword = bindJSONStringOn(c.req, body, "original_password");
+    if (originalPassword instanceof Response) return originalPassword;
+    void originalPassword;
+    const invalid = validateUpdateUser({
+      username,
+      password: "",
+      display_name: displayName,
+      email,
+      verification_code: "",
+      aff_code: "",
+      remark,
+    });
+    if (invalid) return apiErrorMsg(invalidInputMessage(c.req));
     const patch: Record<string, unknown> = {};
-    if (typeof body.username === "string" && body.username.trim()) patch.username = body.username.trim();
-    if (body.display_name != null) patch.display_name = body.display_name;
-    if (passwordRequested) {
+    if (username.trim()) patch.username = username.trim();
+    if (displayName) patch.display_name = displayName;
+    if (password) {
       const user = await s.getUserById(u.id);
-      if (!user) return apiFail("用户不存在");
+      if (!user) return writeAuthSessionError(500, "AUTH_INTERNAL_ERROR");
       const firstPassword = !user.password;
       const scope = firstPassword ? "account.password.set" : "account.password.change";
       const proof = await requireProof(c, s, { scope });
       if (isResponse(proof)) return proof;
-      const password = String(passwordValue);
-      if (password.length < 8) return apiFail("密码长度必须在 8 到 128 之间");
+      const passwordErr = validateNewAccountPassword(password);
+      if (passwordErr) return writeSecurityOperationError("PASSWORD_POLICY_REJECTED", passwordErr);
       patch.password = await hashPassword(password);
       await s.updateUser(u.id, patch);
       await s.bumpAuthVersion(u.id);
@@ -554,7 +583,7 @@ export function adminRouter(): Router<Env> {
       return sessionResponse(issued);
     }
     await s.updateUser(u.id, patch);
-    return apiOk(null);
+    return json(200, { success: true, message: "" });
   });
 
   r.get("/api/user/models", async (c) => {
@@ -1385,7 +1414,7 @@ export function adminRouter(): Router<Env> {
       });
       return apiOk(pageData(items.map((row) => publicLog(row, u.role)), total, q));
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 
@@ -1411,7 +1440,7 @@ export function adminRouter(): Router<Env> {
       });
       return apiOk(pageData(publicUserLogs(items, q.offset), total, q));
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 
@@ -1433,7 +1462,7 @@ export function adminRouter(): Router<Env> {
         }),
       );
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 
@@ -1455,7 +1484,7 @@ export function adminRouter(): Router<Env> {
         }),
       );
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 
@@ -1498,7 +1527,7 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const bound = bindOptionUpdate(await c.req.text());
     if (bound instanceof Response) return bound;
-    if (!bound.key) return apiFail("无效的参数");
+    if (!bound.key) return apiErrorMsg("无效的参数");
     const { key, value } = bound;
     if (key === "QuotaForInviter" || key === "QuotaForInvitee") {
       if (isPositiveOptionValue(value) && !(await paymentComplianceConfirmed(s))) {
@@ -1859,8 +1888,9 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
+    if (u.useAccessToken) return openaiError(500, "暂不支持使用 access token", "access_denied");
     const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在");
+    if (!user) return openaiError(500, "record not found", "query_data_error");
     const body = await readJson(c.req);
     return playgroundRelay(c.req, c.env, s, user, body, { waitUntil: c.waitUntil });
   });
@@ -1935,6 +1965,17 @@ function bindAddChannelRequest(
   const wrapped = rec.channel != null && typeof rec.channel === "object" && !Array.isArray(rec.channel);
   const ch = (wrapped ? rec.channel : rec) as Record<string, unknown>;
   return { rec, ch };
+}
+
+/** Original `common.DecodeJson` into `map[string]any` for `UpdateSelf`. Any decode error is `MsgInvalidParams`. JSON `null` is a nil map. */
+function bindUpdateSelfMap(req: Request, raw: string): Record<string, unknown> | Response {
+  const invalid = () => apiFailInvalidParams(req);
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  if (parsed.value === null) return {};
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  return parsed.value as Record<string, unknown>;
 }
 
 /** Original `common.DecodeJson` into `controller.LoginRequest`. Any decode error is `MsgInvalidParams`. JSON `null` is a zero struct. */

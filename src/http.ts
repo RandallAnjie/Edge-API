@@ -252,6 +252,29 @@ export function userInputInvalidMessage(req: Request, error: string): string {
   }
 }
 
+/** Original `i18n.MsgInvalidInput`. */
+export function invalidInputMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "輸入不合法";
+    case "zh-CN":
+      return "输入不合法";
+    default:
+      return "Invalid input";
+  }
+}
+
+/** Original `i18n.MsgUpdateSuccess`. */
+export function updateSuccessMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+    case "zh-CN":
+      return "更新成功";
+    default:
+      return "Update successful";
+  }
+}
+
 /** Original `i18n.MsgUserPasswordResetLinkInvalid`. */
 export function userPasswordResetLinkInvalidMessage(req: Request): string {
   switch (i18nLang(req)) {
