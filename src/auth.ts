@@ -308,8 +308,9 @@ export function authRotationData(issued: { data: Record<string, unknown> }): Rec
 export function authRotationResponse(
   issued: { data: Record<string, unknown>; cookies: string[] },
   message = "",
+  extra: Record<string, unknown> = {},
 ): Response {
-  return withSetCookies(apiOk(authRotationData(issued), message), issued.cookies);
+  return withSetCookies(apiOk({ ...authRotationData(issued), ...extra }, message), issued.cookies);
 }
 
 export async function refreshLoginSession(

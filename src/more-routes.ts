@@ -2,6 +2,7 @@ import {
   CHANNEL_ENABLED,
   ROLE_ROOT,
   MAX_RECENT_ITEMS,
+  canManageTargetRole,
   nowSec,
   parseJson,
   randomHex,
@@ -20,6 +21,7 @@ import {
   ERR_VERIFICATION_FAILED,
   ERR_TWOFA_ALREADY_ENABLED,
   ERR_TWOFA_CODE_INVALID,
+  ERR_TWOFA_NOT_ENABLED,
   ERR_TWOFA_SETUP_INVALID,
 } from "./totp.js";
 import { notifyAccountSecurityChange, sendMail, sixDigitCode, validateAccountEmail, normalizeEmail } from "./mail.js";
@@ -96,7 +98,7 @@ import {
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { goJSONKind, goUnmarshalJSON, parseChannelBatch } from "./channel-validate.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool, userEmailAlreadyTakenMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -466,6 +468,9 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
     if (!user) return apiFail("用户不存在");
+    if (Number(user.totp_enabled) !== 1) {
+      return writeSecurityOperationError("TWOFA_NOT_ENABLED", ERR_TWOFA_NOT_ENABLED);
+    }
     await s.updateUser(u.id, {
       totp_enabled: 0,
       totp_secret: "",
@@ -476,7 +481,7 @@ export function registerMore(r: Router<Env>): void {
     const fresh = await s.getUserById(u.id);
     const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "twofa_disabled", u.sid);
     if (issued instanceof Response) return issued;
-    return sessionResponse(issued, 200, "两步验证已禁用");
+    return authRotationResponse(issued, "两步验证已禁用");
   });
 
   r.post("/api/user/2fa/backup_codes", async (c) => {
@@ -485,9 +490,16 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
+    const user = await s.getUserById(u.id);
+    if (!user) return apiFail("用户不存在");
+    if (Number(user.totp_enabled) !== 1) {
+      return writeSecurityOperationError("TWOFA_NOT_ENABLED", ERR_TWOFA_NOT_ENABLED);
+    }
     const codes = generateBackupCodes();
     await s.updateUser(u.id, { totp_backup: codes.join(",") });
-    return apiOk({ backup_codes: codes });
+    const issued = await issueSessionSafe(s, c.env, user, c.req, "twofa_backup_codes_regenerated", u.sid);
+    if (issued instanceof Response) return issued;
+    return authRotationResponse(issued, "备用码重新生成成功", { backup_codes: codes });
   });
 
   r.get("/api/user/2fa/stats", async (c) => {
@@ -506,14 +518,21 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.updateUser(Number(c.params.id), {
+    const parsed = strconvAtoi(c.params.id || "");
+    if (!parsed.ok || parsed.n <= 0) return apiErrorMsg("用户ID格式错误");
+    const target = await s.getUserById(parsed.n);
+    if (!target) return apiErrorMsg(userNotExistsMessage(c.req));
+    if (!canManageTargetRole(u.role, target.role)) return apiErrorMsg("无权操作同级或更高级用户的2FA设置");
+    if (Number(target.totp_enabled) !== 1) return apiErrorMsg("用户未启用2FA");
+    await s.updateUser(parsed.n, {
       totp_enabled: 0,
       totp_secret: "",
       totp_backup: "",
       totp_failed_attempts: 0,
       totp_locked_until: 0,
     });
-    return apiOk(null);
+    await s.bumpAuthVersion(parsed.n);
+    return json(200, { success: true, message: "用户2FA已被强制禁用" });
   });
 
   r.get("/api/user/sessions", async (c) => {

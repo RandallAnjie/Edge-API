@@ -131,6 +131,18 @@ export function userPasswordResetLinkInvalidMessage(req: Request): string {
   }
 }
 
+/** Original `i18n.MsgUserNotExists`. */
+export function userNotExistsMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "使用者不存在";
+    case "zh-CN":
+      return "用户不存在";
+    default:
+      return "User does not exist";
+  }
+}
+
 /** Original `i18n.MsgPaymentComplianceRequired`. */
 export function paymentComplianceRequiredMessage(req: Request): string {
   switch (i18nLang(req)) {
