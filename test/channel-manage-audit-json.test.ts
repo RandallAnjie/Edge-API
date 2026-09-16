@@ -9,6 +9,7 @@ import {
   AUDIT_CONTENT_TEMPLATES,
   auditContentEN,
 } from "../src/admin-operation-audit.js";
+import { totpCode } from "../src/totp.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -67,6 +68,49 @@ async function passwordProof(
   );
   assert.equal(r.body.success, true, String(r.body.message || r.body.code));
   return r.body.data as { proof_token: string };
+}
+
+async function twoFAProof(
+  e: Env,
+  auth: Record<string, string>,
+  scope: string,
+  secret: string,
+  extra: Record<string, unknown> = {},
+) {
+  const r = await json(
+    new Request("http://local/api/verify", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ method: "2fa", scope, code: await totpCode(secret), ...extra }),
+    }),
+    e,
+  );
+  assert.equal(r.body.success, true, String(r.body.message || r.body.code));
+  return r.body.data as { proof_token: string };
+}
+
+async function enableTwoFA(e: Env, auth: Record<string, string>): Promise<{ secret: string; auth: Record<string, string> }> {
+  const proof = await passwordProof(e, auth, "2fa.setup");
+  const setup = await json(
+    new Request("http://local/api/user/2fa/setup", {
+      method: "POST",
+      headers: { ...auth, "X-Security-Proof": proof.proof_token },
+    }),
+    e,
+  );
+  assert.equal(setup.body.success, true, String(setup.body.message));
+  const started = setup.body.data as { secret: string; flow_token: string };
+  const en = await json(
+    new Request("http://local/api/user/2fa/enable", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ code: await totpCode(started.secret), flow_token: started.flow_token }),
+    }),
+    e,
+  );
+  assert.equal(en.body.success, true, String(en.body.message));
+  const token = (en.body.data as { access_token: string }).access_token;
+  return { secret: started.secret, auth: { authorization: "Bearer " + token, "content-type": "application/json" } };
 }
 
 type AuditItem = {
@@ -455,58 +499,6 @@ test("original recordManageAudit leftover channel.key_view JSON, invalid-id Extr
   );
   assert.equal((await auditsFor(e, auth, invalidRid)).length, 0);
 
-  const proof = await passwordProof(e, auth, "channel.key.read", { context: { channel_id: id } });
-  const rid = "manage-audit-channel-key-view-1";
-  const viewed = await json(
-    new Request("http://local/api/channel/" + id + "/key", {
-      method: "POST",
-      headers: {
-        ...auth,
-        "X-Security-Proof": proof.proof_token,
-        "x-oneapi-request-id": rid,
-        "user-agent": "channel-key-client",
-        "cf-connecting-ip": "192.0.2.54",
-      },
-    }),
-    e,
-  );
-  assert.equal(viewed.body.success, true, String(viewed.body.message));
-  assert.equal(viewed.body.message, "获取成功");
-  assert.deepEqual(viewed.body.data, { key: "sk-view-secret" });
-  const privileged = operationEvent(await auditsFor(e, auth, rid));
-  assert.equal(privileged.action, "channel.key_view");
-  assert.equal(privileged.success, true);
-  assert.equal(privileged.status, 200);
-  assert.equal(privileged.route, "/api/channel/:id/key");
-  assert.equal(privileged.method, "POST");
-  assert.equal(privileged.auth_method, "session");
-  assert.equal(privileged.token_ref, "");
-  assert.equal(privileged.ip, "192.0.2.54");
-  assert.equal(privileged.content, "Viewed channel key hop328-key (ID: " + id + ")");
-  assert.deepEqual(privileged.other.op, { action: "channel.key_view", params: { id, name: "hop328-key" } });
-  assert.equal(privileged.other.audit_info, undefined);
-  assert.equal(JSON.stringify(privileged).includes("sk-view-secret"), false);
-
-  const missProof = await passwordProof(e, auth, "channel.key.read", { context: { channel_id: 999999 } });
-  const missRid = "manage-audit-channel-key-missing-1";
-  const missing = await json(
-    new Request("http://local/api/channel/999999/key", {
-      method: "POST",
-      headers: {
-        ...auth,
-        "X-Security-Proof": missProof.proof_token,
-        "x-oneapi-request-id": missRid,
-        "cf-connecting-ip": "192.0.2.55",
-      },
-    }),
-    e,
-  );
-  assert.equal(missing.body.success, false);
-  const missOp = operationEvent(await auditsFor(e, auth, missRid));
-  assert.equal(missOp.action, "generic");
-  assert.equal(missOp.success, false);
-  assert.equal(missOp.route, "/api/channel/:id/key");
-
   const patProof = await passwordProof(e, auth, "access_token.generate");
   const issued = await json(
     new Request("http://local/api/user/token", {
@@ -543,4 +535,61 @@ test("original recordManageAudit leftover channel.key_view JSON, invalid-id Extr
   assert.ok(patAccess);
   assert.notEqual(patOp.event_id, patAccess!.event_id);
   assert.equal(JSON.stringify(patEvents).includes(pat), false);
+
+  const enabled = await enableTwoFA(e, auth);
+  const proof = await twoFAProof(e, enabled.auth, "channel.key.read", enabled.secret, {
+    context: { channel_id: id },
+  });
+  const rid = "manage-audit-channel-key-view-1";
+  const viewed = await json(
+    new Request("http://local/api/channel/" + id + "/key", {
+      method: "POST",
+      headers: {
+        ...enabled.auth,
+        "X-Security-Proof": proof.proof_token,
+        "x-oneapi-request-id": rid,
+        "user-agent": "channel-key-client",
+        "cf-connecting-ip": "192.0.2.54",
+      },
+    }),
+    e,
+  );
+  assert.equal(viewed.body.success, true, String(viewed.body.message));
+  assert.equal(viewed.body.message, "获取成功");
+  assert.deepEqual(viewed.body.data, { key: "sk-view-secret" });
+  const privileged = operationEvent(await auditsFor(e, enabled.auth, rid));
+  assert.equal(privileged.action, "channel.key_view");
+  assert.equal(privileged.success, true);
+  assert.equal(privileged.status, 200);
+  assert.equal(privileged.route, "/api/channel/:id/key");
+  assert.equal(privileged.method, "POST");
+  assert.equal(privileged.auth_method, "session");
+  assert.equal(privileged.token_ref, "");
+  assert.equal(privileged.ip, "192.0.2.54");
+  assert.equal(privileged.content, "Viewed channel key pat-renamed (ID: " + id + ")");
+  assert.deepEqual(privileged.other.op, { action: "channel.key_view", params: { id, name: "pat-renamed" } });
+  assert.equal(privileged.other.audit_info, undefined);
+  assert.equal(JSON.stringify(privileged).includes("sk-view-secret"), false);
+
+  const missProof = await twoFAProof(e, enabled.auth, "channel.key.read", enabled.secret, {
+    context: { channel_id: 999999 },
+  });
+  const missRid = "manage-audit-channel-key-missing-1";
+  const missing = await json(
+    new Request("http://local/api/channel/999999/key", {
+      method: "POST",
+      headers: {
+        ...enabled.auth,
+        "X-Security-Proof": missProof.proof_token,
+        "x-oneapi-request-id": missRid,
+        "cf-connecting-ip": "192.0.2.55",
+      },
+    }),
+    e,
+  );
+  assert.equal(missing.body.success, false);
+  const missOp = operationEvent(await auditsFor(e, enabled.auth, missRid));
+  assert.equal(missOp.action, "generic");
+  assert.equal(missOp.success, false);
+  assert.equal(missOp.route, "/api/channel/:id/key");
 });
