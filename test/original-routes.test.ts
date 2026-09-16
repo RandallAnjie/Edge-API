@@ -1276,7 +1276,7 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
     }),
     e,
   );
-  assert.equal(badSetting.body.message, "无效的预警类型");
+  assert.equal(badSetting.body.message, "Invalid warning type");
   const okSetting = await json(
     new Request("http://local/api/user/setting", {
       method: "PUT",
@@ -1286,7 +1286,7 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
     e,
   );
   assert.equal(okSetting.body.success, true);
-  assert.equal(okSetting.body.message, "设置已更新");
+  assert.equal(okSetting.body.message, "Settings updated");
 
   const flowMissing = await json(new Request("http://local/api/data/flow", { headers: auth }), e);
   assert.equal(flowMissing.body.message, "invalid start_timestamp");

@@ -559,14 +559,17 @@ export function adminRouter(): Router<Env> {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const enabled = await s.optionBool("checkin_setting.enabled", false);
-    if (!enabled) return apiFail("签到功能未启用");
+    if (!enabled) return apiErrorMsg("签到功能未启用");
     const month = c.url.searchParams.get("month") || new Date().toISOString().slice(0, 7);
     const stats = await s.checkinStats(u.id, month);
-    return apiOk({
-      enabled: true,
-      min_quota: await s.optionNum("checkin_setting.min_quota", 1000),
-      max_quota: await s.optionNum("checkin_setting.max_quota", 10000),
-      stats,
+    return json(200, {
+      success: true,
+      data: {
+        enabled: true,
+        min_quota: await s.optionNum("checkin_setting.min_quota", 1000),
+        max_quota: await s.optionNum("checkin_setting.max_quota", 10000),
+        stats,
+      },
     });
   });
 
@@ -574,11 +577,11 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    if (!(await s.optionBool("checkin_setting.enabled", false))) return apiFail("签到功能未启用");
+    if (!(await s.optionBool("checkin_setting.enabled", false))) return apiErrorMsg("签到功能未启用");
     const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在");
+    if (!user) return apiErrorMsg("record not found");
     const today = new Date().toISOString().slice(0, 10);
-    if (await s.hasCheckedIn(u.id, today)) return apiFail("今日已签到");
+    if (await s.hasCheckedIn(u.id, today)) return apiErrorMsg("今日已签到");
     const minQ = await s.optionNum("checkin_setting.min_quota", 1000);
     const maxQ = await s.optionNum("checkin_setting.max_quota", 10000);
     const quota = minQ + (maxQ > minQ ? Math.floor(Math.random() * (maxQ - minQ + 1)) : 0);

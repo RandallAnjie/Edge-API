@@ -125,6 +125,7 @@ import {
 } from "./auth.js";
 import { httpStats } from "./metrics.js";
 import { Store, publicUser } from "./store.js";
+import { storeLogQuota } from "./quota.js";
 import type { Env, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -916,85 +917,78 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const denied = await requirePaymentCompliance(s, c.req);
     if (denied) return denied;
-    const body = (await readJson(c.req)) as { quota?: number };
+    const q = bindTransferAffQuota(c.req, await c.req.text());
+    if (q instanceof Response) return q;
     const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在");
-    const q = Math.floor(Number(body.quota || 0));
+    if (!user) return apiErrorMsg("record not found");
     const min = await s.optionNum("QuotaPerUnit", 500000);
-    if (q < min) return apiFail(`划转失败 转移额度最小为${min}！`);
-    if ((user.aff_quota || 0) < q) return apiFail("划转失败 邀请额度不足！");
+    if (q < min) {
+      const inner = `转移额度最小为${await storeLogQuota(s, min)}！`;
+      return apiErrorMsg(i18nPair(c.req, `划转失败 ${inner}`, `Transfer failed ${inner}`));
+    }
+    if ((user.aff_quota || 0) < q) {
+      return apiErrorMsg(i18nPair(c.req, "划转失败 邀请额度不足！", "Transfer failed 邀请额度不足！"));
+    }
     await s.updateUser(u.id, { aff_quota: (user.aff_quota || 0) - q });
     await s.addQuota(u.id, q);
-    return apiOk(null, "划转成功");
+    return apiOk(null, i18nPair(c.req, "划转成功", "Transfer successful"));
   });
 
   r.put("/api/user/setting", async (c) => {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as {
-      notify_type?: string;
-      quota_warning_threshold?: number;
-      webhook_url?: string;
-      webhook_secret?: string;
-      notification_email?: string;
-      bark_url?: string;
-      gotify_url?: string;
-      gotify_token?: string;
-      gotify_priority?: number;
-      upstream_model_update_notify_enabled?: boolean;
-      accept_unset_model_ratio_model?: boolean;
-      record_ip_log?: boolean;
-    };
-    const notify = String(body.notify_type || "");
-    if (!["email", "webhook", "bark", "gotify"].includes(notify)) return apiFail("无效的预警类型");
-    if (Number(body.quota_warning_threshold) <= 0) return apiFail("预警阈值必须大于0");
+    const body = bindUpdateUserSetting(c.req, await c.req.text());
+    if (body instanceof Response) return body;
+    const notify = body.notify_type;
+    if (!["email", "webhook", "bark", "gotify"].includes(notify)) {
+      return apiErrorMsg(i18nPair(c.req, "无效的预警类型", "Invalid warning type"));
+    }
+    if (body.quota_warning_threshold <= 0) {
+      return apiErrorMsg(i18nPair(c.req, "预警阈值必须大于0", "Warning threshold must be greater than 0"));
+    }
     if (notify === "webhook") {
-      if (!body.webhook_url) return apiFail("Webhook地址不能为空");
-      try {
-        new URL(body.webhook_url);
-      } catch {
-        return apiFail("无效的Webhook地址");
+      if (!body.webhook_url) return apiErrorMsg(i18nPair(c.req, "Webhook地址不能为空", "Webhook URL cannot be empty"));
+      if (!parseRequestURI(body.webhook_url)) {
+        return apiErrorMsg(i18nPair(c.req, "无效的Webhook地址", "Invalid Webhook URL"));
       }
     }
-    if (notify === "email" && body.notification_email && !String(body.notification_email).includes("@")) {
-      return apiFail("无效的邮箱地址");
+    if (notify === "email" && body.notification_email && !body.notification_email.includes("@")) {
+      return apiErrorMsg(i18nPair(c.req, "无效的邮箱地址", "Invalid email address"));
     }
     if (notify === "bark") {
-      if (!body.bark_url) return apiFail("Bark推送URL不能为空");
-      try {
-        new URL(body.bark_url);
-      } catch {
-        return apiFail("无效的Bark推送URL");
+      if (!body.bark_url) return apiErrorMsg(i18nPair(c.req, "Bark推送URL不能为空", "Bark push URL cannot be empty"));
+      if (!parseRequestURI(body.bark_url)) {
+        return apiErrorMsg(i18nPair(c.req, "无效的Bark推送URL", "Invalid Bark push URL"));
       }
       if (!body.bark_url.startsWith("http://") && !body.bark_url.startsWith("https://")) {
-        return apiFail("URL必须以http://或https://开头");
+        return apiErrorMsg(i18nPair(c.req, "URL必须以http://或https://开头", "URL must start with http:// or https://"));
       }
     }
     if (notify === "gotify") {
-      if (!body.gotify_url) return apiFail("Gotify服务器地址不能为空");
-      if (!body.gotify_token) return apiFail("Gotify令牌不能为空");
-      try {
-        new URL(body.gotify_url);
-      } catch {
-        return apiFail("无效的Gotify服务器地址");
+      if (!body.gotify_url) {
+        return apiErrorMsg(i18nPair(c.req, "Gotify服务器地址不能为空", "Gotify server URL cannot be empty"));
+      }
+      if (!body.gotify_token) return apiErrorMsg(i18nPair(c.req, "Gotify令牌不能为空", "Gotify token cannot be empty"));
+      if (!parseRequestURI(body.gotify_url)) {
+        return apiErrorMsg(i18nPair(c.req, "无效的Gotify服务器地址", "Invalid Gotify server URL"));
       }
       if (!body.gotify_url.startsWith("http://") && !body.gotify_url.startsWith("https://")) {
-        return apiFail("URL必须以http://或https://开头");
+        return apiErrorMsg(i18nPair(c.req, "URL必须以http://或https://开头", "URL must start with http:// or https://"));
       }
     }
     const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在");
+    if (!user) return apiErrorMsg("record not found");
     const existing = parseJson<Record<string, unknown>>(user.settings || "", {});
     const settings: Record<string, unknown> = {
       ...existing,
       notify_type: notify,
-      quota_warning_threshold: Number(body.quota_warning_threshold),
-      accept_unset_model_ratio_model: Boolean(body.accept_unset_model_ratio_model),
-      record_ip_log: Boolean(body.record_ip_log),
+      quota_warning_threshold: body.quota_warning_threshold,
+      accept_unset_model_ratio_model: body.accept_unset_model_ratio_model,
+      record_ip_log: body.record_ip_log,
     };
     if (u.role >= 10 && body.upstream_model_update_notify_enabled != null) {
-      settings.upstream_model_update_notify_enabled = Boolean(body.upstream_model_update_notify_enabled);
+      settings.upstream_model_update_notify_enabled = body.upstream_model_update_notify_enabled;
     }
     if (notify === "webhook") {
       settings.webhook_url = body.webhook_url;
@@ -1005,11 +999,11 @@ export function registerMore(r: Router<Env>): void {
     if (notify === "gotify") {
       settings.gotify_url = body.gotify_url;
       settings.gotify_token = body.gotify_token;
-      const p = Number(body.gotify_priority);
+      const p = body.gotify_priority;
       settings.gotify_priority = p < 0 || p > 10 ? 5 : p;
     }
     await s.updateUser(u.id, { settings: JSON.stringify(settings) });
-    return apiOk(null, "设置已更新");
+    return apiOk(null, i18nPair(c.req, "设置已更新", "Settings updated"));
   });
 
 
@@ -2375,6 +2369,140 @@ async function bindPasswordResetRequest(req: Request): Promise<{ email: string; 
   return {
     email: rec.email == null ? "" : String(rec.email),
     token: rec.token == null ? "" : String(rec.token),
+  };
+}
+
+/** Original `url.ParseRequestURI`. */
+function parseRequestURI(raw: string): boolean {
+  if (!raw) return false;
+  try {
+    if (raw.startsWith("/")) return true;
+    new URL(raw);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Original `controller.TransferAffQuotaRequest` `ShouldBindJSON` `quota` `binding:"required"`. */
+function bindTransferAffQuota(req: Request, raw: string): number | Response {
+  if (!raw.trim()) return apiErrorMsg("EOF");
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return apiErrorMsg(parsed.message);
+  if (parsed.value === null) {
+    return apiErrorMsg("Key: 'TransferAffQuotaRequest.Quota' Error:Field validation for 'Quota' failed on the 'required' tag");
+  }
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return apiErrorMsg(
+      `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type controller.TransferAffQuotaRequest`,
+    );
+  }
+  const rec = parsed.value as Record<string, unknown>;
+  if (rec.quota !== undefined && rec.quota !== null && (typeof rec.quota !== "number" || !Number.isInteger(rec.quota))) {
+    return apiErrorMsg(
+      `json: cannot unmarshal ${goJSONKind(rec.quota)} into Go struct field TransferAffQuotaRequest.quota of type int`,
+    );
+  }
+  const quota = rec.quota == null ? 0 : Number(rec.quota);
+  if (quota === 0) {
+    return apiErrorMsg("Key: 'TransferAffQuotaRequest.Quota' Error:Field validation for 'Quota' failed on the 'required' tag");
+  }
+  return quota;
+}
+
+type UpdateUserSettingReq = {
+  notify_type: string;
+  quota_warning_threshold: number;
+  webhook_url: string;
+  webhook_secret: string;
+  notification_email: string;
+  bark_url: string;
+  gotify_url: string;
+  gotify_token: string;
+  gotify_priority: number;
+  upstream_model_update_notify_enabled?: boolean;
+  accept_unset_model_ratio_model: boolean;
+  record_ip_log: boolean;
+};
+
+/** Original `UpdateUserSetting` `ShouldBindJSON`; any bind error is `MsgInvalidParams`. */
+function bindUpdateUserSetting(req: Request, raw: string): UpdateUserSettingReq | Response {
+  const invalid = () => apiFailInvalidParams(req);
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  const zero: UpdateUserSettingReq = {
+    notify_type: "",
+    quota_warning_threshold: 0,
+    webhook_url: "",
+    webhook_secret: "",
+    notification_email: "",
+    bark_url: "",
+    gotify_url: "",
+    gotify_token: "",
+    gotify_priority: 0,
+    accept_unset_model_ratio_model: false,
+    record_ip_log: false,
+  };
+  if (parsed.value === null) return zero;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  const rec = parsed.value as Record<string, unknown>;
+  const str = (key: string): string | Response => {
+    const v = rec[key];
+    if (v === undefined || v === null) return "";
+    if (typeof v !== "string") return invalid();
+    return v;
+  };
+  const notify = str("notify_type");
+  if (notify instanceof Response) return notify;
+  const webhookUrl = str("webhook_url");
+  if (webhookUrl instanceof Response) return webhookUrl;
+  const webhookSecret = str("webhook_secret");
+  if (webhookSecret instanceof Response) return webhookSecret;
+  const notificationEmail = str("notification_email");
+  if (notificationEmail instanceof Response) return notificationEmail;
+  const barkUrl = str("bark_url");
+  if (barkUrl instanceof Response) return barkUrl;
+  const gotifyUrl = str("gotify_url");
+  if (gotifyUrl instanceof Response) return gotifyUrl;
+  const gotifyToken = str("gotify_token");
+  if (gotifyToken instanceof Response) return gotifyToken;
+  let threshold = 0;
+  if (rec.quota_warning_threshold !== undefined && rec.quota_warning_threshold !== null) {
+    if (typeof rec.quota_warning_threshold !== "number") return invalid();
+    threshold = rec.quota_warning_threshold;
+  }
+  let priority = 0;
+  if (rec.gotify_priority !== undefined && rec.gotify_priority !== null) {
+    if (typeof rec.gotify_priority !== "number" || !Number.isInteger(rec.gotify_priority)) return invalid();
+    priority = rec.gotify_priority;
+  }
+  const boolVal = (key: string, pointer: boolean): boolean | undefined | Response => {
+    const v = rec[key];
+    if (v === undefined) return pointer ? undefined : false;
+    if (v === null) return pointer ? undefined : invalid();
+    if (typeof v !== "boolean") return invalid();
+    return v;
+  };
+  const accept = boolVal("accept_unset_model_ratio_model", false);
+  if (accept instanceof Response) return accept;
+  const recordIp = boolVal("record_ip_log", false);
+  if (recordIp instanceof Response) return recordIp;
+  const upstream = boolVal("upstream_model_update_notify_enabled", true);
+  if (upstream instanceof Response) return upstream;
+  return {
+    notify_type: notify,
+    quota_warning_threshold: threshold,
+    webhook_url: webhookUrl,
+    webhook_secret: webhookSecret,
+    notification_email: notificationEmail,
+    bark_url: barkUrl,
+    gotify_url: gotifyUrl,
+    gotify_token: gotifyToken,
+    gotify_priority: priority,
+    upstream_model_update_notify_enabled: upstream,
+    accept_unset_model_ratio_model: Boolean(accept),
+    record_ip_log: Boolean(recordIp),
   };
 }
 
