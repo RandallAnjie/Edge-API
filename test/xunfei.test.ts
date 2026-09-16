@@ -12,7 +12,9 @@ import { XUNFEI_WS_BAD_HANDSHAKE, XUNFEI_WS_HANDSHAKE_TIMEOUT_MS } from "../src/
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
+import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
+import { mergeModelRatio } from "./merge-model-ratio.js";
 
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
@@ -60,6 +62,13 @@ async function boot() {
     e,
   );
   const sk = (tk.body.data as { key: string }).key;
+  await mergeModelRatio(new Store(e.DB), {
+    "SparkDesk-invalid": 1,
+    "sub-1": 1,
+    "gpt-5.6-sol": 1,
+    "sub2-alpha": 1,
+    "jimeng_high_aes_general_v21_L": 1,
+  });
   return { e, auth, sk };
 }
 

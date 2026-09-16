@@ -374,11 +374,9 @@ export async function modelPriceHelperReject(
 ): Promise<string | null> {
   const maps = await billingLookupMapsFromStore(store);
   const billingModelName = resolveBillingModelNameFromStoreSync(modelName, maps, reasoningSettings);
-  const exprs = maps.exprs || {};
-  if (
-    getBillingMode(billingModelName, maps.modes, maps.modelRatio, maps.modelPrice) === BILLING_MODE_TIERED_EXPR &&
-    getBillingExpr(billingModelName, maps.modes, exprs, maps.modelRatio, maps.modelPrice)
-  ) {
+  // Original ModelPriceHelper always enters modelPriceHelperTiered when billing
+  // mode is tiered_expr, including a missing expression ("no billing expression").
+  if (getBillingMode(billingModelName, maps.modes, maps.modelRatio, maps.modelPrice) === BILLING_MODE_TIERED_EXPR) {
     return null;
   }
   if (getModelPriceFromMap(billingModelName, maps.modelPrice).configured) return null;

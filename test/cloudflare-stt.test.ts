@@ -13,7 +13,9 @@ import { usesOpenAIAudioAdaptor } from "../src/openai-audio-convert.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
+import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
+import { mergeModelRatio } from "./merge-model-ratio.js";
 
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
@@ -61,6 +63,7 @@ async function boot() {
     e,
   );
   const sk = (tk.body.data as { key: string }).key;
+  await mergeModelRatio(new Store(e.DB), { "customer-audio": 1 });
   return { e, auth, sk };
 }
 

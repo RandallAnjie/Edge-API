@@ -5,7 +5,9 @@ import { clearBaiduAccessTokenCache } from "../src/baidu-convert.js";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
+import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
+import { mergeModelRatio } from "./merge-model-ratio.js";
 
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
@@ -53,6 +55,12 @@ async function boot() {
     e,
   );
   const sk = (tk.body.data as { key: string }).key;
+  await mergeModelRatio(new Store(e.DB), {
+    "rerank-english-v3.0": 1,
+    "dify-bot": 1,
+    "moonshot-v1-8k": 1,
+    "ERNIE-4.0": 1,
+  });
   return { e, auth, sk };
 }
 

@@ -62,6 +62,7 @@ async function boot() {
     "claude-3-7-sonnet-thinking": 1.5,
     "claude-test": 1,
     "m@thinkin:on": 1,
+    m: 1,
   });
   return { e, auth, sk };
 }

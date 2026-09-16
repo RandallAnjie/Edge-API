@@ -11,7 +11,9 @@ import {
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
+import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
+import { mergeModelRatio } from "./merge-model-ratio.js";
 
 function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
@@ -59,6 +61,16 @@ async function boot() {
     e,
   );
   const sk = (tk.body.data as { key: string }).key;
+  await mergeModelRatio(new Store(e.DB), {
+    "hunyuan-lite": 1,
+    "hunyuan-pro": 1,
+    "mistral-small-latest": 1,
+    "m3e-base": 1,
+    "jina-clip-v1": 1,
+    "jina-reranker-v2-base-multilingual": 1,
+    "Qwen/Qwen2-7B-Instruct": 1,
+    "BAAI/bge-reranker-v2-m3": 1,
+  });
   return { e, auth, sk };
 }
 
