@@ -582,7 +582,7 @@ export async function maybeBeginAccessTokenAudit(store: Store, req: Request, sec
   await beginAccessTokenAudit(store, req, user, raw);
 }
 
-export async function finishAccessTokenAudit(store: Store, req: Request, res: Response): Promise<void> {
+export async function finishAccessTokenAudit(store: Store, req: Request, res: Response, requestId = ""): Promise<void> {
   const pending = pendingAccessAudits.get(req);
   if (!pending) return;
   pendingAccessAudits.delete(req);
@@ -607,6 +607,7 @@ export async function finishAccessTokenAudit(store: Store, req: Request, res: Re
     route: pending.route,
     status: res.status,
     success,
+    request_id: requestId,
   });
 }
 

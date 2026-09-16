@@ -226,6 +226,19 @@ Material changes from upstream:
   GlobalAPIRateLimit before this redirect. Extra-OK: worker OPTIONS 204 still
   runs first. requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `middleware.TokenOperationAudit` leftover security audit-log JSON
+  on `/api/token` write routes after UserAuth (`token.create` /
+  `token.update` / `token.status_update` / `token.delete` /
+  `token.delete_batch` / `token.key_view` / `token.key_view_batch`).
+  Category `security`, Content English (`API token creation`, …),
+  `other.op.params` allowlisted only (no bodies, keys, or raw errors),
+  `auth_method` session or access_token, empty `token_ref`. Failed writes
+  still record Success from the JSON `success` field (HTTP 200
+  `success:false`). GET reads and unauthenticated writes add no operation
+  audit. Extra-OK: CT 429 on key-view is audited when a session exists
+  (TokenOperationAudit wraps before CriticalRateLimit). Extra-OK: audit
+  write failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

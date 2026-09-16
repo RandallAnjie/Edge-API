@@ -1875,6 +1875,7 @@ export class Store {
       status?: number;
       success?: boolean;
       request_id?: string;
+      event_id?: string;
       other?: string;
     } = {},
   ): Promise<void> {
@@ -1888,7 +1889,7 @@ export class Store {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
-        extra.request_id || crypto.randomUUID(),
+        extra.event_id || crypto.randomUUID(),
         userId,
         username,
         extra.actor_role ?? 0,

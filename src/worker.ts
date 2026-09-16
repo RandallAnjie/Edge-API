@@ -4,6 +4,7 @@ import { runPendingMidjourneyPoll } from "./midjourney-poll.js";
 import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
 import { nowSec, USER_ENABLED } from "./constants.js";
 import { authenticateApiToken, cryptoSecret, finishAccessTokenAudit, maybeBeginAccessTokenAudit, readSession, sessionSecret } from "./auth.js";
+import { beginTokenOperationAudit, finishTokenOperationAudit, tokenOperationAuditApplies } from "./token-operation-audit.js";
 import { abortWithOpenAiMessage, apiFail, newApiPanicError, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import {
   ARTIFACT_NOT_FOUND,
@@ -783,8 +784,14 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
     res = withCors(req, newApiPanicError(err));
   }
   if (env.DB) {
+    const store = new Store(env.DB);
     try {
-      await finishAccessTokenAudit(new Store(env.DB), req, res);
+      await finishTokenOperationAudit(store, req, res, requestId);
+    } catch {
+      /* original RecordAuditLog logs and continues */
+    }
+    try {
+      await finishAccessTokenAudit(store, req, res, requestId);
     } catch {
       /* audit must not fail the request */
     }
@@ -885,6 +892,10 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       if (globalLimited) return withCors(req, globalLimited);
       const originLimited = sessionCookieOriginGuard(env, req);
       if (originLimited) return withCors(req, originLimited);
+      if (tokenOperationAuditApplies(req.method, path, new URL(req.url).searchParams.get("status_only") || "")) {
+        const session = await readSession(ctxStore(req, env, ctx), store);
+        if (session) beginTokenOperationAudit(req, session);
+      }
       const limited = await criticalRateLimit(env, req);
       if (limited) return withCors(req, limited);
       const bodyLimited = await anonymousRequestBodyLimit(env, req);

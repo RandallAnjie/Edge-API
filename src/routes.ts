@@ -102,6 +102,12 @@ import {
 } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import { turnstileCheck } from "./turnstile.js";
+import {
+  setTokenAuditSucceeded,
+  snapshotTokenAuditFields,
+  tokenAuditParams,
+  tokenUpdateChangedFields,
+} from "./token-operation-audit.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
 import {
@@ -868,6 +874,10 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const t = await loadDashboardToken(s, u.id, c.params.id);
     if (isResponse(t)) return t;
+    const params = tokenAuditParams(c.req);
+    params.id = t.id;
+    params.name = t.name;
+    setTokenAuditSucceeded(c.req);
     return apiOk({ key: t.key });
   });
 
@@ -875,7 +885,15 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as {
+    let raw: unknown;
+    try {
+      raw = await readJson(c.req);
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
+    const body = (
+      raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+    ) as {
       name?: string;
       remain_quota?: number;
       unlimited_quota?: boolean;
@@ -887,6 +905,7 @@ export function adminRouter(): Router<Env> {
       auto_groups?: string[];
       cross_group_retry?: boolean;
     };
+    tokenAuditParams(c.req).name = body.name ?? "";
     const writeErr = await tokenWriteError(c.req, s, u, body, true);
     if (writeErr) return writeErr;
     let autoGroups = Array.isArray(body.auto_groups) ? body.auto_groups : [];
@@ -911,6 +930,8 @@ export function adminRouter(): Router<Env> {
       cross_group_retry: crossGroupRetry,
       status: TOKEN_ENABLED,
     });
+    tokenAuditParams(c.req).id = id;
+    setTokenAuditSucceeded(c.req);
     return apiOk({ id, key: displayTokenKey(key) });
   });
 
@@ -932,15 +953,23 @@ export function adminRouter(): Router<Env> {
       name?: string;
       remain_quota?: number;
       unlimited_quota?: boolean;
+      expired_time?: number;
+      model_limits?: string;
+      model_limits_enabled?: boolean;
+      allow_ips?: string;
       group?: string;
       auto_groups?: string[];
+      cross_group_retry?: boolean;
     };
+    const params = tokenAuditParams(c.req);
+    const id = typeof body.id === "number" && Number.isInteger(body.id) ? body.id : 0;
+    if (id > 0) params.id = id;
     const writeErr = await tokenWriteError(c.req, s, u, body, false);
     if (writeErr) return writeErr;
-    const id = typeof body.id === "number" && Number.isInteger(body.id) ? body.id : 0;
     const existing = await s.getTokenById(id, u.id);
     const byIds = tokenByIdsError(id, u.id, existing);
     if (byIds) return byIds;
+    params.name = existing!.name;
     if (body.status === TOKEN_ENABLED) {
       if (existing!.status === TOKEN_EXPIRED && existing!.expired_time !== -1 && existing!.expired_time <= nowSec()) {
         return apiErrorMsg(i18nPair(c.req, "令牌已过期，无法启用，请先修改令牌过期时间，或者设置为永不过期", "Token has expired and cannot be enabled. Please modify the expiration time or set it to never expire"));
@@ -952,8 +981,13 @@ export function adminRouter(): Router<Env> {
     const statusOnly = c.url.searchParams.get("status_only");
     if (statusOnly) {
       await s.updateToken(id, u.id, { status: Number(body.status) });
+      params.name = existing!.name;
+      params.from = existing!.status;
+      params.to = Number(body.status);
+      setTokenAuditSucceeded(c.req);
       return apiOk(null);
     }
+    const previous = snapshotTokenAuditFields(existing!);
     const patch: Record<string, unknown> = {};
     for (const k of ["name", "status", "remain_quota", "expired_time", "model_limits", "allow_ips", "group"] as const) {
       if (body[k] != null) patch[k] = body[k];
@@ -969,6 +1003,27 @@ export function adminRouter(): Router<Env> {
       patch.auto_groups = "";
     }
     await s.updateToken(id, u.id, patch);
+    const next = {
+      name: body.name != null ? String(body.name) : previous.name,
+      expired_time: body.expired_time != null ? Number(body.expired_time) : previous.expired_time,
+      remain_quota: body.remain_quota != null ? Number(body.remain_quota) : previous.remain_quota,
+      unlimited_quota: body.unlimited_quota != null ? (body.unlimited_quota ? 1 : 0) : previous.unlimited_quota,
+      model_limits_enabled: body.model_limits_enabled != null ? (body.model_limits_enabled ? 1 : 0) : previous.model_limits_enabled,
+      model_limits: body.model_limits != null ? String(body.model_limits) : previous.model_limits,
+      allow_ips: body.allow_ips != null ? String(body.allow_ips) : previous.allow_ips,
+      group: nextGroup,
+      cross_group_retry: nextGroup === "auto"
+        ? (body.cross_group_retry != null ? (body.cross_group_retry ? 1 : 0) : previous.cross_group_retry)
+        : 0,
+      auto_groups: nextGroup === "auto"
+        ? (body.auto_groups != null
+          ? (Array.isArray(body.auto_groups) ? JSON.stringify(body.auto_groups) : String(body.auto_groups))
+          : previous.auto_groups)
+        : "",
+    };
+    params.name = next.name;
+    params.changed_fields = tokenUpdateChangedFields(previous, next);
+    setTokenAuditSucceeded(c.req);
     return apiOk(null, "更新成功");
   });
 
@@ -981,7 +1036,11 @@ export function adminRouter(): Router<Env> {
     const existing = await s.getTokenById(id, u.id);
     const byIds = tokenByIdsError(id, u.id, existing);
     if (byIds) return byIds;
+    const params = tokenAuditParams(c.req);
+    params.id = existing!.id;
+    params.name = existing!.name;
     await s.deleteToken(id, u.id);
+    setTokenAuditSucceeded(c.req);
     return json(200, { success: true, message: "" });
   });
 

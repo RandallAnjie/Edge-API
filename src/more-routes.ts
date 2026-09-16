@@ -101,6 +101,7 @@ import { registerParity, sessionViews } from "./parity-routes.js";
 import { goJSONKind, goUnmarshalJSON, parseChannelBatch, readChannelTagJSON } from "./channel-validate.js";
 import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, passkeyCredentialId, readJson, strconvAtoi, strconvParseBool, userCannotDeleteRootUserMessage, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import { turnstileCheck } from "./turnstile.js";
+import { applyTokenBatchAuditParams, setTokenAuditSucceeded, tokenAuditParams } from "./token-operation-audit.js";
 import { emailVerificationRateLimit } from "./email-verification-rate-limit.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -1626,9 +1627,13 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const ids = bindTokenBatchIds(c.req, await c.req.text());
+    const ids = parseTokenBatchIds(c.req, await c.req.text());
     if (ids instanceof Response) return ids;
+    applyTokenBatchAuditParams(c.req, ids);
+    if (!ids.length) return apiFailInvalidParams(c.req);
     const n = await s.deleteTokensBatch(u.id, ids);
+    tokenAuditParams(c.req).count = n;
+    setTokenAuditSucceeded(c.req);
     return apiOk(n);
   });
 
@@ -1636,16 +1641,28 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const ids = bindTokenBatchIds(c.req, await c.req.text());
+    const ids = parseTokenBatchIds(c.req, await c.req.text());
     if (ids instanceof Response) return ids;
+    applyTokenBatchAuditParams(c.req, ids);
+    if (!ids.length) return apiFailInvalidParams(c.req);
     if (ids.length > 100) {
       return apiErrorMsg(i18nPair(c.req, "批量请求数量过多，最多 100 条", "Too many items in batch request, maximum is 100"));
     }
     const keys: Record<string, string> = {};
+    const returnedIds: number[] = [];
+    const seen = new Set<number>();
     for (const id of ids) {
+      if (seen.has(id)) continue;
       const t = await s.getTokenById(id, u.id);
-      if (t) keys[String(id)] = t.key;
+      if (!t) continue;
+      seen.add(id);
+      keys[String(id)] = t.key;
+      returnedIds.push(id);
     }
+    const params = tokenAuditParams(c.req);
+    params.count = returnedIds.length;
+    params.returned_ids = returnedIds;
+    setTokenAuditSucceeded(c.req);
     return apiOk({ keys });
   });
 
@@ -2764,22 +2781,21 @@ function bindUpdateUserSetting(req: Request, raw: string): UpdateUserSettingReq 
   };
 }
 
-/** Original `controller.TokenBatch` `ShouldBindJSON`; empty ids is `MsgInvalidParams`. */
-function bindTokenBatchIds(req: Request, raw: string): number[] | Response {
+/** Original `controller.TokenBatch` `ShouldBindJSON`; empty/null ids bind then `MsgInvalidParams`. */
+function parseTokenBatchIds(req: Request, raw: string): number[] | Response {
   const invalid = () => apiFailInvalidParams(req);
   if (!raw.trim()) return invalid();
   const parsed = goUnmarshalJSON(raw);
   if (!parsed.ok) return invalid();
   if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
   const ids = (parsed.value as { ids?: unknown }).ids;
-  if (ids == null) return invalid();
+  if (ids == null) return [];
   if (!Array.isArray(ids)) return invalid();
   const out: number[] = [];
   for (const id of ids) {
     if (typeof id !== "number" || !Number.isInteger(id)) return invalid();
     out.push(id);
   }
-  if (!out.length) return invalid();
   return out;
 }
 
