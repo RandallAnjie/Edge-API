@@ -9,6 +9,7 @@ import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugi
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { applyDisableCache } from "./disable-cache.js";
 import { newApiVersion, requestIdFor, withRequestIdAndVersionHeaders } from "./request-id.js";
+import { sessionCookieOriginGuard } from "./session-cookie-origin.js";
 import { criticalRateLimit } from "./critical-rate-limit.js";
 import { globalApiRateLimit } from "./global-api-rate-limit.js";
 import { globalWebRateLimit } from "./global-web-rate-limit.js";
@@ -767,6 +768,8 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
 
       const globalLimited = await globalApiRateLimit(env, req);
       if (globalLimited) return withCors(req, globalLimited);
+      const originLimited = sessionCookieOriginGuard(env, req);
+      if (originLimited) return withCors(req, originLimited);
       const limited = await criticalRateLimit(env, req);
       if (limited) return withCors(req, limited);
       const bodyLimited = await anonymousRequestBodyLimit(env, req);

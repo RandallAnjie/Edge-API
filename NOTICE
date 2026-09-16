@@ -146,9 +146,18 @@ Material changes from upstream:
   `github.com/QuantumNous/new-api` + 8 alphanumeric) and `X-New-Api-Version`
   from `common.Version` (default `v0.0.0`, env `VERSION` overrides). Extra-OK:
   a client-provided `X-Oneapi-Request-Id` is honored so abort-message tests keep
-  a stable id (original always generates). Extra-OK: JS Date has millisecond
+  a stable id (original always generates).   Extra-OK: JS Date has millisecond
   precision so `UnixNano()%1e9` pads 6 trailing zeros. Extra-OK: GetStatus
   `version` stays the worker branding string, not `v0.0.0`.
+  Original `middleware.SessionCookieOriginGuard` leftover HTTP 403
+  `{success:false,code:"AUTH_ORIGIN_FORBIDDEN",message:"request origin is not allowed"}`
+  (omit `data`) on POST `/api/user/auth/refresh` and `/logout` when
+  `SESSION_COOKIE_SECURE=true` (requires `SESSION_COOKIE_TRUSTED_URL` https
+  origins). Same-origin, trusted origin, and Referer fallback are allowed.
+  `X-Forwarded-Proto` is not trusted. Extra-OK: invalid env leaves the guard
+  off instead of original FatalLog. Extra-OK: GA still runs first. Extra-OK:
+  worker `withCors` still adds CORS headers (original api group has no CORS).
+  Extra-OK: CT/DisableCache still skip on this Abort.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

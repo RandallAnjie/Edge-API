@@ -99,6 +99,10 @@ export interface Env {
   SEARCH_RATE_LIMIT?: string;
   /** Original `SEARCH_RATE_LIMIT_DURATION` (`common.SearchRateLimitDuration`, default 60). */
   SEARCH_RATE_LIMIT_DURATION?: string;
+  /** Original `SESSION_COOKIE_SECURE` (`common.SessionCookieSecure`, default false). */
+  SESSION_COOKIE_SECURE?: string;
+  /** Original `SESSION_COOKIE_TRUSTED_URL` (`common.SessionCookieTrustedURLs`, comma-separated https origins). */
+  SESSION_COOKIE_TRUSTED_URL?: string;
 }
 
 export interface ExecutionContextLike {
