@@ -29,6 +29,7 @@ import {
 } from "./crypto.js";
 import {
   abortWithOpenAiMessage,
+  apiErrorMsg,
   apiFail,
   apiFailCode,
   apiOk,
@@ -982,11 +983,11 @@ export async function completeLoginVerification(
  * Empty `method` defaults to `2fa`; any other method is `SECURITY_PROOF_METHOD_MISMATCH`.
  */
 export async function verifyLogin(store: Store, env: Env, req: Request, rawBody: unknown): Promise<Response> {
-  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) return apiFail("参数错误");
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) return apiErrorMsg("参数错误");
   const body = rawBody as { flow_token?: unknown; method?: unknown; code?: unknown };
   const flowToken = typeof body.flow_token === "string" ? body.flow_token : "";
   const code = typeof body.code === "string" ? body.code : "";
-  if (!flowToken || !code) return apiFail("参数错误");
+  if (!flowToken || !code) return apiErrorMsg("参数错误");
   const method = typeof body.method === "string" && body.method ? body.method : VERIFICATION_METHOD_TWO_FA;
   if (method !== VERIFICATION_METHOD_TWO_FA) {
     return apiFailCode(ERR_PROOF_METHOD, "SECURITY_PROOF_METHOD_MISMATCH");
@@ -1004,7 +1005,7 @@ export async function verifyLoginFromRequest(store: Store, env: Env, req: Reques
   try {
     body = await readJson(req);
   } catch {
-    return apiFail("参数错误");
+    return apiErrorMsg("参数错误");
   }
   return verifyLogin(store, env, req, body);
 }

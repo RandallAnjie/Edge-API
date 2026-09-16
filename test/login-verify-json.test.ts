@@ -138,6 +138,8 @@ test("original VerifyLogin JSON uses flow payload login_method and security erro
   );
   assert.equal(invalidJson.body.success, false);
   assert.equal(invalidJson.body.message, "参数错误");
+  assert.equal("data" in invalidJson.body, false);
+  assert.deepEqual(Object.keys(invalidJson.body).sort(), ["message", "success"]);
 
   const missing = await json(
     new Request("http://local/api/user/login/verify", {
@@ -148,6 +150,8 @@ test("original VerifyLogin JSON uses flow payload login_method and security erro
     e,
   );
   assert.equal(missing.body.message, "参数错误");
+  assert.equal("data" in missing.body, false);
+  assert.deepEqual(Object.keys(missing.body).sort(), ["message", "success"]);
 
   const wrongMethod = await json(
     new Request("http://local/api/user/login/verify", {

@@ -1671,7 +1671,7 @@ export function registerParity(r: Router<Env>): void {
     try {
       return apiOk(await previewMetadataSync(s, c.url.searchParams.get("locale") || ""));
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
   r.post("/api/models/sync_upstream", async (c) => {

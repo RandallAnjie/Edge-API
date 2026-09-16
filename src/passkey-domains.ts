@@ -1,7 +1,7 @@
 /** Original `model.UpdatePasskeyDomainOptions` + `system_setting` RP ID helpers. */
 
 import { hmacSha256Hex, timingSafeEqualStr } from "./crypto.js";
-import { apiFail, apiFailCode, i18nPair, json } from "./http.js";
+import { apiErrorMsg, apiFailCode, i18nPair, json } from "./http.js";
 import { effectiveTLDPlusOne, publicSuffix } from "./passkey-publicsuffix.js";
 import type { Store } from "./store.js";
 
@@ -306,9 +306,9 @@ export function passkeyDomainHttpError(err: unknown, req: Request): Response {
         "PASSKEY_RP_ID_UNAVAILABLE",
       );
     }
-    return apiFail(err.message);
+    return apiErrorMsg(err.message);
   }
-  return apiFail(err instanceof Error ? err.message : String(err));
+  return apiErrorMsg(err instanceof Error ? err.message : String(err));
 }
 
 export async function updatePasskeyDomainOptions(
