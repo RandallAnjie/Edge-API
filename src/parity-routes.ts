@@ -948,7 +948,7 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const planId = strconvAtoi(c.params.id);
-    if (!planId.ok || planId.n <= 0) return apiFail("无效的ID");
+    if (!planId.ok || planId.n <= 0) return apiErrorMsg("无效的ID");
     const parsed = await readAdminResetSubscriptionBody(c.req);
     if (parsed instanceof Response) return parsed;
     return resetPlanSubscriptions(c, s, planId.n, undefined, parsed.advanceResetTime);
@@ -976,10 +976,10 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const userId = strconvAtoi(c.params.id);
-    if (!userId.ok || userId.n <= 0) return apiFail("无效的用户ID");
+    if (!userId.ok || userId.n <= 0) return apiErrorMsg("无效的用户ID");
     const parsed = await readAdminResetSubscriptionBody(c.req);
     if (parsed instanceof Response) return parsed;
-    if (parsed.planId <= 0) return apiFail("参数错误");
+    if (parsed.planId <= 0) return apiErrorMsg("参数错误");
     return resetPlanSubscriptions(c, s, parsed.planId, userId.n, parsed.advanceResetTime);
   });
 
@@ -2399,17 +2399,17 @@ async function testIoNet(c: C): Promise<Response> {
 async function readAdminResetSubscriptionBody(
   req: Request,
 ): Promise<{ planId: number; advanceResetTime: boolean } | Response> {
-  let body: { plan_id?: unknown; advance_reset_time?: unknown };
-  try {
-    const text = await req.text();
-    if (!text) return apiFail("参数错误");
-    body = JSON.parse(text) as typeof body;
-  } catch {
-    return apiFail("参数错误");
+  const text = await req.text();
+  if (!text) return apiErrorMsg("参数错误");
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return apiErrorMsg("参数错误");
+  if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return apiErrorMsg("参数错误");
   }
-  if (body.advance_reset_time != null && typeof body.advance_reset_time !== "boolean") return apiFail("参数错误");
+  const body = parsed.value as { plan_id?: unknown; advance_reset_time?: unknown };
+  if (body.advance_reset_time != null && typeof body.advance_reset_time !== "boolean") return apiErrorMsg("参数错误");
   if (body.plan_id != null && (typeof body.plan_id !== "number" || !Number.isInteger(body.plan_id))) {
-    return apiFail("参数错误");
+    return apiErrorMsg("参数错误");
   }
   return {
     planId: typeof body.plan_id === "number" ? body.plan_id : 0,
@@ -2425,11 +2425,11 @@ async function resetPlanSubscriptions(
   advanceResetTime: boolean,
 ): Promise<Response> {
   const plan = await s.getPlan(planId);
-  if (!plan) return apiFail("record not found");
+  if (!plan) return apiErrorMsg("record not found");
   const published = publicPlan(plan);
   const now = nowSec();
   const rows = await s.listActiveUserSubs(userId, planId);
-  if (userId && !rows.length) return apiFail("该用户没有有效的此套餐订阅");
+  if (userId && !rows.length) return apiErrorMsg("该用户没有有效的此套餐订阅");
   const users = new Set<number>();
   for (const row of rows) {
     const patch: Record<string, unknown> = { amount_used: 0, updated_at: now };

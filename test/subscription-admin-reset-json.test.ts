@@ -147,6 +147,8 @@ test("original AdminResetUserSubscriptionsByPlan JSON errors", async () => {
   );
   assert.equal(badUser.body.success, false);
   assert.equal(badUser.body.message, "无效的用户ID");
+  assert.equal("data" in badUser.body, false);
+  assert.deepEqual(Object.keys(badUser.body).sort(), ["message", "success"]);
 
   const empty = await json(
     new Request("http://local/api/subscription/admin/users/1/subscriptions/reset", {
@@ -157,6 +159,7 @@ test("original AdminResetUserSubscriptionsByPlan JSON errors", async () => {
     e,
   );
   assert.equal(empty.body.message, "参数错误");
+  assert.equal("data" in empty.body, false);
 
   const missingPlan = await json(
     new Request("http://local/api/subscription/admin/users/1/subscriptions/reset", {
@@ -167,6 +170,7 @@ test("original AdminResetUserSubscriptionsByPlan JSON errors", async () => {
     e,
   );
   assert.equal(missingPlan.body.message, "该用户没有有效的此套餐订阅");
+  assert.equal("data" in missingPlan.body, false);
 
   const unknownPlan = await json(
     new Request("http://local/api/subscription/admin/plans/999999/subscriptions/reset", {
@@ -177,6 +181,8 @@ test("original AdminResetUserSubscriptionsByPlan JSON errors", async () => {
     e,
   );
   assert.equal(unknownPlan.body.message, "record not found");
+  assert.equal("data" in unknownPlan.body, false);
+  assert.deepEqual(Object.keys(unknownPlan.body).sort(), ["message", "success"]);
 
   const badPlanId = await json(
     new Request("http://local/api/subscription/admin/plans/abc/subscriptions/reset", {
@@ -187,4 +193,16 @@ test("original AdminResetUserSubscriptionsByPlan JSON errors", async () => {
     e,
   );
   assert.equal(badPlanId.body.message, "无效的ID");
+  assert.equal("data" in badPlanId.body, false);
+
+  const arrayBody = await json(
+    new Request("http://local/api/subscription/admin/plans/" + planId + "/subscriptions/reset", {
+      method: "POST",
+      headers: auth,
+      body: "[]",
+    }),
+    e,
+  );
+  assert.equal(arrayBody.body.message, "参数错误");
+  assert.equal("data" in arrayBody.body, false);
 });
