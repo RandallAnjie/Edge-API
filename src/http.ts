@@ -638,6 +638,68 @@ export function cookieGet(req: Request, name: string): string | null {
   return null;
 }
 
+const GO_COOKIE_DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+const GO_COOKIE_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
+/** Original `http.SetCookie` clear expiry `time.Unix(1, 0)`. */
+export const GO_COOKIE_CLEAR_EXPIRES = new Date(1000);
+
+/** Go `net/http.TimeFormat` (`Mon, 02 Jan 2006 15:04:05 GMT`) used by `Cookie.String`. */
+export function formatGoCookieExpires(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${GO_COOKIE_DOW[date.getUTCDay()]}, ${pad(date.getUTCDate())} ${GO_COOKIE_MON[date.getUTCMonth()]} ${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} GMT`;
+}
+
+export type GoCookieAttrs = {
+  name: string;
+  value: string;
+  path?: string;
+  domain?: string;
+  expires?: Date;
+  /** Go `Cookie.MaxAge`: >0 writes Max-Age=N; <0 writes Max-Age=0; 0 omits Max-Age. */
+  maxAge?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Default" | "None" | "Lax" | "Strict";
+};
+
+/**
+ * Original `net/http.Cookie.String` attribute order:
+ * Name=Value; Path; Domain; Expires; Max-Age; HttpOnly; Secure; SameSite
+ */
+export function serializeGoCookie(c: GoCookieAttrs): string {
+  const parts = [`${c.name}=${c.value}`];
+  if (c.path) parts.push(`Path=${c.path}`);
+  if (c.domain) parts.push(`Domain=${c.domain}`);
+  if (c.expires && c.expires.getUTCFullYear() >= 1601) {
+    parts.push(`Expires=${formatGoCookieExpires(c.expires)}`);
+  }
+  const maxAge = c.maxAge ?? 0;
+  if (maxAge > 0) parts.push(`Max-Age=${Math.trunc(maxAge)}`);
+  else if (maxAge < 0) parts.push("Max-Age=0");
+  if (c.httpOnly) parts.push("HttpOnly");
+  if (c.secure) parts.push("Secure");
+  switch (c.sameSite) {
+    case "None":
+      parts.push("SameSite=None");
+      break;
+    case "Lax":
+      parts.push("SameSite=Lax");
+      break;
+    case "Strict":
+      parts.push("SameSite=Strict");
+      break;
+  }
+  return parts.join("; ");
+}
+
+function cookieExpiresFrom(maxAge: number, expiresAtSec?: number): Date | undefined {
+  if (expiresAtSec && expiresAtSec > 0) return new Date(expiresAtSec * 1000);
+  if (maxAge > 0) return new Date(Date.now() + maxAge * 1000);
+  if (maxAge < 0) return GO_COOKIE_CLEAR_EXPIRES;
+  return undefined;
+}
+
 export function sessionCookie(
   token: string,
   maxAge: number,
@@ -645,37 +707,64 @@ export function sessionCookie(
   name = "session",
   path = "/",
   sameSite: "Lax" | "Strict" = "Strict",
+  expiresAtSec?: number,
 ): string {
-  const parts = [
-    `${name}=${encodeURIComponent(token)}`,
-    `Path=${path}`,
-    "HttpOnly",
-    `SameSite=${sameSite}`,
-    `Max-Age=${maxAge}`,
-  ];
-  if (secure) parts.push("Secure");
-  return parts.join("; ");
+  return serializeGoCookie({
+    name,
+    value: token,
+    path,
+    maxAge,
+    expires: cookieExpiresFrom(maxAge, expiresAtSec),
+    httpOnly: true,
+    secure,
+    sameSite,
+  });
 }
 
-export function sessionHintCookie(maxAge: number, secure: boolean): string {
-  const parts = ["new_api_has_session=1", "Path=/", "SameSite=Strict", `Max-Age=${maxAge}`];
-  if (secure) parts.push("Secure");
-  return parts.join("; ");
+export function sessionHintCookie(maxAge: number, secure: boolean, expiresAtSec?: number): string {
+  return serializeGoCookie({
+    name: "new_api_has_session",
+    value: "1",
+    path: "/",
+    maxAge,
+    expires: cookieExpiresFrom(maxAge, expiresAtSec),
+    httpOnly: false,
+    secure,
+    sameSite: "Strict",
+  });
 }
 
-export function refreshCookie(token: string, maxAge: number, secure: boolean): string {
-  return sessionCookie(token, maxAge, secure, "new_api_refresh", "/api/user/auth", "Strict");
+export function refreshCookie(token: string, maxAge: number, secure: boolean, expiresAtSec?: number): string {
+  return sessionCookie(token, maxAge, secure, "new_api_refresh", "/api/user/auth", "Strict", expiresAtSec);
 }
 
 export function clearSessionCookie(secure: boolean): string {
-  return sessionCookie("", 0, secure);
+  return sessionCookie("", -1, secure);
 }
 
 /** Original `service.ClearRefreshCookie`: refresh + session-hint only. */
 export function clearAuthCookies(secure: boolean): string[] {
   return [
-    sessionCookie("", 0, secure, "new_api_refresh", "/api/user/auth"),
-    "new_api_has_session=; Path=/; Max-Age=0; SameSite=Strict" + (secure ? "; Secure" : ""),
+    serializeGoCookie({
+      name: "new_api_refresh",
+      value: "",
+      path: "/api/user/auth",
+      maxAge: -1,
+      expires: GO_COOKIE_CLEAR_EXPIRES,
+      httpOnly: true,
+      secure,
+      sameSite: "Strict",
+    }),
+    serializeGoCookie({
+      name: "new_api_has_session",
+      value: "",
+      path: "/",
+      maxAge: -1,
+      expires: GO_COOKIE_CLEAR_EXPIRES,
+      httpOnly: false,
+      secure,
+      sameSite: "Strict",
+    }),
   ];
 }
 

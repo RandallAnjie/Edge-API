@@ -122,10 +122,11 @@ async function bundleFor(
     accessExp,
   );
   const secure = isSecureRequest(req);
-  const maxAge = Math.max(Number(sess.expires_at) - now, 1);
+  const expiresAt = Number(sess.expires_at);
+  const maxAge = Math.max(expiresAt - now, 1);
   const cookies: string[] = [];
-  if (refreshRaw) cookies.push(refreshCookie(refreshRaw, maxAge, secure));
-  cookies.push(sessionHintCookie(maxAge, secure));
+  if (refreshRaw) cookies.push(refreshCookie(refreshRaw, maxAge, secure, expiresAt));
+  cookies.push(sessionHintCookie(maxAge, secure, expiresAt));
   const data = {
     access_token: token,
     token_type: "Bearer",
