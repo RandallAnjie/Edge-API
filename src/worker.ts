@@ -8,6 +8,7 @@ import { abortWithOpenAiMessage, apiFail, newApiPanicError, noAvailableChannelMe
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { decompressRequest } from "./decompress-request.js";
+import { markSkipGzipResponse, withGzipResponse } from "./gzip-response.js";
 import {
   systemPerformanceCheck,
   systemPerformanceCheckAppliesAfterAuth,
@@ -736,10 +737,12 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
       /* audit must not fail the request */
     }
   }
+  res = await withGzipResponse(req, res);
   return withRequestIdAndVersionHeaders(res, requestId, newApiVersion(env));
 }
 
 async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
+  const inbound = req;
   const url = new URL(req.url);
   const path = url.pathname;
   hit("http");
@@ -780,16 +783,23 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
     try {
       if (isRelay && !path.startsWith("/v1/dashboard")) {
         const unpacked = await limitedDecompress(env, req);
-        if (unpacked.denied) return unpacked.denied;
+        if (unpacked.denied) {
+          markSkipGzipResponse(inbound);
+          return unpacked.denied;
+        }
         req = unpacked.req;
         if (!isRegisteredRelay(req.method, path)) {
           const plugin = await matchPluginRoute(store, req.method, path);
           if (!plugin) {
-            if (await matchPluginOwnedPath(store, path)) return withCors(req, pluginMethodNotAllowed());
+            if (await matchPluginOwnedPath(store, path)) {
+              markSkipGzipResponse(inbound);
+              return withCors(req, pluginMethodNotAllowed());
+            }
             const webLimited = await limitedGlobalWeb(env, req);
             if (webLimited) return webLimited;
             return withRelayNotFoundWebCache(withCors(req, relayNotFound(req.method, path)));
           }
+          markSkipGzipResponse(inbound);
           try {
             if (plugin.kind === "route") return withCors(req, await handleNativePluginRoute(req, env, ctx, plugin, store));
             return withCors(req, await handleRelay(req, env, ctx));
@@ -797,6 +807,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
             return withCors(req, pluginRoutePanicError());
           }
         }
+        markSkipGzipResponse(inbound);
         const beforeAuth = await limitedSystemPerformanceBeforeAuth(store, req, path, env.DB);
         if (beforeAuth) return beforeAuth;
         try {
@@ -808,6 +819,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       }
 
       if (path === "/pg" || path.startsWith("/pg/")) {
+        markSkipGzipResponse(inbound);
         const unpacked = await limitedDecompress(env, req);
         if (unpacked.denied) return unpacked.denied;
         req = unpacked.req;
@@ -844,12 +856,16 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       if (routed) return withCors(req, applyDisableCache(req, routed));
 
       const noRouteUnpacked = await limitedDecompress(env, req);
-      if (noRouteUnpacked.denied) return noRouteUnpacked.denied;
+      if (noRouteUnpacked.denied) {
+        markSkipGzipResponse(inbound);
+        return noRouteUnpacked.denied;
+      }
       req = noRouteUnpacked.req;
 
       const plugin = await matchPluginRoute(store, req.method, path);
       if (plugin) {
         hit("relay");
+        markSkipGzipResponse(inbound);
         try {
           if (plugin.kind === "route") return withCors(req, await handleNativePluginRoute(req, env, ctx, plugin, store));
           return withCors(req, await handleRelay(req, env, ctx));
@@ -857,7 +873,10 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
           return withCors(req, pluginRoutePanicError());
         }
       }
-      if (await matchPluginOwnedPath(store, path)) return withCors(req, pluginMethodNotAllowed());
+      if (await matchPluginOwnedPath(store, path)) {
+        markSkipGzipResponse(inbound);
+        return withCors(req, pluginMethodNotAllowed());
+      }
       if (path.startsWith("/v1") || path.startsWith("/api") || path.startsWith("/assets")) {
         const webLimited = await limitedGlobalWeb(env, req);
         if (webLimited) return webLimited;

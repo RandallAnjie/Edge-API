@@ -191,6 +191,16 @@ Material changes from upstream:
   stays 0 unless tests inject status (default zeros never trip, matching
   original pre-monitor). Extra-OK: MaskSensitiveInfo is a no-op on these
   messages. Extra-OK: `/pg` still runs GA after this check.
+  Original `github.com/gin-contrib/gzip` v0.0.6 `gzip.Gzip(gzip.DefaultCompression)`
+  leftover `Content-Encoding: gzip` + `Vary: Accept-Encoding` + compressed
+  `Content-Length` on the `/api` group, dashboard billing, and `SetWebRouter`
+  NoRoute when `Accept-Encoding` contains `gzip`. `Connection: Upgrade`,
+  `Accept: text/event-stream`, and `.png`/`.gif`/`.jpeg`/`.jpg` skip.
+  Registered relay `/v1` `/pg` `/mj` stay off. PluginDispatcher runs first on
+  NoRoute so plugin routes stay uncompressed. Extra-OK: worker OPTIONS 204
+  still runs before this middleware. Extra-OK: 101/204 are not wrapped.
+  Extra-OK: CompressionStream gzip bytes may differ from Go `compress/gzip`
+  headers; payloads gunzip to the same JSON.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
