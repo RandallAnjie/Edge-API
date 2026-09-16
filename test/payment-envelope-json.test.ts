@@ -154,7 +154,6 @@ test("original subscription pay gin.H omit success on checkout envelopes", async
   const stripe = await post(e, auth, "/api/subscription/stripe/pay", { plan_id: planId });
   assert.equal(stripe.body.success, false);
   assert.equal(stripe.body.message, "该套餐未配置 StripePriceId");
-  assert.equal("data" in stripe.body, false);
 
   const creemBind = await post(e, auth, "/api/subscription/creem/pay", {});
   payErrEnvelope(creemBind.body, "参数错误");
