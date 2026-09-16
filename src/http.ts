@@ -128,14 +128,53 @@ export function strconvParseBool(raw: string): { ok: true; v: boolean } | { ok: 
   }
 }
 
-/** Original `i18n.normalizeLang` / `ParseAcceptLanguage`. */
-export function i18nLang(req: Request): "zh-CN" | "zh-TW" | "en" {
-  const header = req.headers.get("accept-language") || "";
-  const first = header.split(",")[0]?.trim().split(";")[0] || "";
-  const lang = first.toLowerCase().trim();
-  if (lang.startsWith("zh-tw")) return "zh-TW";
-  if (lang.startsWith("zh")) return "zh-CN";
+/** Original `i18n.ContextKeyUserSetting.Language` snapshot at auth time. */
+const requestUserLanguage = new WeakMap<Request, string>();
+
+/** Original `i18n.normalizeLang`. Unsupported tags (including `"fr"`) become English. */
+export function normalizeI18nLang(lang: string): "zh-CN" | "zh-TW" | "en" {
+  const n = lang.toLowerCase().trim();
+  if (n.startsWith("zh-tw")) return "zh-TW";
+  if (n.startsWith("zh")) return "zh-CN";
+  if (n.startsWith("en")) return "en";
   return "en";
+}
+
+/** Original `i18n.ParseAcceptLanguage`. */
+export function parseAcceptLanguage(header: string): "zh-CN" | "zh-TW" | "en" {
+  if (!header) return "en";
+  const first = header.split(",")[0]?.trim().split(";")[0] || "";
+  return normalizeI18nLang(first);
+}
+
+function languageFromUserSettings(settingsRaw: string | undefined | null): string {
+  if (!settingsRaw) return "";
+  try {
+    const parsed = JSON.parse(settingsRaw) as { language?: unknown };
+    return typeof parsed.language === "string" ? parsed.language : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Original `model.UserBase.WriteContext` / `GetUserLanguage` snapshot for
+ * `i18n.GetLangFromContext`. Empty language falls through to Accept-Language.
+ * UpdateSelf language takes effect on the next request.
+ */
+export function rememberRequestUserLanguageFromUser(
+  req: Request | undefined,
+  user: { settings?: string } | null | undefined,
+): void {
+  if (!req || !user) return;
+  requestUserLanguage.set(req, languageFromUserSettings(user.settings));
+}
+
+/** Original `i18n.GetLangFromContext` / `i18n.T` language. */
+export function i18nLang(req: Request): "zh-CN" | "zh-TW" | "en" {
+  const remembered = requestUserLanguage.get(req);
+  if (remembered) return normalizeI18nLang(remembered);
+  return parseAcceptLanguage(req.headers.get("accept-language") || "");
 }
 
 /** Original `i18n.T` with DefaultLang English. */

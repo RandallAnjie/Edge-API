@@ -505,10 +505,21 @@ Material changes from upstream:
   Internal dashboard JWTs (including expired / security-proof) are skipped
   via unverified iss/aud/token_use. `ValidateAccessToken` does not require
   USER_ENABLED. Extra-OK: hop 323 vendor.create/delete fallback tests stay
-  unchanged. Extra-OK: registered relay `/v1` may still begin PAT audit
+  unchanged.   Extra-OK: registered relay `/v1` may still begin PAT audit
   (original AccessTokenAudit is `/api` + web NoRoute). Extra-OK: audit
   write failure must not fail the request. requireUser/requireAdmin/requireRoot
   and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `middleware.I18n` / `i18n.GetLangFromContext` leftover language
+  for `i18n.T` / `TranslateMessage`: auth-time user `settings.language`
+  (TokenAuth `WriteContext` / UserAuth `WriteContext` / TokenAuth lazy
+  `GetUserLanguage`) then Accept-Language then English. Unsupported tags
+  such as `"fr"` normalize to English and beat the header. Empty language
+  falls through so existing header-only zh-CN tests stay valid. UpdateSelf
+  language takes effect on the next request. TokenAuthReadOnly banned /
+  missing-user errors stay header-only (original sets `id` after those
+  checks). Extra-OK: hop 323 vendor.create/delete fallback tests stay
+  unchanged. Extra-OK: AUTH `writeAuthSessionError` stays `http.StatusText`
+  (`Unauthorized`). requireUser/requireAdmin/requireRoot stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

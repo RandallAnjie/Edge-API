@@ -47,6 +47,7 @@ import {
   withSetCookies,
   writeAuthSessionError,
   invalidChannelIdMessage,
+  rememberRequestUserLanguageFromUser,
   tokenInvalidMessage,
   tokenNotProvidedMessage,
   tokenStatusUnavailableMessage,
@@ -399,6 +400,7 @@ async function sessionUserFromAccess(store: Store, secret: string, raw: string, 
     if (!user || user.status !== USER_ENABLED) return null;
     if (Number(user.auth_version || 1) !== jwt.uv) return null;
     await store.touchSession(jwt.sid);
+    rememberRequestUserLanguageFromUser(req, user);
     return toSessionUser(user, jwt.sid, jwt.uv, jwt.sv);
   }
   if (splitRefreshToken(raw)) return null;
@@ -410,11 +412,13 @@ async function sessionUserFromAccess(store: Store, secret: string, raw: string, 
     const user = await store.getUserById(payload.uid);
     if (!user || user.status !== USER_ENABLED) return null;
     if (payload.sid) await store.touchSession(payload.sid);
+    rememberRequestUserLanguageFromUser(req, user);
     return toSessionUser(user, payload.sid || "", Number(user.auth_version || 1) || 1, Number(sess?.version || 1) || 1);
   }
   const user = await store.getUserByField("access_token", raw);
   if (!user || user.status !== USER_ENABLED) return null;
   if (req) await beginAccessTokenAudit(store, req, user, raw);
+  rememberRequestUserLanguageFromUser(req, user);
   return toSessionUser(user, "", Number(user.auth_version || 1) || 1, 1, true);
 }
 
@@ -492,6 +496,7 @@ async function classifyDashboardCredential(c: Context<Env>, store: Store): Promi
       return { kind: "error", response: writeDashboardAuthError("revoked") };
     }
     await store.touchSession(parsed.payload.sid);
+    rememberRequestUserLanguageFromUser(c.req, user);
     return { kind: "user", user: toSessionUser(user, parsed.payload.sid, parsed.payload.uv, parsed.payload.sv) };
   }
   const patUser = await store.getUserByField("access_token", raw);
@@ -499,6 +504,7 @@ async function classifyDashboardCredential(c: Context<Env>, store: Store): Promi
   await beginAccessTokenAudit(store, c.req, patUser, raw);
   const user = await store.getUserById(patUser.id);
   if (!user) return { kind: "error", response: writeDashboardAuthError("revoked") };
+  rememberRequestUserLanguageFromUser(c.req, user);
   return { kind: "user", user: toSessionUser(user, "", Number(user.auth_version || 1) || 1, 1, true) };
 }
 
@@ -688,6 +694,7 @@ export async function authenticateTokenReadOnly(
   if (user.status !== USER_ENABLED) {
     return json(403, { success: false, message: userBannedMessage(c.req) });
   }
+  rememberRequestUserLanguageFromUser(c.req, user);
   return { token, user };
 }
 
@@ -727,6 +734,7 @@ export async function authenticateApiToken(c: Context<Env>, store: Store): Promi
   }
   const user = await store.getUserById(token.user_id);
   if (!user) return tokenAuthAbort(c.req, 500, databaseErrorMessage(c.req));
+  rememberRequestUserLanguageFromUser(c.req, user);
   if (user.status !== USER_ENABLED) return tokenAuthAbort(c.req, 403, userBannedMessage(c.req));
   const userGroup = user.group || "default";
   let usingGroup = userGroup;
