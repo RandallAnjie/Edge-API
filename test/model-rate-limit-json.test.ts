@@ -276,7 +276,8 @@ test("original ModelRequestRateLimitGroup overrides global total count JSON", as
 test("original ModelRequestRateLimit Redis check failure is rate_limit_check_failed JSON", async () => {
   resetSchemaFlag();
   const kv: KVNamespace = {
-    async get() {
+    async get(key) {
+      if (key.startsWith("rateLimit:v2:")) return null;
       throw new Error("redis down");
     },
     async put() {},

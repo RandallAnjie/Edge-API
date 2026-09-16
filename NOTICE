@@ -88,6 +88,11 @@ Material changes from upstream:
   Distributor empty-channel OpenAI errors use original `ErrorCodeModelNotFound`
   (`model_not_found`, HTTP 503, `type: new_api_error`). Extra-OK: task-plugin and
   Midjourney fallbacks may still surface `no_available_channel`.
+  Original `middleware.CriticalRateLimit` is on by default (`CRITICAL_RATE_LIMIT_ENABLE`,
+  20 req / 1200s, mark `CT`, IP-keyed). Deny is empty HTTP 429 + `Retry-After`
+  (memory uses the full window; KV/Redis uses TTL). KV is the Redis path;
+  Redis/KV failure is empty HTTP 500 (not memory fallback, unlike
+  `EmailVerificationRateLimit`). Extra-OK: KV get/put is not Redis lua-atomic.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

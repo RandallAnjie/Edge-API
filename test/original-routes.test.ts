@@ -152,13 +152,13 @@ test("original Gin router method/path catalog is registered (not RelayNotFound)"
   const token = (login.body.data as { access_token: string }).access_token;
   const auth = { authorization: "Bearer " + token, "content-type": "application/json" };
 
-  for (const route of ORIGINAL_GIN_ROUTES) {
+  for (const [i, route] of ORIGINAL_GIN_ROUTES.entries()) {
     const url = probeUrl(route.path);
     const probePath = new URL(url).pathname;
     const { res, text, body } = await json(
       new Request(url, {
         method: route.method,
-        headers: auth,
+        headers: { ...auth, "cf-connecting-ip": `catalog-${i}` },
         body: route.method === "GET" || route.method === "HEAD" || route.method === "DELETE" ? undefined : "{}",
       }),
       e,

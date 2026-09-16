@@ -190,11 +190,12 @@ test("original EmailVerificationRateLimit Redis/KV leftover gin.H HTTP 429 omit 
   assert.match(String(limited.body.message), /^发送过于频繁，请等待 \d+ 秒后再试$/);
 
   const boom: KVNamespace = {
-    async get() {
-      throw new Error("Redis client is not initialized");
+    async get(key) {
+      if (key.includes(":ip:EV:")) throw new Error("Redis client is not initialized");
+      return null;
     },
-    async put() {
-      throw new Error("Redis client is not initialized");
+    async put(key) {
+      if (key.includes(":ip:EV:")) throw new Error("Redis client is not initialized");
     },
   };
   resetSchemaFlag();

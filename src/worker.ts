@@ -6,6 +6,7 @@ import { nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, sessionSecret } from "./auth.js";
 import { abortWithOpenAiMessage, apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
+import { criticalRateLimit } from "./critical-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
 import { adminRouter } from "./routes.js";
 import {
@@ -748,6 +749,8 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       }
 
       const c = ctxStore(req, env, ctx);
+      const limited = await criticalRateLimit(env, req);
+      if (limited) return withCors(req, limited);
       const routed = await api.dispatch(c);
       if (routed) return withCors(req, routed);
 

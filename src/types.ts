@@ -71,6 +71,12 @@ export interface Env {
   WAFFO_WEBHOOK_PROD_PUBLIC_KEY?: string;
   /** Original pancake SDK `WAFFO_WEBHOOK_PUBLIC_KEY`. */
   WAFFO_WEBHOOK_PUBLIC_KEY?: string;
+  /** Original `CRITICAL_RATE_LIMIT_ENABLE` (`common.CriticalRateLimitEnable`, default true). */
+  CRITICAL_RATE_LIMIT_ENABLE?: string;
+  /** Original `CRITICAL_RATE_LIMIT` (`common.CriticalRateLimitNum`, default 20). */
+  CRITICAL_RATE_LIMIT?: string;
+  /** Original `CRITICAL_RATE_LIMIT_DURATION` (`common.CriticalRateLimitDuration`, default 1200). */
+  CRITICAL_RATE_LIMIT_DURATION?: string;
 }
 
 export interface ExecutionContextLike {
