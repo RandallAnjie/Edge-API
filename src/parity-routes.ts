@@ -900,20 +900,20 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "operate");
     if (isResponse(u)) return u;
-    let body: { id?: number };
+    let body: { id?: number } | null;
     try {
-      body = (await readJson(c.req)) as { id?: number };
+      body = (await readJson(c.req)) as { id?: number } | null;
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
-    const id = Number(body.id || 0);
-    if (id <= 0) return apiFail("invalid channel id");
+    const id = Number(body && typeof body === "object" && !Array.isArray(body) ? body.id || 0 : 0);
+    if (id <= 0) return apiErrorMsg("invalid channel id");
     const ch = await s.getChannel(id);
-    if (!ch) return apiFail("record not found");
+    if (!ch) return apiErrorMsg("record not found");
     try {
       return apiOk(await detectChannelUpstreamModelUpdates(s, ch));
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
   });
   r.post("/api/channel/upstream_updates/detect_all", async (c) => {
@@ -938,20 +938,21 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
-    let body: { id?: number; add_models?: string[]; remove_models?: string[]; ignore_models?: string[] };
+    let body: { id?: number; add_models?: string[]; remove_models?: string[]; ignore_models?: string[] } | null;
     try {
       body = (await readJson(c.req)) as typeof body;
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
-    const id = Number(body.id || 0);
-    if (id <= 0) return apiFail("invalid channel id");
+    const rec = body && typeof body === "object" && !Array.isArray(body) ? body : null;
+    const id = Number(rec?.id || 0);
+    if (id <= 0) return apiErrorMsg("invalid channel id");
     const ch = await s.getChannel(id);
-    if (!ch) return apiFail("record not found");
+    if (!ch) return apiErrorMsg("record not found");
     try {
-      return apiOk(await applyChannelUpstreamModelUpdatesForId(s, ch, body.add_models, body.ignore_models, body.remove_models));
+      return apiOk(await applyChannelUpstreamModelUpdatesForId(s, ch, rec?.add_models, rec?.ignore_models, rec?.remove_models));
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
   });
   r.post("/api/channel/upstream_updates/apply_all", async (c) => {
@@ -961,7 +962,7 @@ export function registerParity(r: Router<Env>): void {
     try {
       return apiOk(await applyAllChannelUpstreamModelUpdates(s));
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
   });
 
