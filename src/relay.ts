@@ -2689,7 +2689,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, "bad_response_body", extra);
           return openaiError(500, "bad_response_body", "bad_response_body");
         }
-        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, true, "binary/text", extra);
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, true, "", extra);
         return new Response(text, {
           status: 200,
           headers: { "content-type": ct || "application/json", "x-oneapi-request-id": rid },
