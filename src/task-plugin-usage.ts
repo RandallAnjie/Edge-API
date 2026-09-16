@@ -156,6 +156,13 @@ export function quotaFromFloatStrict(value: number): { quota: number; clamp: Quo
   return { quota: checked.quota, clamp: null };
 }
 
+/** Original `common.QuotaRoundStrict` — clamp is an error, not a saturated result. */
+export function quotaRoundStrict(value: number): { quota: number; clamp: QuotaClamp | null } {
+  const checked = quotaRoundChecked(value);
+  if (checked.clamp) return { quota: 0, clamp: checked.clamp };
+  return { quota: checked.quota, clamp: null };
+}
+
 /**
  * Original `common.QuotaFromDecimalChecked`.
  * shopspring `decimal.Round(0)` is half-away-from-zero; JS `Math.round` matches

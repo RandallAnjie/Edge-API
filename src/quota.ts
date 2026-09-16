@@ -418,6 +418,9 @@ export type ModelPriceHelperQuotaResult = {
   modelPrice: number;
   modelRatio: number;
   otherRatios: Record<string, number>;
+  imageQuotaBeforeGroup: number;
+  groupRatio: number;
+  quotaPerUnit: number;
   error?: string;
 };
 
@@ -448,14 +451,26 @@ function addOtherRatio(out: Record<string, number>, key: string, ratio: number):
   out[key] = ratio;
 }
 
-function quotaHelperError(message: string): ModelPriceHelperQuotaResult {
-  return { quotaToPreConsume: 0, freeModel: false, usePrice: false, modelPrice: 0, modelRatio: 0, otherRatios: {}, error: message };
+function quotaHelperError(message: string, groupRatio = 0, quotaPerUnit = 0): ModelPriceHelperQuotaResult {
+  return {
+    quotaToPreConsume: 0,
+    freeModel: false,
+    usePrice: false,
+    modelPrice: 0,
+    modelRatio: 0,
+    otherRatios: {},
+    imageQuotaBeforeGroup: 0,
+    groupRatio,
+    quotaPerUnit,
+    error: message,
+  };
 }
 
 /** Original `helper.ModelPriceHelper` `QuotaToPreConsume` / `FreeModel`. */
 export function modelPriceHelperQuotaToPreConsume(input: ModelPriceHelperQuotaInput): ModelPriceHelperQuotaResult {
   const billing = input.billingModelName;
   const other: Record<string, number> = {};
+  const helperErr = (message: string) => quotaHelperError(message, input.groupRatio, input.quotaPerUnit);
   if (getBillingMode(billing, input.modes, input.modelRatioMap, input.modelPriceMap) === BILLING_MODE_TIERED_EXPR) {
     let quota = Math.trunc(Number(input.tieredQuotaToPreConsume || 0));
     let freeModel = false;
@@ -463,7 +478,17 @@ export function modelPriceHelperQuotaToPreConsume(input: ModelPriceHelperQuotaIn
       quota = 0;
       freeModel = true;
     }
-    return { quotaToPreConsume: quota, freeModel, usePrice: false, modelPrice: 0, modelRatio: 0, otherRatios: other };
+    return {
+      quotaToPreConsume: quota,
+      freeModel,
+      usePrice: false,
+      modelPrice: 0,
+      modelRatio: 0,
+      otherRatios: other,
+      imageQuotaBeforeGroup: 0,
+      groupRatio: input.groupRatio,
+      quotaPerUnit: input.quotaPerUnit,
+    };
   }
 
   const priced = getModelPriceFromMap(billing, input.modelPriceMap);
@@ -478,7 +503,7 @@ export function modelPriceHelperQuotaToPreConsume(input: ModelPriceHelperQuotaIn
     if (input.maxTokens) preConsumedTokens += Math.trunc(input.maxTokens);
     modelRatio = getModelRatioFromMap(billing, input.modelRatioMap, Boolean(input.selfUse)).ratio;
     const strict = quotaFromFloatStrict(preConsumedTokens * modelRatio * input.groupRatio);
-    if (strict.clamp) return quotaHelperError(quotaClampMessage(strict.clamp));
+    if (strict.clamp) return helperErr(quotaClampMessage(strict.clamp));
     quota = strict.quota;
     if (input.relayMode === "images") imageQuotaBeforeGroup = preConsumedTokens * modelRatio;
   } else if (input.imagePriceRatio) {
@@ -509,7 +534,7 @@ export function modelPriceHelperQuotaToPreConsume(input: ModelPriceHelperQuotaIn
       const count = imageRequestCount(input.body || {}, input.channelType === CHANNEL_TYPE_ALI);
       if (usePrice || input.channelType === CHANNEL_TYPE_ALI) addOtherRatio(other, "n", count);
     } catch (err) {
-      return quotaHelperError(err instanceof Error ? err.message : String(err));
+      return helperErr(err instanceof Error ? err.message : String(err));
     }
     const parameters =
       input.body && typeof input.body.parameters === "object" && input.body.parameters
@@ -521,14 +546,14 @@ export function modelPriceHelperQuotaToPreConsume(input: ModelPriceHelperQuotaIn
     }
     if (!usePrice) {
       const strict = quotaFromFloatStrict(applyOtherRatiosToFloat(imageQuotaBeforeGroup * input.groupRatio, other));
-      if (strict.clamp) return quotaHelperError(quotaClampMessage(strict.clamp));
+      if (strict.clamp) return helperErr(quotaClampMessage(strict.clamp));
       quota = strict.quota;
     }
   }
 
   if (usePrice) {
     const strict = quotaFromFloatStrict(applyOtherRatiosToFloat(modelPrice * input.quotaPerUnit * input.groupRatio, other));
-    if (strict.clamp) return quotaHelperError(quotaClampMessage(strict.clamp));
+    if (strict.clamp) return helperErr(quotaClampMessage(strict.clamp));
     quota = strict.quota;
   }
 
@@ -539,6 +564,9 @@ export function modelPriceHelperQuotaToPreConsume(input: ModelPriceHelperQuotaIn
     modelPrice: usePrice ? modelPrice : -1,
     modelRatio,
     otherRatios: other,
+    imageQuotaBeforeGroup,
+    groupRatio: input.groupRatio,
+    quotaPerUnit: input.quotaPerUnit,
   };
 }
 

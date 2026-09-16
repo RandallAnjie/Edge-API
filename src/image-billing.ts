@@ -79,6 +79,77 @@ export function updateBillingImageCount(count: number, estimatedImageCount: numb
   return Math.trunc(count);
 }
 
+/** Original ImageHelper outbound JSON body used for per-attempt quantity. */
+export function jsonObjectFromRelayBody(body: unknown): { obj: Record<string, unknown> } | { error: string } | null {
+  if (body == null) return null;
+  if (typeof body === "string") {
+    try {
+      const parsed = JSON.parse(body) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { obj: parsed as Record<string, unknown> };
+      return { error: "invalid image billing parameters: json: cannot unmarshal" };
+    } catch (err) {
+      return { error: `invalid image billing parameters: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+  if (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer) return null;
+  if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(body)) return null;
+  if (typeof body === "object" && !Array.isArray(body)) return { obj: body as Record<string, unknown> };
+  return null;
+}
+
+/**
+ * Original ImageHelper: when outbound `n` is nil, keep the previous ImageCount;
+ * otherwise `dto.ImageRequest.ImageCount` on the converted/overridden body.
+ */
+export function outboundImageQuantity(
+  outbound: Record<string, unknown>,
+  previousCount: number,
+  useProviderParameters: boolean,
+): { count: number; promptExtend: boolean } {
+  const n = outbound.n;
+  const body: Record<string, unknown> = {
+    n: n == null ? previousCount : n,
+    parameters: outbound.parameters,
+  };
+  const parameters = asObj(outbound.parameters);
+  return {
+    count: imageRequestCount(body, useProviderParameters),
+    promptExtend: parameters.prompt_extend === true,
+  };
+}
+
+/** Original ImageHelper `sjson.SetBytes(..., "parameters.n", imageCount)` for Ali. */
+export function applyAliImageParametersN(body: Record<string, unknown>, count: number): Record<string, unknown> {
+  return { ...body, parameters: { ...asObj(body.parameters), n: count } };
+}
+
+/**
+ * Original ImageHelper convert/param-override quantity refresh + Ali `parameters.n`.
+ * Multipart/binary bodies keep the previous count (jsonData == nil).
+ */
+export function refreshOutboundImageQuantity(
+  target: { body: unknown },
+  previousCount: number,
+  channelType: number,
+): { count: number; promptExtend: boolean; error?: string } {
+  const parsed = jsonObjectFromRelayBody(target.body);
+  if (parsed && "error" in parsed) {
+    return { count: previousCount, promptExtend: false, error: parsed.error };
+  }
+  if (!parsed) return { count: previousCount, promptExtend: false };
+  let quantity: { count: number; promptExtend: boolean };
+  try {
+    quantity = outboundImageQuantity(parsed.obj, previousCount, channelType === CHANNEL_TYPE_ALI);
+  } catch (err) {
+    return { count: previousCount, promptExtend: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (channelType === CHANNEL_TYPE_ALI) {
+    const next = applyAliImageParametersN(parsed.obj, quantity.count);
+    target.body = typeof target.body === "string" ? JSON.stringify(next) : next;
+  }
+  return quantity;
+}
+
 /** Original `strconv.ParseBool`. */
 export function parseGoBool(value: string): boolean {
   switch (value) {

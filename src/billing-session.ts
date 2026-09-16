@@ -2,6 +2,10 @@
  * Original `service.PreConsumeBilling` / `NewBillingSession` / `BillingSession`
  * wallet hold, settle-delta, and refund on workerd.
  */
+import { BILLING_MODE_TIERED_EXPR } from "./billing-setting.js";
+import { runExprWithRequest, type BillingRequestInput, type BillingSnapshot } from "./billing-expr.js";
+import { CHANNEL_TYPE_ALI } from "./constants.js";
+import { Z_IMAGE_PROMPT_EXTEND_MULTIPLIER } from "./image-billing.js";
 import {
   getTrustQuota,
   insufficientTokenQuotaMessage,
@@ -9,6 +13,14 @@ import {
   storeFormatQuota,
 } from "./quota.js";
 import { normalizeBillingPreference } from "./subscription.js";
+import {
+  applyOtherRatiosToFloat,
+  isValidOtherRatio,
+  MAX_IMAGE_N,
+  quotaClampMessage,
+  quotaFromFloatStrict,
+  quotaRoundStrict,
+} from "./task-plugin-usage.js";
 import type { Store } from "./store.js";
 import type { AuthToken } from "./types.js";
 
@@ -19,7 +31,11 @@ export type BillingError = {
   status: number;
   message: string;
   code: string;
+  skipRetry?: boolean;
 };
+
+/** Original `service.ErrInsufficientWalletQuota`. */
+export const WALLET_QUOTA_INSUFFICIENT = "wallet quota insufficient";
 
 /** Original `service.BillingSession`. */
 export type BillingSession = {
@@ -34,6 +50,7 @@ export type BillingSession = {
   requestId: string;
   playground: boolean;
   forcePreConsume: boolean;
+  imageRequestCount: number;
   subscriptionId: number;
   subscriptionPreConsumed: number;
   subscriptionAmountTotal: number;
@@ -69,6 +86,7 @@ export function emptyBillingSession(requestId: string, playground = false): Bill
     requestId,
     playground,
     forcePreConsume: false,
+    imageRequestCount: 0,
     subscriptionId: 0,
     subscriptionPreConsumed: 0,
     subscriptionAmountTotal: 0,
@@ -134,7 +152,11 @@ async function holdTokenQuota(
   session: BillingSession,
   quota: number,
 ): Promise<BillingError | null> {
-  if (quota <= 0 || session.playground) return null;
+  if (quota <= 0) return null;
+  if (session.playground) {
+    session.tokenConsumed += quota;
+    return null;
+  }
   const unlimited = Boolean(Number(auth.token.unlimited_quota));
   const held = await store.tryHoldTokenQuota(auth.token.id, quota, unlimited);
   if (held) {
@@ -308,6 +330,214 @@ export async function preConsumeBilling(
   }
   if (err) return { error: err };
   return { session };
+}
+
+function addOtherRatioOverwrite(out: Record<string, number>, key: string, ratio: number): void {
+  if (!isValidOtherRatio(ratio)) return;
+  out[key] = ratio;
+}
+
+async function rollbackFundingReserve(
+  store: Store,
+  auth: AuthToken,
+  session: BillingSession,
+  delta: number,
+): Promise<void> {
+  if (delta <= 0) return;
+  if (session.funding === BILLING_SOURCE_SUBSCRIPTION) {
+    if (session.subscriptionId > 0) {
+      try {
+        await store.postConsumeUserSubscriptionDelta(session.subscriptionId, -delta);
+        session.subscriptionPreConsumed -= delta;
+        session.subscriptionAmountUsedAfter -= delta;
+      } catch {
+        /* original logs rollback errors */
+      }
+    }
+    return;
+  }
+  await store.releaseUserQuota(auth.user.id, delta);
+  auth.user.quota += delta;
+}
+
+/** Original `BillingSession.reserveFunding`. */
+async function reserveFunding(
+  store: Store,
+  auth: AuthToken,
+  session: BillingSession,
+  delta: number,
+  requireAvailableQuota: boolean,
+): Promise<BillingError | null> {
+  if (delta <= 0) return null;
+  if (session.funding === BILLING_SOURCE_SUBSCRIPTION) {
+    try {
+      await store.postConsumeUserSubscriptionDelta(session.subscriptionId, delta);
+      session.subscriptionPreConsumed += delta;
+      session.subscriptionAmountUsedAfter += delta;
+      return null;
+    } catch (err) {
+      return {
+        ...billingErr(403, insufficientSubscriptionMessage(err), "insufficient_user_quota"),
+        skipRetry: true,
+      };
+    }
+  }
+  if (requireAvailableQuota) {
+    const held = await store.tryHoldUserQuota(auth.user.id, delta);
+    if (!held) {
+      return { ...billingErr(403, WALLET_QUOTA_INSUFFICIENT, "insufficient_user_quota"), skipRetry: true };
+    }
+    auth.user.quota -= delta;
+    return null;
+  }
+  await store.decreaseUserQuota(auth.user.id, delta);
+  auth.user.quota -= delta;
+  return null;
+}
+
+/** Original `BillingSession.Reserve`. */
+export async function reserveBilling(
+  store: Store,
+  auth: AuthToken,
+  session: BillingSession,
+  targetQuota: number,
+  imageRequest = false,
+): Promise<BillingError | null> {
+  const isImage = imageRequest || session.imageRequestCount > 0;
+  if (session.settled || session.refunded || (session.trusted && !isImage) || targetQuota <= session.preConsumedQuota) {
+    return null;
+  }
+  const delta = targetQuota - session.preConsumedQuota;
+  if (delta <= 0) return null;
+  const fundErr = await reserveFunding(store, auth, session, delta, isImage);
+  if (fundErr) return fundErr;
+  const tokenErr = await holdTokenQuota(store, auth, session, delta);
+  if (tokenErr) {
+    await rollbackFundingReserve(store, auth, session, delta);
+    return { ...tokenErr, skipRetry: true };
+  }
+  session.preConsumedQuota += delta;
+  session.extraReserved += delta;
+  if (isImage) session.trusted = false;
+  return null;
+}
+
+export type ImagePriceData = {
+  usePrice: boolean;
+  modelPrice: number;
+  otherRatios: Record<string, number>;
+  imageQuotaBeforeGroup: number;
+  groupRatio: number;
+  quotaPerUnit: number;
+  quotaToPreConsume: number;
+  freeModel: boolean;
+};
+
+/** Original `service.PrepareImageBillingForRequest`. */
+export async function prepareImageBillingForRequest(
+  store: Store,
+  auth: AuthToken,
+  opts: {
+    count: number;
+    promptExtend: boolean;
+    channelType: number;
+    upstreamModelName: string;
+    price: ImagePriceData;
+    snapshot?: BillingSnapshot | null;
+    billingRequestInput?: BillingRequestInput;
+    session: BillingSession | null;
+    requestId: string;
+    playground?: boolean;
+    billingModelName?: string;
+  },
+): Promise<{ session: BillingSession | null; error?: BillingError }> {
+  if (opts.count < 1 || opts.count > MAX_IMAGE_N) {
+    return {
+      session: opts.session,
+      error: {
+        ...billingErr(400, `image_count must be an integer between 1 and ${MAX_IMAGE_N}`, "invalid_request"),
+        skipRetry: true,
+      },
+    };
+  }
+  if (opts.session) opts.session.imageRequestCount = opts.count;
+  let quota = 0;
+  const snap = opts.snapshot;
+  if (snap && snap.billingMode === BILLING_MODE_TIERED_EXPR) {
+    if (snap.estimatedImageCount == null) return { session: opts.session };
+    const request: BillingRequestInput = { ...(opts.billingRequestInput || {}), imageCount: opts.count };
+    try {
+      const trace = runExprWithRequest(
+        snap.exprString,
+        {},
+        {
+          p: snap.estimatedPromptTokens,
+          c: snap.estimatedCompletionTokens,
+          len: snap.estimatedPromptTokens,
+        },
+        request,
+      );
+      const beforeGroup = (trace.cost / 1_000_000) * snap.quotaPerUnit;
+      const rounded = quotaRoundStrict(beforeGroup * opts.price.groupRatio);
+      if (rounded.clamp) {
+        return {
+          session: opts.session,
+          error: { ...billingErr(400, quotaClampMessage(rounded.clamp), "model_price_error"), skipRetry: true },
+        };
+      }
+      quota = rounded.quota;
+      snap.estimatedImageCount = trace.imageCount;
+      snap.estimatedQuotaBeforeGroup = beforeGroup;
+      snap.estimatedQuotaAfterGroup = quota;
+      snap.estimatedTier = trace.matchedTier;
+      snap.estimatedBillingUnit = trace.billingUnit;
+      snap.estimatedFixedPrice = trace.fixedPrice;
+      snap.groupRatio = opts.price.groupRatio;
+    } catch (err) {
+      return {
+        session: opts.session,
+        error: {
+          ...billingErr(400, err instanceof Error ? err.message : String(err), "model_price_error"),
+          skipRetry: true,
+        },
+      };
+    }
+  } else {
+    const quantity = opts.price.usePrice || opts.channelType === CHANNEL_TYPE_ALI ? opts.count : 1;
+    addOtherRatioOverwrite(opts.price.otherRatios, "n", quantity);
+    let extensionRatio = 1;
+    if (opts.channelType === CHANNEL_TYPE_ALI && String(opts.upstreamModelName).includes("z-image") && opts.promptExtend) {
+      extensionRatio = Z_IMAGE_PROMPT_EXTEND_MULTIPLIER;
+    }
+    addOtherRatioOverwrite(opts.price.otherRatios, "prompt_extend", extensionRatio);
+    let base = opts.price.imageQuotaBeforeGroup;
+    if (opts.price.usePrice) base = opts.price.modelPrice * opts.price.quotaPerUnit;
+    const strict = quotaFromFloatStrict(applyOtherRatiosToFloat(base * opts.price.groupRatio, opts.price.otherRatios));
+    if (strict.clamp) {
+      return {
+        session: opts.session,
+        error: { ...billingErr(400, quotaClampMessage(strict.clamp), "model_price_error"), skipRetry: true },
+      };
+    }
+    quota = strict.quota;
+  }
+  opts.price.quotaToPreConsume = quota;
+  if (quota === 0 && !opts.session) return { session: opts.session };
+  opts.price.freeModel = false;
+  if (!opts.session) {
+    const held = await preConsumeBilling(store, auth, {
+      requestId: opts.requestId,
+      quota,
+      playground: Boolean(opts.playground),
+      billingModelName: opts.billingModelName,
+    });
+    if (held.error) return { session: null, error: { ...held.error, skipRetry: true } };
+    if (held.session) held.session.imageRequestCount = opts.count;
+    return { session: held.session };
+  }
+  const reserved = await reserveBilling(store, auth, opts.session, quota, true);
+  if (reserved) return { session: opts.session, error: reserved };
+  return { session: opts.session };
 }
 
 /** Original `service.SettleBilling` / `BillingSession.Settle`. */

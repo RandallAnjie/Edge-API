@@ -147,6 +147,7 @@ import type { OriginTaskRef } from "./origin-task.js";
 import {
   billingSessionLogFields,
   preConsumeBilling,
+  prepareImageBillingForRequest,
   refundBilling,
   settleBilling,
   type BillingSession,
@@ -231,7 +232,7 @@ import { tokenAllowsModel } from "./auth.js";
 import { OPENAI_MODELS_MAP } from "./channel-models.js";
 import { factoryPluginMeta, listRoutingPlugins } from "./task-plugin-factory.js";
 import { hasModelBillingConfig } from "./billing-setting.js";
-import { openaiImageDataCount } from "./image-billing.js";
+import { imageRequestCount, openaiImageDataCount, refreshOutboundImageQuantity } from "./image-billing.js";
 import {
   billingUsageFromOpenAICounts,
   cacheCreationTokensTotal,
@@ -2143,6 +2144,41 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
       }
     }
+    if (mode === "images") {
+      let previousCount = 1;
+      try {
+        previousCount = imageRequestCount(asObj(opts.body), channel.type === CHANNEL_TYPE_ALI);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await noteAttempt(channelAttemptFromNewApi(message, 400, "invalid_request", true));
+        return openaiError(400, message, "invalid_request");
+      }
+      const outbound = refreshOutboundImageQuantity(target, previousCount, channel.type);
+      if (outbound.error) {
+        await noteAttempt(channelAttemptFromNewApi(outbound.error, 400, "invalid_request", true));
+        return openaiError(400, outbound.error, "invalid_request");
+      }
+      const prepared = await prepareImageBillingForRequest(store, auth, {
+        count: outbound.count,
+        promptExtend: outbound.promptExtend,
+        channelType: channel.type,
+        upstreamModelName: mapped,
+        price: priceQuota,
+        snapshot: tieredSnapshot,
+        billingRequestInput,
+        session: billing,
+        requestId: rid,
+        playground: Boolean(opts.playground),
+        billingModelName,
+      });
+      if (prepared.error) {
+        await noteAttempt(
+          channelAttemptFromNewApi(prepared.error.message, prepared.error.status, prepared.error.code, prepared.error.skipRetry !== false),
+        );
+        return openaiError(prepared.error.status, prepared.error.message, prepared.error.code);
+      }
+      if (prepared.session) billing = prepared.session;
+    }
     const started = Date.now();
     let res: Response;
     let cozeUsage: CozeUsage | undefined;
@@ -2262,6 +2298,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       tieredSnapshot: tieredSnapshot || undefined,
       billingRequestInput,
       billingModelName,
+      otherRatios: priceQuota.otherRatios,
       toolUsage: createToolUsageState({
         model: billingModelName,
         toolPrices,

@@ -155,6 +155,8 @@ test("original ModelPriceHelper image n overlay and Ali prompt_extend JSON", () 
   );
   assert.equal(openaiImage.quotaToPreConsume, 40000);
   assert.equal(openaiImage.otherRatios.n, 2);
+  assert.equal(openaiImage.imageQuotaBeforeGroup, 20000);
+  assert.equal(openaiImage.groupRatio, 1);
 
   const aliRatio = modelPriceHelperQuotaToPreConsume(
     quotaInput({
