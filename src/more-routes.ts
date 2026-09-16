@@ -92,7 +92,7 @@ import {
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { parseChannelBatch } from "./channel-validate.js";
-import { apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -1711,15 +1711,15 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as Record<string, unknown> & { model_name?: string };
     const modelName = String(body.model_name || "").trim();
-    if (!modelName) return apiFail("模型名称不能为空");
+    if (!modelName) return apiErrorMsg("模型名称不能为空");
     const status = body.status == null ? 0 : Number(body.status);
     const name_rule = Number(body.name_rule || 0);
     const invalid = validateMetadataValues({ endpoints: String(body.endpoints || ""), status, name_rule });
-    if (invalid) return apiFail(invalid);
-    if (await s.isModelNameDuplicated(0, modelName)) return apiFail("模型名称已存在");
+    if (invalid) return apiErrorMsg(invalid);
+    if (await s.isModelNameDuplicated(0, modelName)) return apiErrorMsg("模型名称已存在");
     const vendorId = Number(body.vendor_id || 0);
-    if (vendorId < 0) return apiFail("select a saved vendor");
-    if (vendorId > 0 && !(await s.getVendor(vendorId))) return apiFail("vendor does not exist");
+    if (vendorId < 0) return apiErrorMsg("select a saved vendor");
+    if (vendorId > 0 && !(await s.getVendor(vendorId))) return apiErrorMsg("vendor does not exist");
     const id = await s.insertModelMeta(modelName, String(body.description || ""), vendorId);
     const t = nowSec();
     await s.updateModelMeta(id, {
@@ -1742,27 +1742,27 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as Record<string, unknown> & { id?: number };
-    if (!body.id) return apiFail("缺少模型 ID");
+    if (!body.id) return apiErrorMsg("缺少模型 ID");
     const existing = await s.getModelMeta(body.id);
-    if (!existing) return apiFail("不存在");
+    if (!existing) return apiErrorMsg("不存在");
     if (c.url.searchParams.get("status_only") === "true") {
       const status = Number(body.status);
-      if (status !== 0 && status !== 1) return apiFail("invalid catalog visibility");
+      if (status !== 0 && status !== 1) return apiErrorMsg("invalid catalog visibility");
       await s.updateModelMeta(body.id, { status, updated_time: nowSec() });
       const item = await s.getModelMeta(body.id);
       return apiOk(item ? publicModelMeta({ ...item, status }) : null);
     }
     const modelName = String(body.model_name || "").trim();
-    if (!modelName) return apiFail("模型名称不能为空");
+    if (!modelName) return apiErrorMsg("模型名称不能为空");
     const status = Number(body.status || 0);
     const name_rule = Number(body.name_rule || 0);
     const endpoints = String(body.endpoints ?? existing.endpoints ?? "");
     const invalid = validateMetadataValues({ endpoints, status, name_rule });
-    if (invalid) return apiFail(invalid);
-    if (await s.isModelNameDuplicated(body.id, modelName)) return apiFail("模型名称已存在");
+    if (invalid) return apiErrorMsg(invalid);
+    if (await s.isModelNameDuplicated(body.id, modelName)) return apiErrorMsg("模型名称已存在");
     const vendorId = Number(body.vendor_id || 0);
-    if (vendorId < 0) return apiFail("select a saved vendor");
-    if (vendorId > 0 && !(await s.getVendor(vendorId))) return apiFail("vendor does not exist");
+    if (vendorId < 0) return apiErrorMsg("select a saved vendor");
+    if (vendorId > 0 && !(await s.getVendor(vendorId))) return apiErrorMsg("vendor does not exist");
     await s.updateModelMeta(body.id, {
       model_name: modelName,
       description: String(body.description || ""),
@@ -1784,11 +1784,11 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const id = strconvAtoi(c.params.id);
-    if (!id.ok) return apiFail(id.message);
+    if (!id.ok) return apiErrorMsg(id.message);
     const fromChannels = strconvParseBool(c.url.searchParams.get("remove_from_channels") ?? "false");
-    if (!fromChannels.ok) return apiFail(fromChannels.message);
+    if (!fromChannels.ok) return apiErrorMsg(fromChannels.message);
     const fromPricing = strconvParseBool(c.url.searchParams.get("remove_pricing") ?? "false");
-    if (!fromPricing.ok) return apiFail(fromPricing.message);
+    if (!fromPricing.ok) return apiErrorMsg(fromPricing.message);
     if (fromPricing.v && u.role !== ROLE_ROOT) {
       return json(403, { success: false, message: "Model pricing is managed by a super administrator." });
     }
@@ -1808,7 +1808,7 @@ export function registerMore(r: Router<Env>): void {
       });
       return apiOk(result);
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 

@@ -1613,7 +1613,7 @@ export function registerParity(r: Router<Env>): void {
     try {
       body = (await readJson(c.req)) as { model_ids?: number[]; ids?: number[]; remove_from_channels?: boolean; remove_pricing?: boolean };
     } catch {
-      return apiFail("无效的参数");
+      return apiErrorMsg("无效的参数");
     }
     if (body.remove_pricing && u.role !== ROLE_ROOT) {
       return json(403, { success: false, message: "Model pricing is managed by a super administrator." });
@@ -1634,7 +1634,7 @@ export function registerParity(r: Router<Env>): void {
       });
       return apiOk(result);
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
   r.get("/api/models/:id", async (c) => {
@@ -1642,9 +1642,9 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const id = strconvAtoi(c.params.id);
-    if (!id.ok) return apiFail(id.message);
+    if (!id.ok) return apiErrorMsg(id.message);
     const item = await s.getModelMeta(id.n);
-    if (!item) return apiFail("record not found");
+    if (!item) return apiErrorMsg("record not found");
     const [enriched] = await enrichModelMeta(s, [item]);
     return apiOk(enriched);
   });
