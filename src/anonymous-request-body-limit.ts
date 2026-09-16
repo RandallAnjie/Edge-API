@@ -126,7 +126,9 @@ export async function readAnonymousRequestBody(body: ReadableStream<Uint8Array>,
 export function replaceRequestBody(req: Request, body: Uint8Array): Request {
   const headers = new Headers(req.headers);
   headers.set("content-length", String(body.byteLength));
-  return new Request(req.url, { method: req.method, headers, body });
+  const copy = new ArrayBuffer(body.byteLength);
+  new Uint8Array(copy).set(body);
+  return new Request(req.url, { method: req.method, headers, body: copy });
 }
 
 /**
