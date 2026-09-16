@@ -774,13 +774,19 @@ export function registerMore(r: Router<Env>): void {
 
   r.delete("/api/user/self", async (c) => {
     const s = store(c);
-    const proof = await requireProof(c, s, { scope: "account.delete" });
-    if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    if (u.role >= ROLE_ROOT) return apiErrorMsg(userCannotDeleteRootUserMessage(c.req));
+    let succeeded = false;
+    const finishDeleteAudit = async (res: Response) => {
+      await recordUserSecurityAudit(s, c.req, u, "user.account_delete", { success: succeeded }, {}, res.status);
+      return res;
+    };
+    const proof = await requireProof(c, s, { scope: "account.delete" });
+    if (isResponse(proof)) return finishDeleteAudit(proof);
+    if (u.role >= ROLE_ROOT) return finishDeleteAudit(apiErrorMsg(userCannotDeleteRootUserMessage(c.req)));
     await s.softDeleteUser(u.id);
-    return apiOk({});
+    succeeded = true;
+    return finishDeleteAudit(apiOk({}));
   });
 
   r.get("/api/user/token", async (c) => generateUserAccessToken(c));

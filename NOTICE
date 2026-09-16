@@ -440,6 +440,20 @@ Material changes from upstream:
   vendor.create/delete fallback tests stay unchanged. Extra-OK: audit write
   failure must not fail the request. requireUser/requireAdmin/requireRoot
   and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordUserSecurityAudit` leftover security audit-log
+  JSON on UpdateSelf `user.password_change` and DeleteSelf `user.account_delete`.
+  Original defer always records when a password was requested / on every
+  DeleteSelf, including failed writes. Params include bool `success` so
+  `other.audit_info` is present (Method/Route/Path = gin FullPath
+  `/api/user/self`, Status=`Writer.Status`, Success=params.success).
+  Password params also have `notification_failed`; `security_error_code`
+  is copied into `params.code` (missing proof `SECURITY_PROOF_REQUIRED`
+  HTTP 403; password policy `PASSWORD_POLICY_REJECTED` HTTP 200). Empty
+  PUT and sidebar_modules updates add no password_change audit. Extra-OK:
+  hop 323 vendor.create/delete fallback tests stay unchanged. Extra-OK:
+  audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

@@ -9,6 +9,7 @@ import {
   verifySecurityProofJwt,
 } from "./crypto.js";
 import { apiFailCode, json } from "./http.js";
+import { setSecurityErrorCode } from "./admin-operation-audit.js";
 import { verificationRequirements } from "./dto.js";
 import type { Store } from "./store.js";
 import type { Context } from "./router.js";
@@ -120,7 +121,8 @@ export async function bindVerificationOperation(
   };
 }
 
-export function securityProofError(code: string, message: string, status = 403): Response {
+export function securityProofError(code: string, message: string, status = 403, req?: Request): Response {
+  if (req) setSecurityErrorCode(req, code);
   return json(status, { success: false, message, code });
 }
 
@@ -165,9 +167,11 @@ export async function consumeOperationProof(
   user: UserRow,
   operation: VerificationOperation,
   raw: string,
+  req?: Request,
 ): Promise<{ ok: true; method: string } | { ok: false; response: Response }> {
+  const fail = (code: string, message: string, status = 403) => securityProofError(code, message, status, req);
   const bound = await bindVerificationOperation(secret, operation);
-  if (!bound.ok) return { ok: false, response: securityProofError(bound.code, bound.message, bound.status) };
+  if (!bound.ok) return { ok: false, response: fail(bound.code, bound.message, bound.status) };
   const claims = await verifySecurityProofJwt(raw, secret);
   if (!claims) {
     try {
@@ -175,13 +179,13 @@ export async function consumeOperationProof(
       if (parts.length === 3) {
         const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1]))) as { exp?: number };
         if (typeof payload.exp === "number" && payload.exp + 5 < nowSec()) {
-          return { ok: false, response: securityProofError("SECURITY_PROOF_EXPIRED", "安全验证已过期") };
+          return { ok: false, response: fail("SECURITY_PROOF_EXPIRED", "安全验证已过期") };
         }
       }
     } catch {
       /* ignore */
     }
-    return { ok: false, response: securityProofError("SECURITY_PROOF_INVALID", "安全验证状态无效") };
+    return { ok: false, response: fail("SECURITY_PROOF_INVALID", "安全验证状态无效") };
   }
   if (
     Number(claims.sub) !== identity.userId ||
@@ -189,23 +193,26 @@ export async function consumeOperationProof(
     claims.uv !== identity.userAuthVersion ||
     claims.sv !== identity.sessionVersion
   ) {
-    return { ok: false, response: securityProofError("SECURITY_PROOF_INVALID", "安全验证状态无效") };
+    return { ok: false, response: fail("SECURITY_PROOF_INVALID", "安全验证状态无效") };
   }
   if (claims.scopes[0] !== bound.binding.scope) {
-    return { ok: false, response: securityProofError("SECURITY_PROOF_SCOPE_MISMATCH", "安全验证范围不匹配") };
+    return { ok: false, response: fail("SECURITY_PROOF_SCOPE_MISMATCH", "安全验证范围不匹配") };
   }
   if (!timingSafeEqualStr(claims.context_hash, bound.binding.contextHash)) {
-    return { ok: false, response: securityProofError("SECURITY_PROOF_CONTEXT_MISMATCH", "Verification does not match this action's details. Please verify again.") };
+    return { ok: false, response: fail("SECURITY_PROOF_CONTEXT_MISMATCH", "Verification does not match this action's details. Please verify again.") };
   }
   const reqs = await verificationRequirements(store, user, bound.binding.scope);
-  if (!reqs.ok) return { ok: false, response: apiFailCode(reqs.message, reqs.code, reqs.status) };
+  if (!reqs.ok) {
+    if (req) setSecurityErrorCode(req, reqs.code);
+    return { ok: false, response: apiFailCode(reqs.message, reqs.code, reqs.status) };
+  }
   const methods = (reqs.data.methods as { method: string; available: boolean }[]) || [];
   const allowed = methods.find((m) => m.method === claims.method);
   if (!allowed) {
-    return { ok: false, response: securityProofError("SECURITY_PROOF_METHOD_MISMATCH", "安全验证方式不匹配") };
+    return { ok: false, response: fail("SECURITY_PROOF_METHOD_MISMATCH", "安全验证方式不匹配") };
   }
   if (!allowed.available) {
-    return { ok: false, response: securityProofError("SECURITY_METHOD_UNAVAILABLE", "This verification method is currently unavailable.") };
+    return { ok: false, response: fail("SECURITY_METHOD_UNAVAILABLE", "This verification method is currently unavailable.") };
   }
   const hash = await authFlowTokenHash(secret, claims.jti);
   const consumed = await store.consumeAuthFlow(hash, {
@@ -214,13 +221,13 @@ export async function consumeOperationProof(
     session_id: identity.sessionId,
   });
   if (consumed === "consumed") {
-    return { ok: false, response: securityProofError("SECURITY_PROOF_CONSUMED", "This verification has already been used. Please verify again.") };
+    return { ok: false, response: fail("SECURITY_PROOF_CONSUMED", "This verification has already been used. Please verify again.") };
   }
   if (consumed === "expired") {
-    return { ok: false, response: securityProofError("SECURITY_PROOF_EXPIRED", "安全验证已过期") };
+    return { ok: false, response: fail("SECURITY_PROOF_EXPIRED", "安全验证已过期") };
   }
   if (consumed !== "ok") {
-    return { ok: false, response: securityProofError("SECURITY_PROOF_INVALID", "安全验证状态无效") };
+    return { ok: false, response: fail("SECURITY_PROOF_INVALID", "安全验证状态无效") };
   }
   return { ok: true, method: claims.method };
 }
@@ -237,8 +244,8 @@ export async function requireSecurityProof(
     return json(401, { success: false, message: "当前认证方式不支持安全验证" });
   }
   const raw = (c.req.headers.get("X-Security-Proof") || "").trim();
-  if (!raw) return securityProofError("SECURITY_PROOF_REQUIRED", "需要安全验证");
-  const consumed = await consumeOperationProof(store, secret, identity, user, operation, raw);
+  if (!raw) return securityProofError("SECURITY_PROOF_REQUIRED", "需要安全验证", 403, c.req);
+  const consumed = await consumeOperationProof(store, secret, identity, user, operation, raw, c.req);
   if (!consumed.ok) return consumed.response;
   return { ...identity, method: consumed.method };
 }

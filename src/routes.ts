@@ -103,7 +103,7 @@ import {
 } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import { turnstileCheck } from "./turnstile.js";
-import { recordManageAudit, recordPasskeyDomainAudit, recordQuotaManageAudit, auditContentEN } from "./admin-operation-audit.js";
+import { recordManageAudit, recordPasskeyDomainAudit, recordQuotaManageAudit, recordUserSecurityAudit, setSecurityErrorCode, auditContentEN } from "./admin-operation-audit.js";
 import {
   setTokenAuditSucceeded,
   snapshotTokenAuditFields,
@@ -578,23 +578,42 @@ export function adminRouter(): Router<Env> {
     if (username.trim()) patch.username = username.trim();
     if (displayName) patch.display_name = displayName;
     if (password) {
+      let succeeded = false;
+      let notificationFailed = false;
+      const finishPasswordAudit = async (res: Response) => {
+        await recordUserSecurityAudit(
+          s,
+          c.req,
+          u,
+          "user.password_change",
+          { success: succeeded, notification_failed: notificationFailed },
+          {},
+          res.status,
+        );
+        return res;
+      };
       const user = await s.getUserById(u.id);
-      if (!user) return writeAuthSessionError(500, "AUTH_INTERNAL_ERROR");
+      if (!user) return finishPasswordAudit(writeAuthSessionError(500, "AUTH_INTERNAL_ERROR"));
       const firstPassword = !user.password;
       const scope = firstPassword ? "account.password.set" : "account.password.change";
       const proof = await requireProof(c, s, { scope });
-      if (isResponse(proof)) return proof;
+      if (isResponse(proof)) return finishPasswordAudit(proof);
       const passwordErr = validateNewAccountPassword(password);
-      if (passwordErr) return writeSecurityOperationError("PASSWORD_POLICY_REJECTED", passwordErr);
+      if (passwordErr) {
+        setSecurityErrorCode(c.req, "PASSWORD_POLICY_REJECTED");
+        return finishPasswordAudit(writeSecurityOperationError("PASSWORD_POLICY_REJECTED", passwordErr));
+      }
       patch.password = await hashPassword(password);
       await s.updateUser(u.id, patch);
       await s.bumpAuthVersion(u.id);
       const fresh = await s.getUserById(u.id);
+      succeeded = true;
+      notificationFailed = await notifyAccountSecurityChange(s, user.email || "", "Password updated");
       const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "password_changed", u.sid);
-      if (issued instanceof Response) return issued;
+      if (issued instanceof Response) return finishPasswordAudit(issued);
       issued.data.has_password = true;
-      issued.data.notification_warning = await notifyAccountSecurityChange(s, user.email || "", "Password updated");
-      return sessionResponse(issued);
+      issued.data.notification_warning = notificationFailed;
+      return finishPasswordAudit(sessionResponse(issued));
     }
     await s.updateUser(u.id, patch);
     return json(200, { success: true, message: "" });
