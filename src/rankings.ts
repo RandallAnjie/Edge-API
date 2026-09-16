@@ -14,7 +14,8 @@ type PeriodConfig = {
   id: PeriodId;
   durationSec: number;
   bucketSize: number;
-  labelLayout: "hour" | "day";
+  /** Original `rankingPeriodConfig.labelLayout` (`"Jan 2"` / `"15:04"`). */
+  labelLayout: "Jan 2" | "15:04";
 };
 
 type Total = { model_name: string; total_tokens: number };
@@ -25,13 +26,13 @@ function periodConfig(period: string): PeriodConfig {
   switch (period) {
     case "":
     case "week":
-      return { id: "week", durationSec: 7 * 86400, bucketSize: 86400, labelLayout: "day" };
+      return { id: "week", durationSec: 7 * 86400, bucketSize: 86400, labelLayout: "Jan 2" };
     case "today":
-      return { id: "today", durationSec: 86400, bucketSize: 3600, labelLayout: "hour" };
+      return { id: "today", durationSec: 86400, bucketSize: 3600, labelLayout: "15:04" };
     case "month":
-      return { id: "month", durationSec: 30 * 86400, bucketSize: 86400, labelLayout: "day" };
+      return { id: "month", durationSec: 30 * 86400, bucketSize: 86400, labelLayout: "Jan 2" };
     case "year":
-      return { id: "year", durationSec: 365 * 86400, bucketSize: 7 * 86400, labelLayout: "day" };
+      return { id: "year", durationSec: 365 * 86400, bucketSize: 7 * 86400, labelLayout: "Jan 2" };
     default:
       throw Object.assign(new Error(`invalid ranking period: ${period}`), { status: 400 });
   }
@@ -51,17 +52,23 @@ function growthPct(current: number, previous: number): number {
   return round4(((current - previous) / previous) * 100);
 }
 
-function bucketTs(bucket: number): string {
-  return new Date(bucket * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+/** Original `rankingBucketTs` (`time.Unix(bucket, 0).UTC().Format(time.RFC3339)`). */
+export function rankingBucketTs(bucket: number): string {
+  return new Date(Math.trunc(Number(bucket)) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-function bucketLabel(bucket: number, layout: "hour" | "day"): string {
-  const d = new Date(bucket * 1000);
-  if (layout === "hour") {
-    return `${String(d.getUTCHours()).padStart(2, "0")}:00`;
+const GO_JAN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
+/**
+ * Original `rankingBucketLabel`: `time.Unix(bucket, 0).Format(config.labelLayout)`.
+ * Go `"Jan 2"` is unpadded (`"Jan 5"`); `"15:04"` is local 24-hour `HH:MM`.
+ */
+export function rankingBucketLabel(bucket: number, layout: "Jan 2" | "15:04"): string {
+  const d = new Date(Math.trunc(Number(bucket)) * 1000);
+  if (layout === "15:04") {
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   }
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${months[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  return `${GO_JAN[d.getMonth()]} ${d.getDate()}`;
 }
 
 function modelMeta(name: string, meta: Record<string, Meta>): Meta {
@@ -196,8 +203,8 @@ function buildModelHistory(
       const tokens = byBucket.get(bucket)?.get(model.name) || 0;
       if (tokens <= 0) continue;
       points.push({
-        ts: bucketTs(bucket),
-        label: bucketLabel(bucket, config.labelLayout),
+        ts: rankingBucketTs(bucket),
+        label: rankingBucketLabel(bucket, config.labelLayout),
         model: model.name,
         vendor: model.vendor,
         tokens,
@@ -246,8 +253,8 @@ function buildVendorHistory(
       const tokens = byBucket.get(bucket)?.get(vendor.name) || 0;
       if (tokens <= 0) continue;
       points.push({
-        ts: bucketTs(bucket),
-        label: bucketLabel(bucket, config.labelLayout),
+        ts: rankingBucketTs(bucket),
+        label: rankingBucketLabel(bucket, config.labelLayout),
         vendor: vendor.name,
         share: share(tokens, totalsByBucket.get(bucket) || 0),
         tokens,
