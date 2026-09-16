@@ -1459,6 +1459,11 @@ export function adminRouter(): Router<Env> {
           return apiErrorMsg("Classic 前端已移除，主题只能设置为 default");
         }
         break;
+      case "GroupRatio": {
+        const err = checkGroupRatio(value);
+        if (err) return apiErrorMsg(err);
+        break;
+      }
     }
     if (isPasskeyDomainOption(key)) {
       try {
@@ -1764,6 +1769,23 @@ function validateTaskArtifactBaseURL(raw: string): string | null {
   }
   if (parsed.search || parsed.hash || raw.includes("?") || raw.includes("#")) {
     return "task artifact base URL must not contain a query or fragment";
+  }
+  return null;
+}
+
+/** Original `ratio_setting.CheckGroupRatio`. */
+function checkGroupRatio(jsonStr: string): string | null {
+  const parsed = goUnmarshalJSON(jsonStr);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type map[string]float64`;
+  }
+  for (const [name, ratio] of Object.entries(parsed.value as Record<string, unknown>)) {
+    if (typeof ratio !== "number" || !Number.isFinite(ratio)) {
+      return `json: cannot unmarshal ${goJSONKind(ratio)} into Go value of type float64`;
+    }
+    if (ratio < 0) return "group ratio must be not less than 0: " + name;
   }
   return null;
 }

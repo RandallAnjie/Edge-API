@@ -276,3 +276,36 @@ test("original UpdateOption OAuth enablement gin.H omit data", async () => {
   assert.equal(telegram.body.code, "TELEGRAM_OAUTH_NOT_CONFIGURED");
   assert.equal("data" in telegram.body, false);
 });
+
+test("original UpdateOption CheckGroupRatio gin.H omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  async function put(value: string) {
+    return json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ key: "GroupRatio", value }),
+      }),
+      e,
+    );
+  }
+
+  const neg = await put(JSON.stringify({ default: 1, vip: -0.1 }));
+  omitData(neg.body, "group ratio must be not less than 0: vip");
+
+  const arr = await put("[]");
+  omitData(arr.body, "json: cannot unmarshal array into Go value of type map[string]float64");
+
+  const str = await put(JSON.stringify({ vip: "1" }));
+  omitData(str.body, "json: cannot unmarshal string into Go value of type float64");
+
+  const invalid = await put("not-json");
+  omitData(invalid.body, "invalid character 'n' looking for beginning of value");
+
+  const ok = await put(JSON.stringify({ default: 1, vip: 0, svip: 1.5 }));
+  omitDataOk(ok.body);
+  assert.equal(await new Store(e.DB).option("GroupRatio"), JSON.stringify({ default: 1, vip: 0, svip: 1.5 }));
+});
