@@ -4,7 +4,7 @@ import { runPendingMidjourneyPoll } from "./midjourney-poll.js";
 import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
 import { nowSec } from "./constants.js";
 import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, readSession, sessionSecret } from "./auth.js";
-import { abortWithOpenAiMessage, apiFail, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
+import { abortWithOpenAiMessage, apiFail, newApiPanicError, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { decompressRequest } from "./decompress-request.js";
@@ -699,7 +699,13 @@ async function limitedDecompress(env: Env, req: Request): Promise<{ req: Request
 
 async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
   const requestId = requestIdFor(req);
-  const res = await dispatchFetch(req, env, ctx);
+  let res: Response;
+  try {
+    res = await dispatchFetch(req, env, ctx);
+  } catch (err) {
+    hit("error");
+    res = withCors(req, newApiPanicError(err));
+  }
   if (env.DB) {
     try {
       await finishAccessTokenAudit(new Store(env.DB), req, res);
@@ -772,8 +778,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
           return withCors(req, await handleRelay(req, env, ctx));
         } catch (err) {
           hit("error");
-          const msg = err instanceof Error ? err.message : String(err);
-          return withCors(req, openaiError(500, msg, "internal_error"));
+          return withCors(req, newApiPanicError(err));
         }
       }
 
@@ -833,11 +838,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       }
     } catch (err) {
       hit("error");
-      const msg = err instanceof Error ? err.message : String(err);
-      if (path.startsWith("/v1") || path.startsWith("/v1beta")) {
-        return withCors(req, openaiError(500, msg, "internal_error"));
-      }
-      return withCors(req, apiFail(msg, null, 500));
+      return withCors(req, newApiPanicError(err));
     }
   }
 

@@ -920,6 +920,28 @@ export function pluginRoutePanicError(): Response {
   return json(500, { error: { message: "internal plugin route error", type: "plugin_route_error" } });
 }
 
+/** Original `gin.CustomRecovery` / `RelayPanicRecover` panic type. */
+export const NEW_API_PANIC_TYPE = "new_api_panic";
+
+/** Original CustomRecovery issue URL (Calcium-Ion/new-api, including the `a issue` wording). */
+export const NEW_API_PANIC_ISSUE_URL = "https://github.com/Calcium-Ion/new-api";
+
+/** Original `fmt.Sprintf("%v", err)` for recover(). */
+export function panicValue(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+/** Original `Panic detected, error: %v. Please submit a issue here: https://github.com/Calcium-Ion/new-api`. */
+export function panicDetectedMessage(err: unknown): string {
+  return `Panic detected, error: ${panicValue(err)}. Please submit a issue here: ${NEW_API_PANIC_ISSUE_URL}`;
+}
+
+/** Original `gin.CustomRecovery` leftover HTTP 500 gin.H `{error:{message,type:new_api_panic}}`. */
+export function newApiPanicError(err: unknown): Response {
+  return json(500, { error: { message: panicDetectedMessage(err), type: NEW_API_PANIC_TYPE } });
+}
+
 /** Original `PrepareTaskPluginSubmit` `AbortWithStatusJSON` invalid_request_error (no `code`). */
 export function invalidTaskPluginRequestError(message: string): Response {
   return json(400, { error: { message, type: "invalid_request_error" } });

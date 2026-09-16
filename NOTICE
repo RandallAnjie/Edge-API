@@ -167,10 +167,18 @@ Material changes from upstream:
   registers before `Engine.Use`). Extra-OK: worker buffers the decompressed
   body and sets Content-Length. Extra-OK: Node/workerd `DecompressionStream`
   may not support `br`/`zstd`; those encodings pass through instead of a fake
-  open-fail 400. Extra-OK: gzip inflate errors after a valid header are empty
+  open-fail 400.   Extra-OK: gzip inflate errors after a valid header are empty
   400 (original would surface in `GetRequestBody`). Extra-OK: OPTIONS 204 still
   runs before this middleware. Extra-OK: unmatched `/api` may still consume
   GlobalAPIRateLimit before this 400.
+  Original `gin.CustomRecovery` leftover HTTP 500 gin.H
+  `{error:{message:"Panic detected, error: %v. Please submit a issue here: https://github.com/Calcium-Ion/new-api", type:"new_api_panic"}}`
+  on uncaught worker throws (Go panics). Same JSON as unused
+  `middleware.RelayPanicRecover`. Plugin inner-engine panics stay
+  `plugin_route_error`. Handler-returned 500/503 omit-data gin.H is unchanged.
+  Extra-OK: JS `Error.message` is used like Go `%v` on `error`. Extra-OK:
+  D1-missing stays worker `apiFail` 500 (not a panic). Extra-OK: RequestId and
+  Version still wrap panic responses.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
