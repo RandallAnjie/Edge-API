@@ -374,7 +374,7 @@ export const DEFAULT_OPTIONS: Record<string, string> = {
   MinTopup: "1",
   MinTopUp: "1",
   PaymentComplianceConfirmed: "false",
-  PaymentComplianceTermsVersion: "v1",
+  PaymentComplianceTermsVersion: "",
   TopUpLink: "",
   AmountOptions: JSON.stringify([10, 20, 50, 100, 200, 500]),
   AmountDiscount: "{}",

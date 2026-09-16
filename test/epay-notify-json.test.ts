@@ -50,6 +50,7 @@ async function boot() {
 
 async function enableEpay(store: Store) {
   await store.setOption("PaymentComplianceConfirmed", "true");
+  await store.setOption("PaymentComplianceTermsVersion", "v1");
   await store.setOption("PayAddress", "https://epay.example.com");
   await store.setOption("EpayId", "1001");
   await store.setOption("EpayKey", "epay-secret");

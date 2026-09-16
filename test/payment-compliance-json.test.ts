@@ -144,3 +144,47 @@ test("original ConfirmPaymentCompliance DecodeJson and ApiSuccess gin.H JSON", a
   assert.equal(pat.res.status, 403);
   omitData(pat.body, "This operation requires dashboard session authentication. API access token is not allowed.");
 });
+
+test("original IsPaymentComplianceConfirmed requires terms_version v1 and GetTopUpInfo always returns CurrentComplianceTermsVersion", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const store = new Store(e.DB);
+
+  const unconfirmed = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
+  const unconfirmedData = unconfirmed.body.data as Record<string, unknown>;
+  assert.equal(unconfirmedData.payment_compliance_confirmed, false);
+  assert.equal(unconfirmedData.enable_redemption, false);
+  assert.equal(unconfirmedData.payment_compliance_terms_version, "v1");
+  assert.deepEqual(unconfirmedData.pay_methods, []);
+
+  await store.setOption("PaymentComplianceConfirmed", "true");
+  const confirmedOnly = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
+  const confirmedOnlyData = confirmedOnly.body.data as Record<string, unknown>;
+  assert.equal(confirmedOnlyData.payment_compliance_confirmed, false);
+  assert.equal(confirmedOnlyData.enable_redemption, false);
+  assert.equal(confirmedOnlyData.payment_compliance_terms_version, "v1");
+
+  await store.setOption("PaymentComplianceTermsVersion", "v0");
+  const stale = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
+  const staleData = stale.body.data as Record<string, unknown>;
+  assert.equal(staleData.payment_compliance_confirmed, false);
+  assert.equal(staleData.payment_compliance_terms_version, "v1");
+
+  const denied = await json(
+    new Request("http://local/api/user/topup", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ key: "missing" }),
+    }),
+    e,
+  );
+  omitData(denied.body, PAYMENT_COMPLIANCE_REQUIRED);
+
+  await store.setOption("PaymentComplianceTermsVersion", "v1");
+  const ready = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
+  const readyData = ready.body.data as Record<string, unknown>;
+  assert.equal(readyData.payment_compliance_confirmed, true);
+  assert.equal(readyData.enable_redemption, true);
+  assert.equal(readyData.payment_compliance_terms_version, "v1");
+});

@@ -69,7 +69,7 @@ import {
 } from "./passkey-domains.js";
 import { buildRankingsSnapshot } from "./rankings.js";
 import { headerNavModuleAuth, isHeaderNavDenied } from "./header-nav.js";
-import { requirePaymentCompliance } from "./payments.js";
+import { paymentComplianceConfirmed, requirePaymentCompliance } from "./payments.js";
 import {
   isActiveSubscription,
   normalizeBillingPreference,
@@ -1408,7 +1408,7 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    if (!(await s.optionBool("PaymentComplianceConfirmed", false))) return apiOk([]);
+    if (!(await paymentComplianceConfirmed(s))) return apiOk([]);
     return apiOk((await s.listPlans(true)).map(wrapPlan));
   });
 

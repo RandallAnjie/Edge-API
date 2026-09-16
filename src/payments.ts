@@ -31,7 +31,9 @@ export { PAYMENT_COMPLIANCE_REQUIRED };
 export const CURRENT_COMPLIANCE_TERMS_VERSION = "v1";
 
 export async function paymentComplianceConfirmed(store: Store): Promise<boolean> {
-  return store.optionBool("PaymentComplianceConfirmed", false);
+  const confirmed = await store.optionBool("PaymentComplianceConfirmed", false);
+  const version = await store.option("PaymentComplianceTermsVersion");
+  return confirmed && version === CURRENT_COMPLIANCE_TERMS_VERSION;
 }
 
 /** Original `controller.requirePaymentCompliance` / `common.ApiErrorI18n` (omit `data`). */
@@ -143,7 +145,7 @@ export async function topupInfo(store: Store): Promise<Record<string, unknown>> 
   const creem = await paymentEnabled(store, "creem");
   const waffo = await paymentEnabled(store, "waffo");
   const waffoPancake = await paymentEnabled(store, "waffo_pancake");
-  const complianceConfirmed = await store.optionBool("PaymentComplianceConfirmed", false);
+  const complianceConfirmed = await paymentComplianceConfirmed(store);
   const payMethods = complianceConfirmed
     ? parseJson<Record<string, string>[]>(await store.option("PayMethods"), [
         { name: "支付宝", icon: "SiAlipay", type: "alipay" },
@@ -187,7 +189,7 @@ export async function topupInfo(store: Store): Promise<Record<string, unknown>> 
     enable_waffo_pancake_topup: waffoPancake,
     enable_redemption: complianceConfirmed,
     payment_compliance_confirmed: complianceConfirmed,
-    payment_compliance_terms_version: (await store.option("PaymentComplianceTermsVersion")) || "v1",
+    payment_compliance_terms_version: CURRENT_COMPLIANCE_TERMS_VERSION,
     waffo_pay_methods: waffo ? parseJson(await store.option("WaffoPayMethods"), []) : null,
     creem_products: parseJson(await store.option("CreemProducts"), []),
     pay_methods: methods,
