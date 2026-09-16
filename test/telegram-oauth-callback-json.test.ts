@@ -18,12 +18,16 @@ function ctx(): ExecutionContextLike {
   return { waitUntil() {} };
 }
 
+let ctSeq = 0;
+
 function env(db = createMemoryD1()): Env {
   return { DB: db, SYSTEM_NAME: "Edge API Test" };
 }
 
 async function json(req: Request, e: Env) {
-  const res = await handleFetch(req, e, ctx());
+  const headers = new Headers(req.headers);
+  if (!headers.has("cf-connecting-ip")) headers.set("cf-connecting-ip", `oauth-${++ctSeq}`);
+  const res = await handleFetch(new Request(req, { headers }), e, ctx());
   const text = await res.text();
   let body: Record<string, unknown> = {};
   try {
