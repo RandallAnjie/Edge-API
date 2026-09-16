@@ -493,3 +493,83 @@ test("original UpdateOption billing_expr and plugin billing gin.H omit data", as
   omitDataOk(pluginOk.body);
   assert.equal(await store.option("billing_setting.plugin_billing_expr"), "{}");
 });
+
+test("original UpdateOption console_setting gin.H omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const store = new Store(e.DB);
+
+  async function put(key: string, value: string) {
+    return json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ key, value }),
+      }),
+      e,
+    );
+  }
+
+  const unmarshalObj = "json: cannot unmarshal object into Go value of type []map[string]interface {}";
+  const apiObj = await put("console_setting.api_info", "{}");
+  omitData(apiObj.body, "API信息格式错误：" + unmarshalObj);
+
+  const apiMissing = await put("console_setting.api_info", JSON.stringify([{}]));
+  omitData(apiMissing.body, "第1个API信息缺少URL字段");
+
+  const apiColor = await put(
+    "console_setting.api_info",
+    JSON.stringify([{ url: "https://api.example.com", route: "main", description: "prod", color: "black" }]),
+  );
+  omitData(apiColor.body, "第1个API信息的颜色值不合法");
+
+  const apiOk = await put(
+    "console_setting.api_info",
+    JSON.stringify([{ url: "https://api.example.com", route: "main", description: "prod", color: "blue" }]),
+  );
+  omitDataOk(apiOk.body);
+
+  const annMissing = await put("console_setting.announcements", JSON.stringify([{}]));
+  omitData(annMissing.body, "第1个公告缺少内容字段");
+
+  const annDate = await put(
+    "console_setting.announcements",
+    JSON.stringify([{ content: "hello", publishDate: "not-a-date" }]),
+  );
+  omitData(annDate.body, "第1个公告的发布日期格式错误");
+
+  const annOk = await put(
+    "console_setting.announcements",
+    JSON.stringify([{ content: "hello", publishDate: "2026-09-16T00:00:00Z", type: "success" }]),
+  );
+  omitDataOk(annOk.body);
+
+  const faqMissing = await put("console_setting.faq", JSON.stringify([{}]));
+  omitData(faqMissing.body, "第1个FAQ缺少问题字段");
+
+  const faqOk = await put("console_setting.faq", JSON.stringify([{ question: "Q", answer: "A" }]));
+  omitDataOk(faqOk.body);
+
+  const uptimeObj = await put("console_setting.uptime_kuma_groups", "{}");
+  omitData(uptimeObj.body, "Uptime Kuma分组配置格式错误：" + unmarshalObj);
+
+  const uptimeUrl = await put(
+    "console_setting.uptime_kuma_groups",
+    JSON.stringify([{ categoryName: "Core", url: "", slug: "" }]),
+  );
+  omitData(uptimeUrl.body, "第1个分组缺少URL字段");
+
+  const uptimeOk = await put(
+    "console_setting.uptime_kuma_groups",
+    JSON.stringify([{ categoryName: "Core", url: "https://status.example.com", slug: "core" }]),
+  );
+  omitDataOk(uptimeOk.body);
+  assert.equal(
+    await store.option("console_setting.uptime_kuma_groups"),
+    JSON.stringify([{ categoryName: "Core", url: "https://status.example.com", slug: "core" }]),
+  );
+
+  const emptyOk = await put("console_setting.api_info", "");
+  omitDataOk(emptyOk.body);
+});

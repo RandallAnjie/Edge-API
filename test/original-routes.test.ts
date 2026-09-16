@@ -1752,16 +1752,9 @@ test("original JSON fields: perf-metrics, rankings, quota data, model sync", asy
   const uptime = await json(new Request("http://local/api/uptime/status"), e);
   assert.equal(uptime.body.success, true);
   assert.ok(Array.isArray(uptime.body.data));
-  await json(
-    new Request("http://local/api/option/", {
-      method: "PUT",
-      headers: auth,
-      body: JSON.stringify({
-        key: "console_setting.uptime_kuma_groups",
-        value: JSON.stringify([{ categoryName: "Core", url: "", slug: "" }]),
-      }),
-    }),
-    e,
+  await new Store(e.DB).setOption(
+    "console_setting.uptime_kuma_groups",
+    JSON.stringify([{ categoryName: "Core", url: "", slug: "" }]),
   );
   const uptimeGroup = await json(new Request("http://local/api/uptime/status"), e);
   assert.equal(uptimeGroup.body.success, true);

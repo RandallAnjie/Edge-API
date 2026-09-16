@@ -90,6 +90,7 @@ import { checkModelRequestRateLimitGroup } from "./model-rate-limit.js";
 import { parseHTTPStatusCodeRanges } from "./status-code-ranges.js";
 import { TOOL_PRICE_OPTION_KEY, validateToolPricesJSON } from "./tool-price.js";
 import { PLUGIN_BILLING_EXPR_OPTION, validateBillingExprOption, validatePluginBillingExprOption } from "./model-pricing.js";
+import { validateConsoleSettings } from "./console-setting.js";
 import type { Env, RedemptionRow, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -1515,6 +1516,26 @@ export function adminRouter(): Router<Env> {
       }
       case PLUGIN_BILLING_EXPR_OPTION: {
         const err = await validatePluginBillingExprOption(s, value);
+        if (err) return apiErrorMsg(err);
+        break;
+      }
+      case "console_setting.api_info": {
+        const err = validateConsoleSettings(value, "ApiInfo");
+        if (err) return apiErrorMsg(err);
+        break;
+      }
+      case "console_setting.announcements": {
+        const err = validateConsoleSettings(value, "Announcements");
+        if (err) return apiErrorMsg(err);
+        break;
+      }
+      case "console_setting.faq": {
+        const err = validateConsoleSettings(value, "FAQ");
+        if (err) return apiErrorMsg(err);
+        break;
+      }
+      case "console_setting.uptime_kuma_groups": {
+        const err = validateConsoleSettings(value, "UptimeKumaGroups");
         if (err) return apiErrorMsg(err);
         break;
       }
