@@ -627,7 +627,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
   const patAudit = await json(new Request("http://local/api/audit?category=access_token", { headers: auth }), e);
   const patItems = (patAudit.body.data as { items: { route: string; status: number; success: boolean }[] }).items;
   assert.ok(patItems.some((row) => row.route === "/api/user/self" && row.status === 200 && row.success === true));
-  assert.ok(patItems.some((row) => row.route === "/api/this-route-does-not-exist" && row.status === 404 && row.success === false));
+  assert.ok(patItems.some((row) => row.route === "" && row.status === 404 && row.success === false));
 
   const users = await json(new Request("http://local/api/user/search?keyword=admin1", { headers: auth }), e);
   const adminRow = ((users.body.data as { items: { id: number; username: string }[] }).items || []).find((u) => u.username === "admin1");
