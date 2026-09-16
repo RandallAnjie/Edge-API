@@ -232,7 +232,7 @@ import { tokenAllowsModel } from "./auth.js";
 import { OPENAI_MODELS_MAP } from "./channel-models.js";
 import { factoryPluginMeta, listRoutingPlugins } from "./task-plugin-factory.js";
 import { hasModelBillingConfig } from "./billing-setting.js";
-import { imageRequestCount, openaiImageDataCount, refreshOutboundImageQuantity } from "./image-billing.js";
+import { imageHelperFloorUsageTokens, imageHelperLogContent, imageRequestCount, openaiImageDataCount, refreshOutboundImageQuantity } from "./image-billing.js";
 import {
   billingUsageFromOpenAICounts,
   cacheCreationTokensTotal,
@@ -1484,6 +1484,11 @@ async function settle(
     extra.builtInTools = builtInToolCallCounts(extra.toolUsage);
     extra.claudeWebSearchRequests = extra.toolUsage.claudeWebSearchRequests || undefined;
     extra.geminiGoogleSearchCall = extra.toolUsage.geminiGoogleSearchCall || undefined;
+  }
+  if (extra.relayMode === "images" && ok) {
+    if (prompt === 0) prompt = 1;
+    if (extra.billingUsage && (extra.billingUsage.prompt_tokens || 0) === 0) extra.billingUsage.prompt_tokens = 1;
+    content = imageHelperLogContent(extra.imageBody || {});
   }
   const originModel = model;
   const billingName = extra.billingModelName || originModel;
@@ -2762,6 +2767,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         total: sttUsage.total_tokens,
       };
     }
+    if (mode === "images") imageHelperFloorUsageTokens(usage);
     attachSettleUsage(extra, usage);
     if (mode === "images") extra.actualImageCount = openaiImageDataCount(converted);
     await settle(

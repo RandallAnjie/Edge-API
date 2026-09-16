@@ -79,6 +79,34 @@ export function updateBillingImageCount(count: number, estimatedImageCount: numb
   return Math.trunc(count);
 }
 
+/** Original ImageHelper extraContent (`大小` / `品质` / `生成数量`). */
+export function imageHelperLogParts(request: Record<string, unknown>): string[] {
+  const parts: string[] = [];
+  const size = String(request.size || "");
+  if (size) parts.push(`大小 ${size}`);
+  let quality = String(request.quality || "");
+  if (!quality) quality = "standard";
+  if (quality) parts.push(`品质 ${quality}`);
+  let imageN = 1;
+  if (Object.prototype.hasOwnProperty.call(request, "n") && request.n != null) {
+    const parsed = Math.trunc(Number(request.n));
+    imageN = Number.isFinite(parsed) ? parsed : 1;
+  }
+  if (imageN > 0) parts.push(`生成数量 ${imageN}`);
+  return parts;
+}
+
+/** Original `strings.Join(extraContent, ", ")` for ImageHelper. */
+export function imageHelperLogContent(request: Record<string, unknown>): string {
+  return imageHelperLogParts(request).join(", ");
+}
+
+/** Original ImageHelper `usage.TotalTokens/PromptTokens == 0` floors. */
+export function imageHelperFloorUsageTokens(usage: { prompt: number; total: number }): void {
+  if (usage.total === 0) usage.total = 1;
+  if (usage.prompt === 0) usage.prompt = 1;
+}
+
 /** Original ImageHelper outbound JSON body used for per-attempt quantity. */
 export function jsonObjectFromRelayBody(body: unknown): { obj: Record<string, unknown> } | { error: string } | null {
   if (body == null) return null;
