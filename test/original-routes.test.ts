@@ -642,7 +642,9 @@ test("original JSON fields for status, models, deployments, performance, data, u
   );
   const deniedRead = await json(new Request("http://local/api/channel/", { headers: adminAuth }), e);
   assert.equal(deniedRead.res.status, 403);
-  assert.equal(deniedRead.body.message, "无权进行此操作，权限不足");
+  assert.equal(deniedRead.body.message, "Unauthorized, insufficient privileges");
+  assert.equal("data" in deniedRead.body, false);
+  assert.equal("code" in deniedRead.body, false);
 
   const plugins = await json(new Request("http://local/api/plugin/task", { headers: auth }), e);
   assert.ok(Array.isArray(plugins.body.data));

@@ -1568,7 +1568,11 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const start = parseUnixQuery(c.url, "start_timestamp");
     const end = parseUnixQuery(c.url, "end_timestamp");
-    return apiOk((await s.quotaDatesByUser(start, end)).map((row) => publicQuotaData(row as Record<string, unknown>)));
+    try {
+      return apiOk((await s.quotaDatesByUser(start, end)).map((row) => publicQuotaData(row as Record<string, unknown>)));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
   r.get("/api/data/flow", async (c) => {
     const s = store(c);
@@ -1579,9 +1583,13 @@ export function registerParity(r: Router<Env>): void {
     if (start <= 0) return apiErrorMsg("invalid start_timestamp");
     if (end <= 0) return apiErrorMsg("invalid end_timestamp");
     if (end < start) return apiErrorMsg("invalid time range");
-    return apiOk(
-      (await s.flowQuotaDates(start, end, 0, c.url.searchParams.get("username") || "", u.role)).map(publicFlowQuotaData),
-    );
+    try {
+      return apiOk(
+        (await s.flowQuotaDates(start, end, 0, c.url.searchParams.get("username") || "", u.role)).map(publicFlowQuotaData),
+      );
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
   r.get("/api/data/flow/self", async (c) => {
     const s = store(c);
@@ -1593,7 +1601,11 @@ export function registerParity(r: Router<Env>): void {
     if (end <= 0) return apiErrorMsg("invalid end_timestamp");
     if (end < start) return apiErrorMsg("invalid time range");
     if (end - start > 2592000) return apiErrorMsg("时间跨度不能超过 1 个月");
-    return apiOk((await s.flowQuotaDates(start, end, u.id, "", ROLE_USER)).map(publicFlowQuotaData));
+    try {
+      return apiOk((await s.flowQuotaDates(start, end, u.id, "", ROLE_USER)).map(publicFlowQuotaData));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/task/:task_id/artifacts", async (c) => {

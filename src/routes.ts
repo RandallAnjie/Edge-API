@@ -1494,7 +1494,11 @@ export function adminRouter(): Router<Env> {
     if (isResponse(u)) return u;
     const start = parseUnixQuery(c.url, "start_timestamp");
     const end = parseUnixQuery(c.url, "end_timestamp");
-    return apiOk((await s.quotaDates(null, start, end, c.url.searchParams.get("username") || "")).map((row) => publicQuotaData(row as Record<string, unknown>)));
+    try {
+      return apiOk((await s.quotaDates(null, start, end, c.url.searchParams.get("username") || "")).map((row) => publicQuotaData(row as Record<string, unknown>)));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/data/self", async (c) => {
@@ -1504,7 +1508,11 @@ export function adminRouter(): Router<Env> {
     const start = parseUnixQuery(c.url, "start_timestamp");
     const end = parseUnixQuery(c.url, "end_timestamp");
     if (end - start > 2592000) return apiErrorMsg("时间跨度不能超过 1 个月");
-    return apiOk((await s.quotaDates(u.id, start, end)).map((row) => publicQuotaData(row as Record<string, unknown>)));
+    try {
+      return apiOk((await s.quotaDates(u.id, start, end)).map((row) => publicQuotaData(row as Record<string, unknown>)));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.slash("GET", "/api/group/", async (c) => {

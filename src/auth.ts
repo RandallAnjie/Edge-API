@@ -33,6 +33,7 @@ import {
   apiFail,
   apiFailCode,
   apiOk,
+  authInsufficientPrivilegeMessage,
   clearAuthCookies,
   clientIp,
   cookieGet,
@@ -611,12 +612,12 @@ export async function requirePermission(
   const u = await requireAdmin(c, store);
   if (u instanceof Response) return u;
   const user = await store.getUserById(u.id);
-  if (!user) return json(403, { success: false, message: "无权进行此操作，权限不足" });
+  if (!user) return json(403, { success: false, message: authInsufficientPrivilegeMessage(c.req) });
   const roleKey = roleKeyForSystemRole(user.role);
   const userPolicies = await store.casbinPolicies(userSubject(user.id));
   const rolePolicies = roleKey ? await store.casbinPolicies(roleSubject(roleKey)) : [];
   if (!canWithPolicies(user, resource, action, userPolicies, rolePolicies)) {
-    return json(403, { success: false, message: "无权进行此操作，权限不足" });
+    return json(403, { success: false, message: authInsufficientPrivilegeMessage(c.req) });
   }
   return u;
 }
