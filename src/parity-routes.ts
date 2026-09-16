@@ -59,7 +59,7 @@ import { bindVerificationOperation, issueSecurityProof, securityProofError } fro
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
 import { headerNavModulePublicOrUserAuth, isHeaderNavDenied } from "./header-nav.js";
-import { markAuditLogged, recordManageAudit } from "./admin-operation-audit.js";
+import { markAuditLogged, recordManageAudit, recordUserSecurityAudit } from "./admin-operation-audit.js";
 import { emailVerificationRateLimit } from "./email-verification-rate-limit.js";
 import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, strconvParseInt, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
@@ -658,6 +658,10 @@ export function registerParity(r: Router<Env>): void {
     const proof = await issueSecurityProof(s, secret, identity, "passkey", {
       scope: payload.scope || "",
       contextHash: payload.context_hash || "",
+    });
+    await recordUserSecurityAudit(s, c.req, u, "user.security_verify", {
+      method: proof.method,
+      scope: proof.scope,
     });
     return apiOk(proof);
   });

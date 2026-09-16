@@ -1498,6 +1498,16 @@ export function registerMore(r: Router<Env>): void {
           scope: verification.scope || "",
           contextHash: verification.context_hash,
         });
+        if (user) {
+          await recordUserSecurityAudit(
+            s,
+            c.req,
+            user,
+            "user.security_verify",
+            { method: proof.method, scope: proof.scope, provider },
+            c.params,
+          );
+        }
         return apiOk(proof);
       }
       return loginOrBindOAuth(
@@ -2512,6 +2522,10 @@ export function registerMore(r: Router<Env>): void {
       return apiFailCode("This verification method is not allowed for this action.", "SECURITY_PROOF_METHOD_MISMATCH");
     }
     const proof = await issueSecurityProof(s, secret, identity, method, bound.binding);
+    await recordUserSecurityAudit(s, c.req, user, "user.security_verify", {
+      method: proof.method,
+      scope: proof.scope,
+    });
     return apiOk(proof);
   });
 

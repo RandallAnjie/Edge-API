@@ -554,13 +554,14 @@ export async function recordUserSecurityAudit(
   user: { id: number; username: string; role: number; useAccessToken?: boolean },
   action: string,
   params: Record<string, unknown> | null = null,
+  routeParams: Record<string, string> = {},
 ): Promise<void> {
   const merged: Record<string, unknown> = params ? { ...params } : {};
   const code = securityErrorCodeByReq.get(req);
   if (code) merged.code = code;
   const pending = pendingByReq.get(req);
   const url = new URL(req.url);
-  const matched = pending ?? matchAdminAuditRoute(req.method, url.pathname, {});
+  const matched = pending ?? matchAdminAuditRoute(req.method, url.pathname, routeParams);
   let auditInfo:
     | {
         method: string;

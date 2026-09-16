@@ -428,6 +428,18 @@ Material changes from upstream:
   unchanged. Extra-OK: audit write failure must not fail the request.
   requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordUserSecurityAudit` leftover security audit-log
+  JSON on UniversalVerify `user.security_verify` (params `method`/`scope`),
+  PasskeyVerifyFinish (`method`/`scope`), and HandleOAuth verification
+  (`method`/`scope`/`provider`). No `admin_info`, no `audit_info` (params
+  lack a bool `success`), category `security`, Status 200 Success true,
+  English Content “Completed security verification”, gin FullPath
+  `/api/verify`, `/api/user/passkey/verify/finish`, `/api/oauth/:provider`.
+  Failed empty verify / invalid passkey finish / OAuth account mismatch add
+  no security audit (UserAuth has no AdminAuth fallback). Extra-OK: hop 323
+  vendor.create/delete fallback tests stay unchanged. Extra-OK: audit write
+  failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
