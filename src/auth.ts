@@ -42,6 +42,7 @@ import {
   refreshCookie,
   sessionHintCookie,
   withSetCookies,
+  writeAuthSessionError,
   invalidChannelIdMessage,
   tokenInvalidMessage,
   tokenNotProvidedMessage,
@@ -222,11 +223,11 @@ export function authRefreshRace(): Response {
 }
 
 export function authSessionLimit(): Response {
-  return json(409, { success: false, code: "AUTH_SESSION_LIMIT", message: "Conflict", data: null });
+  return writeAuthSessionError(409, "AUTH_SESSION_LIMIT");
 }
 
 export function authSessionIssuanceLimit(): Response {
-  return json(429, { success: false, code: "AUTH_SESSION_ISSUANCE_LIMIT", message: "Too Many Requests", data: null });
+  return writeAuthSessionError(429, "AUTH_SESSION_ISSUANCE_LIMIT");
 }
 
 /** Original `controller.dashboardBearer`. */
@@ -291,6 +292,24 @@ export function maybeClearRefreshCookie(req: Request, res: Response): Response {
 
 export function sessionResponse(issued: { data: Record<string, unknown>; cookies: string[] }, status = 200, message = ""): Response {
   return withSetCookies(apiOk(issued.data, message), issued.cookies);
+}
+
+/** Original `controller.authRotationData` — omits `user`. */
+export function authRotationData(issued: { data: Record<string, unknown> }): Record<string, unknown> {
+  return {
+    access_token: issued.data.access_token,
+    token_type: issued.data.token_type,
+    access_expires_at: issued.data.access_expires_at,
+    session: issued.data.session,
+  };
+}
+
+/** Original `common.ApiSuccess(c, authRotationData(bundle))` plus refresh cookies. */
+export function authRotationResponse(
+  issued: { data: Record<string, unknown>; cookies: string[] },
+  message = "",
+): Response {
+  return withSetCookies(apiOk(authRotationData(issued), message), issued.cookies);
 }
 
 export async function refreshLoginSession(

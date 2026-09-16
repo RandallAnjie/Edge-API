@@ -26,7 +26,7 @@ import {
   parseJson,
 } from "./constants.js";
 import { hmacSha256Raw, maskKey } from "./crypto.js";
-import { ERR_VERIFICATION_LOCKED, twoFALocked } from "./totp.js";
+import { ERR_TWOFA_ALREADY_ENABLED, ERR_TWOFA_NOT_ENABLED, ERR_VERIFICATION_LOCKED, twoFALocked } from "./totp.js";
 import { bytesToHex, sha256BytesSync, utf8Bytes } from "./jsplugin-sha256.js";
 import { advancedCustomConfigFromSettings, supportedEndpointTypesForModel } from "./channel-validate.js";
 import {
@@ -683,10 +683,10 @@ export async function verificationRequirements(
   const encryption = await store.optionBool("PasswordLoginEncryptionEnabled", false);
 
   if (scope === "2fa.disable" || scope === "2fa.backup_codes.regenerate") {
-    if (!hasTwoFA) return { ok: false, code: "TWOFA_NOT_ENABLED", message: "Two-factor authentication is not enabled.", status: 200 };
+    if (!hasTwoFA) return { ok: false, code: "TWOFA_NOT_ENABLED", message: ERR_TWOFA_NOT_ENABLED, status: 200 };
   }
   if (scope === "2fa.setup" && hasTwoFA) {
-    return { ok: false, code: "TWOFA_ALREADY_ENABLED", message: "Two-factor authentication is already enabled.", status: 200 };
+    return { ok: false, code: "TWOFA_ALREADY_ENABLED", message: ERR_TWOFA_ALREADY_ENABLED, status: 200 };
   }
   if (scope === "account.delete" && user.role >= 100) {
     return { ok: false, code: "SECURITY_ACTION_FORBIDDEN", message: "This action is not allowed.", status: 403 };

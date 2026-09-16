@@ -158,7 +158,7 @@ test("original 2FA lockout JSON matches TwoFA.FailedAttempts / LoginChallenge / 
   assert.deepEqual(status.body.data, {
     enabled: true,
     locked: true,
-    backup_codes_remaining: 8,
+    backup_codes_remaining: 4,
   });
 
   const sixth = await json(

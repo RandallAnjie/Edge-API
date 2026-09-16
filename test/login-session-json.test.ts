@@ -280,7 +280,8 @@ test("original login AUTH_SESSION_LIMIT JSON when active sessions are at the cap
   assert.equal(blocked.body.success, false);
   assert.equal(blocked.body.code, "AUTH_SESSION_LIMIT");
   assert.equal(blocked.body.message, "Conflict");
-  assert.equal(blocked.body.data, null);
+  assert.equal("data" in blocked.body, false);
+  assert.deepEqual(Object.keys(blocked.body).sort(), ["code", "message", "success"]);
 });
 
 test("original login AUTH_SESSION_LIMIT ignores expired sessions", async () => {
@@ -359,5 +360,6 @@ test("original login AUTH_SESSION_ISSUANCE_LIMIT JSON uses a strict created_at c
   assert.equal(blocked.body.success, false);
   assert.equal(blocked.body.code, "AUTH_SESSION_ISSUANCE_LIMIT");
   assert.equal(blocked.body.message, "Too Many Requests");
-  assert.equal(blocked.body.data, null);
+  assert.equal("data" in blocked.body, false);
+  assert.deepEqual(Object.keys(blocked.body).sort(), ["code", "message", "success"]);
 });

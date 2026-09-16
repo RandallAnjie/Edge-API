@@ -11,13 +11,14 @@ import {
 import {
   generateBackupCodes,
   generateTotpSecret,
-  otpauthUrl,
+  generateQrCodeData,
   totpCode,
   twoFALocked,
   validateNumericCode,
   verifyTotp,
   verifyTwoFactorCode,
   ERR_VERIFICATION_FAILED,
+  ERR_TWOFA_ALREADY_ENABLED,
   ERR_TWOFA_CODE_INVALID,
   ERR_TWOFA_SETUP_INVALID,
 } from "./totp.js";
@@ -109,6 +110,7 @@ import {
   requireProof,
   requireRoot,
   requireUser,
+  authRotationResponse,
   sessionResponse,
   sessionSecret,
   completeLoginVerification,
@@ -372,6 +374,10 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
+    const existing = await s.getUserById(u.id);
+    if (Number(existing?.totp_enabled) === 1) {
+      return writeSecurityOperationError("TWOFA_ALREADY_ENABLED", ERR_TWOFA_ALREADY_ENABLED);
+    }
     const secret = generateTotpSecret();
     const codes = generateBackupCodes();
     const flowToken = randomHex(16);
@@ -384,15 +390,13 @@ export function registerMore(r: Router<Env>): void {
       payload: JSON.stringify({ secret, backup_codes: codes }),
       session_id: proof.sessionId,
     });
-    const issuer = (await s.option("SystemName")) || "Edge API";
-    const qr = otpauthUrl(secret, u.username, issuer);
+    const issuer = (await s.option("SystemName")) || "New API";
     return apiOk({
       secret,
-      qr_code_data: qr,
+      qr_code_data: generateQrCodeData(secret, u.username, issuer),
       backup_codes: codes,
       flow_token: flowToken,
       expires_at: expiresAt,
-      otpauth_url: qr,
     });
   });
 
@@ -451,7 +455,7 @@ export function registerMore(r: Router<Env>): void {
     const fresh = await s.getUserById(identity.userId);
     const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "twofa_enabled", identity.sessionId);
     if (issued instanceof Response) return issued;
-    return sessionResponse(issued);
+    return authRotationResponse(issued);
   });
 
   r.post("/api/user/2fa/disable", async (c) => {

@@ -13,8 +13,14 @@ export const ERR_TWOFA_NOT_ENABLED = "Two-factor authentication is not enabled."
 export const ERR_TWOFA_SETUP_INVALID = "The two-factor setup has expired or changed. Start setup again.";
 /** Original `model.ErrTwoFACodeInvalid`. */
 export const ERR_TWOFA_CODE_INVALID = "The authenticator code is incorrect.";
+/** Original `writeSecurityOperationError` for `model.ErrTwoFAAlreadyEnabled`. */
+export const ERR_TWOFA_ALREADY_ENABLED = "Two-factor authentication is already enabled.";
 /** Original `common.BackupCodeLength`. */
 const BACKUP_CODE_LENGTH = 8;
+/** Original `common.BackupCodeCount`. */
+const BACKUP_CODE_COUNT = 4;
+/** Original `common.generateRandomBackupCode` charset. */
+const BACKUP_CODE_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 export function generateTotpSecret(): string {
   return base32Encode(crypto.getRandomValues(new Uint8Array(20)));
@@ -83,18 +89,31 @@ export async function verifyTotp(secret: string, code: string, window = 1): Prom
   return false;
 }
 
-export function otpauthUrl(secret: string, username: string, issuer = "Edge API"): string {
-  return (
-    `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(username)}` +
-    `?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`
-  );
+/** Original `common.GenerateQRCodeData` (unencoded issuer/account; no algorithm=). */
+export function generateQrCodeData(secret: string, username: string, issuer = "New API"): string {
+  const accountName = `${username} (${issuer})`;
+  return `otpauth://totp/${issuer}:${accountName}?secret=${secret}&issuer=${issuer}&digits=6&period=30`;
 }
 
-export function generateBackupCodes(n = 8): string[] {
+/** @deprecated Original Setup2FA exposes `qr_code_data` via `generateQrCodeData`. */
+export function otpauthUrl(secret: string, username: string, issuer = "New API"): string {
+  return generateQrCodeData(secret, username, issuer);
+}
+
+/** Original `common.GenerateBackupCodes` (`XXXX-XXXX`, count 4). */
+export function generateBackupCodes(n = BACKUP_CODE_COUNT): string[] {
   const out: string[] = [];
   for (let i = 0; i < n; i++) {
-    const buf = crypto.getRandomValues(new Uint8Array(4));
-    out.push([...buf].map((b) => b.toString(16).padStart(2, "0")).join(""));
+    const raw = new Uint8Array(BACKUP_CODE_LENGTH);
+    for (let j = 0; j < BACKUP_CODE_LENGTH; j++) {
+      let b = 0;
+      do {
+        b = crypto.getRandomValues(new Uint8Array(1))[0];
+      } while (b >= 256 - (256 % BACKUP_CODE_CHARSET.length));
+      raw[j] = BACKUP_CODE_CHARSET.charCodeAt(b % BACKUP_CODE_CHARSET.length);
+    }
+    const chars = String.fromCharCode(...raw);
+    out.push(`${chars.slice(0, 4)}-${chars.slice(4)}`);
   }
   return out;
 }

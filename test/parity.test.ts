@@ -315,7 +315,7 @@ test("2FA login still require_2fa plus original LoginChallenge fields", async ()
   const status = await json(new Request("http://local/api/user/2fa/status", { headers: auth }), e);
   assert.equal(status.body.data.enabled, true);
   assert.equal(status.body.data.locked, false);
-  assert.equal(status.body.data.backup_codes_remaining, 8);
+  assert.equal(status.body.data.backup_codes_remaining, 4);
 
   const v2 = await json(new Request("http://local/api/verify/methods?scope=2fa.disable", { headers: auth }), e);
   assert.equal(v2.body.success, true);

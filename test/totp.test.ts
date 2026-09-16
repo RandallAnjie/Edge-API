@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { totpCode, verifyTotp, generateTotpSecret, validateBackupCodeFormat, validateNumericCode } from "../src/totp.js";
+import {
+  totpCode,
+  verifyTotp,
+  generateTotpSecret,
+  generateBackupCodes,
+  generateQrCodeData,
+  validateBackupCodeFormat,
+  validateNumericCode,
+} from "../src/totp.js";
 
 test("totp generates 6 digits and verifies within window", async () => {
   const secret = generateTotpSecret();
@@ -19,4 +27,12 @@ test("original ValidateNumericCode and ValidateBackupCode formats", () => {
   assert.equal(validateBackupCodeFormat("abcd1234"), true);
   assert.equal(validateBackupCodeFormat("abc"), false);
   assert.equal(validateBackupCodeFormat("123456"), false);
+});
+
+test("original GenerateQRCodeData and GenerateBackupCodes formats", () => {
+  const qr = generateQrCodeData("JBSWY3DPEHPK3PXP", "root", "New API");
+  assert.equal(qr, "otpauth://totp/New API:root (New API)?secret=JBSWY3DPEHPK3PXP&issuer=New API&digits=6&period=30");
+  const codes = generateBackupCodes();
+  assert.equal(codes.length, 4);
+  for (const code of codes) assert.match(code, /^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
 });

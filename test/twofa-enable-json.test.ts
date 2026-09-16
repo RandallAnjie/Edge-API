@@ -165,6 +165,7 @@ test("original Enable2FA writeSecurityOperationError / ApiErrorMsg gin.H omit da
   assert.equal(data.token_type, "Bearer");
   assert.equal(typeof data.session.sid, "string");
   assert.equal("backup_codes" in data, false);
+  assert.equal("user" in data, false);
 
   const replay = await json(
     new Request("http://local/api/user/2fa/enable", {
