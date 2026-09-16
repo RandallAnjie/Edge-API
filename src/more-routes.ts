@@ -1719,6 +1719,7 @@ export function registerMore(r: Router<Env>): void {
     const bound = await readChannelTagJSON(c.req);
     if (!bound.ok) return apiErrorMsg("参数错误");
     await s.setChannelsByTag(bound.tag, CHANNEL_ENABLED);
+    await recordManageAudit(s, c.req, u, "channel.tag_enable", { tag: bound.tag });
     return json(200, { success: true, message: "" });
   });
 

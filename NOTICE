@@ -325,6 +325,22 @@ Material changes from upstream:
   fallback tests stay unchanged. Extra-OK: audit write failure must not
   fail the request. requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on DisableTagChannels `channel.tag_disable`, EnableTagChannels
+  `channel.tag_enable`, EditTagChannels `channel.tag_edit` (`{tag}` only),
+  BatchSetChannelTag `channel.tag_batch_set` (`{count:len(ids)}`),
+  ManageMultiKeys `channel.multi_key_manage` (`{action,id}` before the
+  switch; `get_key_status` is `markAuditLogged` only),
+  ApplyChannelUpstreamModelUpdates `channel.upstream_apply` (`{id}`),
+  ApplyAllChannelUpstreamModelUpdates `channel.upstream_apply_all`
+  (`{count:len(results)}`), and DetectAllChannelUpstreamModelUpdates
+  `channel.upstream_detect_all` (`{task_id}`). Detect-all has no
+  `auditContentTemplates` entry so Content is the action string. Failed
+  bind/missing-channel/409 still use generic `finishAdminAudit`. Extra-OK:
+  hop 323 vendor.create/delete fallback tests stay unchanged. Extra-OK:
+  audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

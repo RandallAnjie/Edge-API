@@ -54,7 +54,7 @@ import {
   type EmailBindingState,
 } from "./email-binding.js";
 import { fetchCustomOAuthDiscovery, publicCustomOAuthProvider } from "./custom-oauth.js";
-import { manageMultiKeys } from "./channel-info.js";
+import { manageMultiKeys, parseChannelInfo } from "./channel-info.js";
 import { bindVerificationOperation, issueSecurityProof, securityProofError } from "./security.js";
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
@@ -743,6 +743,7 @@ export function registerParity(r: Router<Env>): void {
     const bound = await readChannelTagJSON(c.req);
     if (!bound.ok) return apiErrorMsg("参数错误");
     await s.setChannelsByTag(bound.tag, CHANNEL_MANUAL_DISABLED);
+    await recordManageAudit(s, c.req, u, "channel.tag_disable", { tag: bound.tag });
     return json(200, { success: true, message: "" });
   });
 
@@ -799,6 +800,7 @@ export function registerParity(r: Router<Env>): void {
       if (body.header_override != null) patch.header_override = body.header_override;
       if (Object.keys(patch).length) await s.updateChannel(ch.id, patch);
     }
+    await recordManageAudit(s, c.req, u, "channel.tag_edit", { tag: bound.tag });
     return json(200, { success: true, message: "" });
   });
 
@@ -882,6 +884,7 @@ export function registerParity(r: Router<Env>): void {
     } catch (e) {
       return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
+    await recordManageAudit(s, c.req, u, "channel.tag_batch_set", { count: parsed.ids.length });
     return apiOk(parsed.ids.length);
   });
 
@@ -923,9 +926,19 @@ export function registerParity(r: Router<Env>): void {
     };
     const ch = await s.getChannel(Number(body.channel_id));
     if (!ch) return apiErrorMsg("渠道不存在");
+    const info = parseChannelInfo(String(ch.channel_info || ""));
+    if (!info.is_multi_key) return apiErrorMsg("该渠道不是多密钥模式");
     if (body.action === "delete_key" || body.action === "delete_disabled_keys") {
       const allowed = await requirePermission(c, s, "channel", "sensitive_write");
       if (isResponse(allowed)) return allowed;
+    }
+    if (body.action === "get_key_status") {
+      markAuditLogged(c.req);
+    } else {
+      await recordManageAudit(s, c.req, u, "channel.multi_key_manage", {
+        action: body.action ?? "",
+        id: ch.id,
+      });
     }
     const result = manageMultiKeys(ch, body);
     if (result instanceof Response) return result;
@@ -969,6 +982,7 @@ export function registerParity(r: Router<Env>): void {
         },
       });
     }
+    await recordManageAudit(s, c.req, u, "channel.upstream_detect_all", { task_id: systemTaskIdOf(task) });
     return apiOk({ task_id: systemTaskIdOf(task), status: String(task.status || "pending") });
   });
   r.post("/api/channel/upstream_updates/apply", async (c) => {
@@ -987,7 +1001,9 @@ export function registerParity(r: Router<Env>): void {
     const ch = await s.getChannel(id);
     if (!ch) return apiErrorMsg("record not found");
     try {
-      return apiOk(await applyChannelUpstreamModelUpdatesForId(s, ch, rec?.add_models, rec?.ignore_models, rec?.remove_models));
+      const data = await applyChannelUpstreamModelUpdatesForId(s, ch, rec?.add_models, rec?.ignore_models, rec?.remove_models);
+      await recordManageAudit(s, c.req, u, "channel.upstream_apply", { id: ch.id });
+      return apiOk(data);
     } catch (err) {
       return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
@@ -997,7 +1013,9 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireChannel(c, s, "write");
     if (isResponse(u)) return u;
     try {
-      return apiOk(await applyAllChannelUpstreamModelUpdates(s));
+      const data = await applyAllChannelUpstreamModelUpdates(s);
+      await recordManageAudit(s, c.req, u, "channel.upstream_apply_all", { count: data.results.length });
+      return apiOk(data);
     } catch (err) {
       return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
