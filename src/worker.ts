@@ -2,9 +2,19 @@ import { runPendingChannelTestSystemTask } from "./channel-test.js";
 import { runPendingModelUpdateSystemTask } from "./channel-upstream-update.js";
 import { runPendingMidjourneyPoll } from "./midjourney-poll.js";
 import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
-import { nowSec } from "./constants.js";
-import { authenticateApiToken, finishAccessTokenAudit, maybeBeginAccessTokenAudit, readSession, sessionSecret } from "./auth.js";
+import { nowSec, USER_ENABLED } from "./constants.js";
+import { authenticateApiToken, cryptoSecret, finishAccessTokenAudit, maybeBeginAccessTokenAudit, readSession, sessionSecret } from "./auth.js";
 import { abortWithOpenAiMessage, apiFail, newApiPanicError, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
+import {
+  ARTIFACT_NOT_FOUND,
+  ARTIFACT_NOT_FOUND_MESSAGE,
+  collapseTaskArtifactAccessError,
+  isTaskArtifactAccess,
+  redactTaskArtifactAccessQuery,
+  tokenOrTaskArtifactAccessAuth,
+  tokenOrTaskArtifactAccessAuthApplies,
+  withTaskArtifactCacheControl,
+} from "./task-artifact-access.js";
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { decompressRequest } from "./decompress-request.js";
@@ -221,6 +231,11 @@ function ctxStore(req: Request, env: Env, ctx: ExecutionContextLike) {
   };
 }
 
+function writeRelayTaskArtifactError(req: Request, status: number, code: string, message: string): Response {
+  const collapsed = collapseTaskArtifactAccessError(req, status, code, message);
+  return taskArtifactError(collapsed.status, collapsed.code, collapsed.message);
+}
+
 async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
@@ -232,20 +247,41 @@ async function handleRelay(req: Request, env: Env, ctx: ExecutionContextLike): P
     return proxyMj(req, env, store, guest, mjRelayPath(path));
   }
 
-  const auth = await authenticateApiToken(ctxStore(req, env, ctx), store);
-  if (auth instanceof Response) return auth;
-  if (systemPerformanceCheckAppliesAfterAuth(req.method, path) || !isRegisteredRelay(req.method, path)) {
-    const overloaded = await systemPerformanceCheck(store, path, env.DB);
-    if (overloaded) return overloaded;
+  let release: (() => void) | undefined;
+  try {
+    if (tokenOrTaskArtifactAccessAuthApplies(req.method, path)) {
+      const secret = await cryptoSecret(env, store);
+      const gated = await tokenOrTaskArtifactAccessAuth(req, env, secret);
+      req = gated.req;
+      if (gated.denied) return gated.denied;
+      release = gated.release;
+      if (gated.capability) {
+        const capabilityAuth = { token: { id: 0 }, user: { id: 0 }, usingGroup: "default" } as AuthToken;
+        const res = await handleRelayAfterAuth(req, env, ctx, store, capabilityAuth, new URL(req.url), path);
+        return withTaskArtifactCacheControl(res);
+      }
+    }
+
+    const auth = await authenticateApiToken(ctxStore(req, env, ctx), store);
+    if (auth instanceof Response) {
+      return tokenOrTaskArtifactAccessAuthApplies(req.method, path) ? withTaskArtifactCacheControl(auth) : auth;
+    }
+    if (systemPerformanceCheckAppliesAfterAuth(req.method, path) || !isRegisteredRelay(req.method, path)) {
+      const overloaded = await systemPerformanceCheck(store, path, env.DB);
+      if (overloaded) return overloaded;
+    }
+    const res = await withModelRequestRateLimit(
+      store,
+      env,
+      req,
+      auth,
+      () => handleRelayAfterAuth(req, env, ctx, store, auth, new URL(req.url), path),
+      modelRequestRateLimitApplies(req.method, path),
+    );
+    return tokenOrTaskArtifactAccessAuthApplies(req.method, path) ? withTaskArtifactCacheControl(res) : res;
+  } finally {
+    release?.();
   }
-  return withModelRequestRateLimit(
-    store,
-    env,
-    req,
-    auth,
-    () => handleRelayAfterAuth(req, env, ctx, store, auth, url, path),
-    modelRequestRateLimitApplies(req.method, path),
-  );
 }
 
 async function handleRelayAfterAuth(
@@ -344,12 +380,20 @@ async function handleRelayAfterAuth(
     if (tail[0] === "artifacts") {
       const artifactKey = tail[1] ? decodeURIComponent(tail[1]) : "";
       if (tail[2] === "content") {
-        if (!owned || !local) return taskArtifactError(404, "artifact_not_found", "Task or artifact not found");
+        let allowed = Boolean(owned && local);
+        if (isTaskArtifactAccess(req)) {
+          allowed = false;
+          if (local) {
+            const owner = await store.getUserById(Number(local.user_id));
+            allowed = Boolean(owner && owner.status === USER_ENABLED);
+          }
+        }
+        if (!allowed || !local) return writeRelayTaskArtifactError(req, 404, ARTIFACT_NOT_FOUND, ARTIFACT_NOT_FOUND_MESSAGE);
         if (!/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(artifactKey)) {
-          return taskArtifactError(404, "artifact_not_found", "Task or artifact not found");
+          return writeRelayTaskArtifactError(req, 404, ARTIFACT_NOT_FOUND, ARTIFACT_NOT_FOUND_MESSAGE);
         }
         if (String(local.status) !== "SUCCESS") {
-          return taskArtifactError(409, "artifact_not_ready", "Task artifacts are not ready");
+          return writeRelayTaskArtifactError(req, 409, "artifact_not_ready", "Task artifacts are not ready");
         }
         if (env.R2 && artifactKey) {
           const obj = await env.R2.get(`tasks/${decodedId}/${artifactKey}`);
@@ -359,7 +403,7 @@ async function handleRelayAfterAuth(
             });
           }
         }
-        return taskArtifactError(404, "artifact_not_found", "Task or artifact not found");
+        return writeRelayTaskArtifactError(req, 404, ARTIFACT_NOT_FOUND, ARTIFACT_NOT_FOUND_MESSAGE);
       }
       if (!owned || !local) return taskArtifactError(404, "artifact_not_found", "Task or artifact not found");
       try {
@@ -787,7 +831,7 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
           markSkipGzipResponse(inbound);
           return unpacked.denied;
         }
-        req = unpacked.req;
+        req = redactTaskArtifactAccessQuery(unpacked.req);
         if (!isRegisteredRelay(req.method, path)) {
           const plugin = await matchPluginRoute(store, req.method, path);
           if (!plugin) {

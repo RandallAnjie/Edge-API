@@ -105,6 +105,16 @@ export interface Env {
   SESSION_COOKIE_SECURE?: string;
   /** Original `SESSION_COOKIE_TRUSTED_URL` (`common.SessionCookieTrustedURLs`, comma-separated https origins). */
   SESSION_COOKIE_TRUSTED_URL?: string;
+  /** Original `CRYPTO_SECRET` (`common.CryptoSecret`; empty falls back to SessionSecret). */
+  CRYPTO_SECRET?: string;
+  /** Original `TASK_ARTIFACT_INVALID_RATE_LIMIT_PER_MINUTE` (default 60). */
+  TASK_ARTIFACT_INVALID_RATE_LIMIT_PER_MINUTE?: string;
+  /** Original `TASK_ARTIFACT_GLOBAL_CONCURRENCY` (default 128). */
+  TASK_ARTIFACT_GLOBAL_CONCURRENCY?: string;
+  /** Original `TASK_ARTIFACT_IP_CONCURRENCY` (default 64). */
+  TASK_ARTIFACT_IP_CONCURRENCY?: string;
+  /** Original `TASK_ARTIFACT_OBJECT_CONCURRENCY` (default 16). */
+  TASK_ARTIFACT_OBJECT_CONCURRENCY?: string;
 }
 
 export interface ExecutionContextLike {

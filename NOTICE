@@ -201,6 +201,21 @@ Material changes from upstream:
   still runs before this middleware. Extra-OK: 101/204 are not wrapped.
   Extra-OK: CompressionStream gzip bytes may differ from Go `compress/gzip`
   headers; payloads gunzip to the same JSON.
+  Original `middleware.TokenOrTaskArtifactAccessAuth` leftover JSON on
+  GET/HEAD `/v1/tasks/:key/artifacts/:artifact_key/content`: capability
+  `?access=` is verified before any database read (HMAC-SHA256 raw-URL,
+  `CryptoSecret` = `CRYPTO_SECRET` else SessionSecret). Invalid/tampered/
+  empty/duplicate/oversized access is HTTP 404
+  `{error:{message:"Task or artifact not found",type:"artifact_not_found",code:"artifact_not_found"}}`
+  with `Cache-Control: private, no-store`. Limiter deny (invalid-rate
+  default 60/min, or global/IP/object concurrency) is HTTP 429
+  `{error:{message:"Artifact access limit exceeded",type:"rate_limit_error",code:"artifact_access_limited"}}`
+  with `Retry-After: 60`. Missing access falls through to TokenAuth.
+  `SetUpLogger` redacts `access` from the query (also on legacy
+  `/v1/videos/:id/content`). Capability handler errors collapse to the
+  same 404. Extra-OK: limiter state is WeakMap-keyed by D1 so parallel
+  npm tests isolate. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

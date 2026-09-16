@@ -25,7 +25,8 @@ import {
   csv,
   parseJson,
 } from "./constants.js";
-import { hmacSha256Raw, maskKey } from "./crypto.js";
+import { maskKey } from "./crypto.js";
+import { issueTaskArtifactAccess } from "./task-artifact-access.js";
 import { ERR_TWOFA_ALREADY_ENABLED, ERR_TWOFA_NOT_ENABLED, ERR_VERIFICATION_LOCKED, twoFALocked } from "./totp.js";
 import { bytesToHex, sha256BytesSync, utf8Bytes } from "./jsplugin-sha256.js";
 import { advancedCustomConfigFromSettings, supportedEndpointTypesForModel } from "./channel-validate.js";
@@ -2266,16 +2267,7 @@ export function taskFetchView(row: Record<string, unknown>): Record<string, unkn
   };
 }
 
-function bytesToBase64Url(bytes: Uint8Array): string {
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-export async function issueTaskArtifactAccess(secret: string, taskID: string, artifactKey: string): Promise<string> {
-  const msg = new TextEncoder().encode(`v1\0${taskID}\0${artifactKey}`);
-  return bytesToBase64Url(await hmacSha256Raw(secret, msg));
-}
+export { issueTaskArtifactAccess };
 
 export async function buildTaskArtifactContentURL(store: Store, taskID: string, artifactKey: string): Promise<string> {
   const baseAddress = ((await store.option("TaskPublicAddress")) || (await store.option("ServerAddress"))).trim();

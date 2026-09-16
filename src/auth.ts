@@ -73,6 +73,13 @@ export async function sessionSecret(env: Env, store: Store): Promise<string> {
   return s;
 }
 
+/** Original `common.CryptoSecret` (`CRYPTO_SECRET` else `SessionSecret`). */
+export async function cryptoSecret(env: Env, store: Store): Promise<string> {
+  const raw = env.CRYPTO_SECRET;
+  if (raw != null && raw !== "") return raw;
+  return sessionSecret(env, store);
+}
+
 function sessionView(
   sess: {
     sid: string;
