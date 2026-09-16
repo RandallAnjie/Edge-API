@@ -1518,7 +1518,7 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const denied = await requirePaymentCompliance(s);
+    const denied = await requirePaymentCompliance(s, c.req);
     if (denied) return denied;
     const body = await bindRedemption(c.req);
     if (body instanceof Response) return body;
@@ -1593,7 +1593,7 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const denied = await requirePaymentCompliance(s);
+    const denied = await requirePaymentCompliance(s, c.req);
     if (denied) return denied;
     const body = await bindTopUpRequest(c.req);
     if (body instanceof Response) return body;

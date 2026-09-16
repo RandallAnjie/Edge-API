@@ -117,7 +117,7 @@ function moneyOf(plan: Record<string, unknown>): number {
 /** Original `controller.SubscriptionRequestEpay`. */
 export async function requestSubscriptionEpay(c: C): Promise<Response> {
   const s = store(c);
-  const denied = await requirePaymentCompliance(s);
+  const denied = await requirePaymentCompliance(s, c.req);
   if (denied) return denied;
   const u = await requireUser(c, s);
   if (isResponse(u)) return u;
@@ -203,7 +203,7 @@ export async function handleSubscriptionEpayReturn(c: C): Promise<Response> {
 /** Original `controller.SubscriptionRequestStripePay`. */
 export async function requestSubscriptionStripePay(c: C): Promise<Response> {
   const s = store(c);
-  const denied = await requirePaymentCompliance(s);
+  const denied = await requirePaymentCompliance(s, c.req);
   if (denied) return denied;
   const u = await requireUser(c, s);
   if (isResponse(u)) return u;
@@ -275,7 +275,7 @@ async function creemCurrency(s: Store): Promise<string> {
 /** Original `controller.SubscriptionRequestCreemPay`. */
 export async function requestSubscriptionCreemPay(c: C): Promise<Response> {
   const s = store(c);
-  const denied = await requirePaymentCompliance(s);
+  const denied = await requirePaymentCompliance(s, c.req);
   if (denied) return denied;
   const u = await requireUser(c, s);
   if (isResponse(u)) return u;
@@ -332,7 +332,7 @@ export async function requestSubscriptionCreemPay(c: C): Promise<Response> {
 /** Original `controller.SubscriptionRequestWaffoPancakePay`. */
 export async function requestSubscriptionWaffoPancakePay(c: C): Promise<Response> {
   const s = store(c);
-  const denied = await requirePaymentCompliance(s);
+  const denied = await requirePaymentCompliance(s, c.req);
   if (denied) return denied;
   const u = await requireUser(c, s);
   if (isResponse(u)) return u;

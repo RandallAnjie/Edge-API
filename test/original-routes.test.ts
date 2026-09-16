@@ -1157,7 +1157,7 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
     e,
   );
   assert.equal(deniedTopup.body.success, false);
-  assert.equal(deniedTopup.body.message, "支付、兑换码、订阅计划和邀请返利功能已禁用。管理员需先确认合规声明后方可启用。");
+  assert.equal(deniedTopup.body.message, "Payment, redemption, subscription, and invitation reward features are disabled. The administrator must confirm compliance terms before enabling them.");
 
   const deniedRedemption = await json(
     new Request("http://local/api/redemption/", {

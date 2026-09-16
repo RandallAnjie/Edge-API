@@ -959,7 +959,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const denied = await requirePaymentCompliance(s);
+    const denied = await requirePaymentCompliance(s, c.req);
     if (denied) return denied;
     const userId = strconvAtoi(c.params.id);
     if (!userId.ok || userId.n <= 0) return apiErrorMsg("无效的用户ID");

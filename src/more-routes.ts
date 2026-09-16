@@ -783,7 +783,7 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const denied = await requirePaymentCompliance(s);
+    const denied = await requirePaymentCompliance(s, c.req);
     if (denied) return denied;
     const body = (await readJson(c.req)) as { quota?: number };
     const user = await s.getUserById(u.id);
@@ -1457,7 +1457,7 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const denied = await requirePaymentCompliance(s);
+    const denied = await requirePaymentCompliance(s, c.req);
     if (denied) return denied;
     const parsedPay = goUnmarshalJSON((await c.req.text()) || "");
     if (
@@ -1502,7 +1502,7 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const denied = await requirePaymentCompliance(s);
+    const denied = await requirePaymentCompliance(s, c.req);
     if (denied) return denied;
     const parsedPlan = goUnmarshalJSON((await c.req.text()) || "");
     if (
@@ -1525,7 +1525,7 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const denied = await requirePaymentCompliance(s);
+    const denied = await requirePaymentCompliance(s, c.req);
     if (denied) return denied;
     const id = strconvAtoi(c.params.id);
     if (!id.ok || id.n <= 0) return apiErrorMsg("无效的ID");
@@ -1550,7 +1550,7 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const denied = await requirePaymentCompliance(s);
+    const denied = await requirePaymentCompliance(s, c.req);
     if (denied) return denied;
     const id = strconvAtoi(c.params.id);
     if (!id.ok || id.n <= 0) return apiErrorMsg("无效的ID");
@@ -1573,7 +1573,7 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const denied = await requirePaymentCompliance(s);
+    const denied = await requirePaymentCompliance(s, c.req);
     if (denied) return denied;
     const parsedBind = goUnmarshalJSON((await c.req.text()) || "");
     if (

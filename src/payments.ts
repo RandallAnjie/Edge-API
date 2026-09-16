@@ -16,16 +16,13 @@ import {
   validateWaffoPublicKey,
   verifyWaffoBody,
 } from "./crypto.js";
-import { apiErrorMsg, apiOk, clientIp, json, payErr, payOk, paymentReturnPath as serverPaymentReturnPath } from "./http.js";
-import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
+import { apiErrorMsg, apiOk, clientIp, json, payErr, payOk, paymentComplianceRequiredMessage, paymentReturnPath as serverPaymentReturnPath } from "./http.js";
 import {
   ERR_SUBSCRIPTION_ORDER_NOT_FOUND,
   type Store,
 } from "./store.js";
 import type { Env, UserRow } from "./types.js";
 import { parseTrustedRedirectDomains, validateRedirectURL } from "./url-validator.js";
-
-export { PAYMENT_COMPLIANCE_REQUIRED };
 
 /** Original `operation_setting.CurrentComplianceTermsVersion`. */
 export const CURRENT_COMPLIANCE_TERMS_VERSION = "v1";
@@ -37,9 +34,9 @@ export async function paymentComplianceConfirmed(store: Store): Promise<boolean>
 }
 
 /** Original `controller.requirePaymentCompliance` / `common.ApiErrorI18n` (omit `data`). */
-export async function requirePaymentCompliance(store: Store): Promise<Response | null> {
+export async function requirePaymentCompliance(store: Store, req: Request): Promise<Response | null> {
   if (await paymentComplianceConfirmed(store)) return null;
-  return apiErrorMsg(PAYMENT_COMPLIANCE_REQUIRED);
+  return apiErrorMsg(paymentComplianceRequiredMessage(req));
 }
 
 /** Original `common.DecodeJson` into `PaymentComplianceRequest`. */

@@ -3,7 +3,6 @@ import { test } from "node:test";
 import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
-import { PAYMENT_COMPLIANCE_REQUIRED } from "../src/subscription.js";
 import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
@@ -49,6 +48,11 @@ function omitData(body: Record<string, unknown>, message: string) {
   assert.equal("data" in body, false);
   assert.deepEqual(Object.keys(body).sort(), ["message", "success"]);
 }
+
+const COMPLIANCE_REQUIRED_EN =
+  "Payment, redemption, subscription, and invitation reward features are disabled. The administrator must confirm compliance terms before enabling them.";
+const COMPLIANCE_REQUIRED_ZH_CN = "支付、兑换码、订阅计划和邀请返利功能已禁用。管理员需先确认合规声明后方可启用。";
+const COMPLIANCE_REQUIRED_ZH_TW = "支付、兌換碼、訂閱方案和邀請返利功能已停用。管理員需先確認合規聲明後方可啟用。";
 
 test("original ConfirmPaymentCompliance DecodeJson and ApiSuccess gin.H JSON", async () => {
   resetSchemaFlag();
@@ -98,7 +102,27 @@ test("original ConfirmPaymentCompliance DecodeJson and ApiSuccess gin.H JSON", a
     e,
   );
   assert.equal(denied.res.status, 200);
-  omitData(denied.body, PAYMENT_COMPLIANCE_REQUIRED);
+  omitData(denied.body, COMPLIANCE_REQUIRED_EN);
+
+  const zhDenied = await json(
+    new Request("http://local/api/user/topup", {
+      method: "POST",
+      headers: { ...auth, "accept-language": "zh-CN" },
+      body: JSON.stringify({ key: "missing" }),
+    }),
+    e,
+  );
+  omitData(zhDenied.body, COMPLIANCE_REQUIRED_ZH_CN);
+
+  const twDenied = await json(
+    new Request("http://local/api/user/topup", {
+      method: "POST",
+      headers: { ...auth, "accept-language": "zh-TW" },
+      body: JSON.stringify({ key: "missing" }),
+    }),
+    e,
+  );
+  omitData(twDenied.body, COMPLIANCE_REQUIRED_ZH_TW);
 
   const before = Math.floor(Date.now() / 1000);
   const ok = await json(
@@ -179,7 +203,7 @@ test("original IsPaymentComplianceConfirmed requires terms_version v1 and GetTop
     }),
     e,
   );
-  omitData(denied.body, PAYMENT_COMPLIANCE_REQUIRED);
+  omitData(denied.body, COMPLIANCE_REQUIRED_EN);
 
   await store.setOption("PaymentComplianceTermsVersion", "v1");
   const ready = await json(new Request("http://local/api/user/topup/info", { headers: auth }), e);
