@@ -62,7 +62,7 @@ function decodePaymentComplianceRequest(raw: string): { confirmed: boolean } | R
 /** Original `controller.ConfirmPaymentCompliance`. */
 export async function confirmPaymentCompliance(
   store: Store,
-  user: { id: number; sid: string },
+  user: { id: number; sid?: string },
   req: Request,
 ): Promise<Response> {
   if (!user.sid) {
