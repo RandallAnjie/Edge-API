@@ -61,7 +61,7 @@ import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from
 import { headerNavModulePublicOrUserAuth, isHeaderNavDenied } from "./header-nav.js";
 import { markAuditLogged, recordManageAudit } from "./admin-operation-audit.js";
 import { emailVerificationRateLimit } from "./email-verification-rate-limit.js";
-import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, strconvParseInt, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
+import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, strconvParseInt, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -1770,19 +1770,12 @@ export function registerParity(r: Router<Env>): void {
     }
     try {
       const result = await s.deleteModelMetadata(body.model_ids || body.ids || [], Boolean(body.remove_from_channels), Boolean(body.remove_pricing));
-      await s.audit(u.id, u.username, "model.delete_batch", `delete models`, clientIp(c.req), {
-        action: "model.delete_batch",
-        actor_role: u.role,
-        method: "POST",
-        route: "/api/models/delete",
-        other: JSON.stringify({
-          model_ids: body.model_ids || body.ids || [],
-          remove_from_channels: Boolean(body.remove_from_channels),
-          remove_pricing: Boolean(body.remove_pricing),
-          updated_channels: result.updated_channels,
-        }),
+      await recordManageAudit(s, c.req, u, "model.delete_batch", {
+        model_ids: body.model_ids || body.ids || [],
+        remove_from_channels: Boolean(body.remove_from_channels),
+        remove_pricing: Boolean(body.remove_pricing),
+        updated_channels: result.updated_channels,
       });
-      markAuditLogged(c.req);
       return apiOk(result);
     } catch (e) {
       return apiErrorMsg(e instanceof Error ? e.message : String(e));

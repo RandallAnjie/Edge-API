@@ -2281,19 +2281,12 @@ export function registerMore(r: Router<Env>): void {
     }
     try {
       const result = await s.deleteModelMetadata([id.n], fromChannels.v, fromPricing.v);
-      await s.audit(u.id, u.username, "model.delete", `delete model ${id.n}`, clientIp(c.req), {
-        action: "model.delete",
-        actor_role: u.role,
-        method: "DELETE",
-        route: "/api/models/:id",
-        other: JSON.stringify({
-          model_ids: [id.n],
-          remove_from_channels: fromChannels.v,
-          remove_pricing: fromPricing.v,
-          updated_channels: result.updated_channels,
-        }),
+      await recordManageAudit(s, c.req, u, "model.delete", {
+        model_ids: [id.n],
+        remove_from_channels: fromChannels.v,
+        remove_pricing: fromPricing.v,
+        updated_channels: result.updated_channels,
       });
-      markAuditLogged(c.req);
       return apiOk(result);
     } catch (e) {
       return apiErrorMsg(e instanceof Error ? e.message : String(e));
