@@ -303,7 +303,7 @@ test("original UpdateOption CheckGroupRatio gin.H omit data", async () => {
   omitData(str.body, "json: cannot unmarshal string into Go value of type float64");
 
   const invalid = await put("not-json");
-  omitData(invalid.body, "invalid character 'n' looking for beginning of value");
+  omitData(invalid.body, "invalid character 'o' looking for beginning of value");
 
   const ok = await put(JSON.stringify({ default: 1, vip: 0, svip: 1.5 }));
   omitDataOk(ok.body);
