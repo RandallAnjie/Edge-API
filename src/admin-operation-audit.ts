@@ -474,6 +474,34 @@ export function setSecurityErrorCode(req: Request, code: string): void {
   if (code) securityErrorCodeByReq.set(req, code);
 }
 
+/** Stamp `security_error_code` then return the already-built security error. */
+export function withSecurityErrorCode(req: Request, code: string, res: Response): Response {
+  setSecurityErrorCode(req, code);
+  return res;
+}
+
+/**
+ * Original `writeSecurityOperationError` / `securityProofError` set
+ * `security_error_code` from the JSON `code`. Session
+ * `writeAuthSessionError` paths (`AUTH_UNAUTHORIZED` /
+ * `AUTH_SESSION_REVOKED`) do not.
+ */
+export async function attachSecurityErrorCodeFromResponse(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (await res.clone().json()) as { code?: unknown };
+    if (
+      typeof body.code === "string" &&
+      body.code &&
+      body.code !== "AUTH_UNAUTHORIZED" &&
+      body.code !== "AUTH_SESSION_REVOKED"
+    ) {
+      setSecurityErrorCode(req, body.code);
+    }
+  } catch {
+    /* original gin.H omit-data errors have no code */
+  }
+}
+
 /**
  * Original `controller.recordPasskeyDomainAudit`. Category `operation` with
  * English Content, `other.op` + `other.admin_info` + `other.audit_info`

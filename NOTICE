@@ -454,6 +454,23 @@ Material changes from upstream:
   audit write failure must not fail the request.
   requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordUserSecurityAudit` leftover security audit-log
+  JSON on EmailBindStart `user.binding_start`, EmailBindResend
+  `user.email_binding_resend`, EmailBind/WeChatBind/HandleOAuth bind
+  `user.binding_bind`, GenerateOAuthCode bind `user.binding_start`, and
+  UnbindCustomOAuth `user.binding_unbind`. Original defer always records
+  after session identity (invalid provider_id on unbind is before defer),
+  including failed writes. Params include bool `success` so
+  `other.audit_info` is present (Method/Route/Path = gin FullPath,
+  Status=`Writer.Status`, Success=params.success). Email/wechat/OAuth bind
+  and unbind also have `notification_failed`; OAuth start is
+  `{provider, success}` only. `security_error_code` is copied into
+  `params.code` when `writeSecurityOperationError` / `securityProofError`
+  set it. Unauthenticated start/bind and login-intent OAuth state add no
+  binding audit. Extra-OK: hop 323 vendor.create/delete fallback tests stay
+  unchanged. Extra-OK: audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

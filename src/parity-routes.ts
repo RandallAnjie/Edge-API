@@ -59,7 +59,7 @@ import { bindVerificationOperation, issueSecurityProof, securityProofError } fro
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
 import { headerNavModulePublicOrUserAuth, isHeaderNavDenied } from "./header-nav.js";
-import { markAuditLogged, recordManageAudit, recordUserSecurityAudit } from "./admin-operation-audit.js";
+import { markAuditLogged, recordManageAudit, recordUserSecurityAudit, attachSecurityErrorCodeFromResponse } from "./admin-operation-audit.js";
 import { emailVerificationRateLimit } from "./email-verification-rate-limit.js";
 import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, strconvParseInt, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
@@ -69,6 +69,7 @@ import {
   currentSid,
   dashboardIdentity,
   isResponse,
+  readSession,
   issueSessionSafe,
   setupLogin,
   requireAdmin,
@@ -336,26 +337,43 @@ export function registerParity(r: Router<Env>): void {
     if (!identity) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
     const limited = await emailVerificationRateLimit(c.env, c.req);
     if (limited) return limited;
+    const u = await readSession(c, s);
+    if (!u) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    let succeeded = false;
+    let notificationFailed = false;
+    const finishStartAudit = async (res: Response) => {
+      await attachSecurityErrorCodeFromResponse(c.req, res);
+      await recordUserSecurityAudit(
+        s,
+        c.req,
+        u,
+        "user.binding_start",
+        { provider: "email", success: succeeded, notification_failed: notificationFailed },
+        {},
+        res.status,
+      );
+      return res;
+    };
     let body: { email?: unknown };
     try {
       body = (await readJson(c.req)) as { email?: unknown };
     } catch {
-      return securityProofError("SECURITY_CONTEXT_INVALID", "The action details are invalid.", 400);
+      return finishStartAudit(securityProofError("SECURITY_CONTEXT_INVALID", "The action details are invalid.", 400, c.req));
     }
     if (!body || typeof body !== "object") {
-      return securityProofError("SECURITY_CONTEXT_INVALID", "The action details are invalid.", 400);
+      return finishStartAudit(securityProofError("SECURITY_CONTEXT_INVALID", "The action details are invalid.", 400, c.req));
     }
     const validated = await validateAccountEmail(s, String(body.email || ""));
-    if (!validated.ok) return apiFailCode(validated.message, validated.code);
+    if (!validated.ok) return finishStartAudit(apiFailCode(validated.message, validated.code));
     const email = validated.email;
     const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider: "email", email } });
-    if (isResponse(proof)) return proof;
+    if (isResponse(proof)) return finishStartAudit(proof);
     const secret = await sessionSecret(c.env, s);
     const bound = await bindVerificationOperation(secret, { scope: "account.binding.bind", context: { provider: "email", email } });
-    if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
-    if (await emailTakenByOther(s, email, proof.userId)) return emailAlreadyTaken();
+    if (!bound.ok) return finishStartAudit(json(bound.status, { success: false, code: bound.code, message: bound.message }));
+    if (await emailTakenByOther(s, email, proof.userId)) return finishStartAudit(emailAlreadyTaken());
     const user = await s.getUserById(proof.userId);
-    if (!user) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    if (!user) return finishStartAudit(json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" }));
     const currentEmail = (user.email || "").trim().toLowerCase();
     const requireOld = Boolean(currentEmail) && proof.method !== "2fa" && proof.method !== "passkey";
     const codes = await generateEmailBindingCodes(requireOld);
@@ -383,13 +401,15 @@ export function registerParity(r: Router<Env>): void {
       await sendEmailBindingCodes(s, state, codes);
     } catch {
       await s.consumeAuthFlow(flow, { type: EMAIL_BIND_FLOW_TYPE, user_id: proof.userId, session_id: proof.sessionId });
-      return emailDeliveryFailed();
+      return finishStartAudit(emailDeliveryFailed());
     }
     let notification_warning = false;
     if (currentEmail && !requireOld) {
       notification_warning = await notifyAccountSecurityChange(s, currentEmail, "A change of your email address was requested");
     }
-    return apiOk(emailBindingView(flow, expiresAt, state, notification_warning));
+    succeeded = true;
+    notificationFailed = notification_warning;
+    return finishStartAudit(apiOk(emailBindingView(flow, expiresAt, state, notification_warning)));
   });
 
   r.post("/api/oauth/email/bind/resend", async (c) => {
@@ -398,25 +418,35 @@ export function registerParity(r: Router<Env>): void {
     if (!identity) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
     const limited = await emailVerificationRateLimit(c.env, c.req);
     if (limited) return limited;
+    const u = await readSession(c, s);
+    if (!u) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    let succeeded = false;
+    const finishResendAudit = async (res: Response) => {
+      await attachSecurityErrorCodeFromResponse(c.req, res);
+      await recordUserSecurityAudit(s, c.req, u, "user.email_binding_resend", { success: succeeded }, {}, res.status);
+      return res;
+    };
     let body: { flow_token?: unknown };
     try {
       body = (await readJson(c.req)) as { flow_token?: unknown };
     } catch {
-      return authFlowInvalid();
+      return finishResendAudit(authFlowInvalid());
     }
     const token = String(body?.flow_token || "");
-    if (!token) return authFlowInvalid();
+    if (!token) return finishResendAudit(authFlowInvalid());
     const loaded = await loadEmailBinding(s, identity, token);
-    if ("error" in loaded) return loaded.error;
+    if ("error" in loaded) return finishResendAudit(loaded.error);
     const secret = await sessionSecret(c.env, s);
     const bound = await bindVerificationOperation(secret, {
       scope: "account.binding.bind",
       context: { provider: "email", email: loaded.state.email },
     });
-    if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
+    if (!bound.ok) {
+      return finishResendAudit(json(bound.status, { success: false, code: bound.code, message: bound.message }));
+    }
     const invalid = await validateStoredEmailBinding(s, identity, loaded.state, bound.binding.contextHash);
-    if (invalid) return invalid;
-    if (loaded.state.resend_at > nowSec()) return emailBindingResendWait();
+    if (invalid) return finishResendAudit(invalid);
+    if (loaded.state.resend_at > nowSec()) return finishResendAudit(emailBindingResendWait());
     const codes = await generateEmailBindingCodes(Boolean(loaded.state.old_code_hash));
     const next: EmailBindingState = {
       ...loaded.state,
@@ -430,45 +460,64 @@ export function registerParity(r: Router<Env>): void {
       await sendEmailBindingCodes(s, next, codes);
     } catch {
       await s.consumeAuthFlow(token, { type: EMAIL_BIND_FLOW_TYPE, user_id: identity.userId, session_id: identity.sessionId });
-      return emailDeliveryFailed();
+      return finishResendAudit(emailDeliveryFailed());
     }
-    return apiOk(emailBindingView(token, loaded.flow.expires_at, next));
+    succeeded = true;
+    return finishResendAudit(apiOk(emailBindingView(token, loaded.flow.expires_at, next)));
   });
 
   r.post("/api/oauth/email/bind", async (c) => {
     const s = store(c);
     const identity = await dashboardIdentity(c, s);
     if (!identity) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    const u = await readSession(c, s);
+    if (!u) return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
+    let succeeded = false;
+    let notificationFailed = false;
+    const finishBindAudit = async (res: Response) => {
+      await attachSecurityErrorCodeFromResponse(c.req, res);
+      await recordUserSecurityAudit(
+        s,
+        c.req,
+        u,
+        "user.binding_bind",
+        { provider: "email", success: succeeded, notification_failed: notificationFailed },
+        {},
+        res.status,
+      );
+      return res;
+    };
     let body: { flow_token?: unknown; new_code?: unknown; old_code?: unknown };
     try {
       body = (await readJson(c.req)) as { flow_token?: unknown; new_code?: unknown; old_code?: unknown };
     } catch {
-      return authFlowInvalid();
+      return finishBindAudit(authFlowInvalid());
     }
     const token = String(body?.flow_token || "");
-    if (!token) return authFlowInvalid();
+    if (!token) return finishBindAudit(authFlowInvalid());
     const loaded = await loadEmailBinding(s, identity, token);
-    if ("error" in loaded) return loaded.error;
+    if ("error" in loaded) return finishBindAudit(loaded.error);
     const secret = await sessionSecret(c.env, s);
     const bound = await bindVerificationOperation(secret, {
       scope: "account.binding.bind",
       context: { provider: "email", email: loaded.state.email },
     });
-    if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
+    if (!bound.ok) return finishBindAudit(json(bound.status, { success: false, code: bound.code, message: bound.message }));
     const invalid = await validateStoredEmailBinding(s, identity, loaded.state, bound.binding.contextHash);
-    if (invalid) return invalid;
-    if (await emailTakenByOther(s, loaded.state.email, identity.userId)) return emailAlreadyTaken();
+    if (invalid) return finishBindAudit(invalid);
+    if (await emailTakenByOther(s, loaded.state.email, identity.userId)) return finishBindAudit(emailAlreadyTaken());
     if (!(await emailBindingCodesValid(loaded.state, String(body.new_code || ""), String(body.old_code || "")))) {
       const failed = Number(loaded.state.failed_attempts || 0) + 1;
       const next = { ...loaded.state, failed_attempts: failed };
       await s.updateAuthFlowPayload(token, JSON.stringify(next));
-      if (failed >= EMAIL_BINDING_MAX_ATTEMPTS) return emailBindingLocked();
-      return emailBindingCodeInvalid();
+      if (failed >= EMAIL_BINDING_MAX_ATTEMPTS) return finishBindAudit(emailBindingLocked());
+      return finishBindAudit(emailBindingCodeInvalid());
     }
     await s.updateUser(identity.userId, { email: loaded.state.email });
     await s.consumeAuthFlow(token, { type: EMAIL_BIND_FLOW_TYPE, user_id: identity.userId, session_id: identity.sessionId });
-    const notification_warning = await notifyEmailBound(s, loaded.state.current_email, loaded.state.email);
-    return apiOk({ notification_warning });
+    succeeded = true;
+    notificationFailed = await notifyEmailBound(s, loaded.state.current_email, loaded.state.email);
+    return finishBindAudit(apiOk({ notification_warning: notificationFailed }));
   });
 
   r.get("/api/oauth/wechat", async (c) => {
@@ -506,46 +555,73 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const identity = await dashboardIdentity(c, s);
     if (!identity) return writeAuthSessionError(401, "AUTH_UNAUTHORIZED");
-    if (!(await s.optionBool("WeChatAuthEnabled", false))) return apiErrorMsg("管理员未开启通过微信登录以及注册");
+    const u = await readSession(c, s);
+    if (!u) return writeAuthSessionError(401, "AUTH_UNAUTHORIZED");
+    let succeeded = false;
+    let notificationFailed = false;
+    const finishWechatBindAudit = async (res: Response) => {
+      await attachSecurityErrorCodeFromResponse(c.req, res);
+      await recordUserSecurityAudit(
+        s,
+        c.req,
+        u,
+        "user.binding_bind",
+        { provider: "wechat", success: succeeded, notification_failed: notificationFailed },
+        {},
+        res.status,
+      );
+      return res;
+    };
+    if (!(await s.optionBool("WeChatAuthEnabled", false))) {
+      return finishWechatBindAudit(apiErrorMsg("管理员未开启通过微信登录以及注册"));
+    }
     let body: unknown;
     try {
       const raw = await c.req.text();
-      if (!raw.trim()) return apiErrorMsg("无效的请求");
+      if (!raw.trim()) return finishWechatBindAudit(apiErrorMsg("无效的请求"));
       body = JSON.parse(raw);
     } catch {
-      return apiErrorMsg("无效的请求");
+      return finishWechatBindAudit(apiErrorMsg("无效的请求"));
     }
     if (body === null) body = {};
-    if (!body || typeof body !== "object" || Array.isArray(body)) return apiErrorMsg("无效的请求");
+    if (!body || typeof body !== "object" || Array.isArray(body)) return finishWechatBindAudit(apiErrorMsg("无效的请求"));
     const rec = body as { code?: unknown };
-    if ("code" in rec && rec.code != null && typeof rec.code !== "string") return apiErrorMsg("无效的请求");
+    if ("code" in rec && rec.code != null && typeof rec.code !== "string") {
+      return finishWechatBindAudit(apiErrorMsg("无效的请求"));
+    }
     const code = typeof rec.code === "string" ? rec.code.trim() : "";
     const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider: "wechat", code } });
-    if (isResponse(proof)) return proof;
+    if (isResponse(proof)) return finishWechatBindAudit(proof);
     try {
       const wechatId = await wechatIdFromCode(s, code);
       if (await s.getUserByField("wechat_id", wechatId, { includeDeleted: true })) {
-        return apiErrorMsg("该微信账号已被绑定");
+        return finishWechatBindAudit(apiErrorMsg("该微信账号已被绑定"));
       }
       const bound = await s.bindUserColumnForSession(proof, "wechat_id", wechatId);
       if (bound === "already_claimed") {
-        return writeSecurityOperationError("ACCOUNT_ALREADY_BOUND", "This external account is already bound.");
+        return finishWechatBindAudit(
+          writeSecurityOperationError("ACCOUNT_ALREADY_BOUND", "This external account is already bound."),
+        );
       }
       if (bound === "session_invalid") {
-        return writeAuthSessionError(401, "AUTH_UNAUTHORIZED");
+        return finishWechatBindAudit(writeAuthSessionError(401, "AUTH_UNAUTHORIZED"));
       }
       if (bound === "binding_changed") {
-        return writeSecurityOperationError(
-          "ACCOUNT_SECURITY_STATE_CHANGED",
-          "Account bindings have changed. Start this operation again.",
-          409,
+        return finishWechatBindAudit(
+          writeSecurityOperationError(
+            "ACCOUNT_SECURITY_STATE_CHANGED",
+            "Account bindings have changed. Start this operation again.",
+            409,
+          ),
         );
       }
       const user = await s.getUserById(proof.userId);
       const notification_warning = await notifyAccountSecurityChange(s, user?.email || "", "WeChat account linked");
-      return apiOk({ notification_warning });
+      succeeded = true;
+      notificationFailed = notification_warning;
+      return finishWechatBindAudit(apiOk({ notification_warning }));
     } catch (e) {
-      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+      return finishWechatBindAudit(apiErrorMsg(e instanceof Error ? e.message : String(e)));
     }
   });
 

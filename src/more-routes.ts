@@ -102,7 +102,7 @@ import { goJSONKind, goUnmarshalJSON, parseChannelBatch, readChannelTagJSON } fr
 import { apiErrorMsg, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, passkeyCredentialId, readJson, strconvAtoi, strconvParseBool, userCannotDeleteRootUserMessage, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import { turnstileCheck } from "./turnstile.js";
 import { applyTokenBatchAuditParams, setTokenAuditSucceeded, tokenAuditParams } from "./token-operation-audit.js";
-import { recordManageAudit, recordPasskeyDomainAudit, recordUserSecurityAudit } from "./admin-operation-audit.js";
+import { recordManageAudit, recordPasskeyDomainAudit, recordUserSecurityAudit, attachSecurityErrorCodeFromResponse } from "./admin-operation-audit.js";
 import { emailVerificationRateLimit } from "./email-verification-rate-limit.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
@@ -110,6 +110,7 @@ import {
   authenticateTokenReadOnly,
   dashboardIdentity,
   issueSessionSafe,
+  readSession,
   isResponse,
   requireAdmin,
   requireBrowserSession,
@@ -1265,12 +1266,37 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const providerId = strconvAtoi(c.params.provider_id);
     if (!providerId.ok || providerId.n <= 0) return apiErrorMsg("无效的提供商 ID");
+    const u = await readSession(c, s);
+    if (!u) {
+      const proof = await requireProof(c, s, { scope: "account.binding.unbind", context: { provider_id: providerId.n } });
+      if (isResponse(proof)) return proof;
+      await s.deleteUserOAuthBinding(proof.userId, providerId.n);
+      const user = await s.getUserById(proof.userId);
+      const notification_warning = await notifyAccountSecurityChange(s, user?.email || "", "OAuth account unlinked");
+      return apiOk({ notification_warning }, "解绑成功");
+    }
+    let succeeded = false;
+    let notificationFailed = false;
+    const finishUnbindAudit = async (res: Response) => {
+      await attachSecurityErrorCodeFromResponse(c.req, res);
+      await recordUserSecurityAudit(
+        s,
+        c.req,
+        u,
+        "user.binding_unbind",
+        { provider_id: providerId.n, success: succeeded, notification_failed: notificationFailed },
+        c.params,
+        res.status,
+      );
+      return res;
+    };
     const proof = await requireProof(c, s, { scope: "account.binding.unbind", context: { provider_id: providerId.n } });
-    if (isResponse(proof)) return proof;
+    if (isResponse(proof)) return finishUnbindAudit(proof);
     await s.deleteUserOAuthBinding(proof.userId, providerId.n);
+    succeeded = true;
     const user = await s.getUserById(proof.userId);
-    const notification_warning = await notifyAccountSecurityChange(s, user?.email || "", "OAuth account unlinked");
-    return apiOk({ notification_warning }, "解绑成功");
+    notificationFailed = await notifyAccountSecurityChange(s, user?.email || "", "OAuth account unlinked");
+    return finishUnbindAudit(apiOk({ notification_warning: notificationFailed }, "解绑成功"));
   });
 
   r.post("/api/oauth/state", async (c) => {
@@ -1294,17 +1320,34 @@ export function registerMore(r: Router<Env>): void {
     if ((intent === "bind" || intent === "verify") && !identity) {
       return json(401, { success: false, message: "绑定操作需要登录" });
     }
+    let bindingStarted = false;
+    const bindingStartUser = intent === "bind" && identity ? await readSession(c, s) : null;
+    const finishBindingStart = async (res: Response) => {
+      if (bindingStartUser) {
+        await attachSecurityErrorCodeFromResponse(c.req, res);
+        await recordUserSecurityAudit(
+          s,
+          c.req,
+          bindingStartUser,
+          "user.binding_start",
+          { provider, success: bindingStarted },
+          {},
+          res.status,
+        );
+      }
+      return res;
+    };
     const payload: Record<string, unknown> = { provider, intent, aff, affiliate_code: aff };
     if (telegramFlow) payload.telegram = telegramFlow;
     if (intent === "bind" && identity) {
       const proof = await requireProof(c, s, { scope: "account.binding.bind", context: { provider } });
-      if (isResponse(proof)) return proof;
+      if (isResponse(proof)) return finishBindingStart(proof);
       payload.session_id = identity.sessionId;
       payload.session_identity = authSessionIdentityJSON(identity);
     }
     if (telegramFlow && (intent === "bind" || intent === "verify") && identity) {
       if (!(await s.validateAuthSession(identity))) {
-        return json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized" });
+        return finishBindingStart(json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized" }));
       }
       payload.session_identity = authSessionIdentityJSON(identity);
     }
@@ -1339,9 +1382,10 @@ export function registerMore(r: Router<Env>): void {
       payload: JSON.stringify(payload),
       session_id: identity?.sessionId || "",
     });
+    bindingStarted = intent === "bind";
     const data: Record<string, unknown> = { flow_token: flow, expires_at: expires };
     if (telegramFlow) data.authorization_url = await telegramAuthorizationURL(telegramFlow, flow);
-    return apiOk(data);
+    return finishBindingStart(apiOk(data));
   });
 
   r.get("/api/oauth/:provider", async (c) => {
@@ -1372,6 +1416,36 @@ export function registerMore(r: Router<Env>): void {
       return json(403, { success: false, message: i18nPair(c.req, "state 参数为空或不匹配", "State parameter is empty or mismatched") });
     }
     const intent = payload.intent || "login";
+    let bindSucceeded = false;
+    let bindNotificationFailed = false;
+    let bindAuditUser: { id: number; username: string; role: number; useAccessToken?: boolean } | null = null;
+    if (intent === "bind") {
+      const flowUser = await s.getUserById(Number(flow.user_id));
+      const session = await readSession(c, s);
+      bindAuditUser = {
+        id: flowUser?.id ?? Number(flow.user_id) || 0,
+        username: flowUser?.username ?? "",
+        role: session?.role ?? 0,
+        useAccessToken: session?.useAccessToken,
+      };
+    }
+    const finishBindSecurityAudit = async (res: Response) => {
+      if (bindAuditUser && bindAuditUser.id) {
+        await attachSecurityErrorCodeFromResponse(c.req, res);
+        await recordUserSecurityAudit(
+          s,
+          c.req,
+          bindAuditUser,
+          "user.binding_bind",
+          { provider, success: bindSucceeded, notification_failed: bindNotificationFailed },
+          c.params,
+          res.status,
+        );
+      }
+      return res;
+    };
+    return finishBindSecurityAudit(
+      await (async (): Promise<Response> => {
     if (
       (intent === "bind" || intent === "verify") &&
       (!identity || identity.userId !== flow.user_id || identity.sessionId !== String(flow.session_id || ""))
@@ -1466,6 +1540,8 @@ export function registerMore(r: Router<Env>): void {
         user?.email || "",
         "Login account linked: " + displayName,
       );
+      bindSucceeded = true;
+      bindNotificationFailed = notification_warning;
       return apiOk({ action: "bind", notification_warning }, i18nPair(c.req, "绑定成功", "Binding successful"));
     };
 
@@ -1597,6 +1673,8 @@ export function registerMore(r: Router<Env>): void {
       // Original `handleOAuthError` default → `writeSecurityOperationError` unknown → `writeAuthSessionError`.
       return writeAuthSessionError(500, "AUTH_INTERNAL_ERROR");
     }
+      })(),
+    );
   });
 
   r.get("/api/token/search", async (c) => {
