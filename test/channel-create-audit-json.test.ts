@@ -216,8 +216,8 @@ test("original recordManageAudit leftover wrapped/batch channel.create JSON", as
   assert.equal((batch.body.data as { count: number }).count, 2);
   const batchOp = operationEvent(await auditsFor(e, auth, batchRid));
   assert.equal(batchOp.action, "channel.create");
-  assert.equal(batchOp.content, "Created channel batch-ch sk-batch- (type 1, count 2)");
-  assert.equal(batchOp.other.op?.params?.name, "batch-ch sk-batch-");
+  assert.equal(batchOp.content, "Created channel batch-ch sk-batch (type 1, count 2)");
+  assert.equal(batchOp.other.op?.params?.name, "batch-ch sk-batch");
   assert.equal(batchOp.other.op?.params?.count, 2);
   assert.equal(JSON.stringify(batchOp).includes("sk-batch-a"), false);
   assert.equal(JSON.stringify(batchOp).includes("sk-batch-b"), false);
