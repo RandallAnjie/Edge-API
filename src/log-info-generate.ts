@@ -317,6 +317,35 @@ export function shouldPostAudioConsumeQuota(opts: {
   return Boolean(opts.containsAudioRatios);
 }
 
+export type AudioConsumeLogContentOpts = {
+  usePrice: boolean;
+  modelRatio: number;
+  completionRatio: number;
+  audioRatio: number;
+  audioCompletionRatio: number;
+  groupRatio: number;
+  modelPrice: number;
+  totalTokens: number;
+  /** Original HTTP `isFixedPriceSettlement`; WSS omits this check. */
+  fixedPriceBilling?: boolean;
+  extraContent?: string;
+};
+
+/**
+ * Original `service.PostAudioConsumeQuota` consume-log `Content`
+ * (`fmt.Sprintf` `%.2f` ratio/price strings, timeout suffix, extraContent).
+ */
+export function audioConsumeLogContent(opts: AudioConsumeLogContentOpts): string {
+  let logContent = opts.usePrice
+    ? `模型价格 ${opts.modelPrice.toFixed(2)}，分组倍率 ${opts.groupRatio.toFixed(2)}`
+    : `模型倍率 ${opts.modelRatio.toFixed(2)}，补全倍率 ${opts.completionRatio.toFixed(2)}，音频倍率 ${opts.audioRatio.toFixed(2)}，音频补全倍率 ${opts.audioCompletionRatio.toFixed(2)}，分组倍率 ${opts.groupRatio.toFixed(2)}`;
+  if (opts.totalTokens === 0 && !opts.fixedPriceBilling) {
+    logContent += "（可能是上游超时）";
+  }
+  if (opts.extraContent) logContent += `, ${opts.extraContent}`;
+  return logContent;
+}
+
 /** Original `cacheWriteTokensTotal` on `PostTextConsumeQuota`. */
 export function cacheWriteTokensTotal(opts: {
   cacheCreationTokens?: number;

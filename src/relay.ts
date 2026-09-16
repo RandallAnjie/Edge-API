@@ -243,6 +243,7 @@ import {
   type BillingUsage,
 } from "./tiered-settle.js";
 import {
+  audioConsumeLogContent,
   DEFAULT_RELAY_FRT_MS,
   requestConversionChain,
   shouldPostAudioConsumeQuota,
@@ -1585,11 +1586,23 @@ async function settle(
   } else {
     quota = await computeQuota(store, billingName, auth.usingGroup, prompt, completion);
   }
-  if (useAudioOther) {
-    const totalTokens = Number(billingUsage.prompt_tokens || 0) + Number(billingUsage.completion_tokens || 0);
-    if (totalTokens === 0 && !isFixedPriceSettlement(tiered?.result, extra.tieredSnapshot || tiered?.snap)) {
-      quota = 0;
-    }
+  const audioTotalTokens = Number(billingUsage.prompt_tokens || 0) + Number(billingUsage.completion_tokens || 0);
+  const audioFixedPrice = isFixedPriceSettlement(tiered?.result, extra.tieredSnapshot || tiered?.snap);
+  if (useAudioOther && audioTotalTokens === 0 && !audioFixedPrice) {
+    quota = 0;
+  }
+  if (ok && useAudioOther && extra.relayMode !== "images") {
+    content = audioConsumeLogContent({
+      usePrice: price.usePrice,
+      modelRatio: price.modelRatio,
+      completionRatio: audioLog.completionRatio,
+      audioRatio: audioLog.audioRatio,
+      audioCompletionRatio: audioLog.audioCompletionRatio,
+      groupRatio: price.groupRatio,
+      modelPrice: price.modelPrice,
+      totalTokens: audioTotalTokens,
+      fixedPriceBilling: audioFixedPrice,
+    });
   }
   const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
   const logModel = useAudioOther ? billingName : consumeLogModelName(billingName);

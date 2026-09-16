@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { CHANNEL_TYPE_OPENAI, LOG_CONSUME } from "../src/constants.js";
 import { audioConsumeLogRatios, textConsumePriceData } from "../src/quota.js";
 import {
+  audioConsumeLogContent,
   consumeLogOther,
   DEFAULT_RELAY_FRT_MS,
   generateAudioOtherInfo,
@@ -198,6 +199,76 @@ test("original GenerateWssOtherInfo is ws not audio", () => {
   assert.equal(other.ws, true);
   assert.equal("audio" in other, false);
   assert.equal(other.audio_ratio, 8);
+});
+
+test("original PostAudioConsumeQuota consume-log Content JSON", () => {
+  assert.equal(
+    audioConsumeLogContent({
+      usePrice: false,
+      modelRatio: 1.25,
+      completionRatio: 4,
+      audioRatio: 16,
+      audioCompletionRatio: 1,
+      groupRatio: 1,
+      modelPrice: -1,
+      totalTokens: 20,
+    }),
+    "模型倍率 1.25，补全倍率 4.00，音频倍率 16.00，音频补全倍率 1.00，分组倍率 1.00",
+  );
+  assert.equal(
+    audioConsumeLogContent({
+      usePrice: true,
+      modelRatio: 0,
+      completionRatio: 20,
+      audioRatio: 25,
+      audioCompletionRatio: 1,
+      groupRatio: 1,
+      modelPrice: 0.3,
+      totalTokens: 10,
+    }),
+    "模型价格 0.30，分组倍率 1.00",
+  );
+  assert.equal(
+    audioConsumeLogContent({
+      usePrice: false,
+      modelRatio: 1.25,
+      completionRatio: 4,
+      audioRatio: 16,
+      audioCompletionRatio: 1,
+      groupRatio: 1,
+      modelPrice: -1,
+      totalTokens: 0,
+    }),
+    "模型倍率 1.25，补全倍率 4.00，音频倍率 16.00，音频补全倍率 1.00，分组倍率 1.00（可能是上游超时）",
+  );
+  assert.equal(
+    audioConsumeLogContent({
+      usePrice: true,
+      modelRatio: 0,
+      completionRatio: 20,
+      audioRatio: 25,
+      audioCompletionRatio: 1,
+      groupRatio: 1,
+      modelPrice: 0.3,
+      totalTokens: 0,
+      fixedPriceBilling: true,
+    }),
+    "模型价格 0.30，分组倍率 1.00",
+  );
+  assert.equal(
+    audioConsumeLogContent({
+      usePrice: false,
+      modelRatio: 1.25,
+      completionRatio: 4,
+      audioRatio: 16,
+      audioCompletionRatio: 1,
+      groupRatio: 1,
+      modelPrice: -1,
+      totalTokens: 20,
+      extraContent: "voice alloy",
+    }),
+    "模型倍率 1.25，补全倍率 4.00，音频倍率 16.00，音频补全倍率 1.00，分组倍率 1.00, voice alloy",
+  );
 });
 
 test("original PostAudioConsumeQuota vs PostTextConsumeQuota branch JSON", () => {
@@ -405,6 +476,10 @@ test("original chat gpt-4o-audio-preview consume log JSON has GenerateAudioOther
   assert.equal(other.user_group_ratio, -1);
   assert.equal(other.billing_source, "wallet");
   assert.equal("group" in other, false);
+  assert.equal(
+    items[0].content,
+    "模型倍率 1.25，补全倍率 4.00，音频倍率 16.00，音频补全倍率 1.00，分组倍率 1.00",
+  );
 });
 
 test("original chat gpt-4o-mini-tts consume log JSON uses GetAudioRatio 25 under usePrice", async () => {
@@ -457,6 +532,7 @@ test("original chat gpt-4o-mini-tts consume log JSON uses GetAudioRatio 25 under
   assert.equal(other.completion_ratio, 20);
   assert.equal(other.cache_tokens, 0);
   assert.equal(other.audio_output, 4);
+  assert.equal(items[0].content, "模型价格 0.30，分组倍率 1.00");
 });
 
 test("original chat gpt-4o-mini audio tokens without audio ratios stay GenerateTextOtherInfo", async () => {
@@ -503,6 +579,7 @@ test("original chat gpt-4o-mini audio tokens without audio ratios stay GenerateT
   assert.equal("audio" in other, false);
   assert.equal(other.cache_tokens, 1);
   assert.equal(other.cache_ratio, 0.5);
+  assert.equal(items[0].content, "");
 });
 
 test("original binary /v1/audio/speech without audio tokens stays PostTextConsumeQuota JSON", async () => {
@@ -532,6 +609,7 @@ test("original binary /v1/audio/speech without audio tokens stays PostTextConsum
   assert.equal(other.model_ratio, 7.5);
   assert.equal(typeof other.cache_tokens, "number");
   assert.equal(other.request_path, "/v1/audio/speech");
+  assert.equal(items[0].content, "");
 });
 
 test("original calculateAudioQuota ratio path QuotaFromDecimal JSON 523", () => {
@@ -598,4 +676,51 @@ test("original PostAudioConsumeQuota zeros quota when TotalTokens is 0 JSON", as
   const other = parseOther(items[0].other);
   assert.equal(other.audio, true);
   assert.equal(other.audio_input, 4);
+  assert.equal(
+    items[0].content,
+    "模型倍率 1.25，补全倍率 4.00，音频倍率 16.00，音频补全倍率 1.00，分组倍率 1.00（可能是上游超时）",
+  );
+});
+
+test("original stream PostAudioConsumeQuota consume-log Content is ratio string not stream", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  await createChannel(e, auth);
+  const sk = await createSk(e, auth);
+  const sse = [
+    'data: {"id":"chatcmpl-audio-stream","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20,"prompt_tokens_details":{"text_tokens":9,"audio_tokens":3},"completion_tokens_details":{"text_tokens":1,"audio_tokens":7}}}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  await withMockedFetch(
+    () => new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    async () => {
+      const hit = await json(
+        new Request("http://local/v1/chat/completions", {
+          method: "POST",
+          headers: { authorization: "Bearer " + sk, "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-4o-audio-preview",
+            stream: true,
+            messages: [{ role: "user", content: "hi" }],
+          }),
+        }),
+        e,
+      );
+      assert.equal(hit.res.status, 200, hit.text);
+    },
+  );
+  const items = await consumeLogs(e, auth, "gpt-4o-audio-preview");
+  assert.equal(items.length >= 1, true, JSON.stringify(items));
+  assert.equal(Number(items[0].is_stream), 1);
+  assert.equal(
+    items[0].content,
+    "模型倍率 1.25，补全倍率 4.00，音频倍率 16.00，音频补全倍率 1.00，分组倍率 1.00",
+  );
+  const other = parseOther(items[0].other);
+  assert.equal(other.audio, true);
+  assert.equal(other.audio_input, 3);
+  assert.equal(other.audio_output, 7);
 });

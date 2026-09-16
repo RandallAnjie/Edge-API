@@ -6,6 +6,7 @@
 import { LOG_CONSUME, DEFAULT_GROUP_RATIO, parseJson } from "./constants.js";
 import { parseChannelInfo } from "./channel-info.js";
 import { clientIp } from "./http.js";
+import { audioConsumeLogContent } from "./log-info-generate.js";
 import { calculateAudioQuota, generateWssOtherInfo, type RealtimeUsage } from "./openai-realtime-usage.js";
 import {
   getAudioCompletionRatioFromMap,
@@ -187,19 +188,22 @@ export async function postWssConsumeQuota(opts: {
   const audioQuota = postWssAudioQuotaChecked(price, usage);
   let quota = audioQuota.quota;
   const useTimeSeconds = Math.max(0, Math.floor((Date.now() - opts.startMs) / 1000));
-  let logContent: string;
-  if (!price.usePrice) {
-    logContent = `模型倍率 ${price.originModelRatio.toFixed(2)}，补全倍率 ${price.upstreamCompletionRatio.toFixed(2)}，音频倍率 ${price.originAudioRatio.toFixed(2)}，音频补全倍率 ${price.upstreamAudioCompletionRatio.toFixed(2)}，分组倍率 ${price.groupRatio.toFixed(2)}`;
-  } else {
-    logContent = `模型价格 ${price.modelPrice.toFixed(2)}，分组倍率 ${price.groupRatio.toFixed(2)}`;
-  }
   if (usage.total_tokens === 0) {
     quota = 0;
-    logContent += "（可能是上游超时）";
   } else {
     await store.addUserUsedQuotaAndRequestCount(auth.user.id, quota);
     await store.addChannelUsedQuota(channel.id, quota);
   }
+  const logContent = audioConsumeLogContent({
+    usePrice: price.usePrice,
+    modelRatio: price.originModelRatio,
+    completionRatio: price.upstreamCompletionRatio,
+    audioRatio: price.originAudioRatio,
+    audioCompletionRatio: price.upstreamAudioCompletionRatio,
+    groupRatio: price.groupRatio,
+    modelPrice: price.modelPrice,
+    totalTokens: usage.total_tokens,
+  });
   const delta = quota - opts.finalPreConsumedQuota;
   if (delta > 0) {
     await store.decreaseUserQuota(auth.user.id, delta);
