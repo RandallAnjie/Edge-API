@@ -33,7 +33,7 @@ import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { convertOutbound, reasoningSettingsFromStore, type ClientFormat } from "./relay.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
 import { calculateAudioQuota } from "./openai-realtime-usage.js";
-import { computeQuota, textConsumePriceData, audioConsumeLogRatios, modelPriceHelperReject, resolveBillingModelNameFromStore } from "./quota.js";
+import { computeQuota, textConsumePriceData, audioConsumeLogRatios, modelPriceHelperQuotaToPreConsumeFromStore, modelPriceHelperReject, resolveBillingModelNameFromStore } from "./quota.js";
 import { calculateTextQuotaFromStore, composeTieredTextQuota, noteQuotaClamp } from "./text-quota.js";
 import { decodeToolPricesJSON, TOOL_PRICE_OPTION_KEY } from "./tool-price.js";
 import { builtInToolCallCounts, createToolUsageState, ingestUpstreamToolUsage } from "./tool-usage.js";
@@ -610,6 +610,28 @@ export async function testChannel(
       ...testMeta,
       errorCode: "model_price_error",
       newAPIError: channelAttemptFromNewApi(message, 400, "model_price_error"),
+    });
+  }
+  const priceQuota = await modelPriceHelperQuotaToPreConsumeFromStore(store, {
+    billingModelName,
+    promptTokens: 0,
+    maxTokens: tokenMeta.maxTokens,
+    imagePriceRatio: tokenMeta.imagePriceRatio,
+    billingRatios: tokenMeta.billingRatios,
+    group,
+    userGroup: user?.group,
+    relayMode: mode,
+    channelType: channel.type,
+    originModelName: originModel,
+    upstreamModelName: mappedModel || originModel,
+    body: built.body,
+    tieredQuotaToPreConsume: tieredSnapshot?.estimatedQuotaAfterGroup,
+  });
+  if (priceQuota.error) {
+    return fail(priceQuota.error, {
+      ...testMeta,
+      errorCode: "model_price_error",
+      newAPIError: channelAttemptFromNewApi(priceQuota.error, 400, "model_price_error"),
     });
   }
   const paramOverrideAudit: string[] = [];

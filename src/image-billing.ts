@@ -12,6 +12,24 @@ function asObj(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+/** Original `common.ZImagePromptExtendMultiplier`. */
+export const Z_IMAGE_PROMPT_EXTEND_MULTIPLIER = 2;
+
+/** Original `dto.ImageRequest.legacyDallePriceRatio`. */
+export function legacyDallePriceRatio(model: string, size = "", quality = ""): number {
+  if (!model.startsWith("dall-e")) return 1;
+  let sizeRatio = 1;
+  let qualityRatio = 1;
+  if (size === "256x256") sizeRatio = 0.4;
+  else if (size === "512x512") sizeRatio = 0.45;
+  else if (size === "1024x1792" || size === "1792x1024") sizeRatio = 2;
+  if (model === "dall-e-3" && quality === "hd") {
+    qualityRatio = 2;
+    if (size === "1024x1792" || size === "1792x1024") qualityRatio = 1.5;
+  }
+  return sizeRatio * qualityRatio;
+}
+
 /** Original `dto.ImageRequest.ImageCount`. */
 export function imageRequestCount(body: Record<string, unknown>, useProviderParameters: boolean): number {
   let n = 1;

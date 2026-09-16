@@ -1,5 +1,6 @@
 import { BILLING_MODE_TIERED_EXPR, getBillingExpr, getBillingMode } from "./billing-setting.js";
-import { DEFAULT_GROUP_RATIO, parseJson, ROLE_ADMIN } from "./constants.js";
+import { CHANNEL_TYPE_ALI, DEFAULT_GROUP_RATIO, parseJson, ROLE_ADMIN } from "./constants.js";
+import { imageRequestCount, Z_IMAGE_PROMPT_EXTEND_MULTIPLIER } from "./image-billing.js";
 import {
   formatMatchingModelName,
   getAudioCompletionRatioFromMap,
@@ -12,6 +13,12 @@ import {
   getModelRatioFromMap,
   hasConfiguredModelRatio,
 } from "./ratio-setting.js";
+import {
+  applyOtherRatiosToFloat,
+  isValidOtherRatio,
+  quotaClampMessage,
+  quotaFromFloatStrict,
+} from "./task-plugin-usage.js";
 import {
   baseModelName,
   canonicalBillingModelNames,
@@ -392,6 +399,181 @@ export async function modelPriceHelperReject(
     return modelPriceNotConfiguredMessage(ratio.name || billingModelName, userRole);
   }
   return null;
+}
+
+export type ModelPriceHelperQuotaResult = {
+  quotaToPreConsume: number;
+  freeModel: boolean;
+  usePrice: boolean;
+  modelPrice: number;
+  modelRatio: number;
+  otherRatios: Record<string, number>;
+  error?: string;
+};
+
+export type ModelPriceHelperQuotaInput = {
+  billingModelName: string;
+  promptTokens: number;
+  maxTokens?: number;
+  imagePriceRatio?: number;
+  billingRatios?: Record<string, number>;
+  groupRatio: number;
+  quotaPerUnit: number;
+  preConsumedQuota: number;
+  enableFreeModelPreConsume: boolean;
+  modelRatioMap: Record<string, unknown>;
+  modelPriceMap: Record<string, unknown>;
+  modes: Record<string, string>;
+  selfUse?: boolean;
+  relayMode?: string;
+  channelType?: number;
+  originModelName?: string;
+  upstreamModelName?: string;
+  body?: Record<string, unknown>;
+  tieredQuotaToPreConsume?: number;
+};
+
+function addOtherRatio(out: Record<string, number>, key: string, ratio: number): void {
+  if (!isValidOtherRatio(ratio)) return;
+  out[key] = ratio;
+}
+
+function quotaHelperError(message: string): ModelPriceHelperQuotaResult {
+  return { quotaToPreConsume: 0, freeModel: false, usePrice: false, modelPrice: 0, modelRatio: 0, otherRatios: {}, error: message };
+}
+
+/** Original `helper.ModelPriceHelper` `QuotaToPreConsume` / `FreeModel`. */
+export function modelPriceHelperQuotaToPreConsume(input: ModelPriceHelperQuotaInput): ModelPriceHelperQuotaResult {
+  const billing = input.billingModelName;
+  const other: Record<string, number> = {};
+  if (getBillingMode(billing, input.modes, input.modelRatioMap, input.modelPriceMap) === BILLING_MODE_TIERED_EXPR) {
+    let quota = Math.trunc(Number(input.tieredQuotaToPreConsume || 0));
+    let freeModel = false;
+    if (!input.enableFreeModelPreConsume && input.groupRatio === 0) {
+      quota = 0;
+      freeModel = true;
+    }
+    return { quotaToPreConsume: quota, freeModel, usePrice: false, modelPrice: 0, modelRatio: 0, otherRatios: other };
+  }
+
+  const priced = getModelPriceFromMap(billing, input.modelPriceMap);
+  const usePrice = priced.configured;
+  let modelPrice = priced.price;
+  let modelRatio = 0;
+  let imageQuotaBeforeGroup = 0;
+  let quota = 0;
+
+  if (!usePrice) {
+    let preConsumedTokens = Math.max(Math.trunc(input.promptTokens || 0), Math.trunc(input.preConsumedQuota || 0));
+    if (input.maxTokens) preConsumedTokens += Math.trunc(input.maxTokens);
+    modelRatio = getModelRatioFromMap(billing, input.modelRatioMap, Boolean(input.selfUse)).ratio;
+    const strict = quotaFromFloatStrict(preConsumedTokens * modelRatio * input.groupRatio);
+    if (strict.clamp) return quotaHelperError(quotaClampMessage(strict.clamp));
+    quota = strict.quota;
+    if (input.relayMode === "images") imageQuotaBeforeGroup = preConsumedTokens * modelRatio;
+  } else if (input.imagePriceRatio) {
+    modelPrice *= input.imagePriceRatio;
+  }
+  if (usePrice && input.relayMode === "images") imageQuotaBeforeGroup = modelPrice * input.quotaPerUnit;
+
+  let freeModel = false;
+  if (!input.enableFreeModelPreConsume) {
+    if (input.groupRatio === 0) {
+      quota = 0;
+      freeModel = true;
+    } else if (usePrice && modelPrice === 0) {
+      quota = 0;
+      freeModel = true;
+    } else if (!usePrice && modelRatio === 0) {
+      quota = 0;
+      freeModel = true;
+    }
+  }
+
+  if (usePrice && input.billingRatios) {
+    for (const [name, ratio] of Object.entries(input.billingRatios)) addOtherRatio(other, name, ratio);
+  }
+
+  if (input.relayMode === "images") {
+    try {
+      const count = imageRequestCount(input.body || {}, input.channelType === CHANNEL_TYPE_ALI);
+      if (usePrice || input.channelType === CHANNEL_TYPE_ALI) addOtherRatio(other, "n", count);
+    } catch (err) {
+      return quotaHelperError(err instanceof Error ? err.message : String(err));
+    }
+    const parameters =
+      input.body && typeof input.body.parameters === "object" && input.body.parameters
+        ? (input.body.parameters as Record<string, unknown>)
+        : {};
+    if (input.channelType === CHANNEL_TYPE_ALI && parameters.prompt_extend === true) {
+      const mapped = input.upstreamModelName || input.originModelName || billing;
+      if (String(mapped).includes("z-image")) addOtherRatio(other, "prompt_extend", Z_IMAGE_PROMPT_EXTEND_MULTIPLIER);
+    }
+    if (!usePrice) {
+      const strict = quotaFromFloatStrict(applyOtherRatiosToFloat(imageQuotaBeforeGroup * input.groupRatio, other));
+      if (strict.clamp) return quotaHelperError(quotaClampMessage(strict.clamp));
+      quota = strict.quota;
+    }
+  }
+
+  if (usePrice) {
+    const strict = quotaFromFloatStrict(applyOtherRatiosToFloat(modelPrice * input.quotaPerUnit * input.groupRatio, other));
+    if (strict.clamp) return quotaHelperError(quotaClampMessage(strict.clamp));
+    quota = strict.quota;
+  }
+
+  return {
+    quotaToPreConsume: quota,
+    freeModel,
+    usePrice,
+    modelPrice: usePrice ? modelPrice : -1,
+    modelRatio,
+    otherRatios: other,
+  };
+}
+
+export async function modelPriceHelperQuotaToPreConsumeFromStore(
+  store: Store,
+  opts: {
+    billingModelName: string;
+    promptTokens: number;
+    maxTokens?: number;
+    imagePriceRatio?: number;
+    billingRatios?: Record<string, number>;
+    group: string;
+    userGroup?: string;
+    relayMode?: string;
+    channelType?: number;
+    originModelName?: string;
+    upstreamModelName?: string;
+    body?: Record<string, unknown>;
+    tieredQuotaToPreConsume?: number;
+  },
+): Promise<ModelPriceHelperQuotaResult> {
+  const groupInfo = await handleGroupRatio(store, opts.group, opts.userGroup || "");
+  const preConsumedRaw = await store.option("PreConsumedQuota");
+  const preConsumedParsed = Number(preConsumedRaw);
+  return modelPriceHelperQuotaToPreConsume({
+    billingModelName: opts.billingModelName,
+    promptTokens: opts.promptTokens,
+    maxTokens: opts.maxTokens,
+    imagePriceRatio: opts.imagePriceRatio,
+    billingRatios: opts.billingRatios,
+    groupRatio: groupInfo.groupRatio,
+    quotaPerUnit: (await store.optionNum("QuotaPerUnit", 500000)) || 500000,
+    preConsumedQuota: preConsumedRaw && Number.isFinite(preConsumedParsed) ? preConsumedParsed : 500,
+    enableFreeModelPreConsume: await store.optionBool("quota_setting.enable_free_model_pre_consume", true),
+    modelRatioMap: parseJson<Record<string, unknown>>(await store.option("ModelRatio"), {}),
+    modelPriceMap: parseJson<Record<string, unknown>>(await store.option("ModelPrice"), {}),
+    modes: parseJson<Record<string, string>>(await store.option("billing_setting.billing_mode"), {}),
+    selfUse: await store.optionBool("SelfUseModeEnabled", false),
+    relayMode: opts.relayMode,
+    channelType: opts.channelType,
+    originModelName: opts.originModelName,
+    upstreamModelName: opts.upstreamModelName,
+    body: opts.body,
+    tieredQuotaToPreConsume: opts.tieredQuotaToPreConsume,
+  });
 }
 
 function resolveBillingModelNameFromStoreSync(

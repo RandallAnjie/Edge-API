@@ -150,6 +150,7 @@ import {
   audioConsumeLogRatios,
   computeQuota,
   consumeLogModelName,
+  modelPriceHelperQuotaToPreConsumeFromStore,
   modelPriceHelperReject,
   resolveBillingModelNameFromStore,
 } from "./quota.js";
@@ -1785,7 +1786,23 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     const message = err instanceof Error ? err.message : String(err);
     return openaiError(400, message, "model_price_error");
   }
-  const preNeed = tieredSnapshot ? tieredSnapshot.estimatedQuotaAfterGroup : Math.max(1, promptEst);
+  const priceQuota = await modelPriceHelperQuotaToPreConsumeFromStore(store, {
+    billingModelName,
+    promptTokens: promptEst,
+    maxTokens: tokenMeta.maxTokens,
+    imagePriceRatio: tokenMeta.imagePriceRatio,
+    billingRatios: tokenMeta.billingRatios,
+    group: auth.usingGroup,
+    userGroup: auth.user.group,
+    relayMode: mode,
+    channelType: first.type,
+    originModelName: model,
+    upstreamModelName: applyModelMapping(first, model),
+    body: asObj(opts.body),
+    tieredQuotaToPreConsume: tieredSnapshot?.estimatedQuotaAfterGroup,
+  });
+  if (priceQuota.error) return openaiError(400, priceQuota.error, "model_price_error");
+  const preNeed = priceQuota.freeModel ? 0 : priceQuota.quotaToPreConsume;
   const precheck = remainingOk(
     auth.user.quota,
     auth.token.remain_quota,

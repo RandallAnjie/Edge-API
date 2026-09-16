@@ -195,6 +195,8 @@ test("original ImageRequest GetTokenCountMeta MaxTokens is 1584", () => {
   });
   assert.equal(meta.combineText, "a cat");
   assert.equal(meta.maxTokens, 1584);
+  assert.equal(meta.imagePriceRatio, 1);
+  assert.deepEqual(meta.billingRatios, { n: 2 });
 });
 
 test("original AudioRequest HTTP speech consume-log prompt_tokens uses Input rune count", async () => {

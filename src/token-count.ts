@@ -12,6 +12,7 @@ import {
   relayFormatForClient,
 } from "./log-info-generate.js";
 import { embeddingCombineText, rerankCombineText } from "./valid-request.js";
+import { legacyDallePriceRatio } from "./image-billing.js";
 
 export const TOKEN_TYPE_TEXT_NUMBER = "text_number";
 export const TOKEN_TYPE_TOKENIZER = "tokenizer";
@@ -23,6 +24,8 @@ export type TokenCountMeta = {
   nameCount: number;
   messagesCount: number;
   maxTokens: number;
+  imagePriceRatio?: number;
+  billingRatios?: Record<string, number>;
 };
 
 type TokenCountOpts = {
@@ -292,10 +295,14 @@ function audioMeta(body: Record<string, unknown>, model: string): TokenCountMeta
 }
 
 function imageMeta(body: Record<string, unknown>): TokenCountMeta {
+  let imageN = 1;
+  if (body.n != null && Number(body.n) > 0) imageN = Math.trunc(Number(body.n));
   return {
     ...emptyMeta(),
     combineText: typeof body.prompt === "string" ? body.prompt : "",
     maxTokens: 1584,
+    imagePriceRatio: legacyDallePriceRatio(String(body.model || ""), String(body.size || ""), String(body.quality || "")),
+    billingRatios: { n: imageN },
   };
 }
 
