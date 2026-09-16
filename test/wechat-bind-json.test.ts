@@ -26,6 +26,21 @@ async function json(req: Request, e: Env) {
   return { res, body, text };
 }
 
+function omitData(body: Record<string, unknown>, message: string) {
+  assert.equal(body.success, false);
+  assert.equal(body.message, message);
+  assert.equal("data" in body, false);
+  assert.deepEqual(Object.keys(body).sort(), ["message", "success"]);
+}
+
+function securityOp(body: Record<string, unknown>, code: string, message: string) {
+  assert.equal(body.success, false);
+  assert.equal(body.code, code);
+  assert.equal(body.message, message);
+  assert.equal("data" in body, false);
+  assert.deepEqual(Object.keys(body).sort(), ["code", "message", "success"]);
+}
+
 async function boot(e: Env) {
   await json(
     new Request("http://local/api/setup", {
@@ -61,14 +76,7 @@ async function passwordProof(e: Env, auth: Record<string, string>, scope: string
   return r.body.data as { proof_token: string };
 }
 
-test("original WeChatBind JSON: already-bound message, empty success message, notification_warning", async () => {
-  resetSchemaFlag();
-  const e = env();
-  const { auth } = await boot(e);
-  const store = new Store(e.DB);
-  await store.setOption("WeChatServerAddress", "https://wechat.example");
-  await store.setOption("WeChatServerToken", "wechat-token");
-
+function mockWeChatBindFetch() {
   const origFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init);
@@ -82,8 +90,30 @@ test("original WeChatBind JSON: already-bound message, empty success message, no
     }
     return origFetch(input, init);
   }) as typeof fetch;
+  return origFetch;
+}
+
+test("original WeChatBind DecodeJson / leftover gin.H omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const store = new Store(e.DB);
+  await store.setOption("WeChatServerAddress", "https://wechat.example");
+  await store.setOption("WeChatServerToken", "wechat-token");
+  const origFetch = mockWeChatBindFetch();
 
   try {
+    const unauth = await json(
+      new Request("http://local/api/oauth/wechat/bind", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: "wx-ok" }),
+      }),
+      e,
+    );
+    assert.equal(unauth.res.status, 401);
+    securityOp(unauth.body, "AUTH_UNAUTHORIZED", "Unauthorized");
+
     const disabled = await json(
       new Request("http://local/api/oauth/wechat/bind", {
         method: "POST",
@@ -92,10 +122,18 @@ test("original WeChatBind JSON: already-bound message, empty success message, no
       }),
       e,
     );
-    assert.equal(disabled.body.success, false);
-    assert.equal(disabled.body.message, "管理员未开启通过微信登录以及注册");
+    omitData(disabled.body, "管理员未开启通过微信登录以及注册");
 
     await store.setOption("WeChatAuthEnabled", "true");
+
+    const empty = await json(
+      new Request("http://local/api/oauth/wechat/bind", {
+        method: "POST",
+        headers: auth,
+      }),
+      e,
+    );
+    omitData(empty.body, "无效的请求");
 
     const badJson = await json(
       new Request("http://local/api/oauth/wechat/bind", {
@@ -105,8 +143,65 @@ test("original WeChatBind JSON: already-bound message, empty success message, no
       }),
       e,
     );
-    assert.equal(badJson.body.success, false);
-    assert.equal(badJson.body.message, "无效的请求");
+    omitData(badJson.body, "无效的请求");
+
+    const codeNum = await json(
+      new Request("http://local/api/oauth/wechat/bind", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ code: 1 }),
+      }),
+      e,
+    );
+    omitData(codeNum.body, "无效的请求");
+
+    const arrayBody = await json(
+      new Request("http://local/api/oauth/wechat/bind", {
+        method: "POST",
+        headers: auth,
+        body: "[]",
+      }),
+      e,
+    );
+    omitData(arrayBody.body, "无效的请求");
+
+    const jsonNull = await json(
+      new Request("http://local/api/oauth/wechat/bind", {
+        method: "POST",
+        headers: auth,
+        body: "null",
+      }),
+      e,
+    );
+    assert.equal(jsonNull.res.status, 403);
+    securityOp(jsonNull.body, "SECURITY_PROOF_REQUIRED", "需要安全验证");
+
+    const emptyProof = await passwordProof(e, auth, "account.binding.bind", { context: { provider: "wechat", code: "" } });
+    const emptyCode = await json(
+      new Request("http://local/api/oauth/wechat/bind", {
+        method: "POST",
+        headers: { ...auth, "X-Security-Proof": emptyProof.proof_token },
+        body: "null",
+      }),
+      e,
+    );
+    omitData(emptyCode.body, "无效的参数");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original WeChatBind JSON: already-bound message, empty success message, notification_warning", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const store = new Store(e.DB);
+  await store.setOption("WeChatServerAddress", "https://wechat.example");
+  await store.setOption("WeChatServerToken", "wechat-token");
+  const origFetch = mockWeChatBindFetch();
+
+  try {
+    await store.setOption("WeChatAuthEnabled", "true");
 
     const proof = await passwordProof(e, auth, "account.binding.bind", { context: { provider: "wechat", code: "wx-ok" } });
     const bound = await json(
@@ -134,8 +229,7 @@ test("original WeChatBind JSON: already-bound message, empty success message, no
       }),
       e,
     );
-    assert.equal(taken.body.success, false);
-    assert.equal(taken.body.message, "该微信账号已被绑定");
+    omitData(taken.body, "该微信账号已被绑定");
     assert.equal((await store.getUserById(1))?.wechat_id, "wxid-root");
   } finally {
     globalThis.fetch = origFetch;

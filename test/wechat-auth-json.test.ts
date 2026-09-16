@@ -27,6 +27,13 @@ async function json(req: Request, e: Env) {
   return { res, body, text };
 }
 
+function omitData(body: Record<string, unknown>, message: string) {
+  assert.equal(body.success, false);
+  assert.equal(body.message, message);
+  assert.equal("data" in body, false);
+  assert.deepEqual(Object.keys(body).sort(), ["message", "success"]);
+}
+
 function setCookies(res: Response): string[] {
   if (typeof res.headers.getSetCookie === "function") return res.headers.getSetCookie();
   const single = res.headers.get("set-cookie");
@@ -66,6 +73,47 @@ function mockWeChatFetch() {
   return origFetch;
 }
 
+test("original WeChatAuth leftover gin.H omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  await boot(e);
+  const store = new Store(e.DB);
+  await store.setOption("WeChatServerAddress", "https://wechat.example");
+  await store.setOption("WeChatServerToken", "wechat-token");
+
+  const origFetch = mockWeChatFetch();
+  try {
+    const disabled = await json(new Request("http://local/api/oauth/wechat?code=wx-new"), e);
+    omitData(disabled.body, "管理员未开启通过微信登录以及注册");
+
+    await store.setOption("WeChatAuthEnabled", "true");
+
+    const emptyCode = await json(new Request("http://local/api/oauth/wechat"), e);
+    omitData(emptyCode.body, "无效的参数");
+
+    const fail = await json(new Request("http://local/api/oauth/wechat?code=wx-fail"), e);
+    omitData(fail.body, "upstream-fail");
+
+    const emptyData = await json(new Request("http://local/api/oauth/wechat?code=wx-empty"), e);
+    omitData(emptyData.body, "验证码错误或已过期");
+
+    await store.setOption("RegisterEnabled", "false");
+    const closed = await json(new Request("http://local/api/oauth/wechat?code=wx-new"), e);
+    omitData(closed.body, "管理员关闭了新用户注册");
+
+    const deletedId = await store.insertUser({ username: "gone", aff_code: "wxgone", wechat_id: "wxid-deleted" });
+    await store.softDeleteUser(deletedId);
+    const deleted = await json(new Request("http://local/api/oauth/wechat?code=wx-deleted"), e);
+    omitData(deleted.body, "用户已注销");
+
+    await store.insertUser({ username: "banned", aff_code: "wxban", wechat_id: "wxid-banned", status: USER_DISABLED });
+    const banned = await json(new Request("http://local/api/oauth/wechat?code=wx-banned"), e);
+    omitData(banned.body, "用户已被封禁");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test("original WeChatAuth JSON: register, login_method wechat, deleted, banned, LoginChallenge", async () => {
   resetSchemaFlag();
   const e = env();
@@ -77,27 +125,22 @@ test("original WeChatAuth JSON: register, login_method wechat, deleted, banned, 
   const origFetch = mockWeChatFetch();
   try {
     const disabled = await json(new Request("http://local/api/oauth/wechat?code=wx-new"), e);
-    assert.equal(disabled.body.success, false);
-    assert.equal(disabled.body.message, "管理员未开启通过微信登录以及注册");
+    omitData(disabled.body, "管理员未开启通过微信登录以及注册");
 
     await store.setOption("WeChatAuthEnabled", "true");
 
     const emptyCode = await json(new Request("http://local/api/oauth/wechat"), e);
-    assert.equal(emptyCode.body.success, false);
-    assert.equal(emptyCode.body.message, "无效的参数");
+    omitData(emptyCode.body, "无效的参数");
 
     const fail = await json(new Request("http://local/api/oauth/wechat?code=wx-fail"), e);
-    assert.equal(fail.body.success, false);
-    assert.equal(fail.body.message, "upstream-fail");
+    omitData(fail.body, "upstream-fail");
 
     const emptyData = await json(new Request("http://local/api/oauth/wechat?code=wx-empty"), e);
-    assert.equal(emptyData.body.success, false);
-    assert.equal(emptyData.body.message, "验证码错误或已过期");
+    omitData(emptyData.body, "验证码错误或已过期");
 
     await store.setOption("RegisterEnabled", "false");
     const closed = await json(new Request("http://local/api/oauth/wechat?code=wx-new"), e);
-    assert.equal(closed.body.success, false);
-    assert.equal(closed.body.message, "管理员关闭了新用户注册");
+    omitData(closed.body, "管理员关闭了新用户注册");
 
     await store.setOption("RegisterEnabled", "true");
     const created = await json(new Request("http://local/api/oauth/wechat?code=wx-new"), e);
@@ -129,13 +172,11 @@ test("original WeChatAuth JSON: register, login_method wechat, deleted, banned, 
     const deletedId = await store.insertUser({ username: "gone", aff_code: "wxgone", wechat_id: "wxid-deleted" });
     await store.softDeleteUser(deletedId);
     const deleted = await json(new Request("http://local/api/oauth/wechat?code=wx-deleted"), e);
-    assert.equal(deleted.body.success, false);
-    assert.equal(deleted.body.message, "用户已注销");
+    omitData(deleted.body, "用户已注销");
 
     await store.insertUser({ username: "banned", aff_code: "wxban", wechat_id: "wxid-banned", status: USER_DISABLED });
     const banned = await json(new Request("http://local/api/oauth/wechat?code=wx-banned"), e);
-    assert.equal(banned.body.success, false);
-    assert.equal(banned.body.message, "用户已被封禁");
+    omitData(banned.body, "用户已被封禁");
 
     const pkUser = await store.insertUser({ username: "pkuser", aff_code: "wxpk", wechat_id: "wxid-passkey" });
     await store.insertPasskey(pkUser, "cred-wechat", "pubkey", "device", "example.com");
