@@ -1,5 +1,5 @@
 import { nowSec } from "./constants.js";
-import { apiFail, apiOk, OAuthAccessDeniedError, OAuthI18nError, readJson } from "./http.js";
+import { apiErrorMsg, apiOk, OAuthAccessDeniedError, OAuthI18nError, readJson } from "./http.js";
 import type { OAuthProfile } from "./oauth.js";
 import type { Context } from "./router.js";
 import type { Store } from "./store.js";
@@ -463,17 +463,17 @@ export async function exchangeCustom(
 export async function fetchCustomOAuthDiscovery(body: { well_known_url?: string; issuer_url?: string; url?: string }): Promise<Response> {
   const wellKnownURL = (body.well_known_url || body.url || "").trim();
   const issuerURL = (body.issuer_url || "").trim();
-  if (!wellKnownURL && !issuerURL) return apiFail("请先填写 Discovery URL 或 Issuer URL");
+  if (!wellKnownURL && !issuerURL) return apiErrorMsg("请先填写 Discovery URL 或 Issuer URL");
   let targetURL = wellKnownURL || `${issuerURL.replace(/\/+$/, "")}/.well-known/openid-configuration`;
   targetURL = targetURL.trim();
   let parsed: URL;
   try {
     parsed = new URL(targetURL);
   } catch {
-    return apiFail("Discovery URL 无效，仅支持 http/https");
+    return apiErrorMsg("Discovery URL 无效，仅支持 http/https");
   }
   if (!parsed.host || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
-    return apiFail("Discovery URL 无效，仅支持 http/https");
+    return apiErrorMsg("Discovery URL 无效，仅支持 http/https");
   }
   try {
     const res = await fetch(targetURL, {
@@ -482,12 +482,12 @@ export async function fetchCustomOAuthDiscovery(body: { well_known_url?: string;
     });
     if (!res.ok) {
       const text = (await res.text()).trim().slice(0, 512);
-      return apiFail(`获取 Discovery 配置失败: ${text || res.statusText}`);
+      return apiErrorMsg(`获取 Discovery 配置失败: ${text || res.statusText}`);
     }
     const discovery = (await res.json()) as Record<string, unknown>;
     return apiOk({ well_known_url: targetURL, discovery });
   } catch (err) {
-    return apiFail(`获取 Discovery 配置失败: ${err instanceof Error ? err.message : String(err)}`);
+    return apiErrorMsg(`获取 Discovery 配置失败: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -500,15 +500,15 @@ export async function createCustomOAuthProvider(store: Store, body: Record<strin
   const token = String(body.token_endpoint || body.token_url || "").trim();
   const userInfo = String(body.user_info_endpoint || body.user_info_url || "").trim();
   if (!name || !slug || !clientId || !clientSecret || !authorization || !token || !userInfo) {
-    return apiFail("无效的请求参数");
+    return apiErrorMsg("无效的请求参数");
   }
-  if (await store.isOAuthSlugTaken(slug)) return apiFail("该 Slug 已被使用");
-  if (isBuiltinOAuthSlug(slug)) return apiFail("该 Slug 与内置 OAuth 提供商冲突");
+  if (await store.isOAuthSlugTaken(slug)) return apiErrorMsg("该 Slug 已被使用");
+  if (isBuiltinOAuthSlug(slug)) return apiErrorMsg("该 Slug 与内置 OAuth 提供商冲突");
   if (body.access_policy) {
     try {
       parseAccessPolicy(String(body.access_policy));
     } catch (err) {
-      return apiFail(`access_policy is invalid: ${err instanceof Error ? err.message : String(err)}`);
+      return apiErrorMsg(`access_policy is invalid: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   const row = normalizeCustomOAuthWrite(body);
@@ -518,19 +518,19 @@ export async function createCustomOAuthProvider(store: Store, body: Record<strin
 }
 
 export async function updateCustomOAuthProvider(store: Store, id: number, body: Record<string, unknown>): Promise<Response> {
-  if (!Number.isInteger(id) || id <= 0) return apiFail("无效的 ID");
+  if (!Number.isInteger(id) || id <= 0) return apiErrorMsg("无效的 ID");
   const existing = await store.getOAuthProvider(id);
-  if (!existing) return apiFail("未找到该 OAuth 提供商");
+  if (!existing) return apiErrorMsg("未找到该 OAuth 提供商");
   const nextSlug = String(body.slug || existing.slug || "");
   if (nextSlug && nextSlug !== existing.slug) {
-    if (await store.isOAuthSlugTaken(nextSlug, id)) return apiFail("该 Slug 已被使用");
-    if (isBuiltinOAuthSlug(nextSlug)) return apiFail("该 Slug 与内置 OAuth 提供商冲突");
+    if (await store.isOAuthSlugTaken(nextSlug, id)) return apiErrorMsg("该 Slug 已被使用");
+    if (isBuiltinOAuthSlug(nextSlug)) return apiErrorMsg("该 Slug 与内置 OAuth 提供商冲突");
   }
   if (body.access_policy) {
     try {
       parseAccessPolicy(String(body.access_policy));
     } catch (err) {
-      return apiFail(`access_policy is invalid: ${err instanceof Error ? err.message : String(err)}`);
+      return apiErrorMsg(`access_policy is invalid: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   const row = normalizeCustomOAuthWrite(body, existing);
@@ -540,11 +540,11 @@ export async function updateCustomOAuthProvider(store: Store, id: number, body: 
 }
 
 export async function deleteCustomOAuthProvider(store: Store, id: number): Promise<Response> {
-  if (!Number.isInteger(id) || id <= 0) return apiFail("无效的 ID");
+  if (!Number.isInteger(id) || id <= 0) return apiErrorMsg("无效的 ID");
   const existing = await store.getOAuthProvider(id);
-  if (!existing) return apiFail("未找到该 OAuth 提供商");
+  if (!existing) return apiErrorMsg("未找到该 OAuth 提供商");
   const count = await store.countOAuthBindings(id);
-  if (count > 0) return apiFail("该 OAuth 提供商还有用户绑定，无法删除。请先解除所有用户绑定。");
+  if (count > 0) return apiErrorMsg("该 OAuth 提供商还有用户绑定，无法删除。请先解除所有用户绑定。");
   await store.deleteOAuthProvider(id);
   return apiOk(null, "删除成功");
 }

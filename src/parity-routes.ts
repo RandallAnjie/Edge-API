@@ -1,5 +1,5 @@
 import { billingCopies } from "./billing-setting.js";
-import { CHANNEL_MANUAL_DISABLED, CHANNEL_TYPE_OLLAMA, ROLE_ROOT, ROLE_USER, USER_ENABLED, nowSec, parseJson, randomHex } from "./constants.js";
+import { CHANNEL_MANUAL_DISABLED, CHANNEL_TYPE_OLLAMA, ROLE_ROOT, ROLE_USER, USER_ENABLED, canManageTargetRole, nowSec, parseJson, randomHex } from "./constants.js";
 import { permissionCatalog, canWithPolicies, roleKeyForSystemRole, roleSubject, userSubject } from "./authz.js";
 import { loadPerformanceSetting, performanceStats, resetMetrics } from "./metrics.js";
 import {
@@ -59,7 +59,7 @@ import { bindVerificationOperation, issueSecurityProof, securityProofError } fro
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
 import { headerNavModulePublicOrUserAuth, isHeaderNavDenied } from "./header-nav.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -653,8 +653,11 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const user = await s.getUserById(Number(c.params.id));
-    if (!user) return apiFail("用户不存在");
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiErrorMsg("invalid user id");
+    const user = await s.getUserById(id.n);
+    if (!user) return apiErrorMsg("record not found");
+    if (!canManageTargetRole(u.role, user.role)) return apiErrorMsg("no permission");
     return apiOk(await s.listUserOAuthBindings(user.id));
   });
 
@@ -662,14 +665,30 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.deleteUserOAuthBinding(Number(c.params.id), Number(c.params.provider_id));
-    return apiOk(null);
+    const userId = strconvAtoi(c.params.id);
+    if (!userId.ok) return apiErrorMsg("invalid user id");
+    const user = await s.getUserById(userId.n);
+    if (!user) return apiErrorMsg("record not found");
+    if (!canManageTargetRole(u.role, user.role)) return apiErrorMsg("no permission");
+    const providerId = strconvAtoi(c.params.provider_id);
+    if (!providerId.ok) return apiErrorMsg("invalid provider id");
+    await s.deleteUserOAuthBinding(userId.n, providerId.n);
+    return json(200, { success: true, message: "success" });
   });
 
   r.delete("/api/user/:id/bindings/:binding_type", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiFailInvalidParams(c.req);
+    const bindingType = String(c.params.binding_type || "").trim().toLowerCase();
+    if (!bindingType) return apiFailInvalidParams(c.req);
+    const user = await s.getUserById(id.n);
+    if (!user) return apiErrorMsg("record not found");
+    if (!canManageTargetRole(u.role, user.role)) {
+      return apiErrorMsg(i18nPair(c.req, "无权获取同级或更高等级用户的信息", "No permission to access users of same or higher level"));
+    }
     const map: Record<string, string> = {
       github: "github_id",
       discord: "discord_id",
@@ -679,10 +698,10 @@ export function registerParity(r: Router<Env>): void {
       telegram: "telegram_id",
       email: "email",
     };
-    const col = map[c.params.binding_type];
-    if (!col) return apiFail("未知绑定类型");
-    await s.updateUser(Number(c.params.id), { [col]: "" });
-    return apiOk(null);
+    const col = map[bindingType];
+    if (!col) return apiErrorMsg("invalid binding type");
+    await s.updateUser(id.n, { [col]: "" });
+    return json(200, { success: true, message: "success" });
   });
 
   r.get("/api/channel/update_balance", async (c) => {
@@ -1076,17 +1095,23 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return fetchCustomOAuthDiscovery((await readJson(c.req)) as { well_known_url?: string; issuer_url?: string; url?: string });
+    let body: { well_known_url?: string; issuer_url?: string; url?: string };
+    try {
+      body = (await readJson(c.req)) as typeof body;
+    } catch (err) {
+      return apiErrorMsg("无效的请求参数: " + (err instanceof Error ? err.message : String(err)));
+    }
+    return fetchCustomOAuthDiscovery(body || {});
   });
 
   r.get("/api/custom-oauth-provider/:id", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const id = Number(c.params.id);
-    if (!Number.isInteger(id)) return apiFail("无效的 ID");
-    const p = await s.getOAuthProvider(id);
-    if (!p) return apiFail("未找到该 OAuth 提供商");
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiErrorMsg("无效的 ID");
+    const p = await s.getOAuthProvider(id.n);
+    if (!p) return apiErrorMsg("未找到该 OAuth 提供商");
     return apiOk(publicCustomOAuthProvider(p));
   });
 

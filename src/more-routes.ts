@@ -1058,17 +1058,17 @@ export function registerMore(r: Router<Env>): void {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在");
+    if (!user) return apiErrorMsg("用户不存在");
     return apiOk(await s.listUserOAuthBindings(u.id));
   });
 
   r.delete("/api/user/oauth/bindings/:provider_id", async (c) => {
     const s = store(c);
-    const providerId = Number(c.params.provider_id);
-    if (!Number.isInteger(providerId) || providerId <= 0) return apiFail("无效的提供商 ID");
-    const proof = await requireProof(c, s, { scope: "account.binding.unbind", context: { provider_id: providerId } });
+    const providerId = strconvAtoi(c.params.provider_id);
+    if (!providerId.ok || providerId.n <= 0) return apiErrorMsg("无效的提供商 ID");
+    const proof = await requireProof(c, s, { scope: "account.binding.unbind", context: { provider_id: providerId.n } });
     if (isResponse(proof)) return proof;
-    await s.deleteUserOAuthBinding(proof.userId, providerId);
+    await s.deleteUserOAuthBinding(proof.userId, providerId.n);
     const user = await s.getUserById(proof.userId);
     const notification_warning = await notifyAccountSecurityChange(s, user?.email || "", "OAuth account unlinked");
     return apiOk({ notification_warning }, "解绑成功");
@@ -2082,14 +2082,18 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return updateCustomOAuthProvider(s, Number(c.params.id), (await readJson(c.req)) as Record<string, unknown>);
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiErrorMsg("无效的 ID");
+    return updateCustomOAuthProvider(s, id.n, (await readJson(c.req)) as Record<string, unknown>);
   });
 
   r.delete("/api/custom-oauth-provider/:id", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    return deleteCustomOAuthProvider(s, Number(c.params.id));
+    const id = strconvAtoi(c.params.id);
+    if (!id.ok) return apiErrorMsg("无效的 ID");
+    return deleteCustomOAuthProvider(s, id.n);
   });
 
   r.get("/api/option/model_pricing", async (c) => {
