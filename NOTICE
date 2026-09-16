@@ -140,6 +140,15 @@ Material changes from upstream:
   token key/batch keys, channel key, audit). Extra-OK: GA/CT/UC abort still skip
   this middleware like original route order. POST `/api/user/register` and
   POST `/api/oauth/wechat/bind` stay off this middleware.
+  Original `middleware.RequestId` + `middleware.Version` are global `server.Use`
+  leftover headers on every response: `X-Oneapi-Request-Id` from
+  `common.NewRequestId` (`GetTimeString` UTC + SHA-256 prefix of
+  `github.com/QuantumNous/new-api` + 8 alphanumeric) and `X-New-Api-Version`
+  from `common.Version` (default `v0.0.0`, env `VERSION` overrides). Extra-OK:
+  a client-provided `X-Oneapi-Request-Id` is honored so abort-message tests keep
+  a stable id (original always generates). Extra-OK: JS Date has millisecond
+  precision so `UnixNano()%1e9` pads 6 trailing zeros. Extra-OK: GetStatus
+  `version` stays the worker branding string, not `v0.0.0`.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

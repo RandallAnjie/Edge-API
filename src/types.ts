@@ -47,6 +47,8 @@ export interface Env {
   ASSETS?: AssetsBinding;
   R2?: R2Bucket;
   SESSION_SECRET?: string;
+  /** Original `VERSION` (`common.Version` / `X-New-Api-Version`, default `v0.0.0`). */
+  VERSION?: string;
   SYSTEM_NAME?: string;
   /** Original `ERROR_LOG_ENABLED` (`constant.ErrorLogEnabled`, default false). */
   ERROR_LOG_ENABLED?: string;

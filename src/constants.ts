@@ -515,6 +515,5 @@ export function generateVerificationCode(length = 0): string {
   return code.slice(0, length);
 }
 
-export function requestId(): string {
-  return crypto.randomUUID();
-}
+/** Original `common.NewRequestId` (time + module prefix + 8 alphanumeric). */
+export { newRequestId as requestId } from "./request-id.js";

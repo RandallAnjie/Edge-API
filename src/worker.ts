@@ -8,6 +8,7 @@ import { abortWithOpenAiMessage, apiFail, noAvailableChannelMessage, openaiError
 import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugin-legacy-submit.js";
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { applyDisableCache } from "./disable-cache.js";
+import { newApiVersion, requestIdFor, withRequestIdAndVersionHeaders } from "./request-id.js";
 import { criticalRateLimit } from "./critical-rate-limit.js";
 import { globalApiRateLimit } from "./global-api-rate-limit.js";
 import { globalWebRateLimit } from "./global-web-rate-limit.js";
@@ -688,6 +689,7 @@ async function limitedGlobalWeb(env: Env, req: Request): Promise<Response | null
 }
 
 async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
+  const requestId = requestIdFor(req);
   const res = await dispatchFetch(req, env, ctx);
   if (env.DB) {
     try {
@@ -696,7 +698,7 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
       /* audit must not fail the request */
     }
   }
-  return res;
+  return withRequestIdAndVersionHeaders(res, requestId, newApiVersion(env));
 }
 
 async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
