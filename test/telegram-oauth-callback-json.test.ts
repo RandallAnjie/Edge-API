@@ -34,6 +34,14 @@ async function json(req: Request, e: Env) {
   return { res, body, text };
 }
 
+function securityOp(body: Record<string, unknown>, code: string, message: string) {
+  assert.equal(body.success, false);
+  assert.equal(body.code, code);
+  assert.equal(body.message, message);
+  assert.equal("data" in body, false);
+  assert.deepEqual(Object.keys(body).sort(), ["code", "message", "success"]);
+}
+
 async function boot(e: Env) {
   await json(
     new Request("http://local/api/setup", {
@@ -215,9 +223,7 @@ test("original HandleOAuth telegram login JSON preserves bound account and rejec
       ),
       e,
     );
-    assert.equal(unbound.body.success, false);
-    assert.equal(unbound.body.code, "TELEGRAM_ACCOUNT_NOT_BOUND");
-    assert.equal(unbound.body.message, ERR_TELEGRAM_ACCOUNT_NOT_BOUND);
+    securityOp(unbound.body, "TELEGRAM_ACCOUNT_NOT_BOUND", ERR_TELEGRAM_ACCOUNT_NOT_BOUND);
     assert.equal(JSON.stringify(unbound.body).includes("test-access-token"), false);
     const count = await e.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE deleted_at = 0").first<{ n: number }>();
     assert.equal(Number(count?.n), 1);
@@ -343,15 +349,13 @@ test("original HandleOAuth telegram rejects invalid ID tokens with TELEGRAM_OAUT
       const claims = telegramIdentityClaims(42);
       change(claims);
       const response = await start(claims);
-      assert.equal(response.body.success, false, name);
-      assert.equal(response.body.code, "TELEGRAM_OAUTH_FAILED", name);
-      assert.equal(response.body.message, ERR_TELEGRAM_OAUTH_FAILED, name);
+      securityOp(response.body, "TELEGRAM_OAUTH_FAILED", ERR_TELEGRAM_OAUTH_FAILED);
       assert.equal(JSON.stringify(response.body).includes("test-access-token"), false, name);
       assert.equal(JSON.stringify(response.body).includes("access_token"), false, name);
     }
 
     const badSig = await start(telegramIdentityClaims(42), other.privateKey);
-    assert.equal(badSig.body.code, "TELEGRAM_OAUTH_FAILED");
+    securityOp(badSig.body, "TELEGRAM_OAUTH_FAILED", ERR_TELEGRAM_OAUTH_FAILED);
 
     const pkceStart = await json(
       new Request("http://local/api/oauth/state", {
@@ -374,17 +378,17 @@ test("original HandleOAuth telegram rejects invalid ID tokens with TELEGRAM_OAUT
       ),
       e,
     );
-    assert.equal(pkce.body.code, "TELEGRAM_OAUTH_FAILED");
+    securityOp(pkce.body, "TELEGRAM_OAUTH_FAILED", ERR_TELEGRAM_OAUTH_FAILED);
     assert.equal(JSON.stringify(pkce.body).includes("test-access-token"), false);
 
     tokenStatus = 503;
     const tokenDown = await start(telegramIdentityClaims(42));
-    assert.equal(tokenDown.body.code, "TELEGRAM_OAUTH_FAILED");
+    securityOp(tokenDown.body, "TELEGRAM_OAUTH_FAILED", ERR_TELEGRAM_OAUTH_FAILED);
     tokenStatus = 0;
 
     jwksStatus = 503;
     const jwksDown = await start(telegramIdentityClaims(42));
-    assert.equal(jwksDown.body.code, "TELEGRAM_OAUTH_FAILED");
+    securityOp(jwksDown.body, "TELEGRAM_OAUTH_FAILED", ERR_TELEGRAM_OAUTH_FAILED);
     jwksStatus = 0;
   } finally {
     globalThis.fetch = origFetch;
@@ -617,9 +621,7 @@ test("original HandleOAuth telegram bind rejects changed accounts and duplicate 
       "INSERT INTO external_identity_claims (provider, subject, user_id, created_at) VALUES ('telegram', '99', 1, 1)",
     ).run();
     const alreadyRes = await callback(already.flow, already.code);
-    assert.equal(alreadyRes.body.success, false);
-    assert.equal(alreadyRes.body.code, "TELEGRAM_BIND_ALREADY_BOUND");
-    assert.equal(alreadyRes.body.message, ERR_TELEGRAM_BIND_ALREADY_BOUND);
+    securityOp(alreadyRes.body, "TELEGRAM_BIND_ALREADY_BOUND", ERR_TELEGRAM_BIND_ALREADY_BOUND);
     assert.equal(await telegramClaimCount(e, 1, "42"), 0);
     const still99 = await store.getUserById(1);
     assert.equal(still99?.telegram_id, "99");

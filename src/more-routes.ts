@@ -966,7 +966,7 @@ export function registerMore(r: Router<Env>): void {
     let telegramFlow: TelegramOAuthFlow | undefined;
     if (provider === "telegram") {
       const started = await newTelegramOAuthFlow(s);
-      if (!started.ok) return apiFailCode(started.message, started.code);
+      if (!started.ok) return writeSecurityOperationError(started.code, started.message);
       telegramFlow = started.flow;
     }
     const identity = await dashboardIdentity(c, s);
@@ -994,7 +994,12 @@ export function registerMore(r: Router<Env>): void {
       const user = await s.getUserById(identity.userId);
       if (!user) return apiFail("用户不存在");
       const providerUserId = await getBoundOAuthUserId(s, user, provider);
-      if (!providerUserId) return apiFailCode("This verification method is currently unavailable.", "SECURITY_METHOD_UNAVAILABLE");
+      if (!providerUserId) {
+        return writeSecurityOperationError(
+          "SECURITY_METHOD_UNAVAILABLE",
+          "This verification method is currently unavailable.",
+        );
+      }
       payload.verification = {
         scope: bound.binding.scope,
         context_hash: bound.binding.contextHash,
@@ -1054,13 +1059,13 @@ export function registerMore(r: Router<Env>): void {
     }
     if (provider === "telegram") {
       const configErr = await telegramConfigurationError(s);
-      if (configErr) return apiFailCode(configErr.message, configErr.code);
+      if (configErr) return writeSecurityOperationError(configErr.code, configErr.message);
       if (!payload.telegram?.code_verifier || !payload.telegram.client_id || !payload.telegram.redirect_uri) {
-        return apiFailCode("Verification flow expired", "AUTH_FLOW_INVALID");
+        return writeSecurityOperationError("AUTH_FLOW_INVALID", "Verification flow expired");
       }
       if (intent !== "login") {
         if (!identity || !authSessionIdentitiesEqual(payload.session_identity, identity)) {
-          return apiFailCode("Verification flow expired", "AUTH_FLOW_INVALID");
+          return writeSecurityOperationError("AUTH_FLOW_INVALID", "Verification flow expired");
         }
         if (!(await s.validateAuthSession(identity))) {
           return json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized" });
@@ -1101,7 +1106,7 @@ export function registerMore(r: Router<Env>): void {
         if (taken) return apiErrorMsg(alreadyBound);
         const bound = await s.bindTelegramForSession(identity, profile.id);
         if (bound === "already_claimed") {
-          return apiFailCode(ERR_TELEGRAM_BIND_ALREADY_BOUND, "TELEGRAM_BIND_ALREADY_BOUND");
+          return writeSecurityOperationError("TELEGRAM_BIND_ALREADY_BOUND", ERR_TELEGRAM_BIND_ALREADY_BOUND);
         }
         if (bound === "session_invalid") {
           return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
@@ -1119,7 +1124,7 @@ export function registerMore(r: Router<Env>): void {
           ? await s.bindCustomOAuthForSession(identity, profile.provider_id, profile.id)
           : await s.bindUserColumnForSession(identity, profile.field, profile.id);
         if (bound === "already_claimed") {
-          return apiFailCode("This external account is already bound.", "ACCOUNT_ALREADY_BOUND");
+          return writeSecurityOperationError("ACCOUNT_ALREADY_BOUND", "This external account is already bound.");
         }
         if (bound === "session_invalid") {
           return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized" });
@@ -1244,8 +1249,8 @@ export function registerMore(r: Router<Env>): void {
             field: "telegram_id",
           });
         } catch (e) {
-          if (e instanceof TelegramOAuthError) return apiFailCode(e.message, e.code);
-          return apiFailCode(ERR_TELEGRAM_OAUTH_FAILED, "TELEGRAM_OAUTH_FAILED");
+          if (e instanceof TelegramOAuthError) return writeSecurityOperationError(e.code, e.message);
+          return writeSecurityOperationError("TELEGRAM_OAUTH_FAILED", ERR_TELEGRAM_OAUTH_FAILED);
         }
       }
       if (provider === "wechat") {

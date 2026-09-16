@@ -31,6 +31,14 @@ async function json(req: Request, e: Env) {
   return { res, body, text };
 }
 
+function securityOp(body: Record<string, unknown>, code: string, message: string) {
+  assert.equal(body.success, false);
+  assert.equal(body.code, code);
+  assert.equal(body.message, message);
+  assert.equal("data" in body, false);
+  assert.deepEqual(Object.keys(body).sort(), ["code", "message", "success"]);
+}
+
 async function boot(e: Env) {
   await json(
     new Request("http://local/api/setup", {
@@ -117,8 +125,7 @@ test("original GetStatus telegram_oauth_configured matches TelegramConfiguration
     e,
   );
   assert.equal(enableMissing.body.success, false);
-  assert.equal(enableMissing.body.code, "TELEGRAM_OAUTH_NOT_CONFIGURED");
-  assert.equal(enableMissing.body.message, ERR_TELEGRAM_OAUTH_NOT_CONFIGURED);
+  securityOp(enableMissing.body, "TELEGRAM_OAUTH_NOT_CONFIGURED", ERR_TELEGRAM_OAUTH_NOT_CONFIGURED);
   assert.equal((await statusData(e)).telegram_oauth, false);
 
   await store.setOption("telegram.client_secret", "telegram-client-secret");
@@ -141,18 +148,13 @@ test("original GenerateOAuthCode telegram authorization_url and config error JSO
   const store = new Store(e.DB);
 
   const missing = await oauthState(e, auth);
-  assert.equal(missing.body.success, false);
-  assert.equal(missing.body.code, "TELEGRAM_OAUTH_NOT_CONFIGURED");
-  assert.equal(missing.body.message, ERR_TELEGRAM_OAUTH_NOT_CONFIGURED);
-  assert.equal("flow_token" in ((missing.body.data as Record<string, unknown>) || {}), false);
+  securityOp(missing.body, "TELEGRAM_OAUTH_NOT_CONFIGURED", ERR_TELEGRAM_OAUTH_NOT_CONFIGURED);
 
   await store.setOption("TelegramOAuthEnabled", "true");
   await store.setOption("telegram.client_id", "12345");
   await store.setOption("telegram.client_secret", "telegram-client-secret");
   const noServer = await oauthState(e, auth);
-  assert.equal(noServer.body.success, false);
-  assert.equal(noServer.body.code, "TELEGRAM_OAUTH_NOT_CONFIGURED");
-  assert.equal(noServer.body.message, ERR_TELEGRAM_OAUTH_NOT_CONFIGURED);
+  securityOp(noServer.body, "TELEGRAM_OAUTH_NOT_CONFIGURED", ERR_TELEGRAM_OAUTH_NOT_CONFIGURED);
   assert.equal((await statusData(e)).telegram_oauth_configured, true);
 
   await store.setOption("ServerAddress", "https://example.com");
@@ -201,8 +203,6 @@ test("original GetStatus telegram_oauth_configured false on custom telegram slug
   assert.equal(conflicted.telegram_oauth_configured, false);
 
   const state = await oauthState(e, auth);
-  assert.equal(state.body.success, false);
-  assert.equal(state.body.code, "TELEGRAM_OAUTH_CONFLICT");
-  assert.equal(state.body.message, ERR_TELEGRAM_OAUTH_CONFLICT);
+  securityOp(state.body, "TELEGRAM_OAUTH_CONFLICT", ERR_TELEGRAM_OAUTH_CONFLICT);
   assert.equal(JSON.stringify(state.body).includes("flow_token"), false);
 });

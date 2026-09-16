@@ -1,7 +1,7 @@
 import { generateAffCode, generateTokenKey } from "./crypto.js";
 import { hmacSha256Hex, sha256Bytes, timingSafeEqualStr } from "./crypto.js";
 import { nowSec, randomHex, ROLE_USER, USER_ENABLED } from "./constants.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiOk, i18nPair, json, OAuthI18nError } from "./http.js";
+import { apiErrorMsg, apiFail, apiOk, i18nPair, json, OAuthI18nError, writeSecurityOperationError } from "./http.js";
 import { ERR_TELEGRAM_ACCOUNT_NOT_BOUND } from "./telegram-oauth.js";
 import { notifyAccountSecurityChange, normalizeEmail } from "./mail.js";
 import { authUnauthorized, setupLogin } from "./auth.js";
@@ -387,7 +387,7 @@ async function findOrCreateOAuthUser(
 ): Promise<UserRow | Response> {
   if (profile.field === "telegram_id") {
     const user = await store.getUserByField("telegram_id", profile.id);
-    if (!user) return apiFailCode(ERR_TELEGRAM_ACCOUNT_NOT_BOUND, "TELEGRAM_ACCOUNT_NOT_BOUND");
+    if (!user) return writeSecurityOperationError("TELEGRAM_ACCOUNT_NOT_BOUND", ERR_TELEGRAM_ACCOUNT_NOT_BOUND);
     return user;
   }
 
