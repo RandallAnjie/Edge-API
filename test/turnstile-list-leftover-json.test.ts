@@ -296,10 +296,19 @@ test("original GetAllChannels / SearchChannels / GetMissingModels / ResetModelRa
   assert.equal("data" in instErr.body, false);
   assert.match(String(instErr.body.message), /no such table/i);
 
-  await e.DB.exec("DROP TABLE options");
-  const resetErr = await json(new Request("http://local/api/option/rest_model_ratio", { method: "POST", headers: auth }), e);
-  assert.equal(resetErr.res.status, 200);
-  assert.equal(resetErr.body.success, false);
-  assert.equal("data" in resetErr.body, false);
-  assert.match(String(resetErr.body.message), /no such table/i);
+  // Original ResetModelRatio leftover is `model.UpdateOption` err after RootAuth.
+  // DROP options also breaks worker `sessionSecret` / `requireRoot`, so stub setOption.
+  const origSetOption = Store.prototype.setOption;
+  Store.prototype.setOption = async () => {
+    throw new Error("no such table: options");
+  };
+  try {
+    const resetErr = await json(new Request("http://local/api/option/rest_model_ratio", { method: "POST", headers: auth }), e);
+    assert.equal(resetErr.res.status, 200);
+    assert.equal(resetErr.body.success, false);
+    assert.equal("data" in resetErr.body, false);
+    assert.match(String(resetErr.body.message), /no such table/i);
+  } finally {
+    Store.prototype.setOption = origSetOption;
+  }
 });
