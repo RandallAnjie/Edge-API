@@ -107,6 +107,30 @@ export function i18nPair(req: Request, zh: string, en: string): string {
   return en;
 }
 
+/** Original `i18n.MsgUserEmailAlreadyTaken`. */
+export function userEmailAlreadyTakenMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "信箱位址已被占用";
+    case "zh-CN":
+      return "邮箱地址已被占用";
+    default:
+      return "Email address is already in use";
+  }
+}
+
+/** Original `i18n.MsgUserPasswordResetLinkInvalid`. */
+export function userPasswordResetLinkInvalidMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "重置連結非法或已過期";
+    case "zh-CN":
+      return "重置链接非法或已过期";
+    default:
+      return "Password reset link is invalid or has expired";
+  }
+}
+
 /** Original `i18n.MsgPaymentComplianceRequired`. */
 export function paymentComplianceRequiredMessage(req: Request): string {
   switch (i18nLang(req)) {

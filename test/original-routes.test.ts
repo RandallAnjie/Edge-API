@@ -2160,7 +2160,7 @@ test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch,
     assert.equal(invalidEmail.body.message, "Please enter a valid email address");
     await e.DB.prepare("UPDATE users SET email = ? WHERE id = 1").bind("taken@example.com").run();
     const taken = await json(new Request("http://local/api/verification?email=taken@example.com"), e);
-    assert.equal(taken.body.message, "邮箱地址已被占用");
+    assert.equal(taken.body.message, "Email address is already in use");
     const sent = await json(new Request("http://local/api/verification?email=new@example.com"), e);
     assert.equal(sent.body.success, true, String(sent.body.message));
     assert.equal(sent.body.message, "");
@@ -2169,7 +2169,7 @@ test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch,
     assert.equal(resetMissing.body.success, true);
     assert.equal(resetMissing.body.message, "");
     const resetBad = await json(new Request("http://local/api/reset_password?email=not-an-email"), e);
-    assert.equal(resetBad.body.message, "无效的参数");
+    assert.equal(resetBad.body.message, "Invalid parameters");
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -2387,7 +2387,7 @@ test("original ResetPassword, Register, CustomOAuth, GetUser JSON", async () => 
     e,
   );
   assert.equal(missingToken.body.success, false);
-  assert.equal(missingToken.body.message, "无效的参数");
+  assert.equal(missingToken.body.message, "Invalid parameters");
 
   const badToken = await json(
     new Request("http://local/api/user/reset", {
@@ -2398,7 +2398,7 @@ test("original ResetPassword, Register, CustomOAuth, GetUser JSON", async () => 
     e,
   );
   assert.equal(badToken.body.success, false);
-  assert.equal(badToken.body.message, "重置链接非法或已过期");
+  assert.equal(badToken.body.message, "Password reset link is invalid or has expired");
 
   const reset = await json(
     new Request("http://local/api/user/reset", {

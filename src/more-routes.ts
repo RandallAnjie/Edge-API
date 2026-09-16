@@ -91,8 +91,8 @@ import {
   updateCustomOAuthProvider,
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
-import { goUnmarshalJSON, parseChannelBatch } from "./channel-validate.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool } from "./http.js";
+import { goJSONKind, goUnmarshalJSON, parseChannelBatch } from "./channel-validate.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool, userEmailAlreadyTakenMessage, userPasswordResetLinkInvalidMessage } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -277,8 +277,13 @@ export function registerMore(r: Router<Env>): void {
   r.get("/api/verification", async (c) => {
     const s = store(c);
     const validated = await validateAccountEmail(s, c.url.searchParams.get("email") || "");
-    if (!validated.ok) return json(200, { success: false, code: validated.code, message: validated.message });
-    if (await s.getUserByEmail(validated.email, { includeDeleted: true })) return apiFail("邮箱地址已被占用");
+    if (!validated.ok) {
+      // Original `writeSecurityOperationError` for `ErrAccountEmailInvalid` / Restricted.
+      return json(200, { success: false, code: validated.code, message: validated.message });
+    }
+    if (await s.getUserByEmail(validated.email, { includeDeleted: true })) {
+      return apiErrorMsg(userEmailAlreadyTakenMessage(c.req));
+    }
     const code = sixDigitCode();
     await s.insertEmailCode(validated.email, code, "verify");
     const systemName = (await s.option("SystemName")) || "New API";
@@ -290,15 +295,15 @@ export function registerMore(r: Router<Env>): void {
     try {
       await sendMail(s, validated.email, subject, content);
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
-    return apiOk(null, "");
+    return json(200, { success: true, message: "" });
   });
 
   r.get("/api/reset_password", async (c) => {
     const s = store(c);
     const email = normalizeEmail(c.url.searchParams.get("email") || "");
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return apiFail("无效的参数");
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return apiFailInvalidParams(c.req);
     const user = await s.getUserByEmail(email);
     if (user) {
       const code = generateVerificationCode(0);
@@ -318,18 +323,21 @@ export function registerMore(r: Router<Env>): void {
         /* original logs send errors and still returns success */
       }
     }
-    return apiOk(null, "");
+    return json(200, { success: true, message: "" });
   });
 
   r.post("/api/user/reset", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as { email?: string; token?: string; code?: string };
-    const email = normalizeEmail(body.email || "");
-    const token = (body.token || body.code || "").trim();
-    if (!email || !token) return apiFail("无效的参数");
-    if (!(await s.verifyEmailCode(email, token, "reset"))) return apiFail("重置链接非法或已过期");
+    const body = await bindPasswordResetRequest(c.req);
+    if (body instanceof Response) return body;
+    const email = normalizeEmail(body.email);
+    const token = body.token;
+    if (!email || !token) return apiFailInvalidParams(c.req);
+    if (!(await s.verifyEmailCode(email, token, "reset"))) {
+      return apiErrorMsg(userPasswordResetLinkInvalidMessage(c.req));
+    }
     const user = await s.getUserByEmail(email);
-    if (!user) return apiFail("重置链接非法或已过期");
+    if (!user) return apiErrorMsg(userPasswordResetLinkInvalidMessage(c.req));
     const password = generateVerificationCode(12);
     const { hashPassword } = await import("./crypto.js");
     await s.updateUser(user.id, { password: await hashPassword(password) });
@@ -2176,6 +2184,35 @@ async function tokenUsage(c: C): Promise<Response> {
       expires_at: expiredAt,
     },
   });
+}
+
+/** Original `json.NewDecoder.Decode` into `controller.PasswordResetRequest`. */
+async function bindPasswordResetRequest(req: Request): Promise<{ email: string; token: string } | Response> {
+  const raw = await req.text();
+  if (!raw.trim()) return apiErrorMsg("EOF");
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return apiErrorMsg(parsed.message);
+  if (parsed.value === null) return { email: "", token: "" };
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return apiErrorMsg(
+      `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type controller.PasswordResetRequest`,
+    );
+  }
+  const rec = parsed.value as Record<string, unknown>;
+  if (rec.email !== undefined && rec.email !== null && typeof rec.email !== "string") {
+    return apiErrorMsg(
+      `json: cannot unmarshal ${goJSONKind(rec.email)} into Go struct field PasswordResetRequest.email of type string`,
+    );
+  }
+  if (rec.token !== undefined && rec.token !== null && typeof rec.token !== "string") {
+    return apiErrorMsg(
+      `json: cannot unmarshal ${goJSONKind(rec.token)} into Go struct field PasswordResetRequest.token of type string`,
+    );
+  }
+  return {
+    email: rec.email == null ? "" : String(rec.email),
+    token: rec.token == null ? "" : String(rec.token),
+  };
 }
 
 /** Original `DeleteRedemptionBatch` `ShouldBindJSON` `ids` `required,min=1,max=1000,dive,gt=0`. */
