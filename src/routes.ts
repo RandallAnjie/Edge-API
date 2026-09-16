@@ -53,7 +53,7 @@ import {
   verifyPassword,
   decryptPassword,
 } from "./crypto.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, paymentComplianceRequiredMessage, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
@@ -81,7 +81,7 @@ import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { registerMore } from "./more-routes.js";
 import { buildStatus } from "./status.js";
 import { headerNavModuleAuth, isHeaderNavDenied } from "./header-nav.js";
-import { requirePaymentCompliance } from "./payments.js";
+import { paymentComplianceConfirmed, requirePaymentCompliance } from "./payments.js";
 import { storeLogQuota } from "./quota.js";
 import { finishInsertUser } from "./user-insert.js";
 import { notifyAccountSecurityChange } from "./mail.js";
@@ -1403,12 +1403,20 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { key?: string; value?: unknown };
-    if (!body.key) return apiFail("无效的参数");
-    const value = String(body.value ?? "");
-    if (isPasskeyDomainOption(body.key)) {
+    const bound = bindOptionUpdate(await c.req.text());
+    if (bound instanceof Response) return bound;
+    if (!bound.key) return apiFail("无效的参数");
+    const { key, value } = bound;
+    if (key === "QuotaForInviter" || key === "QuotaForInvitee") {
+      if (isPositiveOptionValue(value) && !(await paymentComplianceConfirmed(s))) {
+        return apiErrorMsg(paymentComplianceRequiredMessage(c.req));
+      }
+    } else if (isPaymentComplianceOptionKey(key)) {
+      return apiErrorMsg("合规确认字段不允许通过通用设置接口修改");
+    }
+    if (isPasskeyDomainOption(key)) {
       try {
-        const change = await updatePasskeyDomainOptions(s, await sessionSecret(c.env, s), { [body.key]: value }, false, "");
+        const change = await updatePasskeyDomainOptions(s, await sessionSecret(c.env, s), { [key]: value }, false, "");
         return apiOk(change);
       } catch (e) {
         if (e instanceof PasskeyDomainError) {
@@ -1425,15 +1433,15 @@ export function adminRouter(): Router<Env> {
         return passkeyDomainHttpError(e, c.req);
       }
     }
-    if (body.key === "TelegramOAuthEnabled" && value === "true" && !(await telegramSettingsConfigured(s))) {
+    if (key === "TelegramOAuthEnabled" && value === "true" && !(await telegramSettingsConfigured(s))) {
       return apiFailCode(ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, "TELEGRAM_OAUTH_NOT_CONFIGURED");
     }
-    if (body.key === "ModelRequestRateLimitGroup") {
+    if (key === "ModelRequestRateLimitGroup") {
       const err = checkModelRequestRateLimitGroup(value);
       if (err) return apiFail(err);
     }
-    await s.setOption(body.key, value);
-    return apiOk(null, "更新成功");
+    await s.setOption(key, value);
+    return json(200, { success: true, message: "" });
   });
 
   r.slash("GET", "/api/redemption/", async (c) => {
@@ -1646,6 +1654,45 @@ export function adminRouter(): Router<Env> {
   registerMore(r);
 
   return r;
+}
+
+/** Original `common.DecodeJson` into `controller.OptionUpdateRequest`. Empty/invalid JSON is HTTP 400 gin.H omit `data`. */
+function bindOptionUpdate(raw: string): { key: string; value: string } | Response {
+  const invalid = () => json(400, { success: false, message: "无效的参数" });
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  const rec = parsed.value as { key?: unknown; value?: unknown };
+  return { key: rec.key == null ? "" : String(rec.key), value: optionInterface2String(rec.value) };
+}
+
+/** Original `common.Interface2String` used by `UpdateOption`. */
+function optionInterface2String(value: unknown): string {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (value == null) return "";
+  return String(value);
+}
+
+/** Original `controller.isPaymentComplianceOptionKey`. */
+function isPaymentComplianceOptionKey(key: string): boolean {
+  return key.startsWith("payment_setting.compliance_");
+}
+
+/** Original `controller.isPositiveOptionValue` (`strconv.Atoi` then `ParseFloat`). */
+function isPositiveOptionValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (/^[+-]?\d+$/.test(trimmed)) {
+    try {
+      return BigInt(trimmed) > 0n;
+    } catch {
+      return false;
+    }
+  }
+  if (/^[+-]?0[xX]/.test(trimmed)) return false;
+  const n = Number(trimmed);
+  return Number.isFinite(n) && n > 0;
 }
 
 /** Original `c.ShouldBindJSON` into `model.Redemption`. */

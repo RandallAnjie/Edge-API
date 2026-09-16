@@ -6,6 +6,7 @@ import worker from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { generateDefaultSidebarConfigForRole } from "../src/user-insert.js";
 import { ROLE_ADMIN, ROLE_ROOT, ROLE_USER, ROOT_QUOTA } from "../src/constants.js";
+import { Store } from "../src/store.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 void worker;
@@ -136,8 +137,9 @@ test("original finishInsert 新用户注册赠送 LogQuota JSON and sidebar sett
 test("original finishInsert invite rewards require payment compliance and skip inviter wallet", async () => {
   const { e, auth } = await boot();
   await putOption(e, auth, "QuotaForNewUser", "500000");
-  await putOption(e, auth, "QuotaForInvitee", "1000000");
-  await putOption(e, auth, "QuotaForInviter", "250000");
+  const seeded = new Store(e.DB);
+  await seeded.setOption("QuotaForInvitee", "1000000");
+  await seeded.setOption("QuotaForInviter", "250000");
   const rootSelf = await json(new Request("http://local/api/user/self", { headers: auth }), e);
   const aff = (rootSelf.body.data as { aff_code: string }).aff_code;
   assert.ok(aff);

@@ -107,6 +107,18 @@ export function i18nPair(req: Request, zh: string, en: string): string {
   return en;
 }
 
+/** Original `i18n.MsgPaymentComplianceRequired`. */
+export function paymentComplianceRequiredMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "支付、兌換碼、訂閱方案和邀請返利功能已停用。管理員需先確認合規聲明後方可啟用。";
+    case "zh-CN":
+      return "支付、兑换码、订阅计划和邀请返利功能已禁用。管理员需先确认合规声明后方可启用。";
+    default:
+      return "Payment, redemption, subscription, and invitation reward features are disabled. The administrator must confirm compliance terms before enabling them.";
+  }
+}
+
 /** Original `i18n.MsgTaskPluginUnknownMetaField`. */
 export function taskPluginUnknownMetaFieldMessage(req: Request, field: string): string {
   switch (i18nLang(req)) {
