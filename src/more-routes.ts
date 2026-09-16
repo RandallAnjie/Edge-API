@@ -953,20 +953,15 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/oauth/state", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as {
-      provider?: string;
-      intent?: string;
-      aff?: string;
-      scope?: string;
-      context?: unknown;
-    };
-    const provider = (body.provider || "").trim();
-    const intent = (body.intent || "login").trim();
-    const aff = (body.aff || "").trim();
-    if (!provider || !(await oauthProviderKnown(s, provider))) return apiFail("无效的参数");
-    if (intent !== "login" && intent !== "bind" && intent !== "verify") return apiFail("无效的参数");
-    if (aff.length > 32 || (intent !== "login" && aff)) return apiFail("无效的参数");
-    if (intent !== "verify" && (body.scope || body.context != null)) return apiFail("无效的参数");
+    const body = await bindOAuthStateRequest(c.req);
+    if (body instanceof Response) return body;
+    const provider = body.provider.trim();
+    const intent = body.intent.trim();
+    const aff = body.aff.trim();
+    if (!(await oauthProviderKnown(s, provider))) return apiFailInvalidParams(c.req);
+    if (intent !== "login" && intent !== "bind" && intent !== "verify") return apiFailInvalidParams(c.req);
+    if (aff.length > 32 || (intent !== "login" && aff)) return apiFailInvalidParams(c.req);
+    if (intent !== "verify" && (body.scope !== "" || body.contextPresent)) return apiFailInvalidParams(c.req);
     let telegramFlow: TelegramOAuthFlow | undefined;
     if (provider === "telegram") {
       const started = await newTelegramOAuthFlow(s);
@@ -2184,6 +2179,31 @@ async function tokenUsage(c: C): Promise<Response> {
       expires_at: expiredAt,
     },
   });
+}
+
+/** Original `common.DecodeJson` into `controller.oauthStateRequest`. Any decode error is `MsgInvalidParams`. */
+async function bindOAuthStateRequest(req: Request): Promise<
+  | { provider: string; intent: string; aff: string; scope: string; contextPresent: boolean; context: unknown }
+  | Response
+> {
+  const invalid = () => apiFailInvalidParams(req);
+  const raw = await req.text();
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  const rec = parsed.value as Record<string, unknown>;
+  for (const key of ["provider", "intent", "aff", "scope"] as const) {
+    if (rec[key] !== undefined && rec[key] !== null && typeof rec[key] !== "string") return invalid();
+  }
+  return {
+    provider: rec.provider == null ? "" : String(rec.provider),
+    intent: rec.intent == null ? "" : String(rec.intent),
+    aff: rec.aff == null ? "" : String(rec.aff),
+    scope: rec.scope == null ? "" : String(rec.scope),
+    contextPresent: Object.prototype.hasOwnProperty.call(rec, "context"),
+    context: rec.context,
+  };
 }
 
 /** Original `json.NewDecoder.Decode` into `controller.PasswordResetRequest`. */
