@@ -5,6 +5,8 @@ import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { Store } from "../src/store.js";
 import { parseHeaderNavAccess } from "../src/header-nav.js";
+import { sessionSecret } from "../src/auth.js";
+import { signAccessJwt, signSecurityProofJwt } from "../src/crypto.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -38,9 +40,14 @@ async function boot(e: Env) {
     }),
     e,
   );
-  const token = (login.body.data as { access_token: string }).access_token;
+  const data = login.body.data as {
+    access_token: string;
+    session: { sid: string };
+    user: { id: number };
+  };
+  const token = data.access_token;
   const auth = { authorization: "Bearer " + token, "content-type": "application/json" };
-  return { token, auth };
+  return { token, auth, data };
 }
 
 async function setNav(e: Env, raw: string) {
@@ -217,4 +224,67 @@ test("original GetRankings uses Unknown vendor and omits data on invalid period"
   assert.equal(bad.body.success, false);
   assert.equal(bad.body.message, "invalid ranking period: decade");
   assert.equal("data" in bad.body, false);
+});
+
+function tamperDashboardToken(token: string): string {
+  const i = token.length - 2;
+  const replacement = token[i] === "x" ? "y" : "x";
+  return token.slice(0, i) + replacement + token.slice(i + 1);
+}
+
+test("original TryUserAuth rejects expired internal JWT on HeaderNav public routes", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { token, data } = await boot(e);
+  const store = new Store(e.DB);
+  const secret = await sessionSecret(e, store);
+  const now = Math.floor(Date.now() / 1000);
+  const identity = {
+    userId: data.user.id,
+    sid: data.session.sid,
+    userAuthVersion: 1,
+    sessionVersion: 1,
+  };
+  const expired = await signAccessJwt(secret, identity, now - 120, now - 60);
+  const expiredAuth = { authorization: "Bearer " + expired };
+
+  const pricing = await json(new Request("http://local/api/pricing", { headers: expiredAuth }), e);
+  assert.equal(pricing.res.status, 401);
+  assert.equal(pricing.body.success, false);
+  assert.equal(pricing.body.code, "AUTH_TOKEN_EXPIRED");
+  assert.equal(pricing.body.message, "Unauthorized");
+
+  const ranks = await json(new Request("http://local/api/rankings", { headers: expiredAuth }), e);
+  assert.equal(ranks.res.status, 401);
+  assert.equal(ranks.body.code, "AUTH_TOKEN_EXPIRED");
+
+  const metrics = await json(new Request("http://local/api/perf-metrics?model=gpt-4o-mini", { headers: expiredAuth }), e);
+  assert.equal(metrics.res.status, 401);
+  assert.equal(metrics.body.code, "AUTH_TOKEN_EXPIRED");
+  assert.notEqual(metrics.body.code, "AUTH_UNAUTHORIZED");
+
+  const tampered = await json(
+    new Request("http://local/api/pricing", { headers: { authorization: "Bearer " + tamperDashboardToken(token) } }),
+    e,
+  );
+  assert.equal(tampered.res.status, 401);
+  assert.equal(tampered.body.code, "AUTH_UNAUTHORIZED");
+
+  const unmatched = await json(
+    new Request("http://local/api/pricing", { headers: { authorization: "Bearer opaque.key.with-dots" } }),
+    e,
+  );
+  assert.equal(unmatched.res.status, 200);
+  assert.equal(unmatched.body.success, true);
+
+  const proof = await signSecurityProofJwt(
+    secret,
+    identity,
+    { method: "password", scopes: ["account.password.change"], contextHash: "abc", jti: "proof-jti" },
+    now,
+    now + 60,
+  );
+  const asAccess = await json(new Request("http://local/api/pricing", { headers: { authorization: "Bearer " + proof } }), e);
+  assert.equal(asAccess.res.status, 401);
+  assert.equal(asAccess.body.code, "AUTH_UNAUTHORIZED");
 });

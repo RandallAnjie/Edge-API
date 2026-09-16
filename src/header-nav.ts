@@ -1,5 +1,5 @@
 import { parseJson } from "./constants.js";
-import { authUnauthorized, isResponse, readSession } from "./auth.js";
+import { isResponse, tryUserAuth, userAuth } from "./auth.js";
 import { json } from "./http.js";
 import type { Context } from "./router.js";
 import type { Store } from "./store.js";
@@ -59,9 +59,7 @@ export async function getHeaderNavAccess(store: Store, module: string): Promise<
 }
 
 async function requireDashboardUser(c: Context<Env>, store: Store): Promise<SessionUser | Response> {
-  const user = await readSession(c, store);
-  if (!user) return authUnauthorized();
-  return user;
+  return userAuth(c, store);
 }
 
 /**
@@ -77,7 +75,7 @@ export async function headerNavModuleAuth(
   const access = await getHeaderNavAccess(store, module);
   if (!access.enabled) return json(403, { success: false, message: `${module} is disabled` });
   if (access.requireAuth) return requireDashboardUser(c, store);
-  return readSession(c, store);
+  return tryUserAuth(c, store);
 }
 
 /**
@@ -91,7 +89,7 @@ export async function headerNavModulePublicOrUserAuth(
 ): Promise<SessionUser | null | Response> {
   const access = await getHeaderNavAccess(store, module);
   if (!access.enabled || access.requireAuth) return requireDashboardUser(c, store);
-  return readSession(c, store);
+  return tryUserAuth(c, store);
 }
 
 export function isHeaderNavDenied(value: SessionUser | null | Response): value is Response {

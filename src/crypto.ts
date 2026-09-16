@@ -349,7 +349,39 @@ export async function signAccessJwt(
 }
 
 export async function verifyAccessJwt(token: string, sessionSecret: string): Promise<AccessJwtPayload | null> {
-  return verifyAuthJwt<AccessJwtPayload>(token, sessionSecret, "access", ACCESS_TOKEN_USE);
+  const parsed = await parseAccessJwt(token, sessionSecret);
+  return parsed.ok ? parsed.payload : null;
+}
+
+function audienceMatches(aud: unknown): boolean {
+  if (aud === AUTH_TOKEN_AUD) return true;
+  return Array.isArray(aud) && aud.includes(AUTH_TOKEN_AUD);
+}
+
+/** Original `service.ParseDashboardAccessToken` unverified iss/aud/token_use probe. */
+export function peekDashboardJwt(raw: string): { token_use: string } | null {
+  const token = raw.trim();
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1]))) as {
+      iss?: string;
+      aud?: unknown;
+      token_use?: string;
+    };
+    const knownUse = payload.token_use === ACCESS_TOKEN_USE || payload.token_use === SECURITY_PROOF_TOKEN_USE;
+    if (payload.iss !== AUTH_TOKEN_ISS || !audienceMatches(payload.aud) || !knownUse) return null;
+    return { token_use: payload.token_use! };
+  } catch {
+    return null;
+  }
+}
+
+export type ParseAccessJwtResult = { ok: true; payload: AccessJwtPayload } | { ok: false; expired: boolean };
+
+/** Original `service.ParseAccessToken` / `parseAuthClaims` with jwt.ErrTokenExpired. */
+export async function parseAccessJwt(token: string, sessionSecret: string): Promise<ParseAccessJwtResult> {
+  return parseAuthJwt<AccessJwtPayload>(token, sessionSecret, "access", ACCESS_TOKEN_USE);
 }
 
 export interface SecurityProofJwtPayload extends AccessJwtPayload {
@@ -397,31 +429,42 @@ export async function verifySecurityProofJwt(token: string, sessionSecret: strin
   return payload;
 }
 
+async function parseAuthJwt<T extends AccessJwtPayload>(
+  token: string,
+  sessionSecret: string,
+  purpose: string,
+  expectedUse: string,
+): Promise<{ ok: true; payload: T } | { ok: false; expired: boolean }> {
+  const parts = token.split(".");
+  if (parts.length !== 3) return { ok: false, expired: false };
+  const [header, body, sig] = parts;
+  const key = await authSigningKey(sessionSecret, purpose);
+  const expected = b64url(await hmacSha256Raw(key, `${header}.${body}`));
+  if (!timingSafeEqualStr(expected, sig)) return { ok: false, expired: false };
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(body))) as T;
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.token_use !== expectedUse) return { ok: false, expired: false };
+    if (payload.iss !== AUTH_TOKEN_ISS) return { ok: false, expired: false };
+    if (!audienceMatches(payload.aud)) return { ok: false, expired: false };
+    if (!payload.sid || !payload.sub || payload.uv <= 0 || payload.sv <= 0) return { ok: false, expired: false };
+    if (typeof payload.exp !== "number") return { ok: false, expired: false };
+    if (payload.exp + 5 < now) return { ok: false, expired: true };
+    if (typeof payload.nbf === "number" && payload.nbf - 5 > now) return { ok: false, expired: false };
+    return { ok: true, payload };
+  } catch {
+    return { ok: false, expired: false };
+  }
+}
+
 async function verifyAuthJwt<T extends AccessJwtPayload>(
   token: string,
   sessionSecret: string,
   purpose: string,
   expectedUse: string,
 ): Promise<T | null> {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const [header, body, sig] = parts;
-  const key = await authSigningKey(sessionSecret, purpose);
-  const expected = b64url(await hmacSha256Raw(key, `${header}.${body}`));
-  if (!timingSafeEqualStr(expected, sig)) return null;
-  try {
-    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(body))) as T;
-    const now = Math.floor(Date.now() / 1000);
-    if (payload.token_use !== expectedUse) return null;
-    if (payload.iss !== AUTH_TOKEN_ISS) return null;
-    if (payload.aud !== AUTH_TOKEN_AUD) return null;
-    if (!payload.sid || !payload.sub || payload.uv <= 0 || payload.sv <= 0) return null;
-    if (payload.exp + 5 < now) return null;
-    if (payload.nbf - 5 > now) return null;
-    return payload;
-  } catch {
-    return null;
-  }
+  const parsed = await parseAuthJwt<T>(token, sessionSecret, purpose, expectedUse);
+  return parsed.ok ? parsed.payload : null;
 }
 
 export async function md5Hex(message: string): Promise<string> {

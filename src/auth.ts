@@ -19,6 +19,8 @@ import {
   extractRequestApiKeyParts,
   parseApiKey,
   hashRefreshSecret,
+  parseAccessJwt,
+  peekDashboardJwt,
   randomCharsKey,
   signAccessJwt,
   splitRefreshToken,
@@ -197,6 +199,18 @@ export async function issueSession(
 
 export function authUnauthorized(): Response {
   return json(401, { success: false, code: "AUTH_UNAUTHORIZED", message: "Unauthorized", data: null });
+}
+
+export function authTokenExpired(): Response {
+  return json(401, { success: false, code: "AUTH_TOKEN_EXPIRED", message: "Unauthorized", data: null });
+}
+
+export function authSessionRevoked(): Response {
+  return json(401, { success: false, code: "AUTH_SESSION_REVOKED", message: "Unauthorized", data: null });
+}
+
+export function authUserDisabled(): Response {
+  return json(401, { success: false, code: "AUTH_USER_DISABLED", message: "Unauthorized", data: null });
 }
 
 export function authSessionMismatch(): Response {
@@ -388,6 +402,79 @@ function bearerCredential(req: Request): string {
     if (raw && !raw.toLowerCase().startsWith("sk-")) return raw;
   }
   return "";
+}
+
+/** Original `middleware.authorizationToken`. */
+function dashboardAuthorizationToken(header: string): string {
+  const trimmed = header.trim();
+  if (!trimmed) return "";
+  const parts = trimmed.split(/\s+/);
+  if (parts.length === 2 && parts[0].toLowerCase() === "bearer") return parts[1] || "";
+  if (parts.length !== 1) return "";
+  return parts[0];
+}
+
+function writeDashboardAuthError(kind: "expired" | "invalid" | "revoked"): Response {
+  if (kind === "expired") return authTokenExpired();
+  if (kind === "revoked") return authSessionRevoked();
+  return authUnauthorized();
+}
+
+type DashboardCredential =
+  | { kind: "unmatched" }
+  | { kind: "user"; user: SessionUser }
+  | { kind: "error"; response: Response };
+
+/** Original `middleware.classifyDashboardCredential`. */
+async function classifyDashboardCredential(c: Context<Env>, store: Store): Promise<DashboardCredential> {
+  const raw = dashboardAuthorizationToken(c.req.headers.get("authorization") || "");
+  if (!raw) return { kind: "unmatched" };
+  const secret = await sessionSecret(c.env, store);
+  if (peekDashboardJwt(raw)) {
+    const parsed = await parseAccessJwt(raw, secret);
+    if (!parsed.ok) return { kind: "error", response: writeDashboardAuthError(parsed.expired ? "expired" : "invalid") };
+    const sess = await store.getSession(parsed.payload.sid);
+    const userId = Number(parsed.payload.sub);
+    if (
+      !sess ||
+      sess.revoked ||
+      (sess.expires_at > 0 && sess.expires_at < nowSec()) ||
+      sess.user_id !== userId ||
+      Number(sess.version || 1) !== parsed.payload.sv ||
+      Number(sess.user_auth_version || 1) !== parsed.payload.uv
+    ) {
+      return { kind: "error", response: writeDashboardAuthError("revoked") };
+    }
+    const user = await store.getUserById(userId);
+    if (!user || user.status !== USER_ENABLED || Number(user.auth_version || 1) !== parsed.payload.uv) {
+      return { kind: "error", response: writeDashboardAuthError("revoked") };
+    }
+    await store.touchSession(parsed.payload.sid);
+    return { kind: "user", user: toSessionUser(user, parsed.payload.sid, parsed.payload.uv, parsed.payload.sv) };
+  }
+  const patUser = await store.getUserByField("access_token", raw);
+  if (!patUser || patUser.id <= 0) return { kind: "unmatched" };
+  await beginAccessTokenAudit(store, c.req, patUser, raw);
+  const user = await store.getUserById(patUser.id);
+  if (!user) return { kind: "error", response: writeDashboardAuthError("revoked") };
+  return { kind: "user", user: toSessionUser(user, "", Number(user.auth_version || 1) || 1, 1) };
+}
+
+/** Original `middleware.TryUserAuth`. */
+export async function tryUserAuth(c: Context<Env>, store: Store): Promise<SessionUser | null | Response> {
+  const classified = await classifyDashboardCredential(c, store);
+  if (classified.kind === "error") return classified.response;
+  if (classified.kind === "user") return classified.user;
+  return null;
+}
+
+/** Original `middleware.UserAuth`. */
+export async function userAuth(c: Context<Env>, store: Store): Promise<SessionUser | Response> {
+  const classified = await classifyDashboardCredential(c, store);
+  if (classified.kind === "error") return classified.response;
+  if (classified.kind === "unmatched") return authUnauthorized();
+  if (classified.user.status !== USER_ENABLED) return authUserDisabled();
+  return classified.user;
 }
 
 export async function readSession(c: Context<Env>, store: Store): Promise<SessionUser | null> {
