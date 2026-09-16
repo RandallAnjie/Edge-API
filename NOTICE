@@ -354,6 +354,28 @@ Material changes from upstream:
   fallback tests stay unchanged. Extra-OK: audit write failure must not
   fail the request. requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on DeleteRedemptionBatch `redemption.delete_batch` (`count` / `total` /
+  `requested_redemption_ids`; Content “Batch deleted ${count} redemption
+  codes”), AdminDisable2FA `user.2fa_disable` (nil params plus
+  `target_user_id` when target≠operator; Content “Force-disabled two-factor
+  authentication for the user”), AdminResetPasskey `user.reset_passkey`
+  (`{username,id}` plus `target_user_id`; Content “Reset the user passkey”),
+  AdminResetPlanSubscriptions `subscription.plan_reset`, and
+  AdminResetUserSubscriptionsByPlan `subscription.user_plan_reset`
+  (`plan_id` / `plan_title` / `reset_count` / `user_count` /
+  `advance_reset_time`; `PlanTitle` is `json:"-"` so API JSON omits it;
+  user path also stores `target_user_id`). Category `operation`,
+  `other.op` + `other.admin_info` (no `audit_info`), Status 200 Success
+  true, then `markAuditLogged`. Failed redemption bind still uses
+  `auditRouteActions` `redemption.delete_batch` fallback
+  (`POST /api/redemption/batch`). Failed invalid-id reset_passkey still
+  uses `user.reset_passkey` fallback (`DELETE /api/user/:id/reset_passkey`).
+  Failed 2FA disable / subscription reset still use generic
+  `finishAdminAudit`. Extra-OK: hop 323 vendor.create/delete fallback
+  tests stay unchanged. Extra-OK: audit write failure must not fail the
+  request. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

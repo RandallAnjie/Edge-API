@@ -143,7 +143,7 @@ import {
   validateDeployRequest,
   validatePriceEstimationRequest,
 } from "./ionet.js";
-import type { Env } from "./types.js";
+import type { Env, SessionUser } from "./types.js";
 
 type C = Context<Env>;
 type VendorOp = { action?: string; vendor_ids?: number[]; model_ids?: number[]; target_vendor_id?: number; expected_version?: string };
@@ -1029,7 +1029,7 @@ export function registerParity(r: Router<Env>): void {
     if (!planId.ok || planId.n <= 0) return apiErrorMsg("无效的ID");
     const parsed = await readAdminResetSubscriptionBody(c.req);
     if (parsed instanceof Response) return parsed;
-    return resetPlanSubscriptions(c, s, planId.n, undefined, parsed.advanceResetTime);
+    return resetPlanSubscriptions(c, s, u, planId.n, undefined, parsed.advanceResetTime);
   });
 
   r.post("/api/subscription/admin/users/:id/subscriptions", async (c) => {
@@ -1070,7 +1070,7 @@ export function registerParity(r: Router<Env>): void {
     const parsed = await readAdminResetSubscriptionBody(c.req);
     if (parsed instanceof Response) return parsed;
     if (parsed.planId <= 0) return apiErrorMsg("参数错误");
-    return resetPlanSubscriptions(c, s, parsed.planId, userId.n, parsed.advanceResetTime);
+    return resetPlanSubscriptions(c, s, u, parsed.planId, userId.n, parsed.advanceResetTime);
   });
 
   r.post("/api/subscription/epay/notify", (c) => handleSubscriptionEpayNotify(c));
@@ -2563,6 +2563,7 @@ async function readAdminResetSubscriptionBody(
 async function resetPlanSubscriptions(
   c: C,
   s: Store,
+  u: SessionUser,
   planId: number,
   userId: number | undefined,
   advanceResetTime: boolean,
@@ -2584,13 +2585,33 @@ async function resetPlanSubscriptions(
     await s.updateUserSub(Number(row.id), patch);
     users.add(Number(row.user_id));
   }
-  return apiOk({
+  const result = {
     plan_id: planId,
     matched_count: rows.length,
     reset_count: rows.length,
     user_count: users.size,
     advance_reset_time: advanceResetTime,
-  });
+  };
+  const auditParams: Record<string, unknown> = {
+    plan_id: planId,
+    plan_title: String(published.title || ""),
+    reset_count: rows.length,
+    user_count: users.size,
+    advance_reset_time: advanceResetTime,
+  };
+  if (userId) {
+    await recordManageAudit(
+      s,
+      c.req,
+      u,
+      "subscription.user_plan_reset",
+      { target_user_id: userId, ...auditParams },
+      userId,
+    );
+  } else {
+    await recordManageAudit(s, c.req, u, "subscription.plan_reset", auditParams);
+  }
+  return apiOk(result);
 }
 
 async function fetchCodexWham(c: C, kind: "usage" | "reset-credits" | "reset"): Promise<Response> {

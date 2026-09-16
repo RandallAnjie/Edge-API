@@ -766,6 +766,7 @@ export function registerMore(r: Router<Env>): void {
       totp_locked_until: 0,
     });
     await s.bumpAuthVersion(parsed.n);
+    await recordManageAudit(s, c.req, u, "user.2fa_disable", {}, parsed.n);
     return json(200, { success: true, message: "用户2FA已被强制禁用" });
   });
 
@@ -1118,6 +1119,14 @@ export function registerMore(r: Router<Env>): void {
     if (!keys.length) return apiErrorMsg(MSG_PASSKEY_NOT_BOUND);
     await s.deletePasskeys(parsed.n);
     await s.bumpAuthVersion(parsed.n);
+    await recordManageAudit(
+      s,
+      c.req,
+      u,
+      "user.reset_passkey",
+      { username: target?.username ?? "", id: parsed.n },
+      parsed.n,
+    );
     return json(200, { success: true, message: "Passkey 已重置" });
   });
 
@@ -1747,7 +1756,13 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const ids = bindRedemptionBatchIds(c.req, await c.req.text());
     if (ids instanceof Response) return ids;
-    return apiOk(await s.deleteRedemptionsBatch(ids));
+    const count = await s.deleteRedemptionsBatch(ids);
+    await recordManageAudit(s, c.req, u, "redemption.delete_batch", {
+      count,
+      total: ids.length,
+      requested_redemption_ids: ids,
+    });
+    return apiOk(count);
   });
 
   r.delete("/api/redemption/invalid", async (c) => {
