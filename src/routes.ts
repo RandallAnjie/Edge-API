@@ -52,8 +52,37 @@ import {
   validateNewAccountPassword,
   verifyPassword,
   decryptPassword,
+  utf8RuneCount,
 } from "./crypto.js";
-import { apiErrorMsg, apiFail, apiFailInvalidParams, apiOk, apiOkExtra, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, paymentComplianceRequiredMessage, readJson, searchChannelPageQuery, serveRevalidatedJSON, strconvAtoi, strconvParseBool } from "./http.js";
+import {
+  apiErrorMsg,
+  apiFail,
+  apiFailInvalidParams,
+  apiOk,
+  apiOkExtra,
+  clientIp,
+  databaseErrorMessage,
+  i18nPair,
+  json,
+  pageData,
+  pageQuery,
+  parseUnixQuery,
+  paymentComplianceRequiredMessage,
+  readJson,
+  searchChannelPageQuery,
+  serveRevalidatedJSON,
+  strconvAtoi,
+  strconvParseBool,
+  userEmailAlreadyTakenMessage,
+  userEmailVerificationRequiredMessage,
+  userExistsMessage,
+  userInputInvalidMessage,
+  userPasswordLoginDisabledMessage,
+  userPasswordRegisterDisabledMessage,
+  userRegisterDisabledMessage,
+  userUsernameOrPasswordErrorMessage,
+  userVerificationCodeErrorMessage,
+} from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import type { Context } from "./router.js";
 import { Router } from "./router.js";
@@ -84,7 +113,7 @@ import { headerNavModuleAuth, isHeaderNavDenied } from "./header-nav.js";
 import { paymentComplianceConfirmed, requirePaymentCompliance } from "./payments.js";
 import { storeLogQuota } from "./quota.js";
 import { finishInsertUser } from "./user-insert.js";
-import { notifyAccountSecurityChange } from "./mail.js";
+import { notifyAccountSecurityChange, normalizeEmail } from "./mail.js";
 import { isPasskeyDomainOption, PasskeyDomainError, passkeyDomainHttpError, updatePasskeyDomainOptions } from "./passkey-domains.js";
 import { checkModelRequestRateLimitGroup } from "./model-rate-limit.js";
 import { parseHTTPStatusCodeRanges } from "./status-code-ranges.js";
@@ -332,29 +361,30 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/user/login", async (c) => {
     const s = store(c);
-    if (!(await s.optionBool("PasswordLoginEnabled", true))) return apiFail("管理员关闭了密码登录");
-    const body = (await readJson(c.req)) as {
-      username?: string;
-      password?: string;
-      password_encrypted?: string;
-      encryption_key_id?: string;
-    };
-    let password = body.password || "";
+    if (!(await s.optionBool("PasswordLoginEnabled", true))) {
+      return apiErrorMsg(userPasswordLoginDisabledMessage(c.req));
+    }
+    const body = bindLoginRequest(c.req, await c.req.text());
+    if (body instanceof Response) return body;
+    let password = body.password;
     if (await s.optionBool("PasswordLoginEncryptionEnabled", false)) {
-      if (!body.password_encrypted || !body.encryption_key_id) return apiFail("无效的参数");
+      if (!body.password_encrypted || !body.encryption_key_id) return apiFailInvalidParams(c.req);
       const decrypted = await decryptPassword(
         body.password_encrypted,
         body.encryption_key_id,
         await s.option("PasswordEncryptionPrivateKey"),
         await s.option("PasswordEncryptionKid"),
       );
-      if (!decrypted) return apiFail("用户名或密码错误，或用户已被封禁");
+      if (!decrypted) return apiErrorMsg(userUsernameOrPasswordErrorMessage(c.req));
       password = decrypted;
     }
-    if (!body.username || !password) return apiFail("无效的参数");
-    const user = await s.getUserByUsername(body.username);
+    if (!body.username || !password) return apiFailInvalidParams(c.req);
+    const ident = body.username.trim();
+    if (!ident) return apiFailInvalidParams(c.req);
+    let user = await s.getUserByUsername(ident);
+    if (!user) user = await s.getUserByField("email", ident);
     if (!user || !(await verifyPassword(password, user.password)) || user.status !== USER_ENABLED) {
-      return apiFail("用户名或密码错误，或用户已被封禁");
+      return apiErrorMsg(userUsernameOrPasswordErrorMessage(c.req));
     }
     const started = await startLoginVerification(s, user, "password");
     if ("error" in started) return started.error;
@@ -387,7 +417,7 @@ export function adminRouter(): Router<Env> {
     if (!(await s.optionBool("PasswordLoginEncryptionEnabled", false))) return apiOk({ enabled: false });
     const kid = await s.option("PasswordEncryptionKid");
     const publicKey = await s.option("PasswordEncryptionPublicKey");
-    if (!kid || !publicKey) return apiFail("数据库出错，请联系管理员");
+    if (!kid || !publicKey) return apiErrorMsg(databaseErrorMessage(c.req));
     return apiOk({
       enabled: true,
       kid,
@@ -397,33 +427,34 @@ export function adminRouter(): Router<Env> {
 
   r.post("/api/user/register", async (c) => {
     const s = store(c);
-    if (!(await s.optionBool("RegisterEnabled", true))) return apiFail("管理员关闭了新用户注册");
+    if (!(await s.optionBool("RegisterEnabled", true))) {
+      return apiErrorMsg(userRegisterDisabledMessage(c.req));
+    }
     if (!(await s.optionBool("PasswordRegisterEnabled", true))) {
-      return apiFail("管理员关闭了通过密码进行注册，请使用第三方账户验证的形式进行注册");
+      return apiErrorMsg(userPasswordRegisterDisabledMessage(c.req));
     }
-    const body = (await readJson(c.req)) as {
-      username?: string;
-      password?: string;
-      display_name?: string;
-      aff_code?: string;
-      email?: string;
-      verification_code?: string;
-    };
-    const username = (body.username || "").trim();
-    const password = body.password || "";
-    if (!username) return apiFail("无效的参数");
-    if (username.length > 20) return apiFail("无效的参数");
-    if (password.length < 8 || password.length > 128) return apiFail("密码长度必须在 8 到 128 之间");
+    const body = bindRegisterUser(c.req, await c.req.text());
+    if (body instanceof Response) return body;
+    const username = body.username.trim();
+    const email = normalizeEmail(body.email);
+    if (!username) return apiFailInvalidParams(c.req);
+    const inputErr = validateRegisterUser({ ...body, username, email });
+    if (inputErr) return apiErrorMsg(userInputInvalidMessage(c.req, inputErr));
     const emailVerification = await s.optionBool("EmailVerificationEnabled", false);
-    let email = "";
+    let registerEmail = "";
     if (emailVerification) {
-      if (!body.email || !body.verification_code) return apiFail("管理员开启了邮箱验证，请输入邮箱地址和验证码");
-      const { normalizeEmail } = await import("./mail.js");
-      email = normalizeEmail(body.email);
-      if (!(await s.consumeEmailCode(email, body.verification_code, "verify"))) return apiFail("验证码错误或已过期");
-      if (await s.getUserByEmail(email, { includeDeleted: true })) return apiFail("邮箱地址已被占用");
+      if (!email || !body.verification_code) return apiErrorMsg(userEmailVerificationRequiredMessage(c.req));
+      if (!(await s.consumeEmailCode(email, body.verification_code, "verify"))) {
+        return apiErrorMsg(userVerificationCodeErrorMessage(c.req));
+      }
+      if (await s.getUserByEmail(email, { includeDeleted: true })) {
+        return apiErrorMsg(userEmailAlreadyTakenMessage(c.req));
+      }
+      registerEmail = email;
     }
-    if (await s.getUserByUsername(username, { includeDeleted: true })) return apiFail("用户名已存在，或已注销");
+    if (await s.getUserByUsername(username, { includeDeleted: true })) {
+      return apiErrorMsg(userExistsMessage(c.req));
+    }
     let inviter = 0;
     if (body.aff_code) {
       const inv = await s.getUserByAff(body.aff_code);
@@ -432,15 +463,15 @@ export function adminRouter(): Router<Env> {
     const quota = await s.optionNum("QuotaForNewUser", 0);
     const id = await s.insertUser({
       username,
-      password: await hashPassword(password),
+      password: await hashPassword(body.password),
       display_name: username,
       role: ROLE_USER,
       quota,
-      email,
+      email: registerEmail,
       aff_code: generateAffCode(),
       inviter_id: inviter,
     });
-    if (email) await s.updateUser(id, { email, email_verified: 1 });
+    if (registerEmail) await s.updateUser(id, { email: registerEmail, email_verified: 1 });
     await finishInsertUser(s, id, inviter);
     if (c.env.GENERATE_DEFAULT_TOKEN === "true" || (await s.optionBool("GenerateDefaultToken", false))) {
       await s.insertToken({
@@ -453,7 +484,7 @@ export function adminRouter(): Router<Env> {
         group: (await s.optionBool("DefaultUseAutoGroup", false)) ? "auto" : "",
       });
     }
-    return apiOk(null, "");
+    return json(200, { success: true, message: "" });
   });
 
   r.get("/api/user/self", async (c) => {
@@ -1837,6 +1868,117 @@ function bindOptionUpdate(raw: string): { key: string; value: string } | Respons
   if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
   const rec = parsed.value as { key?: unknown; value?: unknown };
   return { key: rec.key == null ? "" : String(rec.key), value: optionInterface2String(rec.value) };
+}
+
+type LoginRequest = {
+  username: string;
+  password: string;
+  password_encrypted: string;
+  encryption_key_id: string;
+};
+
+type RegisterUser = {
+  username: string;
+  password: string;
+  display_name: string;
+  email: string;
+  verification_code: string;
+  aff_code: string;
+  remark: string;
+};
+
+/** Original `encoding/json` string field: omitted/null → ""; wrong kind → type error. */
+function bindJSONStringOn(req: Request, rec: Record<string, unknown>, key: string): string | Response {
+  if (!(key in rec) || rec[key] == null) return "";
+  if (typeof rec[key] !== "string") return apiFailInvalidParams(req);
+  return rec[key] as string;
+}
+
+/** Original `common.DecodeJson` into `controller.LoginRequest`. Any decode error is `MsgInvalidParams`. JSON `null` is a zero struct. */
+function bindLoginRequest(req: Request, raw: string): LoginRequest | Response {
+  const invalid = () => apiFailInvalidParams(req);
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  const zero: LoginRequest = { username: "", password: "", password_encrypted: "", encryption_key_id: "" };
+  if (parsed.value === null) return zero;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  const rec = parsed.value as Record<string, unknown>;
+  const username = bindJSONStringOn(req, rec, "username");
+  if (username instanceof Response) return username;
+  const password = bindJSONStringOn(req, rec, "password");
+  if (password instanceof Response) return password;
+  const passwordEncrypted = bindJSONStringOn(req, rec, "password_encrypted");
+  if (passwordEncrypted instanceof Response) return passwordEncrypted;
+  const encryptionKeyId = bindJSONStringOn(req, rec, "encryption_key_id");
+  if (encryptionKeyId instanceof Response) return encryptionKeyId;
+  return {
+    username,
+    password,
+    password_encrypted: passwordEncrypted,
+    encryption_key_id: encryptionKeyId,
+  };
+}
+
+/** Original `common.DecodeJson` into `model.User` for `Register`. */
+function bindRegisterUser(req: Request, raw: string): RegisterUser | Response {
+  const invalid = () => apiFailInvalidParams(req);
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  const zero: RegisterUser = {
+    username: "",
+    password: "",
+    display_name: "",
+    email: "",
+    verification_code: "",
+    aff_code: "",
+    remark: "",
+  };
+  if (parsed.value === null) return zero;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  const rec = parsed.value as Record<string, unknown>;
+  const username = bindJSONStringOn(req, rec, "username");
+  if (username instanceof Response) return username;
+  const password = bindJSONStringOn(req, rec, "password");
+  if (password instanceof Response) return password;
+  const displayName = bindJSONStringOn(req, rec, "display_name");
+  if (displayName instanceof Response) return displayName;
+  const email = bindJSONStringOn(req, rec, "email");
+  if (email instanceof Response) return email;
+  const verificationCode = bindJSONStringOn(req, rec, "verification_code");
+  if (verificationCode instanceof Response) return verificationCode;
+  const affCode = bindJSONStringOn(req, rec, "aff_code");
+  if (affCode instanceof Response) return affCode;
+  const remark = bindJSONStringOn(req, rec, "remark");
+  if (remark instanceof Response) return remark;
+  return {
+    username,
+    password,
+    display_name: displayName,
+    email,
+    verification_code: verificationCode,
+    aff_code: affCode,
+    remark,
+  };
+}
+
+/** Original `go-playground/validator` `Error()` for `common.Validate.Struct(&user)`. */
+function validatorFieldError(field: string, tag: string): string {
+  return `Key: 'User.${field}' Error:Field validation for '${field}' failed on the '${tag}' tag`;
+}
+
+/** Original Register `common.Validate.Struct(&user)` tags on `model.User`. */
+function validateRegisterUser(user: RegisterUser): string | null {
+  const errors: string[] = [];
+  if (utf8RuneCount(user.username) > 20) errors.push(validatorFieldError("Username", "max"));
+  const passwordRunes = utf8RuneCount(user.password);
+  if (passwordRunes < 8) errors.push(validatorFieldError("Password", "min"));
+  else if (passwordRunes > 128) errors.push(validatorFieldError("Password", "max"));
+  if (utf8RuneCount(user.display_name) > 20) errors.push(validatorFieldError("DisplayName", "max"));
+  if (utf8RuneCount(user.email) > 50) errors.push(validatorFieldError("Email", "max"));
+  if (user.remark !== "" && utf8RuneCount(user.remark) > 255) errors.push(validatorFieldError("Remark", "max"));
+  return errors.length ? errors.join("\n") : null;
 }
 
 /** Original `common.Interface2String` used by `UpdateOption`. */

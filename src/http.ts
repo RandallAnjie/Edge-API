@@ -156,6 +156,102 @@ export function userEmailAlreadyTakenMessage(req: Request): string {
   }
 }
 
+/** Original `i18n.MsgUserPasswordLoginDisabled`. */
+export function userPasswordLoginDisabledMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "管理員關閉了密碼登錄";
+    case "zh-CN":
+      return "管理员关闭了密码登录";
+    default:
+      return "Password login has been disabled by administrator";
+  }
+}
+
+/** Original `i18n.MsgUserRegisterDisabled`. */
+export function userRegisterDisabledMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "管理員關閉了新使用者註冊";
+    case "zh-CN":
+      return "管理员关闭了新用户注册";
+    default:
+      return "New user registration has been disabled by administrator";
+  }
+}
+
+/** Original `i18n.MsgUserPasswordRegisterDisabled`. */
+export function userPasswordRegisterDisabledMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "管理員關閉了通過密碼進行註冊，請使用第三方帳號驗證的形式進行註冊";
+    case "zh-CN":
+      return "管理员关闭了通过密码进行注册，请使用第三方账户验证的形式进行注册";
+    default:
+      return "Password registration has been disabled by administrator, please use third-party account verification";
+  }
+}
+
+/** Original `i18n.MsgUserUsernameOrPasswordError`. */
+export function userUsernameOrPasswordErrorMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "使用者名或密碼錯誤，或使用者已被封禁";
+    case "zh-CN":
+      return "用户名或密码错误，或用户已被封禁";
+    default:
+      return "Username or password is incorrect, or user has been banned";
+  }
+}
+
+/** Original `i18n.MsgUserExists`. */
+export function userExistsMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "使用者名已存在，或已註銷";
+    case "zh-CN":
+      return "用户名已存在，或已注销";
+    default:
+      return "Username already exists or has been deleted";
+  }
+}
+
+/** Original `i18n.MsgUserEmailVerificationRequired`. */
+export function userEmailVerificationRequiredMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "管理員開啟了信箱驗證，請輸入信箱位址和驗證碼";
+    case "zh-CN":
+      return "管理员开启了邮箱验证，请输入邮箱地址和验证码";
+    default:
+      return "Email verification is enabled, please enter email address and verification code";
+  }
+}
+
+/** Original `i18n.MsgUserVerificationCodeError`. */
+export function userVerificationCodeErrorMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "驗證碼錯誤或已過期";
+    case "zh-CN":
+      return "验证码错误或已过期";
+    default:
+      return "Verification code is incorrect or has expired";
+  }
+}
+
+/** Original `i18n.MsgUserInputInvalid` (`{{.Error}}`). */
+export function userInputInvalidMessage(req: Request, error: string): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return `輸入不合法 ${error}`;
+    case "zh-CN":
+      return `输入不合法 ${error}`;
+    default:
+      return `Invalid input ${error}`;
+  }
+}
+
 /** Original `i18n.MsgUserPasswordResetLinkInvalid`. */
 export function userPasswordResetLinkInvalidMessage(req: Request): string {
   switch (i18nLang(req)) {

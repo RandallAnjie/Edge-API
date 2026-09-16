@@ -2442,7 +2442,7 @@ test("original ResetPassword, Register, CustomOAuth, GetUser JSON", async () => 
   );
   assert.equal(registered.body.success, true, String(registered.body.message));
   assert.equal(registered.body.message, "");
-  assert.equal(registered.body.data, null);
+  assert.equal("data" in registered.body, false);
   const dup = await json(
     new Request("http://local/api/user/register", {
       method: "POST",
@@ -2452,7 +2452,7 @@ test("original ResetPassword, Register, CustomOAuth, GetUser JSON", async () => 
     e,
   );
   assert.equal(dup.body.success, false);
-  assert.equal(dup.body.message, "用户名已存在，或已注销");
+  assert.equal(dup.body.message, "Username already exists or has been deleted");
   const userLogin = await json(
     new Request("http://local/api/user/login", {
       method: "POST",
@@ -4779,7 +4779,7 @@ test("original user soft-delete, amount envelopes, billing expr, RelayErrorHandl
     e,
   );
   assert.equal(loginDeleted.body.success, false);
-  assert.equal(loginDeleted.body.message, "用户名或密码错误，或用户已被封禁");
+  assert.equal(loginDeleted.body.message, "Username or password is incorrect, or user has been banned");
 
   const registerDeleted = await json(
     new Request("http://local/api/user/register", {
@@ -4790,7 +4790,7 @@ test("original user soft-delete, amount envelopes, billing expr, RelayErrorHandl
     e,
   );
   assert.equal(registerDeleted.body.success, false);
-  assert.equal(registerDeleted.body.message, "用户名已存在，或已注销");
+  assert.equal(registerDeleted.body.message, "Username already exists or has been deleted");
 
   const hardCreated = await json(
     new Request("http://local/api/user/", {
