@@ -240,8 +240,11 @@ test("original ModelPriceHelper QuotaToPreConsume is HTTP 403 when token remain 
       e,
     );
     assert.equal(short.res.status, 403, short.text);
-    assert.equal((short.body.error as { code?: string })?.code, "insufficient_quota");
-    assert.match(String((short.body.error as { message?: string })?.message || ""), /令牌额度不足/);
+    assert.equal((short.body.error as { code?: string })?.code, "pre_consume_token_quota_failed");
+    assert.equal(
+      (short.body.error as { message?: string })?.message,
+      "token quota is not enough, token remain quota: ＄0.000072, need quota: ＄0.000074",
+    );
   } finally {
     globalThis.fetch = orig;
   }

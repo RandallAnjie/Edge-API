@@ -145,7 +145,13 @@ import {
 } from "./channel-error.js";
 import type { OriginTaskRef } from "./origin-task.js";
 import {
-  remainingOk,
+  billingSessionLogFields,
+  preConsumeBilling,
+  refundBilling,
+  settleBilling,
+  type BillingSession,
+} from "./billing-session.js";
+import {
   textConsumePriceData,
   audioConsumeLogRatios,
   computeQuota,
@@ -1447,6 +1453,15 @@ type SettleLogExtra = {
   paramOverrideAudit?: string[];
   streamStatus?: StreamStatus;
   billingModelName?: string;
+  billing?: BillingSession | null;
+  billingPreference?: string;
+  subscriptionId?: number;
+  subscriptionPreConsumed?: number;
+  subscriptionPostDelta?: number;
+  subscriptionPlanId?: number;
+  subscriptionPlanTitle?: string;
+  subscriptionAmountTotal?: number;
+  subscriptionAmountUsedAfterPreConsume?: number;
 };
 
 async function settle(
@@ -1572,14 +1587,22 @@ async function settle(
   }
   const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
   const logModel = useAudioOther ? billingName : consumeLogModelName(billingName);
+  const billingLog = billingSessionLogFields(extra.billing);
   if (ok && quota > 0) {
-    await store.consumeQuota(auth.user.id, auth.token.id, channel.id, quota);
+    if (extra.billing) {
+      await store.addUserUsedQuotaAndRequestCount(auth.user.id, quota);
+      await store.addChannelUsedQuota(channel.id, quota);
+    } else {
+      await store.consumeQuota(auth.user.id, auth.token.id, channel.id, quota);
+    }
     await store.bumpQuotaData(auth.user, logModel, quota, prompt + completion, {
       useGroup: auth.usingGroup,
       tokenId: auth.token.id,
       channelId: channel.id,
     });
   }
+  if (ok && extra.billing) await settleBilling(store, auth, extra.billing, quota);
+  else if (!ok && extra.billing) await refundBilling(store, auth, extra.billing);
   await store.insertLog({
     user_id: auth.user.id,
     type: ok ? LOG_CONSUME : LOG_ERROR,
@@ -1640,7 +1663,16 @@ async function settle(
       isMultiKey: parseChannelInfo(String(channel.channel_info || "")).is_multi_key,
       useChannel: extra.useChannel,
       channelAffinity: extra.channelAffinity,
-      billingSource: extra.billingSource || "wallet",
+      billingSource: extra.billingSource || billingLog.billingSource || "wallet",
+      billingPreference: extra.billingPreference || billingLog.billingPreference,
+      subscriptionId: extra.subscriptionId ?? billingLog.subscriptionId,
+      subscriptionPreConsumed: extra.subscriptionPreConsumed ?? billingLog.subscriptionPreConsumed,
+      subscriptionPostDelta: extra.subscriptionPostDelta ?? billingLog.subscriptionPostDelta,
+      subscriptionPlanId: extra.subscriptionPlanId ?? billingLog.subscriptionPlanId,
+      subscriptionPlanTitle: extra.subscriptionPlanTitle ?? billingLog.subscriptionPlanTitle,
+      subscriptionAmountTotal: extra.subscriptionAmountTotal ?? billingLog.subscriptionAmountTotal,
+      subscriptionAmountUsedAfterPreConsume:
+        extra.subscriptionAmountUsedAfterPreConsume ?? billingLog.subscriptionAmountUsedAfterPreConsume,
       publicExtra,
       quotaClamp,
       toolSurcharges: textSummary?.toolSurchargeItems,
@@ -1803,14 +1835,19 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   });
   if (priceQuota.error) return openaiError(400, priceQuota.error, "model_price_error");
   const preNeed = priceQuota.freeModel ? 0 : priceQuota.quotaToPreConsume;
-  const precheck = remainingOk(
-    auth.user.quota,
-    auth.token.remain_quota,
-    Boolean(auth.token.unlimited_quota),
-    preNeed,
-  );
-  if (precheck) return openaiError(403, precheck, "insufficient_quota");
-
+  let billing: BillingSession | null = null;
+  if (!priceQuota.freeModel) {
+    const held = await preConsumeBilling(store, auth, {
+      requestId: rid,
+      quota: preNeed,
+      playground: Boolean(opts.playground),
+      billingModelName,
+    });
+    if (held.error) return openaiError(held.error.status, held.error.message, held.error.code);
+    billing = held.session;
+  }
+  let pendingStreamSettle = false;
+  try {
   let lastErr = "所有渠道均失败";
   let lastStatus = 502;
 
@@ -2215,7 +2252,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         viaResponses,
         destinationFormat: destinationRelayFormat(channel.type, mode, viaResponses),
       }),
-      billingSource: "wallet",
+      billingSource: billing?.funding || "wallet",
+      billingPreference: billing?.billingPreference,
+      billing,
       relayMode: mode,
       imageBody: asObj(opts.body),
       imageChannelType: channel.type,
@@ -2324,9 +2363,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
-        ctx?.waitUntil(
-          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
-        );
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
         return new Response(converted.sse, {
           status: 200,
           headers: {
@@ -2358,9 +2395,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
-        ctx?.waitUntil(
-          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
-        );
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
         return new Response(converted.sse, {
           status: 200,
           headers: {
@@ -2384,9 +2419,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
-        ctx?.waitUntil(
-          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
-        );
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
         return new Response(converted.sse, {
           status: 200,
           headers: {
@@ -2417,9 +2450,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
-        ctx?.waitUntil(
-          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
-        );
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
         return new Response(converted.sse, {
           status: 200,
           headers: {
@@ -2443,9 +2474,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
-        ctx?.waitUntil(
-          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
-        );
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
         return new Response(converted.sse, {
           status: 200,
           headers: {
@@ -2478,9 +2507,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
-        ctx?.waitUntil(
-          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
-        );
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
         return new Response(converted.sse, {
           status: 200,
           headers: {
@@ -2509,9 +2536,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
-        ctx?.waitUntil(
-          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
-        );
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
         return new Response(converted.sse, {
           status: 200,
           headers: {
@@ -2548,9 +2573,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         const usage = usageFromOpenAI(converted.usageBody);
         attachSettleUsage(extra, usage);
-        ctx?.waitUntil(
-          settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra),
-        );
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
         return new Response(converted.body, {
           status: 200,
           headers: {
@@ -2561,8 +2584,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         });
       }
       const [clientBody, logBody] = res.body.tee();
+      pendingStreamSettle = true;
       ctx?.waitUntil(
-        parseStreamAndSettle(store, auth, channel, model, promptEst, useTime, ip, rid, logBody, extra),
+        parseStreamAndSettle(store, auth, channel, model, promptEst, useTime, ip, rid, logBody, extra).finally(() =>
+          refundBilling(store, auth, extra.billing),
+        ),
       );
       const headers = new Headers();
       headers.set("content-type", "text/event-stream; charset=utf-8");
@@ -2723,6 +2749,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   }
 
   return openaiError(lastStatus, lastErr.slice(0, 800), "channel_error");
+  } finally {
+    if (!pendingStreamSettle) await refundBilling(store, auth, billing);
+  }
 }
 
 function noteRelaySseStatus(extra: SettleLogExtra, text: string): void {

@@ -205,6 +205,16 @@ export function remainingOk(userQuota: number, tokenRemain: number, unlimited: b
   return null;
 }
 
+/** Original `common.GetTrustQuota` (`10 * QuotaPerUnit`). */
+export function getTrustQuota(quotaPerUnit = 500000): number {
+  return Math.trunc(10 * (quotaPerUnit || 500000));
+}
+
+/** Original `common.GetTrustQuota` using persisted `QuotaPerUnit`. */
+export async function storeTrustQuota(store: Store): Promise<number> {
+  return getTrustQuota((await store.optionNum("QuotaPerUnit", 500000)) || 500000);
+}
+
 export function formatQuota(quota: number, quotaPerUnit: number, displayCurrency: boolean): string {
   if (!displayCurrency) return String(quota);
   const usd = quota / (quotaPerUnit || 500000);
