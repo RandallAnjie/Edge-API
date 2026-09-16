@@ -85,6 +85,12 @@ export interface Env {
   GLOBAL_API_RATE_LIMIT_DURATION?: string;
   /** Original `ANONYMOUS_REQUEST_BODY_LIMIT_KB` (`constant.AnonymousRequestBodyLimitKB`, default 512). `<= 0` disables. */
   ANONYMOUS_REQUEST_BODY_LIMIT_KB?: string;
+  /** Original `SEARCH_RATE_LIMIT_ENABLE` (`common.SearchRateLimitEnable`, default true). */
+  SEARCH_RATE_LIMIT_ENABLE?: string;
+  /** Original `SEARCH_RATE_LIMIT` (`common.SearchRateLimitNum`, default 10). */
+  SEARCH_RATE_LIMIT?: string;
+  /** Original `SEARCH_RATE_LIMIT_DURATION` (`common.SearchRateLimitDuration`, default 60). */
+  SEARCH_RATE_LIMIT_DURATION?: string;
 }
 
 export interface ExecutionContextLike {

@@ -111,6 +111,12 @@ Material changes from upstream:
   2FA setup/enable. Deny is empty HTTP 429 + `Retry-After`. Missing user ID is
   empty HTTP 401. Redis/KV failure is empty HTTP 500. Extra-OK: unauthenticated
   UC routes skip the leftover empty 401 so UserAuth/requireUser JSON still runs.
+  Original `middleware.SearchRateLimit` is on by default (`SEARCH_RATE_LIMIT_ENABLE`,
+  10 req / 60s, mark `SR`, user-id keyed) on GET `/api/token/search` and
+  GET `/api/log/self/search`. Deny is empty HTTP 429 + `Retry-After`. Missing
+  user ID is empty HTTP 401. Redis/KV failure is empty HTTP 500. Extra-OK:
+  unauthenticated search routes skip the leftover empty 401 so requireUser JSON
+  still runs. GET `/api/log/search` stays AdminAuth-only and is not on this limiter.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

@@ -9,6 +9,7 @@ import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugi
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { criticalRateLimit } from "./critical-rate-limit.js";
 import { globalApiRateLimit } from "./global-api-rate-limit.js";
+import { searchRateLimit, searchRateLimitApplies } from "./search-rate-limit.js";
 import { userCriticalRateLimit, userCriticalRateLimitScope } from "./user-critical-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
 import { adminRouter } from "./routes.js";
@@ -764,6 +765,13 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
         if (session) {
           const ucLimited = await userCriticalRateLimit(env, session.id, ucScope);
           if (ucLimited) return withCors(req, ucLimited);
+        }
+      }
+      if (searchRateLimitApplies(req.method, path)) {
+        const session = await readSession(ctxStore(routedReq, env, ctx), store);
+        if (session) {
+          const srLimited = await searchRateLimit(env, session.id);
+          if (srLimited) return withCors(req, srLimited);
         }
       }
       const c = ctxStore(routedReq, env, ctx);
