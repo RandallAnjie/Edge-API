@@ -2369,7 +2369,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       await noteAttempt(channelAttemptFromUpstream(res.status, text));
       if (!lastAttempt && retryable(res.status, retryRanges)) continue;
       await settle(store, auth, channel, model, promptEst, 0, useTime, opts.stream, ip, rid, false, lastErr.slice(0, 2000), extra);
-      const errRes = relayErrorHandler(res.status, text, String(channel.status_code_mapping || ""));
+      const errRes = relayErrorHandler(res.status, text, String(channel.status_code_mapping || ""), opts.req);
       const headers = new Headers(errRes.headers);
       headers.set("x-oneapi-request-id", rid);
       return new Response(errRes.body, { status: errRes.status, headers });

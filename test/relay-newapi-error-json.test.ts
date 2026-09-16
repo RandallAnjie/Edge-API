@@ -5,12 +5,14 @@ import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import {
   ERROR_CODE_BAD_RESPONSE_BODY,
+  ERROR_CODE_BAD_RESPONSE_STATUS_CODE,
   ERROR_CODE_CONVERT_REQUEST_FAILED,
   ERROR_CODE_DO_REQUEST_FAILED,
   ERROR_CODE_INVALID_REQUEST,
   ERROR_CODE_MODEL_PRICE_ERROR,
   ERROR_TYPE_NEW_API_ERROR,
   messageWithRequestId,
+  relayErrorHandler,
   relayUsesClaudeError,
   toClaudeRelayError,
   writeRelayNewAPIError,
@@ -349,6 +351,160 @@ test("original Relay leftover convert/price does not change AUTH StatusText or h
   assert.equal(created.body.success, true, created.text);
   const listed = await send(
     new Request("http://local/api/audit?page_size=100&request_id=hop350-vendor-create", { headers: auth }),
+    e,
+  );
+  const items = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(items.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original Relay leftover RelayErrorHandler Claude vs OpenAI gin.H", async () => {
+  const claudeReq = new Request("http://local/v1/messages", { method: "POST" });
+  const claudeRes = relayErrorHandler(502, "not-json", "", claudeReq);
+  assert.equal(claudeRes.status, 502);
+  const claudeBody = (await claudeRes.json()) as { type: string; error: Record<string, unknown> };
+  assert.equal(claudeBody.type, "error");
+  assert.deepEqual(Object.keys(claudeBody), ["type", "error"]);
+  assert.deepEqual(Object.keys(claudeBody.error).sort(), ["message", "type"]);
+  assert.equal("param" in claudeBody.error, false);
+  assert.equal("code" in claudeBody.error, false);
+  assert.deepEqual(claudeBody.error, {
+    type: ERROR_CODE_BAD_RESPONSE_STATUS_CODE,
+    message: "bad response status code 502",
+  });
+
+  const numberedReq = new Request("http://local/v1/messages", {
+    method: "POST",
+    headers: { "x-oneapi-request-id": "hop351-claude-status" },
+  });
+  const numberedRes = relayErrorHandler(502, "not-json", "", numberedReq);
+  const numberedBody = (await numberedRes.json()) as { error: { message: string } };
+  assert.equal(numberedBody.error.message, messageWithRequestId("bad response status code 502", "hop351-claude-status"));
+
+  const deniedReq = new Request("http://local/v1/messages", { method: "POST" });
+  const deniedRes = relayErrorHandler(
+    403,
+    JSON.stringify({ error: { message: "nope", type: "auth", code: "denied" } }),
+    JSON.stringify({ "403": 404 }),
+    deniedReq,
+  );
+  assert.equal(deniedRes.status, 404);
+  const deniedBody = (await deniedRes.json()) as { type: string; error: Record<string, unknown> };
+  assert.equal(deniedBody.type, "error");
+  assert.deepEqual(deniedBody.error, { type: "denied", message: "nope" });
+
+  const chatRes = relayErrorHandler(502, "not-json");
+  const chatBody = (await chatRes.json()) as { error: Record<string, unknown> };
+  assert.equal("type" in chatBody, false);
+  assert.deepEqual(chatBody.error, {
+    message: "bad response status code 502",
+    type: ERROR_CODE_BAD_RESPONSE_STATUS_CODE,
+    param: "",
+    code: ERROR_CODE_BAD_RESPONSE_STATUS_CODE,
+  });
+});
+
+test("original Relay leftover RelayErrorHandler Claude envelope JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.140" });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.141" },
+      body: JSON.stringify({
+        name: "hop351-status",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop351",
+        models: "gpt-4o-mini",
+        group: "default",
+        base_url: "https://hop351.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("not-json", { status: 502 })) as typeof fetch;
+  try {
+    const claude = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "192.0.2.142",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop351-claude-upstream",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 502, claude.text);
+    assert.equal(claude.body.type, "error");
+    const err = claude.body.error as { type: string; message: string; code?: string; param?: string };
+    assert.equal(err.type, ERROR_CODE_BAD_RESPONSE_STATUS_CODE);
+    assert.equal(err.message, messageWithRequestId("bad response status code 502", "hop351-claude-upstream"));
+    assert.equal(err.code, undefined);
+    assert.equal(err.param, undefined);
+    assert.deepEqual(Object.keys(err).sort(), ["message", "type"]);
+
+    const chat = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.143" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chat.res.status, 502, chat.text);
+    assert.equal("type" in chat.body && chat.body.type === "error", false, chat.text);
+    const chatErr = chat.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, "bad response status code 502");
+    assert.equal(chatErr.type, ERROR_CODE_BAD_RESPONSE_STATUS_CODE);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_BAD_RESPONSE_STATUS_CODE);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original Relay leftover RelayErrorHandler does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.144" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.145", "x-oneapi-request-id": "hop351-vendor-create" },
+      body: JSON.stringify({ name: "relay-error-handler-vendor", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop351-vendor-create", { headers: auth }),
     e,
   );
   const items = ((listed.body.data as { items: { action: string }[] }).items || []);

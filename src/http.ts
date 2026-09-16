@@ -793,6 +793,9 @@ export const ERROR_CODE_DO_REQUEST_FAILED = "do_request_failed";
 /** Original `types.ErrorCodeBadResponseBody`. */
 export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
 
+/** Original `types.ErrorCodeBadResponseStatusCode`. */
+export const ERROR_CODE_BAD_RESPONSE_STATUS_CODE = "bad_response_status_code";
+
 /** Original `types.ErrorTypeNewAPIError`. */
 export const ERROR_TYPE_NEW_API_ERROR = "new_api_error";
 
@@ -833,8 +836,12 @@ export function writeRelayNewAPIError(
   return openaiError(status, msg, code, type);
 }
 
-/** Original `service.RelayErrorHandler` + `ResetStatusCode`. */
-export function relayErrorHandler(status: number, bodyText: string, statusCodeMapping = ""): Response {
+/** Original `service.RelayErrorHandler` + `ResetStatusCode`.
+ * Extra-OK: leftover Relay defer Claude envelope when `req` is POST `/v1/messages`
+ * (`ToClaudeError` ErrorTypeOpenAIError uses `fmt.Sprintf("%v", OpenAIError.Code)`).
+ * Extra-OK: generated RequestId is not appended (hop 314); honor client header on Claude.
+ */
+export function relayErrorHandler(status: number, bodyText: string, statusCodeMapping = "", req?: Request): Response {
   let message = `bad response status code ${status}`;
   let type = "bad_response_status_code";
   let code: unknown = "bad_response_status_code";
@@ -875,7 +882,12 @@ export function relayErrorHandler(status: number, bodyText: string, statusCodeMa
       /* invalid mapping */
     }
   }
-  return json(mapped, { error: { message, type, param, code } });
+  const rid = req?.headers.get("x-oneapi-request-id") || "";
+  const msg = rid && req && relayUsesClaudeError(new URL(req.url).pathname) ? messageWithRequestId(message, rid) : message;
+  if (req && relayUsesClaudeError(new URL(req.url).pathname)) {
+    return json(mapped, { type: "error", error: { type: String(code), message: msg } });
+  }
+  return json(mapped, { error: { message: msg, type, param, code } });
 }
 
 /** Original `controller.respondPluginProtocolError`. */
