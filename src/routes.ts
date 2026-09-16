@@ -1211,7 +1211,7 @@ export function adminRouter(): Router<Env> {
       id = await s.insertChannel({
         ...fields,
         name,
-        key: mode === "multi_to_single" ? expanded.key : key;
+        key: mode === "multi_to_single" ? expanded.key : key,
         channel_info: expanded.multiKey
           ? stringifyChannelInfo(multiKeyInfoFromKeys(expanded.key.split("\n").filter(Boolean), String(body.multi_key_mode || "random")))
           : "",
