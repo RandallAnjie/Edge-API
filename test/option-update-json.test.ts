@@ -309,3 +309,51 @@ test("original UpdateOption CheckGroupRatio gin.H omit data", async () => {
   omitDataOk(ok.body);
   assert.equal(await new Store(e.DB).option("GroupRatio"), JSON.stringify({ default: 1, vip: 0, svip: 1.5 }));
 });
+
+test("original UpdateOption Image/Audio/CreateCache ratio and status-code gin.H omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const store = new Store(e.DB);
+
+  async function put(key: string, value: string) {
+    return json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ key, value }),
+      }),
+      e,
+    );
+  }
+
+  const unmarshalArr = "json: cannot unmarshal array into Go value of type map[string]float64";
+  const image = await put("ImageRatio", "[]");
+  omitData(image.body, "图片倍率设置失败: " + unmarshalArr);
+
+  const audio = await put("AudioRatio", "[]");
+  omitData(audio.body, "音频倍率设置失败: " + unmarshalArr);
+
+  const audioComp = await put("AudioCompletionRatio", "[]");
+  omitData(audioComp.body, "音频补全倍率设置失败: " + unmarshalArr);
+
+  const cache = await put("CreateCacheRatio", "[]");
+  omitData(cache.body, "缓存创建倍率设置失败: " + unmarshalArr);
+
+  const notObj = await put("ImageRatio", JSON.stringify({ "gpt-image-1": "2" }));
+  omitData(notObj.body, "图片倍率设置失败: json: cannot unmarshal string into Go value of type float64");
+
+  const imageOk = await put("ImageRatio", JSON.stringify({ "gpt-image-1": 2 }));
+  omitDataOk(imageOk.body);
+  assert.equal(await store.option("ImageRatio"), JSON.stringify({ "gpt-image-1": 2 }));
+
+  const disableBad = await put("AutomaticDisableStatusCodes", "abc");
+  omitData(disableBad.body, "invalid http status code rules: abc");
+
+  const retryBad = await put("AutomaticRetryStatusCodes", "200-abc");
+  omitData(retryBad.body, "invalid http status code rules: 200-abc");
+
+  const disableOk = await put("AutomaticDisableStatusCodes", "401,429");
+  omitDataOk(disableOk.body);
+  assert.equal(await store.option("AutomaticDisableStatusCodes"), "401,429");
+});

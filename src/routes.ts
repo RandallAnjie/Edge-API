@@ -87,6 +87,7 @@ import { finishInsertUser } from "./user-insert.js";
 import { notifyAccountSecurityChange } from "./mail.js";
 import { isPasskeyDomainOption, PasskeyDomainError, passkeyDomainHttpError, updatePasskeyDomainOptions } from "./passkey-domains.js";
 import { checkModelRequestRateLimitGroup } from "./model-rate-limit.js";
+import { parseHTTPStatusCodeRanges } from "./status-code-ranges.js";
 import type { Env, RedemptionRow, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -1464,6 +1465,32 @@ export function adminRouter(): Router<Env> {
         if (err) return apiErrorMsg(err);
         break;
       }
+      case "ImageRatio": {
+        const parsed = parseFloat64Map(value);
+        if (!parsed.ok) return apiErrorMsg("图片倍率设置失败: " + parsed.message);
+        break;
+      }
+      case "AudioRatio": {
+        const parsed = parseFloat64Map(value);
+        if (!parsed.ok) return apiErrorMsg("音频倍率设置失败: " + parsed.message);
+        break;
+      }
+      case "AudioCompletionRatio": {
+        const parsed = parseFloat64Map(value);
+        if (!parsed.ok) return apiErrorMsg("音频补全倍率设置失败: " + parsed.message);
+        break;
+      }
+      case "CreateCacheRatio": {
+        const parsed = parseFloat64Map(value);
+        if (!parsed.ok) return apiErrorMsg("缓存创建倍率设置失败: " + parsed.message);
+        break;
+      }
+      case "AutomaticDisableStatusCodes":
+      case "AutomaticRetryStatusCodes": {
+        const parsed = parseHTTPStatusCodeRanges(value);
+        if (!parsed.ok) return apiErrorMsg(parsed.message);
+        break;
+      }
     }
     if (isPasskeyDomainOption(key)) {
       try {
@@ -1773,18 +1800,29 @@ function validateTaskArtifactBaseURL(raw: string): string | null {
   return null;
 }
 
-/** Original `ratio_setting.CheckGroupRatio`. */
-function checkGroupRatio(jsonStr: string): string | null {
+/** Original `types.LoadFromJsonString` into `map[string]float64`. */
+function parseFloat64Map(jsonStr: string): { ok: true; value: Record<string, number> } | { ok: false; message: string } {
   const parsed = goUnmarshalJSON(jsonStr);
-  if (!parsed.ok) return parsed.message;
-  if (parsed.value === null) return null;
+  if (!parsed.ok) return parsed;
+  if (parsed.value === null) return { ok: true, value: {} };
   if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
-    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type map[string]float64`;
+    return { ok: false, message: `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type map[string]float64` };
   }
+  const out: Record<string, number> = {};
   for (const [name, ratio] of Object.entries(parsed.value as Record<string, unknown>)) {
     if (typeof ratio !== "number" || !Number.isFinite(ratio)) {
-      return `json: cannot unmarshal ${goJSONKind(ratio)} into Go value of type float64`;
+      return { ok: false, message: `json: cannot unmarshal ${goJSONKind(ratio)} into Go value of type float64` };
     }
+    out[name] = ratio;
+  }
+  return { ok: true, value: out };
+}
+
+/** Original `ratio_setting.CheckGroupRatio`. */
+function checkGroupRatio(jsonStr: string): string | null {
+  const parsed = parseFloat64Map(jsonStr);
+  if (!parsed.ok) return parsed.message;
+  for (const [name, ratio] of Object.entries(parsed.value)) {
     if (ratio < 0) return "group ratio must be not less than 0: " + name;
   }
   return null;
