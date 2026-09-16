@@ -76,6 +76,7 @@ test("original RequestEpay bind errors and missing method JSON", async () => {
   const empty = await json(new Request("http://local/api/user/pay", { method: "POST", headers: auth, body: "" }), e);
   assert.equal(empty.body.message, "error");
   assert.equal(empty.body.data, "参数错误");
+  assert.equal("success" in empty.body, false);
 
   const invalid = await pay(e, auth, "{");
   assert.equal(invalid.body.message, "error");
@@ -115,6 +116,7 @@ test("original RequestEpay Purchase JSON: USR trade, TUC name, device pc, submit
   const out = await pay(e, auth, { amount: 10, payment_method: "alipay" });
   assert.equal(out.res.status, 200);
   assert.equal(out.body.message, "success");
+  assert.equal("success" in out.body, false);
   assert.equal(out.body.url, "https://epay.example/submit.php");
   const data = out.body.data as Record<string, string>;
   assert.equal(data.pid, "1001");

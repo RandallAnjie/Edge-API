@@ -125,6 +125,7 @@ test("original RequestCreemPay checkout JSON: ref_ sha1 trade, empty email, meta
   try {
     const out = await pay(e, auth, { product_id: "prod_1", payment_method: "creem" });
     assert.equal(out.body.message, "success");
+    assert.equal("success" in out.body, false);
     const data = out.body.data as { checkout_url?: string; order_id?: string };
     assert.equal(data.checkout_url, "https://checkout.creem.io/pay");
     assert.match(String(data.order_id || ""), /^ref_[0-9a-f]{40}$/);

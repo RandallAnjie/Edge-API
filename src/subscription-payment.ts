@@ -5,7 +5,7 @@ import {
   formatWaffoPancakeAmount,
   waffoPancakeBuyerIdentityFromUserId,
 } from "./waffo-pancake.js";
-import { apiFail, json, payErr, payOk, paymentReturnPath, readJson } from "./http.js";
+import { apiFail, payErr, payOk, paymentReturnPath, readJson } from "./http.js";
 import {
   creemCheckoutApiUrl,
   requirePaymentCompliance,
@@ -162,7 +162,7 @@ export async function requestSubscriptionEpay(c: C): Promise<Response> {
   params.sign = await signEpayParams(params, client.key);
   params.sign_type = "MD5";
   const url = client.address + (client.address.includes("?") ? "&" : "?") + new URLSearchParams(params).toString();
-  return json(200, { message: "success", data: params, url, success: true });
+  return payOk(params, { url });
 }
 
 /** Original `controller.SubscriptionEpayNotify`. */

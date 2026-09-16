@@ -314,7 +314,7 @@ export async function requestAmount(
           : await store.optionNum("Price", 7.3);
   const money = await payMoneyFor(store, amount, user.group, unit);
   if (money <= 0.01) return payErr("充值金额过低");
-  return json(200, { message: "success", data: money.toFixed(2), success: true });
+  return payOk(money.toFixed(2));
 }
 
 /** Original `StripeAdaptor.RequestPay` HTTP 400 when a custom redirect is untrusted. */
@@ -334,8 +334,8 @@ export async function requestStripePay(
   if ((body.payment_method || "") !== "stripe") return payErr("不支持的支付渠道");
   const amount = Number(body.amount || 0);
   const min = await minTopup(store, "StripeMinTopUp", 1);
-  if (amount < min) return json(200, { message: `充值数量不能小于 ${min}`, data: 10, success: false });
-  if (amount > 10000) return json(200, { message: "充值数量不能大于 10000", data: 10, success: false });
+  if (amount < min) return json(200, { message: `充值数量不能小于 ${min}`, data: 10 });
+  if (amount > 10000) return json(200, { message: "充值数量不能大于 10000", data: 10 });
   const successUrl = String(body.success_url ?? "");
   const cancelUrl = String(body.cancel_url ?? "");
   const trusted = parseTrustedRedirectDomains(trustedRedirectDomainsRaw);
@@ -630,7 +630,7 @@ export async function requestEpay(
   } catch {
     return payErr("创建订单失败");
   }
-  return json(200, { message: "success", data: params, url: submitUrl, success: true });
+  return payOk(params, { url: submitUrl });
 }
 
 /** Original gin `c.Writer.Write([]byte("success"|"fail"))` (HTTP 200). */

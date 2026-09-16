@@ -696,7 +696,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
     }),
     e,
   );
-  assert.equal(stripePay.body.success, false);
+  assert.equal("success" in stripePay.body, false);
   assert.equal(stripePay.body.message, "error");
   assert.equal(stripePay.body.data, "拉起支付失败");
 
@@ -767,6 +767,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
   );
   assert.equal(creemUnconfigured.body.message, "error");
   assert.equal(creemUnconfigured.body.data, "产品不存在");
+  assert.equal("success" in creemUnconfigured.body, false);
 
   const waffoDisabled = await json(
     new Request("http://local/api/user/waffo/pay", {
@@ -778,6 +779,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
   );
   assert.equal(waffoDisabled.body.message, "error");
   assert.equal(waffoDisabled.body.data, "Waffo 支付未启用");
+  assert.equal("success" in waffoDisabled.body, false);
 
   await json(
     new Request("http://local/api/option/", {
@@ -822,6 +824,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
       e,
     );
     assert.equal(creemPay.body.message, "success");
+    assert.equal("success" in creemPay.body, false);
     const creemData = creemPay.body.data as { checkout_url: string; order_id: string };
     assert.equal(creemData.checkout_url, "https://checkout.creem.io/pay");
     assert.equal(typeof creemData.order_id, "string");
@@ -881,6 +884,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
       e,
     );
     assert.equal(waffoPay.body.message, "success");
+    assert.equal("success" in waffoPay.body, false);
     const waffoData = waffoPay.body.data as { payment_url: string; order_id: string };
     assert.equal(waffoData.payment_url, "https://pay.waffo.com/x");
     assert.equal(typeof waffoData.order_id, "string");
@@ -4817,7 +4821,7 @@ test("original user soft-delete, amount envelopes, billing expr, RelayErrorHandl
   );
   assert.equal(tooSmall.body.message, "error");
   assert.equal(tooSmall.body.data, "充值数量不能小于 1");
-  assert.equal(tooSmall.body.success, false);
+  assert.equal("success" in tooSmall.body, false);
 
   const epayAmount = await json(
     new Request("http://local/api/user/amount", {
@@ -4829,6 +4833,7 @@ test("original user soft-delete, amount envelopes, billing expr, RelayErrorHandl
   );
   assert.equal(epayAmount.body.message, "success");
   assert.equal(epayAmount.body.data, "73.00");
+  assert.equal("success" in epayAmount.body, false);
 
   const stripeCap = await json(
     new Request("http://local/api/user/stripe/amount", {
@@ -4863,6 +4868,7 @@ test("original user soft-delete, amount envelopes, billing expr, RelayErrorHandl
   );
   assert.equal(stripeAmount.body.message, "success");
   assert.equal(stripeAmount.body.data, "80.00");
+  assert.equal("success" in stripeAmount.body, false);
 
   const pricing = await json(new Request("http://local/api/option/model_pricing", { headers: auth }), e);
   const emptyVersion = (pricing.body.data as { empty_version: string }).empty_version;

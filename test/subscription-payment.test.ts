@@ -190,6 +190,7 @@ test("original SubscriptionRequestEpay pay/notify/return JSON", async () => {
     e,
   );
   assert.equal(pay.body.message, "success", pay.text);
+  assert.equal("success" in pay.body, false);
   assert.equal(typeof pay.body.url, "string");
   assert.match(String(pay.body.url), /^https:\/\/epay\.example\/submit\.php\?/);
   const params = pay.body.data as Record<string, string>;
@@ -349,6 +350,7 @@ test("original SubscriptionRequestStripePay pay_link and webhook CompleteSubscri
       e,
     );
     assert.equal(pay.body.message, "success", pay.text);
+    assert.equal("success" in pay.body, false);
     const data = pay.body.data as { pay_link: string };
     assert.equal(data.pay_link, "https://checkout.stripe.com/c/pay/cs_sub");
     assert.match(captured, /mode=subscription/);
@@ -448,6 +450,7 @@ test("original SubscriptionRequestCreemPay checkout_url/order_id JSON", async ()
       e,
     );
     assert.equal(pay.body.message, "success", pay.text);
+    assert.equal("success" in pay.body, false);
     const data = pay.body.data as { checkout_url: string; order_id: string };
     assert.equal(data.checkout_url, "https://checkout.creem.io/sub");
     assert.match(data.order_id, /^sub_ref_[0-9a-f]{40}$/);
@@ -524,6 +527,7 @@ test("original SubscriptionRequestWaffoPancakePay WAFFO_PANCAKE_SUB JSON", async
       e,
     );
     assert.equal(pay.body.message, "success", pay.text);
+    assert.equal("success" in pay.body, false);
     const data = pay.body.data as {
       checkout_url: string;
       session_id: string;

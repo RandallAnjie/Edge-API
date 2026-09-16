@@ -100,6 +100,7 @@ test("original RequestStripePay empty success_url skips validator even with empt
   assert.equal(out.res.status, 200);
   assert.equal(out.body.message, "error");
   assert.equal(out.body.data, "拉起支付失败");
+  assert.equal("success" in out.body, false);
   assert.equal(await stripeTopupCount(store), before);
 });
 
@@ -128,6 +129,7 @@ test("original RequestStripePay trusted subdomain proceeds to checkout then inse
     });
     assert.equal(out.res.status, 200);
     assert.equal(out.body.message, "success");
+    assert.equal("success" in out.body, false);
     assert.deepEqual(out.body.data, { pay_link: "https://checkout.stripe.com/c/pay/cs_test" });
     const params = new URLSearchParams(captured);
     assert.equal(params.get("success_url"), "https://sub.example.com/ok");
@@ -175,6 +177,7 @@ test("original RequestStripePay bind errors and amount bounds JSON", async () =>
   assert.equal(low.res.status, 200);
   assert.equal(low.body.message, "充值数量不能小于 1");
   assert.equal(low.body.data, 10);
+  assert.equal("success" in low.body, false);
 
   const high = await pay(e, auth, { amount: 10001, payment_method: "stripe" });
   assert.equal(high.res.status, 200);

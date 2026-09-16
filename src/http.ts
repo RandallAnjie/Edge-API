@@ -323,13 +323,13 @@ export function apiFailCode(message: string, code: string, status = 200, data: u
   return json(status, { success: false, message, code, data });
 }
 
-/** Original Stripe/Epay/Creem/Waffo checkout envelope: `{message, data}` plus extra `success`. */
-export function payOk(data: unknown): Response {
-  return json(200, { message: "success", data, success: true });
+/** Original Stripe/Epay/Creem/Waffo gin.H `{message, data}` (and optional `url`) — omits `success`. */
+export function payOk(data: unknown, extra: Record<string, unknown> = {}): Response {
+  return json(200, { message: "success", data, ...extra });
 }
 
 export function payErr(data: unknown): Response {
-  return json(200, { message: "error", data, success: false });
+  return json(200, { message: "error", data });
 }
 
 const PUBLIC_CONTENT_ETAG_NS = "public-content:v1";
