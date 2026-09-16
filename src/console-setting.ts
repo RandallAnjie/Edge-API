@@ -213,3 +213,41 @@ export function validateConsoleSettings(settingsStr: string, settingType: string
       return `未知的设置类型：${settingType}`;
   }
 }
+
+/** Original `console_setting.getJSONList`. Invalid JSON is a nil slice (`null`). */
+export function getJSONList(jsonStr: string): Record<string, unknown>[] | null {
+  if (jsonStr === "") return [];
+  const parsed = goUnmarshalJSON(jsonStr);
+  if (!parsed.ok) return null;
+  if (parsed.value === null) return null;
+  if (!Array.isArray(parsed.value)) return null;
+  const out: Record<string, unknown>[] = [];
+  for (const item of parsed.value) {
+    if (item === null) {
+      out.push({});
+      continue;
+    }
+    if (typeof item !== "object" || Array.isArray(item)) return null;
+    out.push(item as Record<string, unknown>);
+  }
+  return out;
+}
+
+function publishTimeMs(item: Record<string, unknown>): number {
+  const raw = asString(item.publishDate);
+  if (!raw || !isRFC3339(raw)) return Number.NEGATIVE_INFINITY;
+  return Date.parse(raw);
+}
+
+/** Original `console_setting.GetAnnouncements` (newest publishDate first, stable). */
+export function getAnnouncements(jsonStr: string): Record<string, unknown>[] | null {
+  const list = getJSONList(jsonStr);
+  if (!list) return null;
+  return list
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const dt = publishTimeMs(b.item) - publishTimeMs(a.item);
+      return dt !== 0 ? dt : a.index - b.index;
+    })
+    .map((entry) => entry.item);
+}

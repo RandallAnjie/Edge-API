@@ -2,6 +2,7 @@ import { START_TIME, VERSION, DEFAULT_HEADER_NAV_MODULES, DEFAULT_SIDEBAR_MODULE
 import { publicCustomOAuthStatus } from "./custom-oauth.js";
 import { effectivePasskeyRPID, passkeySettingsSnapshot, relyingPartyIDs } from "./passkey-domains.js";
 import { telegramConfigurationError } from "./telegram-oauth.js";
+import { getAnnouncements, getJSONList } from "./console-setting.js";
 import type { Store } from "./store.js";
 import type { Env } from "./types.js";
 
@@ -92,9 +93,9 @@ export async function buildStatus(store: Store, env: Env): Promise<Record<string
     privacy_policy_enabled: Boolean(privacy),
     checkin_enabled: await store.optionBool("checkin_setting.enabled", false),
   };
-  if (apiInfoEnabled) data.api_info = parseJson(await store.option("ApiInfo"), []);
-  if (announcementsEnabled) data.announcements = parseJson(await store.option("Announcements"), []);
-  if (faqEnabled) data.faq = parseJson(await store.option("FAQ"), []);
+  if (apiInfoEnabled) data.api_info = getJSONList(await store.option("console_setting.api_info"));
+  if (announcementsEnabled) data.announcements = getAnnouncements(await store.option("console_setting.announcements"));
+  if (faqEnabled) data.faq = getJSONList(await store.option("console_setting.faq"));
   if (customProviders.length) {
     data.custom_oauth_providers = customProviders.map((p) => publicCustomOAuthStatus(p));
   }

@@ -178,3 +178,30 @@ test("original GetStatus does not expose passkey_origins", async () => {
   assert.equal(data.passkey_login, true);
   assert.equal(data.theme, "default");
 });
+
+test("original GetStatus api_info/announcements/faq match GetApiInfo/GetAnnouncements/GetFAQ", async () => {
+  resetSchemaFlag();
+  const e = env();
+  await boot(e);
+  const store = new Store(e.DB);
+
+  await store.setOption("console_setting.api_info", "{}");
+  await store.setOption(
+    "console_setting.announcements",
+    JSON.stringify([
+      { content: "old", publishDate: "2026-01-01T00:00:00Z" },
+      { content: "new", publishDate: "2026-09-16T00:00:00Z" },
+      { content: "also-new", publishDate: "2026-09-16T00:00:00Z" },
+    ]),
+  );
+  await store.setOption("console_setting.faq", "not-json");
+
+  const status = await json(new Request("http://local/api/status"), e);
+  const data = status.body.data as Record<string, unknown>;
+  assert.equal(data.api_info, null);
+  assert.equal(data.faq, null);
+  assert.deepEqual(
+    (data.announcements as { content: string }[]).map((row) => row.content),
+    ["new", "also-new", "old"],
+  );
+});
