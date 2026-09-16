@@ -176,16 +176,16 @@ test("original WeChatBind DecodeJson / leftover gin.H omit data", async () => {
     assert.equal(jsonNull.res.status, 403);
     securityOp(jsonNull.body, "SECURITY_PROOF_REQUIRED", "需要安全验证");
 
-    const emptyProof = await passwordProof(e, auth, "account.binding.bind", { context: { provider: "wechat", code: "" } });
-    const emptyCode = await json(
+    const badCodeProof = await passwordProof(e, auth, "account.binding.bind", { context: { provider: "wechat", code: "wx-missing" } });
+    const badCode = await json(
       new Request("http://local/api/oauth/wechat/bind", {
         method: "POST",
-        headers: { ...auth, "X-Security-Proof": emptyProof.proof_token },
-        body: "null",
+        headers: { ...auth, "X-Security-Proof": badCodeProof.proof_token },
+        body: JSON.stringify({ code: "wx-missing" }),
       }),
       e,
     );
-    omitData(emptyCode.body, "无效的参数");
+    omitData(badCode.body, "验证码错误或已过期");
   } finally {
     globalThis.fetch = origFetch;
   }
