@@ -102,6 +102,7 @@ import {
 } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import { turnstileCheck } from "./turnstile.js";
+import { markAuditLogged } from "./admin-operation-audit.js";
 import {
   setTokenAuditSucceeded,
   snapshotTokenAuditFields,
@@ -800,6 +801,7 @@ export function adminRouter(): Router<Env> {
       if (mode === "override") await s.updateUser(quotaTarget.id, { quota: value });
       else await s.addQuota(quotaTarget.id, mode === "subtract" ? -value : value);
       await s.audit(u.id, u.username, "user.manage", `${bound.action} user ${quotaTarget.username}`, clientIp(c.req));
+      markAuditLogged(c.req);
       return apiOk(null);
     }
     const target = await s.getUserById(bound.id, { includeDeleted: true });
@@ -817,6 +819,7 @@ export function adminRouter(): Router<Env> {
         if (target.role === ROLE_ROOT) return apiErrorMsg(userCannotDeleteRootUserMessage(c.req));
         await s.softDeleteUser(target.id);
         await s.audit(u.id, u.username, "user.manage", `${bound.action} user ${target.username}`, clientIp(c.req));
+        markAuditLogged(c.req);
         return json(200, { success: true, message: "" });
       case "promote":
         if (u.role < ROLE_ROOT) return apiErrorMsg(userAdminCannotPromoteMessage(c.req));
@@ -832,6 +835,7 @@ export function adminRouter(): Router<Env> {
         return apiFailInvalidParams(c.req);
     }
     await s.audit(u.id, u.username, "user.manage", `${bound.action} user ${target.username}`, clientIp(c.req));
+    markAuditLogged(c.req);
     const fresh = await s.getUserById(target.id);
     return apiOk(manageUserView(fresh?.role ?? target.role, fresh?.status ?? target.status));
   });
@@ -1165,6 +1169,7 @@ export function adminRouter(): Router<Env> {
     const ch = await s.getChannel(channelId);
     if (!ch) return apiErrorMsg(i18nPair(c.req, "渠道不存在", "Channel does not exist"));
     await s.audit(u.id, u.username, "channel.key_view", `view channel key ${ch.name}`, clientIp(c.req));
+    markAuditLogged(c.req);
     return apiOk({ key: ch.key }, "获取成功");
   });
 
@@ -1219,6 +1224,7 @@ export function adminRouter(): Router<Env> {
       count += 1;
     }
     await s.audit(u.id, u.username, "channel.create", `create channel ${fields.name}`, clientIp(c.req));
+    markAuditLogged(c.req);
     return apiOk({ id, count });
   });
 
@@ -1384,6 +1390,7 @@ export function adminRouter(): Router<Env> {
         used_quota: resetBalance ? 0 : origin.used_quota,
       });
       await s.audit(u.id, u.username, "channel.copy", `copy channel ${origin.name}`, clientIp(c.req));
+      markAuditLogged(c.req);
       return apiOk({ id: cloneId });
     } catch {
       return apiErrorMsg("复制渠道失败，请稍后重试");
@@ -1763,6 +1770,7 @@ export function adminRouter(): Router<Env> {
             status: e.status,
             success: false,
           });
+          markAuditLogged(c.req);
         }
         return passkeyDomainHttpError(e, c.req);
       }

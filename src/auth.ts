@@ -60,6 +60,7 @@ import { tokenModelLimitAllows } from "./ratio-setting.js";
 import type { AuthToken, Env, LoginSessionRow, SessionUser, TokenRow, UserRow } from "./types.js";
 import type { Context } from "./router.js";
 import { requireSecurityProof, type AuthIdentity, type VerificationOperation } from "./security.js";
+import { beginAdminAudit } from "./admin-operation-audit.js";
 
 export async function sessionSecret(env: Env, store: Store): Promise<string> {
   if (env.SESSION_SECRET) return env.SESSION_SECRET;
@@ -526,6 +527,7 @@ export async function requireAdmin(c: Context<Env>, store: Store): Promise<Sessi
   const u = await requireUser(c, store);
   if (u instanceof Response) return u;
   if (u.role < ROLE_ADMIN) return apiFail("无权访问", null, 403);
+  beginAdminAudit(c.req, u, c.params);
   return u;
 }
 
@@ -533,6 +535,7 @@ export async function requireRoot(c: Context<Env>, store: Store): Promise<Sessio
   const u = await requireUser(c, store);
   if (u instanceof Response) return u;
   if (u.role < ROLE_ROOT) return apiFail("需要超级管理员", null, 403);
+  beginAdminAudit(c.req, u, c.params);
   return u;
 }
 

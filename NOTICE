@@ -239,6 +239,20 @@ Material changes from upstream:
   (TokenOperationAudit wraps before CriticalRateLimit). Extra-OK: audit
   write failure must not fail the request. requireUser/requireAdmin/requireRoot
   and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `middleware.beginAdminAudit` / `finishAdminAudit` leftover
+  operation audit-log JSON after AdminAuth/RootAuth on write methods
+  (POST/PUT/PATCH/DELETE). `auditRouteActions` maps METHOD+FullPath to
+  language-neutral actions (`vendor.create`, `option.reset_ratio`,
+  `performance.gc`, …); unmapped writes use `generic` with
+  `other.op.params.method/route`. Category `operation`, Content
+  `METHOD FullPath`, `other.admin_info` + `other.audit_info` (Path is the
+  gin FullPath template; route params are strings). `markAuditLogged`
+  skips the fallback when a handler already recorded a log. GET reads,
+  unauthenticated writes, and 无权访问 before AdminAuth add no operation
+  audit. Extra-OK: audit write failure must not fail the request.
+  Extra-OK: requireProof-before-requireRoot routes (channel key) begin
+  the fallback only after RootAuth succeeds. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

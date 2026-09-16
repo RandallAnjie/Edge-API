@@ -4,6 +4,7 @@ import { runPendingMidjourneyPoll } from "./midjourney-poll.js";
 import { runPendingAsyncTaskPoll } from "./task-plugin-poll.js";
 import { nowSec, USER_ENABLED } from "./constants.js";
 import { authenticateApiToken, cryptoSecret, finishAccessTokenAudit, maybeBeginAccessTokenAudit, readSession, sessionSecret } from "./auth.js";
+import { finishAdminAudit } from "./admin-operation-audit.js";
 import { beginTokenOperationAudit, finishTokenOperationAudit, tokenOperationAuditApplies } from "./token-operation-audit.js";
 import { abortWithOpenAiMessage, apiFail, newApiPanicError, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, readJson, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
 import {
@@ -787,6 +788,11 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
     const store = new Store(env.DB);
     try {
       await finishTokenOperationAudit(store, req, res, requestId);
+    } catch {
+      /* original RecordAuditLog logs and continues */
+    }
+    try {
+      await finishAdminAudit(store, req, res, requestId);
     } catch {
       /* original RecordAuditLog logs and continues */
     }
