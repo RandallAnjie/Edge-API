@@ -216,6 +216,16 @@ Material changes from upstream:
   same 404. Extra-OK: limiter state is WeakMap-keyed by D1 so parallel
   npm tests isolate. requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original slave `FRONTEND_BASE_URL` leftover HTTP 301 on `SetRouter` NoRoute
+  after pluginDispatcher (`c.Redirect(MovedPermanently, base+RequestURI)`).
+  Master (`NODE_TYPE != "slave"`) ignores the env and keeps SetWebRouter.
+  GET includes `Content-Type: text/html; charset=utf-8` and
+  `<a href="{html.EscapeString}">Moved Permanently</a>.\n\n`; HEAD has the
+  Content-Type without a body. No gzip, GlobalWebRateLimit, or Cache on this
+  NoRoute. Extra-OK: hop 307 unmatched `/api` may still consume
+  GlobalAPIRateLimit before this redirect. Extra-OK: worker OPTIONS 204 still
+  runs first. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

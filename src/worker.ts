@@ -19,6 +19,7 @@ import { handlePrepareTaskPluginSubmit, taskPluginSubmitKey } from "./task-plugi
 import { anonymousRequestBodyLimit } from "./anonymous-request-body-limit.js";
 import { decompressRequest } from "./decompress-request.js";
 import { markSkipGzipResponse, withGzipResponse } from "./gzip-response.js";
+import { frontendBaseUrlRedirect } from "./frontend-base-url.js";
 import {
   systemPerformanceCheck,
   systemPerformanceCheckAppliesAfterAuth,
@@ -229,6 +230,13 @@ function ctxStore(req: Request, env: Env, ctx: ExecutionContextLike) {
     params: {} as Record<string, string>,
     waitUntil: (p: Promise<unknown>) => ctx.waitUntil(p),
   };
+}
+
+function maybeFrontendBaseUrlRedirect(env: Env, inbound: Request, req: Request): Response | null {
+  const redirected = frontendBaseUrlRedirect(env, req);
+  if (!redirected) return null;
+  markSkipGzipResponse(inbound);
+  return redirected;
 }
 
 function writeRelayTaskArtifactError(req: Request, status: number, code: string, message: string): Response {
@@ -839,6 +847,8 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
               markSkipGzipResponse(inbound);
               return withCors(req, pluginMethodNotAllowed());
             }
+            const redirected = maybeFrontendBaseUrlRedirect(env, inbound, req);
+            if (redirected) return redirected;
             const webLimited = await limitedGlobalWeb(env, req);
             if (webLimited) return webLimited;
             return withRelayNotFoundWebCache(withCors(req, relayNotFound(req.method, path)));
@@ -921,6 +931,8 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
         markSkipGzipResponse(inbound);
         return withCors(req, pluginMethodNotAllowed());
       }
+      const redirected = maybeFrontendBaseUrlRedirect(env, inbound, req);
+      if (redirected) return redirected;
       if (path.startsWith("/v1") || path.startsWith("/api") || path.startsWith("/assets")) {
         const webLimited = await limitedGlobalWeb(env, req);
         if (webLimited) return webLimited;
@@ -931,6 +943,9 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       return withCors(req, newApiPanicError(err));
     }
   }
+
+  const redirected = maybeFrontendBaseUrlRedirect(env, inbound, req);
+  if (redirected) return redirected;
 
   const webLimited = await limitedGlobalWeb(env, req);
   if (webLimited) return webLimited;

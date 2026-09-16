@@ -55,6 +55,8 @@ export interface Env {
   GENERATE_DEFAULT_TOKEN?: string;
   NODE_NAME?: string;
   NODE_TYPE?: string;
+  /** Original `FRONTEND_BASE_URL` (slave NoRoute 301; ignored on master). */
+  FRONTEND_BASE_URL?: string;
   /** Original `UPDATE_TASK` (`constant.UpdateTask`, default true). */
   UPDATE_TASK?: string;
   /** Original `CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_ENABLED` (default true). */
