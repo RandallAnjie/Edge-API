@@ -568,9 +568,9 @@ export function relayNotFound(method: string, path: string): Response {
   );
 }
 
-/** Original `common.ApiErrorI18n(c, i18n.MsgInvalidParams)`. */
+/** Original `common.ApiErrorI18n(c, i18n.MsgInvalidParams)` gin.H (HTTP 200, no `data`). */
 export function apiFailInvalidParams(req: Request): Response {
-  return apiFail(i18nPair(req, "无效的参数", "Invalid parameters"));
+  return apiErrorMsg(i18nPair(req, "无效的参数", "Invalid parameters"));
 }
 
 export function corsHeaders(req: Request): Headers {

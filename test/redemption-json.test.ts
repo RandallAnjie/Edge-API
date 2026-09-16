@@ -179,3 +179,78 @@ test("original AddRedemption/GetRedemption/DeleteRedemption/TopUp ApiErrorMsg gi
   );
   omitData(zhRedeem.body, "兑换失败，请稍后重试");
 });
+
+test("original DeleteRedemptionBatch ApiErrorI18n gin.H omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const empty = await json(new Request("http://local/api/redemption/batch", { method: "POST", headers: auth }), e);
+  assert.equal(empty.res.status, 200);
+  omitData(empty.body, "Invalid parameters");
+
+  const zh = await json(
+    new Request("http://local/api/redemption/batch", {
+      method: "POST",
+      headers: { ...auth, "accept-language": "zh-CN" },
+      body: JSON.stringify({ ids: [] }),
+    }),
+    e,
+  );
+  omitData(zh.body, "无效的参数");
+
+  const emptyIds = await json(
+    new Request("http://local/api/redemption/batch", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ ids: [] }),
+    }),
+    e,
+  );
+  omitData(emptyIds.body, "Invalid parameters");
+
+  const zeroId = await json(
+    new Request("http://local/api/redemption/batch", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ ids: [0] }),
+    }),
+    e,
+  );
+  omitData(zeroId.body, "Invalid parameters");
+
+  const tooMany = await json(
+    new Request("http://local/api/redemption/batch", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ ids: Array.from({ length: 1001 }, (_, i) => i + 1) }),
+    }),
+    e,
+  );
+  omitData(tooMany.body, "Invalid parameters");
+
+  const created = await json(
+    new Request("http://local/api/redemption/", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ name: "batch", quota: 10, count: 2 }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, String(created.body.message));
+  const listed = await json(new Request("http://local/api/redemption/", { headers: auth }), e);
+  const ids = ((listed.body.data as { items: { id: number }[] }).items || []).map((row) => row.id);
+  assert.equal(ids.length >= 2, true);
+
+  const ok = await json(
+    new Request("http://local/api/redemption/batch", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ ids: ids.slice(0, 2) }),
+    }),
+    e,
+  );
+  assert.equal(ok.body.success, true);
+  assert.equal(ok.body.message, "");
+  assert.equal(ok.body.data, 2);
+});

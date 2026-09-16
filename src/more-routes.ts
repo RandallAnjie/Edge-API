@@ -1376,8 +1376,9 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { ids?: number[] };
-    return apiOk(await s.deleteRedemptionsBatch(body.ids || []));
+    const ids = bindRedemptionBatchIds(c.req, await c.req.text());
+    if (ids instanceof Response) return ids;
+    return apiOk(await s.deleteRedemptionsBatch(ids));
   });
 
   r.delete("/api/redemption/invalid", async (c) => {
@@ -2175,4 +2176,21 @@ async function tokenUsage(c: C): Promise<Response> {
       expires_at: expiredAt,
     },
   });
+}
+
+/** Original `DeleteRedemptionBatch` `ShouldBindJSON` `ids` `required,min=1,max=1000,dive,gt=0`. */
+function bindRedemptionBatchIds(req: Request, raw: string): number[] | Response {
+  const invalid = () => apiFailInvalidParams(req);
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  const ids = (parsed.value as { ids?: unknown }).ids;
+  if (!Array.isArray(ids) || ids.length < 1 || ids.length > 1000) return invalid();
+  const out: number[] = [];
+  for (const id of ids) {
+    if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) return invalid();
+    out.push(id);
+  }
+  return out;
 }
