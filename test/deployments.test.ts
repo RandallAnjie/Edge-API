@@ -340,6 +340,7 @@ test("original deployments HTTP JSON fields", async () => {
     const badHw = await json(new Request("http://local/api/deployments/available-replicas?hardware_id=abc", { headers: auth }), e);
     assert.equal(badHw.body.success, false);
     assert.equal(badHw.body.message, "invalid hardware_id parameter");
+    assert.equal("data" in badHw.body, false);
 
     const price = await json(
       new Request("http://local/api/deployments/price-estimation", {
@@ -443,6 +444,7 @@ test("original deployments HTTP JSON fields", async () => {
     const logsMissing = await json(new Request("http://local/api/deployments/dep-1/logs", { headers: auth }), e);
     assert.equal(logsMissing.body.success, false);
     assert.equal(logsMissing.body.message, "container_id parameter is required");
+    assert.equal("data" in logsMissing.body, false);
 
     const logs = await json(new Request("http://local/api/deployments/dep-1/logs?container_id=ctr-1", { headers: auth }), e);
     assert.equal(logs.body.success, true, String(logs.body.message));
@@ -475,4 +477,36 @@ test("original deployments HTTP JSON fields", async () => {
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+test("original deployment getIoAPIKey and ApiErrorMsg gin.H omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+
+  const list = await json(new Request("http://local/api/deployments/", { headers: auth }), e);
+  assert.equal(list.res.status, 200);
+  assert.equal(list.body.success, false);
+  assert.equal(list.body.message, "io.net model deployment is not enabled or api key missing");
+  assert.equal("data" in list.body, false);
+  assert.deepEqual(Object.keys(list.body).sort(), ["message", "success"]);
+
+  const hardware = await json(new Request("http://local/api/deployments/hardware-types", { headers: auth }), e);
+  assert.equal(hardware.body.message, "io.net model deployment is not enabled or api key missing");
+  assert.equal("data" in hardware.body, false);
+
+  const badPayload = await json(
+    new Request("http://local/api/deployments/test-connection", { method: "POST", headers: auth, body: "{" }),
+    e,
+  );
+  assert.equal(badPayload.res.status, 200);
+  assert.equal(badPayload.body.message, "invalid request payload");
+  assert.equal("data" in badPayload.body, false);
+
+  const noKey = await json(
+    new Request("http://local/api/deployments/test-connection", { method: "POST", headers: auth, body: "{}" }),
+    e,
+  );
+  assert.equal(noKey.body.message, "api_key is required");
+  assert.equal("data" in noKey.body, false);
 });
