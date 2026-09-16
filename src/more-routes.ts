@@ -115,8 +115,10 @@ import {
   authRotationResponse,
   sessionResponse,
   sessionSecret,
+  AUTH_FLOW_PURPOSE_LOGIN_PASSKEY,
   completeLoginVerification,
-  isLoginVerificationFlow,
+  requireLoginVerification,
+  VERIFICATION_METHOD_PASSKEY,
   verifyLoginFromRequest,
 } from "./auth.js";
 import { httpStats } from "./metrics.js";
@@ -161,6 +163,25 @@ async function passkeyLoginBeginSelection(
 ) {
   const settings = await passkeySettingsSnapshot(s);
   return selectPasskeyBeginRpIDs(settings, hint, rpFromRequest(req).rpId, credentialRpId);
+}
+
+/** Original `LoginPasskeyBegin` / `LoginPasskeyFinish` `common.DecodeJson` → ApiErrorMsg `参数错误`. */
+async function decodeLoginPasskeyJSON(req: Request): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; response: Response }> {
+  let body: unknown;
+  try {
+    const raw = await req.text();
+    if (!raw.trim()) return { ok: false, response: apiErrorMsg("参数错误") };
+    body = JSON.parse(raw);
+  } catch {
+    return { ok: false, response: apiErrorMsg("参数错误") };
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, response: apiErrorMsg("参数错误") };
+  return { ok: true, body: body as Record<string, unknown> };
+}
+
+function loginPasskeyStringField(body: Record<string, unknown>, key: string): { ok: true; value: string } | { ok: false; response: Response } {
+  if (key in body && body[key] != null && typeof body[key] !== "string") return { ok: false, response: apiErrorMsg("参数错误") };
+  return { ok: true, value: typeof body[key] === "string" ? body[key] : "" };
 }
 
 async function handlePasskeyDomainUpdate(
@@ -749,30 +770,36 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/user/login/passkey/begin", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as { flow_token?: string; rp_id?: string };
-    if (!body.flow_token) return apiFail("参数错误");
-    const flow = await s.getAuthFlow(body.flow_token);
-    if (!flow || !isLoginVerificationFlow(flow.type) || flow.expires_at < nowSec()) {
-      return apiFail("登录流程已过期");
-    }
-    const user = await s.getUserById(flow.user_id);
-    if (!user) return apiFail("用户不存在");
-    const keys = await s.listPasskeys(user.id);
-    if (!keys.length) return apiFail("未绑定 Passkey");
+    const decoded = await decodeLoginPasskeyJSON(c.req);
+    if (!decoded.ok) return decoded.response;
+    const flowTokenField = loginPasskeyStringField(decoded.body, "flow_token");
+    if (!flowTokenField.ok) return flowTokenField.response;
+    const rpIdField = loginPasskeyStringField(decoded.body, "rp_id");
+    if (!rpIdField.ok) return rpIdField.response;
+    if (!flowTokenField.value) return apiErrorMsg("参数错误");
+    const loaded = await requireLoginVerification(s, flowTokenField.value, VERIFICATION_METHOD_PASSKEY);
+    if ("error" in loaded) return loaded.error;
+    const keys = await s.listPasskeys(loaded.user.id);
+    if (!keys.length) return writeSecurityOperationError("PASSKEY_NOT_FOUND", "No Passkey is registered.");
     let selected: { rpId: string; rp_ids: string[] };
     try {
-      selected = await passkeyLoginBeginSelection(s, c.req, body.rp_id || "", keys[0]?.rp_id || "");
+      selected = await passkeyLoginBeginSelection(s, c.req, rpIdField.value, keys[0]?.rp_id || "");
     } catch (e) {
       return passkeyDomainHttpError(e, c.req);
     }
     const ch = newChallenge();
-    const expiresAt = nowSec() + 300;
+    const expiresAt = Math.min(nowSec() + 300, loaded.flow.expires_at);
     await s.insertAuthFlow({
       token: ch.id,
-      type: "login_passkey",
-      user_id: user.id,
+      type: AUTH_FLOW_PURPOSE_LOGIN_PASSKEY,
+      user_id: loaded.user.id,
       expires_at: expiresAt,
-      payload: JSON.stringify({ challenge: ch.challenge, login_flow: body.flow_token, rp_id: selected.rpId }),
+      payload: JSON.stringify({
+        challenge: ch.challenge,
+        login_flow: flowTokenField.value,
+        rp_id: selected.rpId,
+        user_verification: "required",
+      }),
     });
     return apiOk({
       flow_token: ch.id,
@@ -790,28 +817,44 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/user/login/passkey/finish", async (c) => {
     const s = store(c);
-    const body = (await readJson(c.req)) as {
-      flow_token?: string;
-      passkey_flow_token?: string;
-      credential?: { id?: string };
-      credential_id?: string;
-    };
-    const loginFlow = await s.getAuthFlow(body.flow_token || "");
-    if (!loginFlow || !isLoginVerificationFlow(loginFlow.type) || loginFlow.expires_at < nowSec()) {
-      return apiFail("登录流程已过期");
+    const decoded = await decodeLoginPasskeyJSON(c.req);
+    if (!decoded.ok) return decoded.response;
+    const flowTokenField = loginPasskeyStringField(decoded.body, "flow_token");
+    if (!flowTokenField.ok) return flowTokenField.response;
+    const passkeyFlowField = loginPasskeyStringField(decoded.body, "passkey_flow_token");
+    if (!passkeyFlowField.ok) return passkeyFlowField.response;
+    if (!flowTokenField.value || !passkeyFlowField.value || !("credential" in decoded.body)) {
+      return apiErrorMsg("参数错误");
     }
-    const passkeyFlow = await s.getAuthFlow(body.passkey_flow_token || "");
-    if (!passkeyFlow || passkeyFlow.type !== "login_passkey" || passkeyFlow.user_id !== loginFlow.user_id) {
-      return apiFail("流程无效");
+    const loaded = await requireLoginVerification(s, flowTokenField.value, VERIFICATION_METHOD_PASSKEY);
+    if ("error" in loaded) return loaded.error;
+    const credentialId = passkeyCredentialId(decoded.body.credential);
+    if (!credentialId) {
+      return writeSecurityOperationError("SECURITY_VERIFICATION_FAILED", ERR_VERIFICATION_FAILED);
     }
-    const credentialId = body.credential_id || String(body.credential?.id || "");
-    const pk = await s.getPasskeyByCred(credentialId);
-    if (!pk || pk.user_id !== loginFlow.user_id) return apiFail("凭证无效");
-    const user = await s.getUserById(loginFlow.user_id);
-    if (!user) return apiFail("用户不存在");
+    const consumed = await s.consumeAuthFlow(passkeyFlowField.value, {
+      type: AUTH_FLOW_PURPOSE_LOGIN_PASSKEY,
+      user_id: loaded.user.id,
+    });
+    if (consumed !== "ok") return writeSecurityOperationError("AUTH_FLOW_INVALID", "Verification flow expired");
+    const passkeyFlow = await s.getAuthFlow(passkeyFlowField.value);
+    const session = parseJson<{ login_flow?: string; rp_id?: string; user_verification?: string }>(passkeyFlow?.payload || "", {});
+    if (
+      session.login_flow !== flowTokenField.value ||
+      session.user_verification !== "required" ||
+      !session.rp_id
+    ) {
+      return writeSecurityOperationError("AUTH_FLOW_INVALID", "Verification flow expired");
+    }
+    const keys = await s.listPasskeys(loaded.user.id);
+    if (!keys.length) return writeSecurityOperationError("PASSKEY_NOT_FOUND", "No Passkey is registered.");
+    const pk = keys.find((k) => k.credential_id === credentialId);
+    if (!pk) return writeSecurityOperationError("SECURITY_VERIFICATION_FAILED", ERR_VERIFICATION_FAILED);
+    if (pk.rp_id && pk.rp_id !== session.rp_id) {
+      return writeSecurityOperationError("SECURITY_VERIFICATION_FAILED", ERR_VERIFICATION_FAILED);
+    }
     await s.touchPasskey(pk.credential_id);
-    await s.deleteAuthFlow(passkeyFlow.token);
-    return completeLoginVerification(s, c.env, c.req, loginFlow.token, "passkey");
+    return completeLoginVerification(s, c.env, c.req, flowTokenField.value, VERIFICATION_METHOD_PASSKEY);
   });
 
   r.delete("/api/user/passkey", async (c) => {

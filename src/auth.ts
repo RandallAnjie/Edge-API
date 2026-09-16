@@ -799,8 +799,14 @@ export async function issueSessionSafe(
 /** Original `model.AuthFlowPurposeLoginVerification`. */
 export const AUTH_FLOW_PURPOSE_LOGIN_VERIFICATION = "login_verification";
 
+/** Original `model.AuthFlowPurposeLoginPasskey`. */
+export const AUTH_FLOW_PURPOSE_LOGIN_PASSKEY = "login_passkey";
+
 /** Original `service.VerificationMethodTwoFA`. */
 export const VERIFICATION_METHOD_TWO_FA = "2fa";
+
+/** Original `service.VerificationMethodPasskey`. */
+export const VERIFICATION_METHOD_PASSKEY = "passkey";
 
 /** Original `service.ErrProofMethod` via `writeSecurityOperationError`. */
 const ERR_PROOF_METHOD = "This verification method is not allowed for this action.";
@@ -887,11 +893,19 @@ export async function setupLogin(
 
 type LoginFlowPayload = { auth_version: number; login_method: string };
 
-async function requireLoginVerification(
+/** Original `service.RequireLoginVerification`. */
+export async function requireLoginVerification(
   store: Store,
   token: string,
   method: string,
-): Promise<{ flow: { token: string; user_id: number }; user: UserRow; payload: LoginFlowPayload } | { error: Response }> {
+): Promise<
+  | {
+      flow: { token: string; user_id: number; expires_at: number };
+      user: UserRow;
+      payload: LoginFlowPayload;
+    }
+  | { error: Response }
+> {
   const flow = await store.getAuthFlow(token);
   if (!flow || !isLoginVerificationFlow(flow.type)) {
     return { error: apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID") };
