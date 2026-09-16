@@ -69,6 +69,43 @@ export function apiErrorMsg(message: string): Response {
   return json(200, { success: false, message });
 }
 
+/** Original Passkey disabled gin.H `{success:false,message}` (no `data`). */
+export const MSG_PASSKEY_DISABLED = "管理员未启用 Passkey 登录";
+/** Original `parsePasskeyFinishRequest` controller wrapper message. */
+export const MSG_PASSKEY_INVALID_REQUEST = "无效的 Passkey 验证请求";
+/** Original Passkey not-bound gin.H `{success:false,message}` (no `data`). */
+export const MSG_PASSKEY_NOT_BOUND = "该用户尚未绑定 Passkey";
+
+/** Original `controller.parsePasskeyFinishRequest` — every error is `无效的 Passkey 验证请求`. */
+export async function parsePasskeyFinishRequest(
+  req: Request,
+): Promise<{ ok: true; flowToken: string; credential: unknown } | { ok: false; response: Response }> {
+  let body: unknown;
+  try {
+    const raw = await req.text();
+    if (!raw.trim()) return { ok: false, response: apiErrorMsg(MSG_PASSKEY_INVALID_REQUEST) };
+    body = JSON.parse(raw);
+  } catch {
+    return { ok: false, response: apiErrorMsg(MSG_PASSKEY_INVALID_REQUEST) };
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, response: apiErrorMsg(MSG_PASSKEY_INVALID_REQUEST) };
+  }
+  const rec = body as Record<string, unknown>;
+  const flowToken = typeof rec.flow_token === "string" ? rec.flow_token : "";
+  if (!flowToken || rec.credential == null) {
+    return { ok: false, response: apiErrorMsg(MSG_PASSKEY_INVALID_REQUEST) };
+  }
+  return { ok: true, flowToken, credential: rec.credential };
+}
+
+/** Original WebAuthn credential `id` / `rawId` from a finish payload. */
+export function passkeyCredentialId(credential: unknown): string {
+  if (!credential || typeof credential !== "object") return "";
+  const rec = credential as Record<string, unknown>;
+  return String(rec.id || rec.rawId || "");
+}
+
 /** Original `strconv.ParseBool` error string from `common.ApiError`. */
 export function strconvParseBool(raw: string): { ok: true; v: boolean } | { ok: false; message: string } {
   switch (raw) {

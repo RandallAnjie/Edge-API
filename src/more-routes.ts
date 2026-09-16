@@ -98,7 +98,7 @@ import {
 } from "./custom-oauth.js";
 import { registerParity, sessionViews } from "./parity-routes.js";
 import { goJSONKind, goUnmarshalJSON, parseChannelBatch } from "./channel-validate.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, pageData, pageQuery, readJson, strconvAtoi, strconvParseBool, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nLang, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, passkeyCredentialId, readJson, strconvAtoi, strconvParseBool, userEmailAlreadyTakenMessage, userNotExistsMessage, userPasswordResetLinkInvalidMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -621,11 +621,11 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/user/passkey/register/begin", async (c) => {
     const s = store(c);
-    const proof = await requireProof(c, s, { scope: "passkey.register" });
-    if (isResponse(proof)) return proof;
+    if (!(await s.optionBool("PasskeyEnabled", true))) return apiErrorMsg(MSG_PASSKEY_DISABLED);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    if (!(await s.optionBool("PasskeyEnabled", true))) return apiFail("管理员未启用 Passkey 登录");
+    const proof = await requireProof(c, s, { scope: "passkey.register" });
+    if (isResponse(proof)) return proof;
     const ch = newChallenge();
     const rp = rpFromRequest(c.req);
     const expiresAt = nowSec() + 300;
@@ -647,39 +647,41 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/user/passkey/register/finish", async (c) => {
     const s = store(c);
+    if (!(await s.optionBool("PasskeyEnabled", true))) return apiErrorMsg(MSG_PASSKEY_DISABLED);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as {
-      flow_id?: string;
-      flow_token?: string;
-      credential_id?: string;
-      public_key?: string;
-      name?: string;
-      credential?: Record<string, unknown>;
-    };
-    const flow = await s.getAuthFlow(body.flow_id || body.flow_token || "");
-    if (!flow || flow.type !== "passkey_reg" || flow.user_id !== u.id) return apiFail("流程无效");
-    const cred = body.credential || {};
-    const credentialId = body.credential_id || String(cred.id || cred.rawId || "");
-    const publicKey = body.public_key || JSON.stringify(cred);
-    if (!credentialId) return apiFail("缺少凭证");
-    await s.insertPasskey(u.id, credentialId, publicKey, body.name || "passkey", rpFromRequest(c.req).rpId);
+    const parsed = await parsePasskeyFinishRequest(c.req);
+    if (!parsed.ok) return parsed.response;
+    const flow = await s.getAuthFlow(parsed.flowToken);
+    if (
+      !flow ||
+      flow.type !== "passkey_reg" ||
+      Number(flow.user_id) !== u.id ||
+      flow.expires_at < nowSec() ||
+      Number(flow.consumed_at || 0) > 0
+    ) {
+      return writeSecurityOperationError("AUTH_FLOW_INVALID", "Verification flow expired");
+    }
+    const credentialId = passkeyCredentialId(parsed.credential);
+    if (!credentialId) return writeAuthSessionError(500, "AUTH_INTERNAL_ERROR");
+    const publicKey = JSON.stringify(parsed.credential);
+    await s.insertPasskey(u.id, credentialId, publicKey, "passkey", rpFromRequest(c.req).rpId);
     await s.deleteAuthFlow(flow.token);
     const user = await s.getUserById(u.id);
-    if (!user) return apiOk(null, "Passkey 注册成功");
+    if (!user) return writeAuthSessionError(500, "AUTH_INTERNAL_ERROR");
     const issued = await issueSessionSafe(s, c.env, user, c.req, "passkey_registered", u.sid);
     if (issued instanceof Response) return issued;
-    return sessionResponse(issued, 200, "Passkey 注册成功");
+    return authRotationResponse(issued, "Passkey 注册成功");
   });
 
   r.post("/api/user/passkey/login/begin", async (c) => {
     const s = store(c);
-    if (!(await s.optionBool("PasskeyEnabled", true))) return apiFail("管理员未启用 Passkey 登录");
+    if (!(await s.optionBool("PasskeyEnabled", true))) return apiErrorMsg(MSG_PASSKEY_DISABLED);
     let body: { rp_id?: string } = {};
     try {
       body = (await readJson(c.req)) as { rp_id?: string };
     } catch {
-      return apiFail("无效的 Passkey 验证请求");
+      return apiErrorMsg(MSG_PASSKEY_INVALID_REQUEST);
     }
     let selected: { rpId: string; rp_ids: string[] };
     try {
@@ -711,25 +713,20 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/user/passkey/login/finish", async (c) => {
     const s = store(c);
-    if (!(await s.optionBool("PasskeyEnabled", true))) return apiFail("管理员未启用 Passkey 登录");
-    const body = (await readJson(c.req)) as {
-      flow_id?: string;
-      flow_token?: string;
-      credential_id?: string;
-      credential?: { id?: string; rawId?: string; response?: { clientDataJSON?: string; authenticatorData?: string; signature?: string } };
-      clientDataJSON?: string;
-      authenticatorData?: string;
-      signature?: string;
-    };
-    const flow = await s.getAuthFlow(body.flow_id || body.flow_token || "");
-    if (!flow || flow.type !== "passkey_login" || flow.expires_at < nowSec()) return apiFail("流程无效");
-    const cred = body.credential || {};
-    const credentialId = body.credential_id || String(cred.id || cred.rawId || "");
+    if (!(await s.optionBool("PasskeyEnabled", true))) return apiErrorMsg(MSG_PASSKEY_DISABLED);
+    const parsed = await parsePasskeyFinishRequest(c.req);
+    if (!parsed.ok) return parsed.response;
+    const flow = await s.getAuthFlow(parsed.flowToken);
+    if (!flow || flow.type !== "passkey_login" || flow.expires_at < nowSec() || Number(flow.consumed_at || 0) > 0) {
+      return writeSecurityOperationError("AUTH_FLOW_INVALID", "Verification flow expired");
+    }
+    const cred = parsed.credential as { id?: string; rawId?: string; response?: { clientDataJSON?: string; authenticatorData?: string; signature?: string } };
+    const credentialId = passkeyCredentialId(parsed.credential);
     const pk = await s.getPasskeyByCred(credentialId);
     if (!pk) return apiFail("凭证无效");
-    const clientDataJSON = body.clientDataJSON || cred.response?.clientDataJSON || "";
-    const authenticatorData = body.authenticatorData || cred.response?.authenticatorData || "";
-    const signature = body.signature || cred.response?.signature || "";
+    const clientDataJSON = cred.response?.clientDataJSON || "";
+    const authenticatorData = cred.response?.authenticatorData || "";
+    const signature = cred.response?.signature || "";
     if (clientDataJSON && authenticatorData && signature) {
       const ok = await verifyAssertion({
         publicKeySpki: pk.public_key,
@@ -823,20 +820,30 @@ export function registerMore(r: Router<Env>): void {
     if (isResponse(proof)) return proof;
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
+    const keys = await s.listPasskeys(u.id);
+    if (!keys.length) return writeSecurityOperationError("PASSKEY_NOT_FOUND", "No Passkey is registered.");
     await s.deletePasskeys(u.id);
     const user = await s.getUserById(u.id);
-    if (!user) return apiOk(null, "Passkey 已解绑");
+    if (!user) return writeAuthSessionError(500, "AUTH_INTERNAL_ERROR");
     const issued = await issueSessionSafe(s, c.env, user, c.req, "passkey_deleted", u.sid);
     if (issued instanceof Response) return issued;
-    return sessionResponse(issued, 200, "Passkey 已解绑");
+    return authRotationResponse(issued, "Passkey 已解绑");
   });
 
   r.delete("/api/user/:id/reset_passkey", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    await s.deletePasskeys(Number(c.params.id));
-    return apiOk(null);
+    const parsed = strconvAtoi(c.params.id || "");
+    if (!parsed.ok) return apiErrorMsg("无效的用户 ID");
+    if (parsed.n === 0) return writeAuthSessionError(500, "AUTH_INTERNAL_ERROR");
+    const target = await s.getUserById(parsed.n);
+    if (!canManageTargetRole(u.role, target?.role ?? 0)) return apiErrorMsg("no permission");
+    const keys = await s.listPasskeys(parsed.n);
+    if (!keys.length) return apiErrorMsg(MSG_PASSKEY_NOT_BOUND);
+    await s.deletePasskeys(parsed.n);
+    await s.bumpAuthVersion(parsed.n);
+    return json(200, { success: true, message: "Passkey 已重置" });
   });
 
   r.post("/api/user/aff_transfer", async (c) => {

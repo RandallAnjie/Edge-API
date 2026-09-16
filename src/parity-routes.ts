@@ -59,7 +59,7 @@ import { bindVerificationOperation, issueSecurityProof, securityProofError } fro
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
 import { headerNavModulePublicOrUserAuth, isHeaderNavDenied } from "./header-nav.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, pageData, pageQuery, parseUnixQuery, payErr, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiOk, clientIp, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -557,16 +557,25 @@ export function registerParity(r: Router<Env>): void {
 
   r.post("/api/user/passkey/verify/begin", async (c) => {
     const s = store(c);
+    if (!(await s.optionBool("PasskeyEnabled", true))) return apiErrorMsg(MSG_PASSKEY_DISABLED);
     const identity = await dashboardIdentity(c, s);
     if (!identity) return json(401, { success: false, message: "当前认证方式不支持安全验证" });
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { scope?: string; context?: unknown; rp_id?: string };
+    let body: { scope?: string; context?: unknown; rp_id?: string };
+    try {
+      const raw = await c.req.text();
+      if (!raw.trim()) return apiErrorMsg(MSG_PASSKEY_INVALID_REQUEST);
+      body = JSON.parse(raw) as { scope?: string; context?: unknown; rp_id?: string };
+    } catch {
+      return apiErrorMsg(MSG_PASSKEY_INVALID_REQUEST);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return apiErrorMsg(MSG_PASSKEY_INVALID_REQUEST);
     const secret = await sessionSecret(c.env, s);
     const bound = await bindVerificationOperation(secret, { scope: body.scope || "", context: body.context });
     if (!bound.ok) return json(bound.status, { success: false, code: bound.code, message: bound.message });
     const keys = await s.listPasskeys(u.id);
-    if (!keys.length) return apiFail("该用户尚未绑定 Passkey");
+    if (!keys.length) return apiErrorMsg(MSG_PASSKEY_NOT_BOUND);
     let selected: { rpId: string; rp_ids: string[] };
     try {
       selected = selectPasskeyBeginRpIDs(
@@ -598,21 +607,33 @@ export function registerParity(r: Router<Env>): void {
       challenge: ch.challenge,
       allowCredentials: keys.map((k) => ({ type: "public-key", id: k.credential_id })),
       timeout: 60000,
-      userVerification: "preferred",
+      userVerification: "required",
       rpId: selected.rpId,
     };
-    return apiOk({ options, rp_ids: selected.rp_ids, flow_token: ch.id, expires_at: expiresAt, flow_id: ch.id, publicKey: options });
+    return apiOk({ options, rp_ids: selected.rp_ids, flow_token: ch.id, expires_at: expiresAt });
   });
 
   r.post("/api/user/passkey/verify/finish", async (c) => {
     const s = store(c);
+    if (!(await s.optionBool("PasskeyEnabled", true))) return apiErrorMsg(MSG_PASSKEY_DISABLED);
     const identity = await dashboardIdentity(c, s);
     if (!identity) return json(401, { success: false, message: "当前认证方式不支持安全验证" });
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { flow_id?: string; flow_token?: string; credential_id?: string };
-    const flow = await s.getAuthFlow(body.flow_id || body.flow_token || "");
-    if (!flow || flow.type !== "passkey_verify" || flow.user_id !== u.id) return apiFail("流程无效");
+    const parsed = await parsePasskeyFinishRequest(c.req);
+    if (!parsed.ok) return parsed.response;
+    const keys = await s.listPasskeys(u.id);
+    if (!keys.length) return apiErrorMsg(MSG_PASSKEY_NOT_BOUND);
+    const flow = await s.getAuthFlow(parsed.flowToken);
+    if (
+      !flow ||
+      flow.type !== "passkey_verify" ||
+      Number(flow.user_id) !== u.id ||
+      flow.expires_at < nowSec() ||
+      Number(flow.consumed_at || 0) > 0
+    ) {
+      return writeSecurityOperationError("AUTH_FLOW_INVALID", "Verification flow expired");
+    }
     const payload = parseJson<{ scope?: string; context_hash?: string }>(flow.payload, {});
     await s.deleteAuthFlow(flow.token);
     const secret = await sessionSecret(c.env, s);
