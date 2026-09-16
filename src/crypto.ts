@@ -1,5 +1,12 @@
 const PBKDF2_ITERS = 100_000;
 
+/** Original `common.MinAccountPasswordLength` / `MaxAccountPasswordLength`. */
+export const MIN_ACCOUNT_PASSWORD_LENGTH = 8;
+export const MAX_ACCOUNT_PASSWORD_LENGTH = 128;
+
+/** Original `common.ErrAccountPasswordLength`. */
+export const ERR_ACCOUNT_PASSWORD_LENGTH = "Password must contain between 8 and 128 characters.";
+
 function b64url(data: ArrayBuffer | Uint8Array): string {
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
   let bin = "";
@@ -24,6 +31,26 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
     false,
     ["sign", "verify"],
   );
+}
+
+/**
+ * Original `utf8.RuneCountInString` for BMP + supplementary-plane code points.
+ * Unpaired UTF-16 surrogates are counted as one rune each, matching JS string iteration.
+ */
+export function utf8RuneCount(value: string): number {
+  return [...value].length;
+}
+
+/**
+ * Original `common.ValidateNewAccountPassword`. Returns the exact error string
+ * or null. Workerd cannot emit Argon2id; hashing stays documented PBKDF2-SHA256.
+ */
+export function validateNewAccountPassword(password: string): string | null {
+  const runes = utf8RuneCount(password);
+  if (runes < MIN_ACCOUNT_PASSWORD_LENGTH || runes > MAX_ACCOUNT_PASSWORD_LENGTH) {
+    return ERR_ACCOUNT_PASSWORD_LENGTH;
+  }
+  return null;
 }
 
 export async function hashPassword(password: string): Promise<string> {

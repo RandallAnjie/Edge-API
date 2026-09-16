@@ -47,6 +47,7 @@ import {
   generateTokenKey,
   displayTokenKey,
   hashPassword,
+  validateNewAccountPassword,
   verifyPassword,
   decryptPassword,
 } from "./crypto.js";
@@ -227,26 +228,41 @@ export function adminRouter(): Router<Env> {
   r.get("/api/setup", async (c) => {
     const s = store(c);
     const done = await s.setupDone();
-    if (done) return apiOk({ status: true, root_init: false, database_type: "" });
-    return apiOk({ status: false, root_init: await s.rootExists(), database_type: "sqlite" });
+    if (done) return json(200, { success: true, data: { status: true, root_init: false, database_type: "" } });
+    return json(200, { success: true, data: { status: false, root_init: await s.rootExists(), database_type: "sqlite" } });
   });
 
   r.post("/api/setup", async (c) => {
     const s = store(c);
-    if (await s.setupDone()) return apiFail("系统已经初始化完成");
-    const body = (await readJson(c.req)) as {
-      username?: string;
-      password?: string;
-      confirmPassword?: string;
-      SelfUseModeEnabled?: boolean;
-      DemoSiteEnabled?: boolean;
+    if (await s.setupDone()) return json(200, { success: false, message: "系统已经初始化完成" });
+    let body: {
+      username?: unknown;
+      password?: unknown;
+      confirmPassword?: unknown;
+      SelfUseModeEnabled?: unknown;
+      DemoSiteEnabled?: unknown;
     };
+    try {
+      const text = await c.req.text();
+      if (!text) return json(200, { success: false, message: "请求参数有误" });
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return json(200, { success: false, message: "请求参数有误" });
+      }
+      body = parsed as typeof body;
+    } catch {
+      return json(200, { success: false, message: "请求参数有误" });
+    }
     if (!(await s.rootExists())) {
-      const username = (body.username || "").trim();
-      const password = body.password || "";
-      if (username.length < 1 || username.length > 12) return apiFail("用户名长度不能超过12个字符");
-      if (password !== (body.confirmPassword || password)) return apiFail("两次输入的密码不一致");
-      if (password.length < 8 || password.length > 128) return apiFail("密码长度必须在 8 到 128 之间");
+      const username = typeof body.username === "string" ? body.username : "";
+      const password = typeof body.password === "string" ? body.password : "";
+      const confirmPassword = typeof body.confirmPassword === "string" ? body.confirmPassword : "";
+      if (new TextEncoder().encode(username).length > 12) {
+        return json(200, { success: false, message: "用户名长度不能超过12个字符" });
+      }
+      if (password !== confirmPassword) return json(200, { success: false, message: "两次输入的密码不一致" });
+      const passwordErr = validateNewAccountPassword(password);
+      if (passwordErr) return json(200, { success: false, message: passwordErr });
       const hashed = await hashPassword(password);
       await s.insertUser({
         username,
@@ -262,7 +278,7 @@ export function adminRouter(): Router<Env> {
     await s.setOption("SelfUseModeEnabled", String(Boolean(body.SelfUseModeEnabled ?? false)));
     await s.setOption("DemoSiteEnabled", String(Boolean(body.DemoSiteEnabled ?? false)));
     await s.setOption("Setup", "true");
-    return apiOk(null, "系统初始化成功");
+    return json(200, { success: true, message: "系统初始化成功" });
   });
 
   r.get("/api/status", async (c) => apiOk(await buildStatus(store(c), c.env)));

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hashPassword, maskKey, parseApiKey, signAccessJwt, splitRefreshToken, verifyAccessJwt, verifyPassword, signSession, verifySession, signSecurityProofJwt, verifySecurityProofJwt } from "../src/crypto.js";
+import { hashPassword, maskKey, parseApiKey, signAccessJwt, splitRefreshToken, verifyAccessJwt, verifyPassword, signSession, verifySession, signSecurityProofJwt, verifySecurityProofJwt, validateNewAccountPassword, ERR_ACCOUNT_PASSWORD_LENGTH } from "../src/crypto.js";
 
 test("parseApiKey strips sk- and extra segments", () => {
   assert.equal(parseApiKey("Bearer sk-abc123-extra"), "abc123");
@@ -21,6 +21,13 @@ test("pbkdf2 hash verifies", async () => {
   assert.match(h, /^\$pbkdf2-sha256\$i=100000\$/);
   assert.equal(await verifyPassword("hello-world-12", h), true);
   assert.equal(await verifyPassword("nope", h), false);
+});
+
+test("original ValidateNewAccountPassword JSON error is English length message", () => {
+  assert.equal(validateNewAccountPassword("short7"), ERR_ACCOUNT_PASSWORD_LENGTH);
+  assert.equal(validateNewAccountPassword("password12"), null);
+  assert.equal(validateNewAccountPassword("😀😀😀😀😀😀😀😀"), null);
+  assert.equal(validateNewAccountPassword("😀😀😀😀😀😀😀"), ERR_ACCOUNT_PASSWORD_LENGTH);
 });
 
 test("session sign/verify", async () => {
