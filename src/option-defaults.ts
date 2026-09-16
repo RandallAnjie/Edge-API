@@ -269,3 +269,32 @@ export const DEFAULT_MARKETPLACE_SOURCES = [
   { name: "Official", index_url: "https://www.newapi.ai/api/v1/plugins/index.json" },
   { name: "GitHub", index_url: "https://raw.githubusercontent.com/QuantumNous/new-api-plugins/main/index.json" },
 ];
+
+export type TaskPluginMarketplaceSource = { name: string; index_url: string };
+
+/** Original `setting.GetTaskPluginMarketplaceSources`. Empty/invalid option → defaults; JSON `null` → `[]`. */
+export function getTaskPluginMarketplaceSources(raw: string): TaskPluginMarketplaceSource[] {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return DEFAULT_MARKETPLACE_SOURCES.map((s) => ({ ...s }));
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed === null) return [];
+    if (!Array.isArray(parsed)) return DEFAULT_MARKETPLACE_SOURCES.map((s) => ({ ...s }));
+    const sources: TaskPluginMarketplaceSource[] = [];
+    for (const item of parsed) {
+      if (item == null || typeof item !== "object" || Array.isArray(item)) {
+        return DEFAULT_MARKETPLACE_SOURCES.map((s) => ({ ...s }));
+      }
+      const rec = item as Record<string, unknown>;
+      if (rec.name != null && typeof rec.name !== "string") return DEFAULT_MARKETPLACE_SOURCES.map((s) => ({ ...s }));
+      if (rec.index_url != null && typeof rec.index_url !== "string") return DEFAULT_MARKETPLACE_SOURCES.map((s) => ({ ...s }));
+      sources.push({
+        name: typeof rec.name === "string" ? rec.name : "",
+        index_url: typeof rec.index_url === "string" ? rec.index_url : "",
+      });
+    }
+    return sources;
+  } catch {
+    return DEFAULT_MARKETPLACE_SOURCES.map((s) => ({ ...s }));
+  }
+}

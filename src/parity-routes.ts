@@ -94,7 +94,7 @@ import {
 } from "./task-plugin-factory.js";
 import { channelAffinityCacheStats, clearAffinityCacheAll, clearAffinityCacheByRule, getChannelAffinityUsageCacheStats } from "./channel-affinity.js";
 import { applyMetadataSync, previewMetadataSync } from "./model-sync.js";
-import { DEFAULT_MARKETPLACE_SOURCES } from "./option-defaults.js";
+import { getTaskPluginMarketplaceSources } from "./option-defaults.js";
 import { queryPerfMetrics, queryPerfMetricsSummary } from "./perf-metrics.js";
 import { SYSTEM_INSTANCE_STALE_AFTER_SECONDS, listSystemInstanceResponses } from "./system-instance.js";
 import { lazySystemTaskRun, runPendingLogCleanupSystemTask, startLogCleanupTask } from "./system-task.js";
@@ -1189,16 +1189,16 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const raw = await s.option("TaskPluginMarketplaceSources");
-    const parsed = parseJson<{ name?: string; index_url?: string }[] | null>(raw, null);
-    return apiOk(parsed && parsed.length ? parsed : DEFAULT_MARKETPLACE_SOURCES);
+    return apiOk(getTaskPluginMarketplaceSources(await s.option("TaskPluginMarketplaceSources")));
   });
   r.put("/api/plugin/task/marketplace/sources", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    await s.setOption("TaskPluginMarketplaceSources", JSON.stringify(await readJson(c.req)));
-    return apiOk(null);
+    const bound = bindTaskPluginMarketplaceSources(await c.req.text());
+    if (!bound.ok) return apiErrorMsg(bound.message);
+    await s.setOption("TaskPluginMarketplaceSources", JSON.stringify(bound.sources));
+    return apiOk(bound.sources);
   });
   r.get("/api/plugin/task/:key", async (c) => {
     const s = store(c);
@@ -1224,9 +1224,9 @@ export function registerParity(r: Router<Env>): void {
         has_icon: String(p.icon || "") !== "",
       });
     }
-    if (version) return apiFail("record not found");
+    if (version) return apiErrorMsg("record not found");
     const factorySource = factoryPluginSource(c.params.key);
-    if (factorySource == null) return apiFail("task plugin not found");
+    if (factorySource == null) return apiErrorMsg("task plugin not found");
     let factoryLoaded!: ReturnType<typeof compilePlugin>;
     const factoryCompileErr = taskPluginCompileError(c, () => {
       factoryLoaded = compilePlugin(factorySource, { key: c.params.key });
@@ -1281,16 +1281,16 @@ export function registerParity(r: Router<Env>): void {
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const body = (await readJson(c.req)) as { version?: string };
-    if (!body.version) return apiFail("Key: 'taskPluginActivateRequest.Version' Error:Field validation for 'Version' failed on the 'required' tag");
+    if (!body.version) return apiErrorMsg("Key: 'taskPluginActivateRequest.Version' Error:Field validation for 'Version' failed on the 'required' tag");
     const versions = await s.listTaskPluginVersions(c.params.key);
     const target = versions.find((row) => String(row.version) === body.version);
-    if (!target) return apiFail("plugin version not found");
+    if (!target) return apiErrorMsg("plugin version not found");
     const compileErr = taskPluginCompileError(c, () =>
       compilePlugin(String(target.source || ""), { key: String(target.key || c.params.key), version: String(target.version || body.version) }),
     );
     if (compileErr) return compileErr;
     const ok = await s.activateTaskPluginVersion(c.params.key, body.version);
-    if (!ok) return apiFail("plugin version not found");
+    if (!ok) return apiErrorMsg("plugin version not found");
     const syncErr = await syncTaskPluginsAfterMutation(s);
     if (syncErr) return syncErr;
     return apiOk(null);
@@ -1299,8 +1299,17 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { enabled?: boolean };
-    if (typeof body.enabled !== "boolean") return apiFail("enabled is required");
+    const parsedStatus = goUnmarshalJSON((await c.req.text()) || "");
+    if (
+      !parsedStatus.ok ||
+      parsedStatus.value === null ||
+      typeof parsedStatus.value !== "object" ||
+      Array.isArray(parsedStatus.value) ||
+      typeof (parsedStatus.value as { enabled?: unknown }).enabled !== "boolean"
+    ) {
+      return apiErrorMsg("enabled is required");
+    }
+    const body = parsedStatus.value as { enabled: boolean };
     const key = c.params.key;
     let disabledChannels = 0;
     if (!body.enabled) {
@@ -1332,7 +1341,7 @@ export function registerParity(r: Router<Env>): void {
     try {
       await s.setTaskPluginEnabled(key, body.enabled);
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
     const syncErr = await syncTaskPluginsAfterMutation(s);
     if (syncErr) return syncErr;
@@ -1344,21 +1353,21 @@ export function registerParity(r: Router<Env>): void {
     if (isResponse(u)) return u;
     const raw = await c.req.text();
     const parsed = goUnmarshalJSON(raw || "{}");
-    if (!parsed.ok) return apiFail(parsed.message);
+    if (!parsed.ok) return apiErrorMsg(parsed.message);
     if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
-      return apiFail(`json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type controller.taskPluginDryRunRequest`);
+      return apiErrorMsg(`json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type controller.taskPluginDryRunRequest`);
     }
     const body = parsed.value as { hook?: string; member?: string; args?: unknown[] };
     if (!body.hook) {
-      return apiFail("Key: 'taskPluginDryRunRequest.Hook' Error:Field validation for 'Hook' failed on the 'required' tag");
+      return apiErrorMsg("Key: 'taskPluginDryRunRequest.Hook' Error:Field validation for 'Hook' failed on the 'required' tag");
     }
     if (body.args != null && !Array.isArray(body.args)) {
-      return apiFail(`json: cannot unmarshal ${goJSONKind(body.args)} into Go value of type []json.RawMessage`);
+      return apiErrorMsg(`json: cannot unmarshal ${goJSONKind(body.args)} into Go value of type []json.RawMessage`);
     }
     const resolved = await resolveTaskPluginSource(s, c.params.key);
-    if (!resolved) return apiFail("task plugin not found");
+    if (!resolved) return apiErrorMsg("task plugin not found");
     const result = dryRunPlugin(resolved.source, { hook: body.hook, member: body.member, args: body.args }, { key: c.params.key });
-    if (!result.ok) return apiFail(result.message);
+    if (!result.ok) return apiErrorMsg(result.message);
     return apiOk(result.data);
   });
   r.delete("/api/plugin/task/:key/versions/:version", async (c) => {
@@ -1368,7 +1377,7 @@ export function registerParity(r: Router<Env>): void {
     const key = c.params.key;
     const version = c.params.version;
     const target = await s.getTaskPluginVersion(key, version);
-    if (!target) return apiFail("override plugin version not found; factory plugins cannot be deleted");
+    if (!target) return apiErrorMsg("override plugin version not found; factory plugins cannot be deleted");
     if (Number(target.active) && !hasFactoryPlugin(key) && c.url.searchParams.get("force") !== "true") {
       const usage = await s.taskPluginUsage(key);
       if (usage.channels.length > 0 || usage.in_flight_count > 0) {
@@ -2172,7 +2181,7 @@ async function syncTaskPluginsAfterMutation(s: Store): Promise<Response | undefi
   try {
     await syncTaskPluginsOnce(s);
   } catch (err) {
-    return apiFail(err instanceof Error ? err.message : String(err));
+    return apiErrorMsg(err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -2181,9 +2190,73 @@ function taskPluginCompileError(c: C, run: () => unknown): Response | undefined 
     run();
     return undefined;
   } catch (err) {
-    if (err instanceof UnknownMetaFieldError) return apiFail(taskPluginUnknownMetaFieldMessage(c.req, err.field));
-    return apiFail(err instanceof Error ? err.message : String(err));
+    if (err instanceof UnknownMetaFieldError) return apiErrorMsg(taskPluginUnknownMetaFieldMessage(c.req, err.field));
+    return apiErrorMsg(err instanceof Error ? err.message : String(err));
   }
+}
+
+/** Original `url.Parse` + IsAbs + Host + http(s) scheme in `UpdateTaskPluginMarketplaceSources`. */
+function marketplaceIndexURLOk(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    return Boolean(u.host);
+  } catch {
+    return false;
+  }
+}
+
+/** Original `controller.UpdateTaskPluginMarketplaceSources` ShouldBindJSON + name/URL checks. */
+function bindTaskPluginMarketplaceSources(
+  raw: string,
+): { ok: true; sources: { name: string; index_url: string }[] } | { ok: false; message: string } {
+  if (!raw) return { ok: false, message: "EOF" };
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return { ok: false, message: parsed.message };
+  if (parsed.value === null) return { ok: true, sources: [] };
+  if (!Array.isArray(parsed.value)) {
+    return {
+      ok: false,
+      message: `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type []setting.TaskPluginMarketplaceSource`,
+    };
+  }
+  const pending: { name: string; index_url: string }[] = [];
+  for (const item of parsed.value) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      return {
+        ok: false,
+        message: `json: cannot unmarshal ${goJSONKind(item)} into Go value of type setting.TaskPluginMarketplaceSource`,
+      };
+    }
+    const rec = item as Record<string, unknown>;
+    if ("name" in rec && rec.name != null && typeof rec.name !== "string") {
+      return {
+        ok: false,
+        message: `json: cannot unmarshal ${goJSONKind(rec.name)} into Go struct field TaskPluginMarketplaceSource.Name of type string`,
+      };
+    }
+    if ("index_url" in rec && rec.index_url != null && typeof rec.index_url !== "string") {
+      return {
+        ok: false,
+        message: `json: cannot unmarshal ${goJSONKind(rec.index_url)} into Go struct field TaskPluginMarketplaceSource.IndexURL of type string`,
+      };
+    }
+    pending.push({
+      name: typeof rec.name === "string" ? rec.name : "",
+      index_url: typeof rec.index_url === "string" ? rec.index_url : "",
+    });
+  }
+  const sources: { name: string; index_url: string }[] = [];
+  for (const item of pending) {
+    const name = item.name.trim();
+    const indexURL = item.index_url.trim();
+    if (!name) return { ok: false, message: "marketplace source name is required" };
+    if (!marketplaceIndexURLOk(indexURL)) {
+      return { ok: false, message: "marketplace source index_url must be an absolute http(s) URL" };
+    }
+    sources.push({ name, index_url: indexURL });
+  }
+  return { ok: true, sources };
 }
 
 async function upsertPlugin(c: C): Promise<Response> {
@@ -2199,11 +2272,11 @@ async function upsertPlugin(c: C): Promise<Response> {
     force?: boolean;
   };
   const source = String(body.source || "");
-  if (!source) return apiFail("Key: 'taskPluginUploadRequest.Source' Error:Field validation for 'Source' failed on the 'required' tag");
-  if (new TextEncoder().encode(source).length > 1024 * 1024) return apiFail("plugin source exceeds 1 MiB");
+  if (!source) return apiErrorMsg("Key: 'taskPluginUploadRequest.Source' Error:Field validation for 'Source' failed on the 'required' tag");
+  if (new TextEncoder().encode(source).length > 1024 * 1024) return apiErrorMsg("plugin source exceeds 1 MiB");
   const sourceHash = bytesToHex(await sha256Bytes(source));
   const expected = String(body.sourceSha256 || "").trim();
-  if (expected && expected.toLowerCase() !== sourceHash.toLowerCase()) return apiFail("plugin source sha256 mismatch");
+  if (expected && expected.toLowerCase() !== sourceHash.toLowerCase()) return apiErrorMsg("plugin source sha256 mismatch");
   let loaded!: ReturnType<typeof compilePlugin>;
   const compileErr = taskPluginCompileError(c, () => {
     loaded = compilePlugin(source);
@@ -2212,14 +2285,14 @@ async function upsertPlugin(c: C): Promise<Response> {
   try {
     validateV1Meta(loaded.meta);
   } catch (err) {
-    return apiFail(err instanceof Error ? err.message : String(err));
+    return apiErrorMsg(err instanceof Error ? err.message : String(err));
   }
   const icon = String(body.icon || "").trim();
   if (icon) {
     try {
       decodeIconDataURI(icon);
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
   }
   const enabled = body.enabled == null ? true : Boolean(body.enabled);
@@ -2229,7 +2302,7 @@ async function upsertPlugin(c: C): Promise<Response> {
       const current = await currentRoutingGeneration(s);
       preflightRoutingConflict(current, routingMetaFromRecord(loaded.meta));
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
   }
   const meta = taskPluginMetaView(loaded.meta, {
@@ -2278,7 +2351,7 @@ async function upsertPlugin(c: C): Promise<Response> {
       has_icon: Boolean(icon),
     });
   } catch (e) {
-    return apiFail(e instanceof Error ? e.message : String(e));
+    return apiErrorMsg(e instanceof Error ? e.message : String(e));
   }
 }
 
