@@ -52,6 +52,18 @@ async function boot(extra: Partial<Env> = {}) {
   return { e, auth, token };
 }
 
+async function enablePasskey(e: Env, auth: Record<string, string>) {
+  const r = await json(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: auth,
+      body: JSON.stringify({ key: "passkey.enabled", value: "true" }),
+    }),
+    e,
+  );
+  assert.equal(r.body.success, true, String(r.body.message));
+}
+
 async function passwordProof(e: Env, auth: Record<string, string>, scope: string) {
   const r = await json(
     new Request("http://local/api/verify", {
@@ -285,6 +297,7 @@ test("original recordUserSecurityAudit leftover 2FA self JSON", async () => {
 
 test("original recordUserSecurityAudit leftover passkey register/delete JSON", async () => {
   const { e, auth } = await boot();
+  await enablePasskey(e, auth);
   const missingRid = "passkey-security-audit-delete-missing-1";
   const missing = await json(
     new Request("http://local/api/user/passkey", {
