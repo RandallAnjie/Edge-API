@@ -460,7 +460,8 @@ export async function exchangeCustom(
   };
 }
 
-export async function fetchCustomOAuthDiscovery(body: { well_known_url?: string; issuer_url?: string; url?: string }): Promise<Response> {
+export async function fetchCustomOAuthDiscovery(body: { well_known_url?: string; issuer_url?: string; url?: string } | null | undefined): Promise<Response> {
+  body = body || {};
   const wellKnownURL = (body.well_known_url || body.url || "").trim();
   const issuerURL = (body.issuer_url || "").trim();
   if (!wellKnownURL && !issuerURL) return apiErrorMsg("请先填写 Discovery URL 或 Issuer URL");
