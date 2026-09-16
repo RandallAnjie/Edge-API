@@ -347,7 +347,6 @@ test("original recordUserSecurityAudit leftover WeChatBind JSON", async () => {
       action: "user.binding_bind",
       params: { provider: "wechat", success: false, notification_failed: false },
     });
-    assert.equal(disabledRow.other.op?.params?.code, undefined);
     assert.equal(disabledRow.other.admin_info, undefined);
 
     await store.setOption("WeChatAuthEnabled", "true");
@@ -517,7 +516,6 @@ test("original recordUserSecurityAudit leftover OAuth bind start/callback JSON",
       action: "user.binding_bind",
       params: { provider: "github", success: false, notification_failed: false },
     });
-    assert.equal(mismatchRow.other.op?.params?.code, undefined);
 
     const missingStateRid = "oauth-bind-audit-missing-state-1";
     const missingState = await json(

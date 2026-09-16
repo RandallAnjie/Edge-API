@@ -1423,7 +1423,7 @@ export function registerMore(r: Router<Env>): void {
       const flowUser = await s.getUserById(Number(flow.user_id));
       const session = await readSession(c, s);
       bindAuditUser = {
-        id: flowUser?.id ?? Number(flow.user_id) || 0,
+        id: flowUser?.id ?? (Number(flow.user_id) || 0),
         username: flowUser?.username ?? "",
         role: session?.role ?? 0,
         useAccessToken: session?.useAccessToken,
