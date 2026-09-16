@@ -117,7 +117,7 @@ test("original GetTokenKey JSON is GenerateKey 48 alphanumeric chars", async () 
 
 test("original AddRedemption JSON keys are GetUUID without hyphens", async () => {
   const { e, auth } = await boot();
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const created = await json(
     new Request("http://local/api/redemption/", {
       method: "POST",

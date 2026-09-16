@@ -43,7 +43,7 @@ async function boot() {
   );
   const token = (login.body.data as { access_token: string }).access_token;
   const auth = { authorization: "Bearer " + token, "content-type": "application/json" };
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   return { e, auth, store: new Store(e.DB) };
 }
 

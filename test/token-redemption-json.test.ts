@@ -147,7 +147,7 @@ test("original GetToken and SearchTokens JSON include DeletedAt", async () => {
 
 test("original GetAllRedemptions JSON includes count zero and DeletedAt", async () => {
   const { e, auth } = await boot();
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const created = await json(
     new Request("http://local/api/redemption/", {
       method: "POST",
@@ -202,7 +202,7 @@ test("original Token.Delete is a GORM soft delete that keeps the unique key", as
 
 test("original Redemption.Delete is a GORM soft delete that keeps the unique key", async () => {
   const { e, auth } = await boot();
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const created = await json(
     new Request("http://local/api/redemption/", {
       method: "POST",

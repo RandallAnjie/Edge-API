@@ -71,7 +71,7 @@ test("original AdminBindSubscription GET /api/user/self group JSON", async () =>
   const { e, auth, store } = await boot();
   const root = await store.getUserByUsername("root");
   assert.ok(root);
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const plan = await json(
     new Request("http://local/api/subscription/admin/plans", {
       method: "POST",
@@ -117,7 +117,7 @@ test("original AdminCreateUserSubscription POST users/:id/subscriptions group JS
   const { e, auth, store } = await boot();
   const root = await store.getUserByUsername("root");
   assert.ok(root);
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const planId = await store.insertPlan({
     title: "Pro",
     quota_reset_period: "never",
@@ -244,7 +244,7 @@ test("original AdminInvalidateUserSubscription GET /api/user/self group JSON", a
   const { e, auth, store } = await boot();
   const root = await store.getUserByUsername("root");
   assert.ok(root);
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const planId = await store.insertPlan({
     title: "Cancel me",
     quota_reset_period: "never",
@@ -274,7 +274,7 @@ test("original AdminDeleteUserSubscription GET /api/user/self group JSON", async
   const { e, auth, store } = await boot();
   const root = await store.getUserByUsername("root");
   assert.ok(root);
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const planId = await store.insertPlan({
     title: "Delete me",
     quota_reset_period: "never",
@@ -304,7 +304,7 @@ test("original CreateUserSubscriptionFromPlanTx max purchase JSON", async () => 
   const { e, auth, store } = await boot();
   const root = await store.getUserByUsername("root");
   assert.ok(root);
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const planId = await store.insertPlan({
     title: "Once",
     quota_reset_period: "never",
@@ -339,7 +339,7 @@ test("original PurchaseSubscriptionWithBalance source and group JSON", async () 
   const { e, auth, store } = await boot();
   const root = await store.getUserByUsername("root");
   assert.ok(root);
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const planId = await store.insertPlan({
     title: "Balance VIP",
     quota_reset_period: "never",

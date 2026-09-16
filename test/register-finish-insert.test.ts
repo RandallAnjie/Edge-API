@@ -170,7 +170,7 @@ test("original finishInsert invite rewards require payment compliance and skip i
   assert.equal(rootBlocked.aff_count, 0);
   assert.equal(rootBlocked.aff_quota, 0);
 
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const allowed = await json(
     new Request("http://local/api/user/register", {
       method: "POST",

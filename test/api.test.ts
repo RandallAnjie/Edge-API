@@ -125,7 +125,7 @@ test("setup + login + channel + token + mocked relay", async () => {
   assert.equal(models.body.object, "list");
   assert.ok(models.body.data.some((m: { id: string }) => m.id === "gpt-4o-mini"));
 
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const red = await json(
     new Request("http://local/api/redemption/", {
       method: "POST",
@@ -270,7 +270,7 @@ test("rankings + subscription buy + token batch", async () => {
   assert.ok(rank.body.data.models_history);
   assert.ok(rank.body.data.vendor_share_history);
 
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
 
   const plan = await json(
     new Request("http://local/api/subscription/admin/plans", {

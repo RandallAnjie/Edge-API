@@ -87,7 +87,7 @@ test("original checkin and redemption RecordLog content uses LogQuota JSON", asy
   assert.equal(checkin.quota, 1000);
   assert.equal(checkin.type, 4);
 
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const created = await json(
     new Request("http://local/api/redemption/", {
       method: "POST",

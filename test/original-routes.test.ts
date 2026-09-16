@@ -911,7 +911,7 @@ test("original JSON fields for status, models, deployments, performance, data, u
   }
 
   const compliance = await json(
-    new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }),
+    new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }),
     e,
   );
   assert.equal(compliance.body.success, true, String(compliance.body.message));
@@ -987,7 +987,7 @@ test("original subscription self/plans wrapping, token mask, plugin get, tag mod
   assert.equal((selfAfterPref.body.data as { billing_preference: string }).billing_preference, "wallet_first");
   assert.ok(Array.isArray(selfData.all_subscriptions));
 
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const created = await json(
     new Request("http://local/api/subscription/admin/plans", {
       method: "POST",
@@ -1181,7 +1181,7 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
   assert.equal(deniedAff.body.success, false);
   assert.equal(deniedAff.body.message, deniedTopup.body.message);
 
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
 
   const badRedeem = await json(
     new Request("http://local/api/user/topup", {
@@ -2312,7 +2312,7 @@ test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch,
   assert.equal(typeof ss.rpm, "number");
   assert.equal(typeof ss.tpm, "number");
 
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   await json(
     new Request("http://local/api/redemption/", {
       method: "POST",
@@ -3409,7 +3409,7 @@ test("original GetOptions billing, models delete, and redemption PUT JSON", asyn
   assert.equal(batch.body.success, true, String(batch.body.message));
   assert.deepEqual(batch.body.data, { deleted_count: 1, updated_channels: 0 });
 
-  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   const future = Math.floor(Date.now() / 1000) + 3600;
   const createdCode = await json(
     new Request("http://local/api/redemption/", {

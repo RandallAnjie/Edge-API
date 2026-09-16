@@ -60,7 +60,7 @@ async function boot() {
 }
 
 async function confirmCompliance(e: Env, auth: Record<string, string>) {
-  const res = await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth }), e);
+  const res = await json(new Request("http://local/api/option/payment_compliance", { method: "POST", headers: auth, body: JSON.stringify({ confirmed: true }) }), e);
   assert.equal(res.body.success, true, String(res.body.message));
 }
 

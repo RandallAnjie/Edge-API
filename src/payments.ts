@@ -16,7 +16,7 @@ import {
   validateWaffoPublicKey,
   verifyWaffoBody,
 } from "./crypto.js";
-import { apiFail, clientIp, json, payErr, payOk, paymentReturnPath as serverPaymentReturnPath, readJson } from "./http.js";
+import { apiErrorMsg, apiOk, clientIp, json, payErr, payOk, paymentReturnPath as serverPaymentReturnPath } from "./http.js";
 import { PAYMENT_COMPLIANCE_REQUIRED } from "./subscription.js";
 import {
   ERR_SUBSCRIPTION_ORDER_NOT_FOUND,
@@ -27,13 +27,70 @@ import { parseTrustedRedirectDomains, validateRedirectURL } from "./url-validato
 
 export { PAYMENT_COMPLIANCE_REQUIRED };
 
+/** Original `operation_setting.CurrentComplianceTermsVersion`. */
+export const CURRENT_COMPLIANCE_TERMS_VERSION = "v1";
+
 export async function paymentComplianceConfirmed(store: Store): Promise<boolean> {
   return store.optionBool("PaymentComplianceConfirmed", false);
 }
 
+/** Original `controller.requirePaymentCompliance` / `common.ApiErrorI18n` (omit `data`). */
 export async function requirePaymentCompliance(store: Store): Promise<Response | null> {
   if (await paymentComplianceConfirmed(store)) return null;
-  return apiFail(PAYMENT_COMPLIANCE_REQUIRED);
+  return apiErrorMsg(PAYMENT_COMPLIANCE_REQUIRED);
+}
+
+/** Original `common.DecodeJson` into `PaymentComplianceRequest`. */
+function decodePaymentComplianceRequest(raw: string): { confirmed: boolean } | Response {
+  if (!raw.trim()) return apiErrorMsg("参数错误");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return apiErrorMsg("参数错误");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return apiErrorMsg("参数错误");
+  }
+  const rec = parsed as Record<string, unknown>;
+  if ("confirmed" in rec && typeof rec.confirmed !== "boolean") {
+    return apiErrorMsg("参数错误");
+  }
+  return { confirmed: rec.confirmed === true };
+}
+
+/** Original `controller.ConfirmPaymentCompliance`. */
+export async function confirmPaymentCompliance(
+  store: Store,
+  user: { id: number; sid: string },
+  req: Request,
+): Promise<Response> {
+  if (!user.sid) {
+    return json(403, {
+      success: false,
+      message: "This operation requires dashboard session authentication. API access token is not allowed.",
+    });
+  }
+  const decoded = decodePaymentComplianceRequest(await req.text());
+  if (decoded instanceof Response) return decoded;
+  if (!decoded.confirmed) return apiErrorMsg("请确认合规声明");
+  const now = nowSec();
+  const updates: Record<string, string> = {
+    "payment_setting.compliance_confirmed": "true",
+    "payment_setting.compliance_terms_version": CURRENT_COMPLIANCE_TERMS_VERSION,
+    "payment_setting.compliance_confirmed_at": String(now),
+    "payment_setting.compliance_confirmed_by": String(user.id),
+    "payment_setting.compliance_confirmed_ip": clientIp(req),
+  };
+  for (const [key, value] of Object.entries(updates)) {
+    await store.setOption(key, value);
+  }
+  return apiOk({
+    confirmed: true,
+    terms_version: CURRENT_COMPLIANCE_TERMS_VERSION,
+    confirmed_at: now,
+    confirmed_by: user.id,
+  });
 }
 
 export async function paymentConfigured(store: Store, kind: "stripe" | "epay" | "creem" | "waffo" | "waffo_pancake"): Promise<boolean> {

@@ -15,6 +15,7 @@ import {
   requestStripePay,
   requestWaffoPancakePay,
   requestWaffoPay,
+  confirmPaymentCompliance,
   requirePaymentCompliance,
   topupInfo,
 } from "./payments.js";
@@ -1004,8 +1005,7 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    await s.setOption("PaymentComplianceConfirmed", "true");
-    return apiOk({ confirmed: true });
+    return confirmPaymentCompliance(s, u, c.req);
   });
 
   r.get("/api/option/channel_affinity_cache", async (c) => {
