@@ -802,6 +802,9 @@ export const AUTH_FLOW_PURPOSE_LOGIN_VERIFICATION = "login_verification";
 /** Original `model.AuthFlowPurposeLoginPasskey`. */
 export const AUTH_FLOW_PURPOSE_LOGIN_PASSKEY = "login_passkey";
 
+/** Original `model.AuthFlowPurposePasskeyLogin`. */
+export const AUTH_FLOW_PURPOSE_PASSKEY_LOGIN = "passkey_login";
+
 /** Original `service.VerificationMethodTwoFA`. */
 export const VERIFICATION_METHOD_TWO_FA = "2fa";
 

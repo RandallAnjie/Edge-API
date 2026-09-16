@@ -1,6 +1,7 @@
 import {
   CHANNEL_ENABLED,
   ROLE_ROOT,
+  USER_ENABLED,
   MAX_RECENT_ITEMS,
   canManageTargetRole,
   nowSec,
@@ -116,6 +117,7 @@ import {
   sessionResponse,
   sessionSecret,
   AUTH_FLOW_PURPOSE_LOGIN_PASSKEY,
+  AUTH_FLOW_PURPOSE_PASSKEY_LOGIN,
   completeLoginVerification,
   requireLoginVerification,
   VERIFICATION_METHOD_PASSKEY,
@@ -714,10 +716,14 @@ export function registerMore(r: Router<Env>): void {
     const expiresAt = nowSec() + 300;
     await s.insertAuthFlow({
       token: ch.id,
-      type: "passkey_login",
+      type: AUTH_FLOW_PURPOSE_PASSKEY_LOGIN,
       user_id: 0,
       expires_at: expiresAt,
-      payload: ch.challenge,
+      payload: JSON.stringify({
+        challenge: ch.challenge,
+        rp_id: selected.rpId,
+        user_verification: "required",
+      }),
     });
     return apiOk({
       options: {
@@ -737,14 +743,28 @@ export function registerMore(r: Router<Env>): void {
     if (!(await s.optionBool("PasskeyEnabled", true))) return apiErrorMsg(MSG_PASSKEY_DISABLED);
     const parsed = await parsePasskeyFinishRequest(c.req);
     if (!parsed.ok) return parsed.response;
+    const credentialId = passkeyCredentialId(parsed.credential);
+    if (!credentialId) {
+      return writeSecurityOperationError("SECURITY_VERIFICATION_FAILED", ERR_VERIFICATION_FAILED);
+    }
+    const consumed = await s.consumeAuthFlow(parsed.flowToken, {
+      type: AUTH_FLOW_PURPOSE_PASSKEY_LOGIN,
+      user_id: 0,
+    });
+    if (consumed !== "ok") return writeSecurityOperationError("AUTH_FLOW_INVALID", "Verification flow expired");
     const flow = await s.getAuthFlow(parsed.flowToken);
-    if (!flow || flow.type !== "passkey_login" || flow.expires_at < nowSec() || Number(flow.consumed_at || 0) > 0) {
+    const session = parseJson<{ challenge?: string; rp_id?: string; user_verification?: string }>(flow?.payload || "", {});
+    const challenge = session.challenge || (session.rp_id ? "" : flow?.payload || "");
+    if (session.rp_id && session.user_verification !== "required") {
       return writeSecurityOperationError("AUTH_FLOW_INVALID", "Verification flow expired");
     }
-    const cred = parsed.credential as { id?: string; rawId?: string; response?: { clientDataJSON?: string; authenticatorData?: string; signature?: string } };
-    const credentialId = passkeyCredentialId(parsed.credential);
     const pk = await s.getPasskeyByCred(credentialId);
-    if (!pk) return apiFail("凭证无效");
+    if (!pk) return writeSecurityOperationError("SECURITY_VERIFICATION_FAILED", ERR_VERIFICATION_FAILED);
+    const storedRpId = (pk as { rp_id?: string }).rp_id || "";
+    if (storedRpId && session.rp_id && storedRpId !== session.rp_id) {
+      return writeSecurityOperationError("SECURITY_VERIFICATION_FAILED", ERR_VERIFICATION_FAILED);
+    }
+    const cred = parsed.credential as { response?: { clientDataJSON?: string; authenticatorData?: string; signature?: string } };
     const clientDataJSON = cred.response?.clientDataJSON || "";
     const authenticatorData = cred.response?.authenticatorData || "";
     const signature = cred.response?.signature || "";
@@ -754,15 +774,16 @@ export function registerMore(r: Router<Env>): void {
         clientDataJSON,
         authenticatorData,
         signature,
-        expectedChallenge: flow.payload,
+        expectedChallenge: challenge,
         expectedOrigin: new URL(c.req.url).origin,
       });
-      if (!ok) return apiFail("Passkey 校验失败");
+      if (!ok) return writeSecurityOperationError("SECURITY_VERIFICATION_FAILED", ERR_VERIFICATION_FAILED);
     }
     const user = await s.getUserById(pk.user_id);
-    if (!user) return apiFail("用户不存在");
+    if (!user || user.status !== USER_ENABLED) {
+      return writeSecurityOperationError("SECURITY_VERIFICATION_FAILED", ERR_VERIFICATION_FAILED);
+    }
     await s.touchPasskey(pk.credential_id);
-    await s.deleteAuthFlow(flow.token);
     const issued = await issueSessionSafe(s, c.env, user, c.req, "passkey");
     if (issued instanceof Response) return issued;
     return sessionResponse(issued);
