@@ -24,6 +24,9 @@ export const ADMIN_OPERATION_AUDIT_MAX_BODY = TOKEN_OPERATION_AUDIT_MAX_BODY;
 /** Original `model.AuditCategoryOperation`. */
 export const AUDIT_CATEGORY_OPERATION = "operation";
 
+/** Original `model.AuditCategoryLogin`. */
+export const AUDIT_CATEGORY_LOGIN = "login";
+
 /** Original `auditRouteActions` (`METHOD + " " + FullPath`). */
 export const AUDIT_ROUTE_ACTIONS: Record<string, string> = {
   "POST /api/user/topup/complete": "user.topup_complete",
@@ -628,6 +631,91 @@ export async function recordUserSecurityAudit(
       route: matched.route,
       status,
       success,
+      request_id: requestIdFor(req),
+      other: JSON.stringify(other),
+    });
+  } catch {
+    /* original RecordAuditLog logs and continues */
+  }
+}
+
+/**
+ * Original `controller.loginMethodFromContext`. Prefers an explicit session
+ * `login_method` (writeLoginResponse `c.Set`) then gin FullPath mapping.
+ */
+export function loginMethodFromContext(req: Request, explicit = ""): string {
+  if (explicit) return explicit;
+  const path = new URL(req.url).pathname;
+  switch (path) {
+    case "/api/user/login":
+      return "password";
+    case "/api/user/login/2fa":
+      return "2fa";
+    case "/api/user/passkey/login/finish":
+      return "passkey";
+    case "/api/oauth/wechat":
+      return "wechat";
+    case "/api/oauth/telegram/login":
+      return "telegram";
+    default: {
+      const oauth = path.match(/^\/api\/oauth\/([^/]+)$/);
+      if (oauth && oauth[1] !== "wechat") return "oauth:" + oauth[1];
+      return "unknown";
+    }
+  }
+}
+
+/**
+ * Original gin FullPath for login audit Route. WeChat is a static route;
+ * HandleOAuth is `/api/oauth/:provider`.
+ */
+export function ginLoginAuditRoute(pathname: string, routeParams: Record<string, string> = {}): string {
+  const oauth = pathname.match(/^\/api\/oauth\/([^/]+)$/);
+  if (oauth && oauth[1] !== "wechat") {
+    return reconstructAdminAuditRoute(pathname, { provider: oauth[1], ...routeParams });
+  }
+  return reconstructAdminAuditRoute(pathname, routeParams);
+}
+
+/**
+ * Original `controller.recordLoginAudit` / `model.RecordLoginLog`. Category
+ * `login`, action `login`, Success true. `other.op` is
+ * `{action:"login", params:{method, optional verification_method}}` plus
+ * `other.login_method` + `other.user_agent`. No `admin_info` / `audit_info`.
+ * `AuditLog.TokenRef` empty; `auth_method` session. Only success (not failures).
+ */
+export async function recordLoginAudit(
+  store: Store,
+  req: Request,
+  user: { id: number; username: string; role: number },
+  loginMethod = "",
+  verificationMethod = "",
+  routeParams: Record<string, string> = {},
+  writerStatus = 200,
+): Promise<void> {
+  const method = loginMethodFromContext(req, loginMethod);
+  const params: Record<string, unknown> = { method };
+  if (verificationMethod) params.verification_method = verificationMethod;
+  const ua = req.headers.get("user-agent") || "";
+  const other: Record<string, unknown> = {
+    op: { action: "login", params },
+    login_method: method,
+  };
+  if (ua) other.user_agent = ua;
+  const url = new URL(req.url);
+  const route = ginLoginAuditRoute(url.pathname, routeParams);
+  try {
+    await store.audit(user.id, user.username, AUDIT_CATEGORY_LOGIN, `Logged in successfully via ${method}`, clientIp(req), {
+      actor_role: auditActorRole(user.role),
+      category: AUDIT_CATEGORY_LOGIN,
+      action: "login",
+      token_ref: "",
+      auth_method: "session",
+      user_agent: truncateAuditUserAgent(ua),
+      method: req.method,
+      route,
+      status: writerStatus,
+      success: true,
       request_id: requestIdFor(req),
       other: JSON.stringify(other),
     });

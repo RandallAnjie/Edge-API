@@ -60,7 +60,7 @@ import { tokenModelLimitAllows } from "./ratio-setting.js";
 import type { AuthToken, Env, LoginSessionRow, SessionUser, TokenRow, UserRow } from "./types.js";
 import type { Context } from "./router.js";
 import { requireSecurityProof, type AuthIdentity, type VerificationOperation } from "./security.js";
-import { beginAdminAudit } from "./admin-operation-audit.js";
+import { beginAdminAudit, recordLoginAudit } from "./admin-operation-audit.js";
 
 export async function sessionSecret(env: Env, store: Store): Promise<string> {
   if (env.SESSION_SECRET) return env.SESSION_SECRET;
@@ -904,7 +904,7 @@ export async function setupLogin(
   if (started.challenge) return apiOk(started.challenge);
   const issued = await issueSessionSafe(store, env, user, req, loginMethod);
   if (issued instanceof Response) return issued;
-  await store.audit(user.id, user.username, "login", `Logged in successfully via ${loginMethod}`, clientIp(req));
+  await recordLoginAudit(store, req, user, loginMethod);
   return sessionResponse(issued);
 }
 
@@ -979,14 +979,7 @@ export async function completeLoginVerification(
   if (consumed !== "ok") return apiFailCode(ERR_AUTH_FLOW_INVALID, "AUTH_FLOW_INVALID");
   const issued = await issueSessionSafe(store, env, loaded.user, req, loaded.payload.login_method);
   if (issued instanceof Response) return issued;
-  await store.audit(
-    loaded.user.id,
-    loaded.user.username,
-    "login",
-    `Logged in successfully via ${loaded.payload.login_method}`,
-    clientIp(req),
-    { method: loaded.payload.login_method, other: JSON.stringify({ verification_method: method }) },
-  );
+  await recordLoginAudit(store, req, loaded.user, loaded.payload.login_method, method);
   return sessionResponse(issued);
 }
 

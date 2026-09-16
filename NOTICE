@@ -471,6 +471,18 @@ Material changes from upstream:
   unchanged. Extra-OK: audit write failure must not fail the request.
   requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordLoginAudit` / `model.RecordLoginLog` leftover
+  login audit-log JSON on writeLoginResponse (password Login, setupLogin
+  WeChat/OAuth, completeVerifiedLoginResponse, PasskeyLoginFinish). Category
+  `login`, action `login`, Content `Logged in successfully via ${method}`,
+  Success true, Status 200, `auth_method` session, empty `token_ref`,
+  `other.op` `{action:"login", params:{method, optional verification_method}}`
+  plus `other.login_method` + `other.user_agent` (no `admin_info` /
+  `audit_info`). `login_method` prefers the issued session method. Failed
+  logins and login challenges add no login audit. Extra-OK: hop 323
+  vendor.create/delete fallback tests stay unchanged. Extra-OK: audit write
+  failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

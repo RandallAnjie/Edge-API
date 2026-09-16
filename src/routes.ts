@@ -62,7 +62,6 @@ import {
   apiOk,
   apiOkExtra,
   authInsufficientPrivilegeMessage,
-  clientIp,
   databaseErrorMessage,
   i18nPair,
   invalidInputMessage,
@@ -103,7 +102,7 @@ import {
 } from "./http.js";
 import { ERR_TELEGRAM_OAUTH_NOT_CONFIGURED, telegramSettingsConfigured } from "./telegram-oauth.js";
 import { turnstileCheck } from "./turnstile.js";
-import { recordManageAudit, recordPasskeyDomainAudit, recordQuotaManageAudit, recordUserSecurityAudit, setSecurityErrorCode, auditContentEN } from "./admin-operation-audit.js";
+import { recordManageAudit, recordPasskeyDomainAudit, recordQuotaManageAudit, recordUserSecurityAudit, recordLoginAudit, setSecurityErrorCode, auditContentEN } from "./admin-operation-audit.js";
 import {
   setTokenAuditSucceeded,
   snapshotTokenAuditFields,
@@ -425,7 +424,7 @@ export function adminRouter(): Router<Env> {
     }
     const issued = await issueSessionSafe(s, c.env, user, c.req, "password");
     if (issued instanceof Response) return issued;
-    await s.audit(user.id, user.username, "login", "Logged in successfully via password", clientIp(c.req));
+    await recordLoginAudit(s, c.req, user, "password");
     return sessionResponse(issued);
   });
 
