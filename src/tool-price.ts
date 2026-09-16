@@ -3,6 +3,8 @@
  * (`tools.go`).
  */
 
+import { goJSONSyntaxError } from "./channel-validate.js";
+
 export const TOOL_PRICE_OPTION_KEY = "tool_price_setting.prices";
 
 export const BUILD_IN_TOOL_WEB_SEARCH_PREVIEW = "web_search_preview";
@@ -27,6 +29,47 @@ type ToolPriceIndex = {
 
 function isValidToolPrice(price: number): boolean {
   return price >= 0 && Number.isFinite(price);
+}
+
+/** Original `common.GetJsonType`. */
+function goGetJsonType(data: string): string {
+  const trimmed = data.trim();
+  if (!trimmed) return "unknown";
+  switch (trimmed[0]) {
+    case "{":
+      return "object";
+    case "[":
+      return "array";
+    case '"':
+      return "string";
+    case "t":
+    case "f":
+      return "boolean";
+    case "n":
+      return "null";
+    default:
+      return "number";
+  }
+}
+
+/** Original `operation_setting.ValidateToolPricesJSON`. */
+export function validateToolPricesJSON(value: string): string | null {
+  const trimmed = String(value ?? "").trim();
+  if (goGetJsonType(trimmed) !== "object") return "工具价格必须是 JSON 对象";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (err) {
+    return "解析工具价格失败: " + goJSONSyntaxError(trimmed, err);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return "工具价格必须是 JSON 对象";
+  }
+  for (const [name, entry] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof entry !== "number") return `工具价格 "${name}" 必须是非负数字`;
+    if (!isValidToolPrice(entry)) return `工具价格 "${name}" 必须是有限的非负数字`;
+  }
+  return null;
 }
 
 /** Original `seedHardcodedToolPrices`. */

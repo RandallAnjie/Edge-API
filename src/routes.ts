@@ -88,6 +88,7 @@ import { notifyAccountSecurityChange } from "./mail.js";
 import { isPasskeyDomainOption, PasskeyDomainError, passkeyDomainHttpError, updatePasskeyDomainOptions } from "./passkey-domains.js";
 import { checkModelRequestRateLimitGroup } from "./model-rate-limit.js";
 import { parseHTTPStatusCodeRanges } from "./status-code-ranges.js";
+import { TOOL_PRICE_OPTION_KEY, validateToolPricesJSON } from "./tool-price.js";
 import type { Env, RedemptionRow, UserRow } from "./types.js";
 
 type C = Context<Env>;
@@ -1485,6 +1486,21 @@ export function adminRouter(): Router<Env> {
         if (!parsed.ok) return apiErrorMsg("缓存创建倍率设置失败: " + parsed.message);
         break;
       }
+      case "gemini.safety_settings": {
+        const err = validateGeminiSafetySettings(value);
+        if (err) return apiErrorMsg(err);
+        break;
+      }
+      case "claude.default_max_tokens": {
+        const err = validateClaudeDefaultMaxTokens(value);
+        if (err) return apiErrorMsg(err);
+        break;
+      }
+      case TOOL_PRICE_OPTION_KEY: {
+        const err = validateToolPricesJSON(value);
+        if (err) return apiErrorMsg(err);
+        break;
+      }
       case "AutomaticDisableStatusCodes":
       case "AutomaticRetryStatusCodes": {
         const parsed = parseHTTPStatusCodeRanges(value);
@@ -1824,6 +1840,55 @@ function checkGroupRatio(jsonStr: string): string | null {
   if (!parsed.ok) return parsed.message;
   for (const [name, ratio] of Object.entries(parsed.value)) {
     if (ratio < 0) return "group ratio must be not less than 0: " + name;
+  }
+  return null;
+}
+
+const VALID_GEMINI_SAFETY_SETTINGS = new Set([
+  "OFF",
+  "BLOCK_NONE",
+  "BLOCK_ONLY_HIGH",
+  "BLOCK_MEDIUM_AND_ABOVE",
+  "BLOCK_LOW_AND_ABOVE",
+  "HARM_BLOCK_THRESHOLD_UNSPECIFIED",
+]);
+
+/** Original `model_setting.ValidateGeminiSafetySettings`. */
+function validateGeminiSafetySettings(value: string): string | null {
+  const parsed = goUnmarshalJSON(value);
+  if (!parsed.ok) return "Gemini safety settings must be a JSON string map: " + parsed.message;
+  if (parsed.value === null) return "Gemini safety settings must be a JSON string map";
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `Gemini safety settings must be a JSON string map: json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type map[string]string`;
+  }
+  for (const [category, threshold] of Object.entries(parsed.value as Record<string, unknown>)) {
+    if (typeof threshold !== "string") {
+      return `Gemini safety settings must be a JSON string map: json: cannot unmarshal ${goJSONKind(threshold)} into Go value of type string`;
+    }
+    if (!threshold) continue;
+    if (!VALID_GEMINI_SAFETY_SETTINGS.has(threshold)) {
+      return `invalid Gemini safety threshold "${threshold}" for "${category}"`;
+    }
+  }
+  return null;
+}
+
+/** Original `model_setting.ValidateClaudeDefaultMaxTokens`. */
+function validateClaudeDefaultMaxTokens(value: string): string | null {
+  const parsed = goUnmarshalJSON(value);
+  if (!parsed.ok) return "Claude default max tokens must be a JSON map of model to integer: " + parsed.message;
+  if (parsed.value === null) return "Claude default max tokens must be a JSON map of model to integer";
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `Claude default max tokens must be a JSON map of model to integer: json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type map[string]int`;
+  }
+  for (const [model, maxTokens] of Object.entries(parsed.value as Record<string, unknown>)) {
+    if (typeof maxTokens !== "number" || !Number.isInteger(maxTokens)) {
+      if (typeof maxTokens === "number") {
+        return `Claude default max tokens must be a JSON map of model to integer: json: cannot unmarshal number ${maxTokens} into Go value of type int`;
+      }
+      return `Claude default max tokens must be a JSON map of model to integer: json: cannot unmarshal ${goJSONKind(maxTokens)} into Go value of type int`;
+    }
+    if (maxTokens < 0) return `negative Claude default max_tokens ${maxTokens} for "${model}"`;
   }
   return null;
 }

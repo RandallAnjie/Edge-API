@@ -357,3 +357,72 @@ test("original UpdateOption Image/Audio/CreateCache ratio and status-code gin.H 
   omitDataOk(disableOk.body);
   assert.equal(await store.option("AutomaticDisableStatusCodes"), "401,429");
 });
+
+test("original UpdateOption gemini/claude/tool-price gin.H omit data", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  const store = new Store(e.DB);
+
+  async function put(key: string, value: string) {
+    return json(
+      new Request("http://local/api/option/", {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ key, value }),
+      }),
+      e,
+    );
+  }
+
+  const geminiNull = await put("gemini.safety_settings", "null");
+  omitData(geminiNull.body, "Gemini safety settings must be a JSON string map");
+
+  const geminiArr = await put("gemini.safety_settings", "[]");
+  omitData(
+    geminiArr.body,
+    "Gemini safety settings must be a JSON string map: json: cannot unmarshal array into Go value of type map[string]string",
+  );
+
+  const geminiBad = await put("gemini.safety_settings", JSON.stringify({ default: "NOPE" }));
+  omitData(geminiBad.body, 'invalid Gemini safety threshold "NOPE" for "default"');
+
+  const geminiOk = await put("gemini.safety_settings", JSON.stringify({ default: "OFF" }));
+  omitDataOk(geminiOk.body);
+  assert.equal(await store.option("gemini.safety_settings"), JSON.stringify({ default: "OFF" }));
+
+  const claudeNull = await put("claude.default_max_tokens", "null");
+  omitData(claudeNull.body, "Claude default max tokens must be a JSON map of model to integer");
+
+  const claudeArr = await put("claude.default_max_tokens", "[]");
+  omitData(
+    claudeArr.body,
+    "Claude default max tokens must be a JSON map of model to integer: json: cannot unmarshal array into Go value of type map[string]int",
+  );
+
+  const claudeFrac = await put("claude.default_max_tokens", JSON.stringify({ default: 1.5 }));
+  omitData(
+    claudeFrac.body,
+    "Claude default max tokens must be a JSON map of model to integer: json: cannot unmarshal number 1.5 into Go value of type int",
+  );
+
+  const claudeNeg = await put("claude.default_max_tokens", JSON.stringify({ default: -1 }));
+  omitData(claudeNeg.body, 'negative Claude default max_tokens -1 for "default"');
+
+  const claudeOk = await put("claude.default_max_tokens", JSON.stringify({ default: 8192 }));
+  omitDataOk(claudeOk.body);
+  assert.equal(await store.option("claude.default_max_tokens"), JSON.stringify({ default: 8192 }));
+
+  const pricesArr = await put("tool_price_setting.prices", "[]");
+  omitData(pricesArr.body, "工具价格必须是 JSON 对象");
+
+  const pricesStr = await put("tool_price_setting.prices", JSON.stringify({ x: "1" }));
+  omitData(pricesStr.body, '工具价格 "x" 必须是非负数字');
+
+  const pricesNeg = await put("tool_price_setting.prices", JSON.stringify({ x: -1 }));
+  omitData(pricesNeg.body, '工具价格 "x" 必须是有限的非负数字');
+
+  const pricesOk = await put("tool_price_setting.prices", JSON.stringify({ priced_fn: 5 }));
+  omitDataOk(pricesOk.body);
+  assert.equal(await store.option("tool_price_setting.prices"), JSON.stringify({ priced_fn: 5 }));
+});
