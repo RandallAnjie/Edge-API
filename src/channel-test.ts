@@ -2,12 +2,8 @@ import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   CHANNEL_TYPE_BAIDU,
   CHANNEL_TYPE_CODEX,
-  CHANNEL_TYPE_COHERE,
   CHANNEL_TYPE_COZE,
-  CHANNEL_TYPE_JINA,
   CHANNEL_TYPE_MOKA,
-  CHANNEL_TYPE_REPLICATE,
-  CHANNEL_TYPE_SILICONFLOW,
   CHANNEL_TYPE_TENCENT,
   CHANNEL_TYPE_AWS,
   CHANNEL_TYPE_VERTEX,
@@ -24,17 +20,8 @@ import {
   parseJson,
 } from "./constants.js";
 import { channelKind, channelTypeName, resolveBaseUrl } from "./catalog.js";
-import {
-  convertAdvancedCustomClaudeRequest,
-  convertAdvancedCustomGeminiRequest,
-  convertOpenAIRequest,
-  convertOpenAIResponsesRequest,
-  emptyOpenAIUsageCounts,
-  isOpenAIReasoningOModel,
-  usageFromOpenAI,
-  type OpenAIUsageCounts,
-} from "./convert.js";
-import { applyBaiduAccessToken, convertBaiduEmbeddingRequest } from "./baidu-convert.js";
+import { emptyOpenAIUsageCounts, isOpenAIReasoningOModel, usageFromOpenAI, type OpenAIUsageCounts } from "./convert.js";
+import { applyBaiduAccessToken } from "./baidu-convert.js";
 import { applyVertexAdcAuth } from "./vertex-auth.js";
 import { applyAwsAkskAuth } from "./aws-auth.js";
 import { decodeAwsEventStreamResponse } from "./aws-eventstream.js";
@@ -42,8 +29,8 @@ import { applyZhipuV3Authorization } from "./zhipu-convert.js";
 import { applyTencentTc3Authorization, tencentUsesNativeAdaptor } from "./tencent-convert.js";
 import { parseXunfeiAuth, runXunfeiChat } from "./xunfei-convert.js";
 import { parseVolcengineAuth, runVolcTtsWebSocket, volcTtsEncodingFromRequest, volcTtsIsStream, wrapVolcTtsHttpResponse } from "./volc-tts.js";
-import { convertCohereRerankRequest } from "./cohere-convert.js";
 import { completeCozeNonStreamChat } from "./coze-convert.js";
+import { convertOutbound, reasoningSettingsFromStore, type ClientFormat } from "./relay.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
 import { calculateAudioQuota } from "./openai-realtime-usage.js";
 import { computeQuota, textConsumePriceData, audioConsumeLogRatios } from "./quota.js";
@@ -56,7 +43,7 @@ import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget }
 import { relayFormatForClient, requestConversionChain, shouldPostAudioConsumeQuota } from "./log-info-generate.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
 import { applySseScannerEndReason, StreamStatus } from "./stream-status.js";
-import { buildAdvancedCustomRelayTarget, shouldApplyAdvancedCustomClaudeHeaders } from "./channel-validate.js";
+import { buildAdvancedCustomRelayTarget, resolveAdvancedCustomConverter, shouldApplyAdvancedCustomClaudeHeaders } from "./channel-validate.js";
 import { buildCodexRelayTarget } from "./codex-models.js";
 import { pickChannelKey } from "./select.js";
 import { DEFAULT_GEMINI_VERSION_SETTINGS } from "./reasoning.js";
@@ -461,7 +448,18 @@ function healthCheckAuth(user: UserRow): AuthToken {
   return { token, user, usingGroup: user.group || "default" };
 }
 
-function buildTestTarget(
+function testClientFormat(kind: TestRequestKind): ClientFormat {
+  if (kind === "anthropic") return "anthropic";
+  if (kind === "gemini") return "gemini";
+  return "openai";
+}
+
+/**
+ * Original `controller.testChannel` adaptor Convert* then GetRequestURL.
+ * Convert* is the same dispatcher as HTTP `convertOutbound` (not a reduced subset).
+ */
+async function buildTestTarget(
+  store: Store,
   channel: ChannelRow,
   mode: RelayMode,
   requestPath: string,
@@ -471,7 +469,7 @@ function buildTestTarget(
   isStream: boolean,
   kind: TestRequestKind,
   relayInfo: ParamOverrideRelayInfo,
-): UpstreamTarget {
+): Promise<UpstreamTarget> {
   const info: ParamOverrideRelayInfo = {
     ...relayInfo,
     originalModel: originModel,
@@ -480,59 +478,53 @@ function buildTestTarget(
     isChannelTest: true,
     isStream,
   };
+  if (kind === "anthropic") info.relayFormat = "claude";
+  else if (kind === "gemini") info.relayFormat = "gemini";
+
+  const channelSetting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
+  const converter =
+    channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM
+      ? resolveAdvancedCustomConverter(channel, requestPath.split("?")[0], originModel)
+      : undefined;
+  const payload = await convertOutbound(
+    channelKind(channel.type),
+    testClientFormat(kind),
+    body,
+    channel.type,
+    mappedModel,
+    originModel,
+    await reasoningSettingsFromStore(store),
+    mode,
+    {
+      botId: channel.other || "",
+      channelKey: pickChannelKey(channel.key),
+      channelBase: resolveBaseUrl(channel.type, channel.base_url),
+      requestPath,
+      systemPrompt: String(channelSetting.system_prompt || ""),
+      systemPromptOverride: Boolean(channelSetting.system_prompt_override),
+      converter,
+      isStream,
+    },
+  );
+  if (payload && typeof payload === "object" && typeof (payload as { model?: unknown }).model === "string") {
+    info.upstreamModel = String((payload as { model: string }).model);
+  }
+
   if (channel.type === CHANNEL_TYPE_CODEX) {
-    if (kind === "chat") throw new Error("codex channel: /v1/chat/completions endpoint not supported");
-    if (kind === "embedding") throw new Error("codex channel: /v1/embeddings endpoint not supported");
-    if (kind === "rerank") throw new Error("codex channel: /v1/rerank endpoint not supported");
-    if (kind === "image") throw new Error("codex channel: endpoint not supported");
-    if (kind === "anthropic") throw new Error("codex channel: /v1/messages endpoint not supported");
-    if (kind === "gemini") throw new Error("codex channel: endpoint not supported");
-    const channelSetting = parseJson<Record<string, unknown>>(String(channel.setting || ""), {});
-    const converted =
-      mode === "responses"
-        ? convertOpenAIResponsesRequest(body as Record<string, unknown>, {
-            channelType: channel.type,
-            originModelName: originModel,
-            upstreamModelName: mappedModel,
-            requestPath,
-            relayMode: mode,
-            systemPrompt: String(channelSetting.system_prompt || ""),
-            systemPromptOverride: Boolean(channelSetting.system_prompt_override),
-          })
-        : body;
-    const target = buildCodexRelayTarget(channel, mode, requestPath, mappedModel, converted, isStream);
-    target.body = applyChannelParamOverride(channel, target.body, target.headers, info, pickChannelKey(channel.key), mappedModel);
+    const target = buildCodexRelayTarget(channel, mode, requestPath, info.upstreamModel || mappedModel, payload, isStream);
+    target.body = applyChannelParamOverride(
+      channel,
+      target.body,
+      target.headers,
+      info,
+      pickChannelKey(channel.key),
+      info.upstreamModel || mappedModel,
+    );
     return target;
   }
   if (channel.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
     const incoming = requestPath.split("?")[0];
-    const target = buildAdvancedCustomRelayTarget(channel, incoming, originModel, mappedModel, body, isStream);
-    const convertOpts = {
-      channelType: channel.type,
-      originModelName: originModel,
-      upstreamModelName: mappedModel,
-      converter: target.converter,
-      requestPath,
-      relayMode: mode,
-      isStream,
-    };
-    let payload: unknown = body;
-    if (kind === "chat") {
-      payload = convertOpenAIRequest(body as Record<string, unknown>, convertOpts);
-    } else if (kind === "responses" || kind === "responses-compact") {
-      payload = convertOpenAIResponsesRequest(body as Record<string, unknown>, convertOpts);
-    } else if (kind === "anthropic") {
-      payload = convertAdvancedCustomClaudeRequest(body as Record<string, unknown>, convertOpts);
-    } else if (kind === "gemini") {
-      payload = convertAdvancedCustomGeminiRequest(body as Record<string, unknown>, convertOpts);
-    } else if (kind === "embedding") {
-      payload = convertOpenAIRequest(body as Record<string, unknown>, { ...convertOpts, relayMode: "embeddings" });
-    } else if (kind === "image") {
-      payload = convertOpenAIRequest(body as Record<string, unknown>, { ...convertOpts, relayMode: "images" });
-    } else if (kind === "rerank") {
-      payload = convertOpenAIRequest(body as Record<string, unknown>, { ...convertOpts, relayMode: "rerank" });
-    }
-    target.body = payload;
+    const target = buildAdvancedCustomRelayTarget(channel, incoming, originModel, mappedModel, payload, isStream);
     const relayFormat = kind === "anthropic" ? "claude" : kind === "gemini" ? "gemini" : "openai";
     if (shouldApplyAdvancedCustomClaudeHeaders(target.converter, relayFormat)) {
       target.headers["anthropic-version"] = CLAUDE_VERSION;
@@ -541,60 +533,9 @@ function buildTestTarget(
     return target;
   }
 
-  let payload = body;
-  const kindName = channelKind(channel.type);
-  if (kind === "chat") {
-    payload = convertOpenAIRequest(body as Record<string, unknown>, {
-      channelType: channel.type,
-      originModelName: originModel,
-      upstreamModelName: mappedModel,
-      botId: channel.other || "",
-      channelKey: pickChannelKey(channel.key),
-      relayMode: mode,
-    });
-    if (payload && typeof payload === "object" && typeof (payload as { model?: unknown }).model === "string") {
-      info.upstreamModel = String((payload as { model: string }).model);
-    }
-  } else if (kind === "embedding" && channel.type === CHANNEL_TYPE_BAIDU) {
-    payload = convertBaiduEmbeddingRequest(body as Record<string, unknown>);
-  } else if (kind === "embedding" && (channel.type === CHANNEL_TYPE_MOKA || channel.type === CHANNEL_TYPE_JINA)) {
-    payload = convertOpenAIRequest(body as Record<string, unknown>, {
-      channelType: channel.type,
-      originModelName: originModel,
-      upstreamModelName: mappedModel,
-      channelKey: pickChannelKey(channel.key),
-      relayMode: "embeddings",
-    });
-  } else if (kind === "image" && (channel.type === CHANNEL_TYPE_SILICONFLOW || channel.type === CHANNEL_TYPE_REPLICATE)) {
-    payload = convertOpenAIRequest(body as Record<string, unknown>, {
-      channelType: channel.type,
-      originModelName: originModel,
-      upstreamModelName: mappedModel,
-      relayMode: "images",
-    });
-  } else if (kind === "rerank" && channel.type === CHANNEL_TYPE_COHERE) {
-    payload = convertCohereRerankRequest(body as Record<string, unknown>, { upstreamModelName: mappedModel });
-  } else if (kind === "rerank" && (channel.type === CHANNEL_TYPE_JINA || channel.type === CHANNEL_TYPE_SILICONFLOW)) {
-    payload = convertOpenAIRequest(body as Record<string, unknown>, {
-      channelType: channel.type,
-      originModelName: originModel,
-      upstreamModelName: mappedModel,
-      relayMode: "rerank",
-    });
-  } else if (channel.type === CHANNEL_TYPE_VOLC && mode === "audio_speech") {
-    payload = convertOpenAIRequest(body as Record<string, unknown>, {
-      channelType: channel.type,
-      originModelName: originModel,
-      upstreamModelName: mappedModel,
-      channelKey: pickChannelKey(channel.key),
-      relayMode: "audio_speech",
-    });
-  }
   const extra: Record<string, string> = {};
-  if (kind === "anthropic" || kindName === "anthropic") extra["anthropic-version"] = CLAUDE_VERSION;
-  if (kind === "anthropic") info.relayFormat = "claude";
-  else if (kind === "gemini") info.relayFormat = "gemini";
-  return buildUpstream(channel, mode, requestPath, mappedModel, payload, extra, "POST", info);
+  if (channelKind(channel.type) === "anthropic") extra["anthropic-version"] = CLAUDE_VERSION;
+  return buildUpstream(channel, mode, requestPath, info.upstreamModel || mappedModel, payload, extra, "POST", info);
 }
 
 /** Original `controller.testChannel` / `controller.TestChannel`. Failures return `time: 0`. */
@@ -629,7 +570,7 @@ export async function testChannel(
   const paramOverrideAudit: string[] = [];
   let target: UpstreamTarget;
   try {
-    target = buildTestTarget(channel, mode, requestPath, originModel, mappedModel, built.body, isStream, built.kind, {
+    target = await buildTestTarget(store, channel, mode, requestPath, originModel, mappedModel, built.body, isStream, built.kind, {
       userId: opts.userId,
       userGroup: opts.group,
       usingGroup: opts.group,

@@ -345,7 +345,8 @@ async function fetchUpstream(target: ReturnType<typeof buildUpstream>, timeoutMs
   return decodeAwsEventStreamResponse(res);
 }
 
-async function reasoningSettingsFromStore(store: Store): Promise<ReasoningHostSettings> {
+/** Original host reasoning maps loaded before adaptor Convert*. */
+export async function reasoningSettingsFromStore(store: Store): Promise<ReasoningHostSettings> {
   return {
     thinkingModelBlacklist: parseJson(await store.option("global.thinking_model_blacklist"), DEFAULT_THINKING_MODEL_BLACKLIST),
     effortTailModelIDs: parseJson(await store.option("global.effort_tail_model_ids"), DEFAULT_EFFORT_TAIL_MODEL_IDS),
@@ -374,7 +375,12 @@ function convertRequestFailed(err: unknown): ParamOverrideReturnError {
   return new ParamOverrideReturnError(message, 500, "convert_request_failed", "new_api_error", true);
 }
 
-async function convertOutbound(
+/**
+ * Original adaptor ConvertOpenAIRequest / ConvertClaudeRequest / ConvertGeminiRequest /
+ * ConvertEmbeddingRequest / ConvertImageRequest / ConvertRerankRequest /
+ * ConvertOpenAIResponsesRequest dispatch (`controller.testChannel` switch + HTTP TextHelper).
+ */
+export async function convertOutbound(
   kind: ReturnType<typeof channelKind>,
   client: ClientFormat,
   body: unknown,
