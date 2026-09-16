@@ -162,6 +162,57 @@ function channelGroupLikeSql(): string {
   return `(',' || "group" || ',') LIKE ? ESCAPE '!'`;
 }
 
+/** Original `controller.GetAllChannels` leftover gin.H messages. */
+export const MSG_CHANNEL_TAGS_FAILED = "获取标签失败，请稍后重试";
+export const MSG_CHANNEL_TAG_COUNT_FAILED = "获取标签数量失败，请稍后重试";
+export const MSG_CHANNEL_TAG_CHANNELS_FAILED = "获取标签渠道失败，请稍后重试";
+export const MSG_CHANNEL_COUNT_FAILED = "获取渠道数量失败，请稍后重试";
+export const MSG_CHANNEL_LIST_FAILED = "获取渠道列表失败，请稍后重试";
+export const MSG_CHANNEL_TYPE_COUNTS_FAILED = "获取渠道类型统计失败，请稍后重试";
+
+export class ChannelListQueryError extends Error {
+  constructor(readonly leftover: string) {
+    super(leftover);
+    this.name = "ChannelListQueryError";
+  }
+}
+
+export type ChannelListOpts = {
+  offset: number;
+  limit: number;
+  group?: string;
+  status?: number;
+  type?: number;
+  tag_mode?: boolean;
+  sort_by?: string;
+  sort_order?: string;
+  id_sort?: boolean;
+};
+
+function channelListFilters(opts: ChannelListOpts): {
+  w: string;
+  binds: unknown[];
+  countWhere: string;
+  countBinds: unknown[];
+} {
+  const where: string[] = ["1=1"];
+  const binds: unknown[] = [];
+  const group = normalizeChannelGroupFilter(opts.group || "");
+  if (group) {
+    where.push(channelGroupLikeSql());
+    binds.push(channelGroupLikePattern(group));
+  }
+  if (opts.status === CHANNEL_ENABLED) where.push("status = 1");
+  else if (opts.status === 0) where.push("status != 1");
+  const countWhere = where.join(" AND ");
+  const countBinds = [...binds];
+  if (opts.type != null && opts.type >= 0) {
+    where.push("type = ?");
+    binds.push(opts.type);
+  }
+  return { w: where.join(" AND "), binds, countWhere, countBinds };
+}
+
 /** Original `common.String2Int` (`strconv.Atoi`, invalid → 0). */
 function string2Int(str: string): number {
   return /^-?\d+$/.test(str) ? Number(str) : 0;
@@ -1008,71 +1059,125 @@ export class Store {
     return results;
   }
 
-  async listChannels(opts: {
-    offset: number;
-    limit: number;
-    group?: string;
-    status?: number;
-    type?: number;
-    tag_mode?: boolean;
-    sort_by?: string;
-    sort_order?: string;
-    id_sort?: boolean;
-  }): Promise<{ items: ChannelRow[]; total: number; type_counts: Record<string, number> }> {
-    const where: string[] = ["1=1"];
-    const binds: unknown[] = [];
-    const group = normalizeChannelGroupFilter(opts.group || "");
-    if (group) {
-      where.push(channelGroupLikeSql());
-      binds.push(channelGroupLikePattern(group));
-    }
-    if (opts.status === CHANNEL_ENABLED) where.push("status = 1");
-    else if (opts.status === 0) where.push("status != 1");
-    const countWhere = where.join(" AND ");
-    const countBinds = [...binds];
-    if (opts.type != null && opts.type >= 0) {
-      where.push("type = ?");
-      binds.push(opts.type);
-    }
-    const w = where.join(" AND ");
+  /**
+   * Original GetAllChannels leftover gin.H (HTTP 200, no `data`).
+   * Thrown from `listChannels` after wrapping the matching query stage.
+   */
+  async countChannels(opts: ChannelListOpts): Promise<number> {
+    const f = channelListFilters(opts);
+    const totalRow = await this.db.prepare(`SELECT COUNT(*) as c FROM channels WHERE ${f.w}`).bind(...f.binds).first<{ c: number }>();
+    return num(totalRow?.c);
+  }
+
+  /** Original GetAllChannels `Find` / `获取渠道列表失败，请稍后重试`. */
+  async listChannelPage(opts: ChannelListOpts): Promise<ChannelRow[]> {
+    const f = channelListFilters(opts);
+    const order = channelOrderSql(opts.sort_by, opts.sort_order, opts.id_sort);
+    const { results } = await this.db
+      .prepare(`SELECT * FROM channels WHERE ${f.w} ORDER BY ${order} LIMIT ? OFFSET ?`)
+      .bind(...f.binds, opts.limit, opts.offset)
+      .all<ChannelRow>();
+    return results;
+  }
+
+  /** Original GetAllChannels type_counts / `获取渠道类型统计失败，请稍后重试`. */
+  async channelTypeCounts(opts: ChannelListOpts): Promise<Record<string, number>> {
+    const f = channelListFilters(opts);
     const counts = await this.db
-      .prepare(`SELECT type, COUNT(*) as c FROM channels WHERE ${countWhere} GROUP BY type`)
-      .bind(...countBinds)
+      .prepare(`SELECT type, COUNT(*) as c FROM channels WHERE ${f.countWhere} GROUP BY type`)
+      .bind(...f.countBinds)
       .all<{ type: number; c: number }>();
     const type_counts: Record<string, number> = {};
     for (const r of counts.results) type_counts[String(r.type)] = num(r.c);
-    const order = channelOrderSql(opts.sort_by, opts.sort_order, opts.id_sort);
-    if (opts.tag_mode) {
-      const tagWhere = `${w} AND tag != ''`;
-      const totalRow = await this.db
-        .prepare(`SELECT COUNT(DISTINCT tag) as c FROM channels WHERE ${tagWhere}`)
-        .bind(...binds)
-        .first<{ c: number }>();
-      const { results: tagRows } = await this.db
-        .prepare(`SELECT DISTINCT tag FROM channels WHERE ${tagWhere} ORDER BY tag LIMIT ? OFFSET ?`)
-        .bind(...binds, opts.limit, opts.offset)
-        .all<{ tag: string }>();
-      const tags = tagRows.map((r) => r.tag).filter(Boolean);
-      let items: ChannelRow[] = [];
-      if (tags.length) {
-        const ph = tags.map(() => "?").join(",");
-        const { results } = await this.db
-          .prepare(`SELECT * FROM channels WHERE ${w} AND tag IN (${ph}) ORDER BY ${order}`)
-          .bind(...binds, ...tags)
-          .all<ChannelRow>();
-        items = results;
-      }
-      return { items, total: num(totalRow?.c), type_counts };
-    }
+    return type_counts;
+  }
+
+  /** Original `GetPaginatedChannelTags` / `获取标签失败，请稍后重试`. */
+  async paginatedChannelTags(opts: ChannelListOpts): Promise<string[]> {
+    const f = channelListFilters(opts);
+    const tagWhere = `${f.w} AND tag != ''`;
+    const { results: tagRows } = await this.db
+      .prepare(`SELECT DISTINCT tag FROM channels WHERE ${tagWhere} ORDER BY tag LIMIT ? OFFSET ?`)
+      .bind(...f.binds, opts.limit, opts.offset)
+      .all<{ tag: string }>();
+    return tagRows.map((r) => r.tag).filter(Boolean);
+  }
+
+  /** Original `CountChannelTags` / `获取标签数量失败，请稍后重试`. */
+  async countChannelTags(opts: ChannelListOpts): Promise<number> {
+    const f = channelListFilters(opts);
+    const tagWhere = `${f.w} AND tag != ''`;
     const totalRow = await this.db
-      .prepare(`SELECT COUNT(*) as c FROM channels WHERE ${w}`)
-      .bind(...binds)
+      .prepare(`SELECT COUNT(DISTINCT tag) as c FROM channels WHERE ${tagWhere}`)
+      .bind(...f.binds)
       .first<{ c: number }>();
+    return num(totalRow?.c);
+  }
+
+  /** Original per-tag Find / `获取标签渠道失败，请稍后重试`. */
+  async channelsByTagFiltered(tag: string, opts: ChannelListOpts): Promise<ChannelRow[]> {
+    const f = channelListFilters(opts);
+    const order = channelOrderSql(opts.sort_by, opts.sort_order, opts.id_sort);
     const { results } = await this.db
-      .prepare(`SELECT * FROM channels WHERE ${w} ORDER BY ${order} LIMIT ? OFFSET ?`)
-      .bind(...binds, opts.limit, opts.offset)
+      .prepare(`SELECT * FROM channels WHERE ${f.w} AND tag = ? ORDER BY ${order}`)
+      .bind(...f.binds, tag)
       .all<ChannelRow>();
-    return { items: results, total: num(totalRow?.c), type_counts };
+    return results;
+  }
+
+  /**
+   * Original `controller.GetAllChannels` query order:
+   * tag_mode: paginated tags → tag count → per-tag Find → type_counts.
+   * else: Count → Find → type_counts.
+   */
+  async listChannels(opts: ChannelListOpts): Promise<{ items: ChannelRow[]; total: number; type_counts: Record<string, number> }> {
+    let items: ChannelRow[] = [];
+    let total = 0;
+    if (opts.tag_mode) {
+      let tags: string[];
+      try {
+        tags = await this.paginatedChannelTags(opts);
+      } catch (e) {
+        if (e instanceof ChannelListQueryError) throw e;
+        throw new ChannelListQueryError(MSG_CHANNEL_TAGS_FAILED);
+      }
+      try {
+        total = await this.countChannelTags(opts);
+      } catch (e) {
+        if (e instanceof ChannelListQueryError) throw e;
+        throw new ChannelListQueryError(MSG_CHANNEL_TAG_COUNT_FAILED);
+      }
+      try {
+        for (const tag of tags) {
+          if (!tag) continue;
+          items.push(...(await this.channelsByTagFiltered(tag, opts)));
+        }
+      } catch (e) {
+        if (e instanceof ChannelListQueryError) throw e;
+        throw new ChannelListQueryError(MSG_CHANNEL_TAG_CHANNELS_FAILED);
+      }
+    } else {
+      try {
+        total = await this.countChannels(opts);
+      } catch (e) {
+        if (e instanceof ChannelListQueryError) throw e;
+        throw new ChannelListQueryError(MSG_CHANNEL_COUNT_FAILED);
+      }
+      try {
+        items = await this.listChannelPage(opts);
+      } catch (e) {
+        if (e instanceof ChannelListQueryError) throw e;
+        throw new ChannelListQueryError(MSG_CHANNEL_LIST_FAILED);
+      }
+    }
+    let type_counts: Record<string, number>;
+    try {
+      type_counts = await this.channelTypeCounts(opts);
+    } catch (e) {
+      if (e instanceof ChannelListQueryError) throw e;
+      throw new ChannelListQueryError(MSG_CHANNEL_TYPE_COUNTS_FAILED);
+    }
+    return { items, total, type_counts };
   }
 
   /**

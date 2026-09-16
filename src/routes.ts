@@ -122,7 +122,7 @@ import {
   sessionSecret,
   startLoginVerification,
 } from "./auth.js";
-import { Store, publicUser, stripChannelKey, parseChannelStatusFilter } from "./store.js";
+import { Store, publicUser, stripChannelKey, parseChannelStatusFilter, ChannelListQueryError } from "./store.js";
 import { publicToken, buildPricing, userGroupsView, userUsableGroups, userAutoGroups, publicLog, publicUserLogs, dashboardListModels, channelListModels, publicOptions, publicQuotaData, manageUserView, publicMj, publicChannel, publicRedemption } from "./dto.js";
 import { fetchUpstreamModels, playgroundRelay, testChannel } from "./relay.js";
 import { registerMore } from "./more-routes.js";
@@ -1007,7 +1007,8 @@ export function adminRouter(): Router<Env> {
         id_sort: queryParseBool(c.url, "id_sort"),
       });
       return apiOk(pageData(items.map(stripChannelKey), total, q, { type_counts }));
-    } catch {
+    } catch (e) {
+      if (e instanceof ChannelListQueryError) return apiErrorMsg(e.leftover);
       return apiErrorMsg(tagMode ? "获取标签失败，请稍后重试" : "获取渠道数量失败，请稍后重试");
     }
   });
