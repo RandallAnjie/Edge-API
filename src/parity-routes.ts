@@ -1168,7 +1168,7 @@ export function registerParity(r: Router<Env>): void {
     };
     const result = await fetchUpstreamRatios({ req, channels, localData });
     if (!result.ok) return json(result.status, { success: false, message: result.message });
-    return apiOk(result.data);
+    return json(200, { success: true, data: result.data });
   });
 
   r.get("/api/plugin/task", async (c) => {
