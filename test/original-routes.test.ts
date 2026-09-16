@@ -1245,7 +1245,7 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
   );
   assert.equal(createUser.body.success, true, String(createUser.body.message));
   assert.equal(createUser.body.message, "");
-  assert.equal(createUser.body.data, null);
+  assert.equal("data" in createUser.body, false);
   const createdUser = await json(new Request("http://local/api/user/search?keyword=vipuser", { headers: auth }), e);
   const vip = ((createdUser.body.data as { items: { id: number; username: string }[] }).items || []).find((u) => u.username === "vipuser");
   assert.ok(vip);
@@ -1409,7 +1409,7 @@ test("original TopUp, GetAllUsers, SearchUsers, settings, data/flow, performance
     }),
     e,
   );
-  assert.equal(higher.body.message, "无法创建权限大于等于自己的用户");
+  assert.equal(higher.body.message, "Cannot create users with permission level equal to or higher than yourself");
 });
 
 test("original JSON fields: RelayNotImplemented, 2FA stats, groups, manage, plugins, vendors, system-task", async () => {
@@ -1493,7 +1493,7 @@ test("original JSON fields: RelayNotImplemented, 2FA stats, groups, manage, plug
     }),
     e,
   );
-  assert.equal(already.body.message, "该用户已经是管理员");
+  assert.equal(already.body.message, "This user is already an administrator");
 
   const pwProof = await passwordProof(e, auth, "account.password.change");
   const pw = await json(
@@ -2604,7 +2604,7 @@ test("original ResetPassword, Register, CustomOAuth, GetUser JSON", async () => 
   };
   const forbidden = await json(new Request("http://local/api/user/" + rootId, { headers: adminAuth }), e);
   assert.equal(forbidden.body.success, false);
-  assert.equal(forbidden.body.message, "无权获取同级或更高等级用户的信息");
+  assert.equal(forbidden.body.message, "No permission to access users of same or higher level");
 
   const searched = await json(new Request("http://local/api/user/search?keyword=siteadmin", { headers: newAuth }), e);
   const adminRow = ((searched.body.data as { items: { id: number; username: string }[] }).items || []).find(
@@ -4765,7 +4765,7 @@ test("original user soft-delete, amount envelopes, billing expr, RelayErrorHandl
 
   const scoped = await json(new Request("http://local/api/user/" + soft.id, { headers: auth }), e);
   assert.equal(scoped.body.success, false);
-  assert.equal(scoped.body.message, "用户不存在");
+  assert.equal(scoped.body.message, "record not found");
 
   const unscoped = await json(new Request("http://local/api/user/?p=1&page_size=50", { headers: auth }), e);
   assert.ok(((unscoped.body.data as { items: { username: string }[] }).items || []).some((u) => u.username === "softdeluser"));

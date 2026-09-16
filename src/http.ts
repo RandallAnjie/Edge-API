@@ -276,6 +276,126 @@ export function userNotExistsMessage(req: Request): string {
   }
 }
 
+/** Original `i18n.MsgUserNoPermissionSameLevel`. */
+export function userNoPermissionSameLevelMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "無權獲取同級或更高等級使用者的資訊";
+    case "zh-CN":
+      return "无权获取同级或更高等级用户的信息";
+    default:
+      return "No permission to access users of same or higher level";
+  }
+}
+
+/** Original `i18n.MsgUserNoPermissionHigherLevel`. */
+export function userNoPermissionHigherLevelMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "無權更新同權限等級或更高權限等級的使用者資訊";
+    case "zh-CN":
+      return "无权更新同权限等级或更高权限等级的用户信息";
+    default:
+      return "No permission to update users of same or higher permission level";
+  }
+}
+
+/** Original `i18n.MsgUserCannotCreateHigherLevel`. */
+export function userCannotCreateHigherLevelMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "無法建立權限大於等於自己的使用者";
+    case "zh-CN":
+      return "无法创建权限大于等于自己的用户";
+    default:
+      return "Cannot create users with permission level equal to or higher than yourself";
+  }
+}
+
+/** Original `i18n.MsgUserCannotDeleteRootUser`. */
+export function userCannotDeleteRootUserMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "不能刪除超級管理員帳號";
+    case "zh-CN":
+      return "不能删除超级管理员账户";
+    default:
+      return "Cannot delete super administrator account";
+  }
+}
+
+/** Original `i18n.MsgUserCannotDisableRootUser`. */
+export function userCannotDisableRootUserMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "無法禁用超級管理員使用者";
+    case "zh-CN":
+      return "无法禁用超级管理员用户";
+    default:
+      return "Cannot disable super administrator user";
+  }
+}
+
+/** Original `i18n.MsgUserCannotDemoteRootUser`. */
+export function userCannotDemoteRootUserMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "無法降級超級管理員使用者";
+    case "zh-CN":
+      return "无法降级超级管理员用户";
+    default:
+      return "Cannot demote super administrator user";
+  }
+}
+
+/** Original `i18n.MsgUserAlreadyAdmin`. */
+export function userAlreadyAdminMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "該使用者已經是管理員";
+    case "zh-CN":
+      return "该用户已经是管理员";
+    default:
+      return "This user is already an administrator";
+  }
+}
+
+/** Original `i18n.MsgUserAlreadyCommon`. */
+export function userAlreadyCommonMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "該使用者已經是普通使用者";
+    case "zh-CN":
+      return "该用户已经是普通用户";
+    default:
+      return "This user is already a common user";
+  }
+}
+
+/** Original `i18n.MsgUserAdminCannotPromote`. */
+export function userAdminCannotPromoteMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "普通管理員使用者無法提升其他使用者為管理員";
+    case "zh-CN":
+      return "普通管理员用户无法提升其他用户为管理员";
+    default:
+      return "Regular administrators cannot promote other users to administrator";
+  }
+}
+
+/** Original `i18n.MsgUserQuotaChangeZero`. */
+export function userQuotaChangeZeroMessage(req: Request): string {
+  switch (i18nLang(req)) {
+    case "zh-TW":
+      return "額度變更量不能為0";
+    case "zh-CN":
+      return "额度变更量不能为0";
+    default:
+      return "Quota change amount cannot be zero";
+  }
+}
+
 /** Original `i18n.MsgPaymentComplianceRequired`. */
 export function paymentComplianceRequiredMessage(req: Request): string {
   switch (i18nLang(req)) {

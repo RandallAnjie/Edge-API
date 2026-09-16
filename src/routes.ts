@@ -74,12 +74,23 @@ import {
   serveRevalidatedJSON,
   strconvAtoi,
   strconvParseBool,
+  userAdminCannotPromoteMessage,
+  userAlreadyAdminMessage,
+  userAlreadyCommonMessage,
+  userCannotCreateHigherLevelMessage,
+  userCannotDeleteRootUserMessage,
+  userCannotDemoteRootUserMessage,
+  userCannotDisableRootUserMessage,
   userEmailAlreadyTakenMessage,
   userEmailVerificationRequiredMessage,
   userExistsMessage,
   userInputInvalidMessage,
+  userNoPermissionHigherLevelMessage,
+  userNoPermissionSameLevelMessage,
+  userNotExistsMessage,
   userPasswordLoginDisabledMessage,
   userPasswordRegisterDisabledMessage,
+  userQuotaChangeZeroMessage,
   userRegisterDisabledMessage,
   userUsernameOrPasswordErrorMessage,
   userVerificationCodeErrorMessage,
@@ -493,7 +504,7 @@ export function adminRouter(): Router<Env> {
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
     const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在");
+    if (!user) return apiErrorMsg("record not found");
     return apiOk(await publicSelf(s, user));
   });
 
@@ -661,10 +672,10 @@ export function adminRouter(): Router<Env> {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const id = strconvAtoi(c.params.id);
-    if (!id.ok) return apiFail(id.message);
+    if (!id.ok) return apiErrorMsg(id.message);
     const user = await s.getUserById(id.n);
-    if (!user) return apiFail("用户不存在");
-    if (!canManageTargetRole(u.role, user.role)) return apiFail("无权获取同级或更高等级用户的信息");
+    if (!user) return apiErrorMsg("record not found");
+    if (!canManageTargetRole(u.role, user.role)) return apiErrorMsg(userNoPermissionSameLevelMessage(c.req));
     const data = await publicSelf(s, user);
     return apiOk({ ...data, admin_permissions: (data.permissions as { admin_permissions?: unknown }).admin_permissions });
   });
@@ -673,108 +684,112 @@ export function adminRouter(): Router<Env> {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Partial<UserRow> & { password?: string };
-    const username = String(body.username || "").trim();
-    if (!username || !body.password) return apiFail("无效的参数");
-    if (await s.getUserByUsername(username, { includeDeleted: true })) return apiFail("用户已存在");
-    const role = Number(body.role || ROLE_USER);
-    if (role >= u.role) return apiFail("无法创建权限大于等于自己的用户");
+    const bound = bindAdminUser(c.req, await c.req.text());
+    if (bound instanceof Response) return bound;
+    const username = bound.username.trim();
+    if (!username || !bound.password) return apiFailInvalidParams(c.req);
+    const invalid = validateRegisterUser(bound);
+    if (invalid) return apiErrorMsg(userInputInvalidMessage(c.req, invalid));
+    if (await s.getUserByUsername(username, { includeDeleted: true })) return apiErrorMsg("用户已存在");
+    const role = bound.role || ROLE_USER;
+    if (role >= u.role) return apiErrorMsg(userCannotCreateHigherLevelMessage(c.req));
     const id = await s.insertUser({
       username,
-      password: await hashPassword(body.password),
-      display_name: body.display_name || username,
+      password: await hashPassword(bound.password),
+      display_name: bound.display_name || username,
       role,
       quota: await s.optionNum("QuotaForNewUser", 0),
       aff_code: generateAffCode(),
     });
     await finishInsertUser(s, id, 0);
-    return apiOk(null);
+    return json(200, { success: true, message: "" });
   });
 
   r.slash("PUT", "/api/user/", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as Partial<UserRow> & {
-      id?: number;
-      username?: string;
-      password?: string;
-      admin_permissions?: Record<string, Record<string, boolean>>;
-    };
-    const username = String(body.username || "").trim();
-    if (!body.id || !username) return apiFail("无效的参数");
-    const target = await s.getUserById(body.id);
-    if (!target) return apiFail("用户不存在");
-    if (body.role != null && body.role !== ROLE_GUEST && body.role !== target.role) return apiFail("无效的参数");
-    if (!canManageTargetRole(u.role, target.role)) return apiFail("无权更新同权限等级或更高权限等级的用户信息");
+    const bound = bindAdminUser(c.req, await c.req.text());
+    if (bound instanceof Response) return bound;
+    const username = bound.username.trim();
+    if (!bound.id || !username) return apiFailInvalidParams(c.req);
+    const invalid = validateUpdateUser(bound);
+    if (invalid) return apiErrorMsg(userInputInvalidMessage(c.req, invalid));
+    const target = await s.getUserById(bound.id);
+    if (!target) return apiErrorMsg("record not found");
+    if (bound.role !== ROLE_GUEST && bound.role !== target.role) return apiFailInvalidParams(c.req);
+    if (!canManageTargetRole(u.role, target.role)) return apiErrorMsg(userNoPermissionHigherLevelMessage(c.req));
     const patch: Record<string, unknown> = { username };
     for (const k of ["display_name", "email", "quota", "group", "status"] as const) {
-      if (body[k] != null) patch[k] = body[k];
+      if (k in bound.rec && bound.rec[k] != null) patch[k] = bound.rec[k];
     }
-    if (body.password) patch.password = await hashPassword(body.password);
-    if (body.admin_permissions) {
-      if (u.role < ROLE_ROOT) return apiFail("only root can update admin permissions");
+    if (bound.password) patch.password = await hashPassword(bound.password);
+    if (bound.rec.admin_permissions && typeof bound.rec.admin_permissions === "object" && !Array.isArray(bound.rec.admin_permissions)) {
+      if (u.role < ROLE_ROOT) return apiErrorMsg("only root can update admin permissions");
       const targetRole = target.role;
       if (targetRole < ROLE_ADMIN) {
-        await s.clearUserCasbinPolicies(body.id);
+        await s.clearUserCasbinPolicies(bound.id);
         patch.admin_permissions = "";
       } else {
-        const deltas = permissionDeltas(targetRole, body.admin_permissions);
-        await s.setUserCasbinPolicies(body.id, deltas);
+        const deltas = permissionDeltas(targetRole, bound.rec.admin_permissions as Record<string, Record<string, boolean>>);
+        await s.setUserCasbinPolicies(bound.id, deltas);
         patch.admin_permissions = JSON.stringify(deltas);
       }
     }
-    await s.updateUser(body.id, patch);
-    if (body.password) await s.bumpAuthVersion(body.id);
-    return apiOk(null);
+    await s.updateUser(bound.id, patch);
+    if (bound.password) await s.bumpAuthVersion(bound.id);
+    return json(200, { success: true, message: "" });
   });
 
   r.post("/api/user/manage", async (c) => {
     const s = store(c);
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { id?: number; action?: string; quota?: number; value?: number; mode?: string };
-    if (!body.id || !body.action) return apiFail("无效的参数");
-    const target = await s.getUserById(body.id, { includeDeleted: true });
-    if (!target) return apiFail("用户不存在");
-    if (!canManageTargetRole(u.role, target.role)) return apiFail("无权更新同权限等级或更高权限等级的用户信息");
-    if (body.action === "add_quota") {
-      const mode = body.mode || "add";
-      const value = Number(body.value ?? body.quota ?? 0);
-      if (mode !== "add" && mode !== "subtract" && mode !== "override") return apiFail("无效的参数");
-      if (mode !== "override" && value <= 0) return apiFail("额度变更量不能为0");
-      if (mode === "override") await s.updateUser(target.id, { quota: value });
-      else await s.addQuota(target.id, mode === "subtract" ? -value : value);
-      await s.audit(u.id, u.username, "user.manage", `${body.action} user ${target.username}`, clientIp(c.req));
+    const bound = bindManageRequest(c.req, await c.req.text());
+    if (bound instanceof Response) return bound;
+    if (bound.action === "add_quota") {
+      const mode = bound.mode;
+      const value = bound.value;
+      if (mode !== "add" && mode !== "subtract" && mode !== "override") return apiFailInvalidParams(c.req);
+      if (mode !== "override" && value <= 0) return apiErrorMsg(userQuotaChangeZeroMessage(c.req));
+      const quotaTarget = await s.getUserById(bound.id, { includeDeleted: true });
+      if (!quotaTarget) return apiErrorMsg(userNotExistsMessage(c.req));
+      if (!canManageTargetRole(u.role, quotaTarget.role)) return apiErrorMsg(userNoPermissionHigherLevelMessage(c.req));
+      if (mode === "override") await s.updateUser(quotaTarget.id, { quota: value });
+      else await s.addQuota(quotaTarget.id, mode === "subtract" ? -value : value);
+      await s.audit(u.id, u.username, "user.manage", `${bound.action} user ${quotaTarget.username}`, clientIp(c.req));
       return apiOk(null);
     }
-    switch (body.action) {
+    const target = await s.getUserById(bound.id, { includeDeleted: true });
+    if (!target) return apiErrorMsg(userNotExistsMessage(c.req));
+    if (!canManageTargetRole(u.role, target.role)) return apiErrorMsg(userNoPermissionHigherLevelMessage(c.req));
+    switch (bound.action) {
       case "disable":
-        if (target.role === ROLE_ROOT) return apiFail("无法禁用超级管理员用户");
+        if (target.role === ROLE_ROOT) return apiErrorMsg(userCannotDisableRootUserMessage(c.req));
         await s.updateUser(target.id, { status: USER_DISABLED });
         break;
       case "enable":
         await s.updateUser(target.id, { status: USER_ENABLED });
         break;
       case "delete":
-        if (target.role === ROLE_ROOT) return apiFail("不能删除超级管理员账户");
+        if (target.role === ROLE_ROOT) return apiErrorMsg(userCannotDeleteRootUserMessage(c.req));
         await s.softDeleteUser(target.id);
-        await s.audit(u.id, u.username, "user.manage", `${body.action} user ${target.username}`, clientIp(c.req));
-        return apiOk(null);
+        await s.audit(u.id, u.username, "user.manage", `${bound.action} user ${target.username}`, clientIp(c.req));
+        return json(200, { success: true, message: "" });
       case "promote":
-        if (u.role < ROLE_ROOT) return apiFail("普通管理员用户无法提升其他用户为管理员");
-        if (target.role >= ROLE_ADMIN) return apiFail("该用户已经是管理员");
+        if (u.role < ROLE_ROOT) return apiErrorMsg(userAdminCannotPromoteMessage(c.req));
+        if (target.role >= ROLE_ADMIN) return apiErrorMsg(userAlreadyAdminMessage(c.req));
         await s.updateUser(target.id, { role: ROLE_ADMIN });
         break;
       case "demote":
-        if (target.role === ROLE_ROOT) return apiFail("无法降级超级管理员用户");
-        if (target.role === ROLE_USER) return apiFail("该用户已经是普通用户");
+        if (target.role === ROLE_ROOT) return apiErrorMsg(userCannotDemoteRootUserMessage(c.req));
+        if (target.role === ROLE_USER) return apiErrorMsg(userAlreadyCommonMessage(c.req));
         await s.updateUser(target.id, { role: ROLE_USER });
         break;
       default:
-        return apiFail("无效的参数");
+        return apiFailInvalidParams(c.req);
     }
-    await s.audit(u.id, u.username, "user.manage", `${body.action} user ${target.username}`, clientIp(c.req));
+    await s.audit(u.id, u.username, "user.manage", `${bound.action} user ${target.username}`, clientIp(c.req));
     const fresh = await s.getUserById(target.id);
     return apiOk(manageUserView(fresh?.role ?? target.role, fresh?.status ?? target.status));
   });
@@ -784,13 +799,13 @@ export function adminRouter(): Router<Env> {
     const u = await requireAdmin(c, s);
     if (isResponse(u)) return u;
     const id = strconvAtoi(c.params.id);
-    if (!id.ok) return apiFail(id.message);
+    if (!id.ok) return apiErrorMsg(id.message);
     const target = await s.getUserById(id.n);
-    if (!target) return apiFail("用户不存在");
-    if (!canManageTargetRole(u.role, target.role)) return apiFail("无权更新同权限等级或更高权限等级的用户信息");
-    if (target.role === ROLE_ROOT) return apiFail("不能删除超级管理员账户");
+    if (!target) return apiErrorMsg("record not found");
+    if (!canManageTargetRole(u.role, target.role)) return apiErrorMsg(userNoPermissionHigherLevelMessage(c.req));
+    if (target.role === ROLE_ROOT) return apiErrorMsg(userCannotDeleteRootUserMessage(c.req));
     await s.deleteUser(target.id);
-    return apiOk(null);
+    return json(200, { success: true, message: "" });
   });
 
   r.slash("GET", "/api/token/", async (c) => {
@@ -2007,6 +2022,106 @@ function validateRegisterUser(user: RegisterUser): string | null {
   if (utf8RuneCount(user.email) > 50) errors.push(validatorFieldError("Email", "max"));
   if (user.remark !== "" && utf8RuneCount(user.remark) > 255) errors.push(validatorFieldError("Remark", "max"));
   return errors.length ? errors.join("\n") : null;
+}
+
+/** Original UpdateUser `common.Validate.StructExcept(&updatedUser, "Password")`. */
+function validateUpdateUser(user: RegisterUser): string | null {
+  const errors: string[] = [];
+  if (utf8RuneCount(user.username) > 20) errors.push(validatorFieldError("Username", "max"));
+  if (utf8RuneCount(user.display_name) > 20) errors.push(validatorFieldError("DisplayName", "max"));
+  if (utf8RuneCount(user.email) > 50) errors.push(validatorFieldError("Email", "max"));
+  if (user.remark !== "" && utf8RuneCount(user.remark) > 255) errors.push(validatorFieldError("Remark", "max"));
+  return errors.length ? errors.join("\n") : null;
+}
+
+type AdminUser = RegisterUser & {
+  id: number;
+  role: number;
+  rec: Record<string, unknown>;
+};
+
+/** Original `common.DecodeJson` into `model.User` for CreateUser / UpdateUser. Any decode error is `MsgInvalidParams`. JSON `null` is a zero struct. */
+function bindAdminUser(req: Request, raw: string): AdminUser | Response {
+  const invalid = () => apiFailInvalidParams(req);
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  const zero: AdminUser = {
+    id: 0,
+    username: "",
+    password: "",
+    display_name: "",
+    email: "",
+    verification_code: "",
+    aff_code: "",
+    remark: "",
+    role: 0,
+    rec: {},
+  };
+  if (parsed.value === null) return zero;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  const rec = parsed.value as Record<string, unknown>;
+  const username = bindJSONStringOn(req, rec, "username");
+  if (username instanceof Response) return username;
+  const password = bindJSONStringOn(req, rec, "password");
+  if (password instanceof Response) return password;
+  const displayName = bindJSONStringOn(req, rec, "display_name");
+  if (displayName instanceof Response) return displayName;
+  const email = bindJSONStringOn(req, rec, "email");
+  if (email instanceof Response) return email;
+  const remark = bindJSONStringOn(req, rec, "remark");
+  if (remark instanceof Response) return remark;
+  const id = bindJSONIntOn(req, rec, "id");
+  if (id instanceof Response) return id;
+  const role = bindJSONIntOn(req, rec, "role");
+  if (role instanceof Response) return role;
+  return {
+    id,
+    username,
+    password,
+    display_name: displayName,
+    email,
+    verification_code: "",
+    aff_code: "",
+    remark,
+    role,
+    rec,
+  };
+}
+
+type ManageRequest = { id: number; action: string; value: number; mode: string };
+
+/** Original `common.DecodeJson` into `controller.ManageRequest`. Any decode error is `MsgInvalidParams`. JSON `null` is a zero struct. */
+function bindManageRequest(req: Request, raw: string): ManageRequest | Response {
+  const invalid = () => apiFailInvalidParams(req);
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  const zero: ManageRequest = { id: 0, action: "", value: 0, mode: "" };
+  if (parsed.value === null) return zero;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  const rec = parsed.value as Record<string, unknown>;
+  const id = bindJSONIntOn(req, rec, "id");
+  if (id instanceof Response) return id;
+  const action = bindJSONStringOn(req, rec, "action");
+  if (action instanceof Response) return action;
+  const value = bindJSONIntOn(req, rec, "value");
+  if (value instanceof Response) return value;
+  const quota = bindJSONIntOn(req, rec, "quota");
+  if (quota instanceof Response) return quota;
+  const mode = bindJSONStringOn(req, rec, "mode");
+  if (mode instanceof Response) return mode;
+  const hasValue = "value" in rec && rec.value != null;
+  return { id, action, value: hasValue ? value : quota, mode };
+}
+
+/** Original `encoding/json` int field: omitted/null → 0; non-integer JSON number / wrong kind → type error as `MsgInvalidParams`. */
+function bindJSONIntOn(req: Request, rec: Record<string, unknown>, key: string): number | Response {
+  if (!(key in rec) || rec[key] == null) return 0;
+  if (typeof rec[key] !== "number" || !Number.isFinite(rec[key]) || !Number.isInteger(rec[key])) {
+    return apiFailInvalidParams(req);
+  }
+  return rec[key] as number;
 }
 
 /** Original `common.Interface2String` used by `UpdateOption`. */
