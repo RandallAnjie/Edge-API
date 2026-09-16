@@ -2253,6 +2253,10 @@ export function registerMore(r: Router<Env>): void {
       }
       await s.updateVendor(body.id, patch);
       const v = await s.getVendor(body.id);
+      await recordManageAudit(s, c.req, u, "vendor.metadata.save", {
+        vendor_id: body.id,
+        name: v ? String(v.name || "") : String(body.name || ""),
+      });
       return apiOk(v ? publicVendor(v) : null);
     } catch (e) {
       return vendorAPIError(e);

@@ -1792,6 +1792,12 @@ export function registerParity(r: Router<Env>): void {
           deleted_vendors.push(v.id);
         }
       }
+      await recordManageAudit(s, c.req, u, "vendor." + String(body.action || ""), {
+        source_vendor_ids: Array.isArray(body.vendor_ids) ? body.vendor_ids : null,
+        target_vendor_id: Number(body.target_vendor_id || 0),
+        updated_model_ids: updated_models,
+        deleted_vendor_ids: deleted_vendors,
+      });
       return apiOk({ updated_models, deleted_vendors });
     } catch (e) {
       return vendorOpError(e);

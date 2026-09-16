@@ -483,6 +483,19 @@ Material changes from upstream:
   vendor.create/delete fallback tests stay unchanged. Extra-OK: audit write
   failure must not fail the request. requireUser/requireAdmin/requireRoot
   and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on UpdateVendorMeta `vendor.metadata.save` (`vendor_id`/`name`) and
+  ApplyVendorOperation `vendor.{action}` (`assign`/`merge`/`delete` with
+  `source_vendor_ids`/`target_vendor_id`/`updated_model_ids`/`deleted_vendor_ids`).
+  Neither action is in `auditContentTemplates` so Content is the action
+  string. Category `operation`, `other.op` + `other.admin_info` (no
+  `audit_info`), Status 200 Success true, gin FullPath `/api/vendors/` and
+  `/api/vendors/operations`, then `markAuditLogged`. Failed missing-id PUT
+  still uses `auditRouteActions` `vendor.update` fallback. Failed missing
+  `expected_version` still uses generic `finishAdminAudit`. Extra-OK: hop
+  323 vendor.create/delete fallback tests stay unchanged. Extra-OK: audit
+  write failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
