@@ -4,6 +4,7 @@ import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import { ROLE_ROOT } from "../src/constants.js";
+import { Store } from "../src/store.js";
 import { totpCode } from "../src/totp.js";
 import {
   AUDIT_CATEGORY_SECURITY,
@@ -368,7 +369,11 @@ test("original recordUserSecurityAudit leftover passkey register/delete JSON", a
   assert.equal(registerSec.ip, "192.0.2.145");
   assert.equal(registerSec.user_agent, "passkey-register-client");
 
-  const deleteProof = await passwordProof(e, registerAuth, "passkey.delete");
+  const store = new Store(e.DB);
+  const root = await store.getUserByUsername("root");
+  assert.ok(root);
+  await store.updateUser(root.id, { totp_enabled: 1, totp_secret: "JBSWY3DPEHPK3PXP" });
+  const deleteProof = await twoFAProof(e, registerAuth, "passkey.delete", "JBSWY3DPEHPK3PXP");
   const deleteRid = "passkey-security-audit-delete-1";
   const deleted = await json(
     new Request("http://local/api/user/passkey", {
