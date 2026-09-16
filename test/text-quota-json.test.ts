@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_OPENROUTER, LOG_CONSUME } from "../src/constants.js";
 import { consumeLogOther, RELAY_FORMAT_OPENAI } from "../src/log-info-generate.js";
 import type { TextConsumePriceData } from "../src/quota.js";
+import { logQuota } from "../src/quota.js";
 import {
   calcOpenRouterCacheCreateTokens,
   calculateTextQuotaSummary,
@@ -10,6 +11,11 @@ import {
   composeTieredTextQuota,
   hasCustomModelRatio,
   mergeToolSurchargeItems,
+  postTextAudioInputQuota,
+  postTextConsumeLogContent,
+  postTextConsumeLogParts,
+  postTextToolSurchargeQuota,
+  textHasBillableUsage,
 } from "../src/text-quota.js";
 import { mergeModelRatio } from "./merge-model-ratio.js";
 import {
@@ -225,6 +231,85 @@ async function chatLog(
   assert.equal(items.length >= 1, true, JSON.stringify(logs.body));
   return { row: items[0], other: parseOther(items[0].other) };
 }
+
+test("original PostTextConsumeQuota extraContent JSON", () => {
+  const formatQuota = (q: number) => logQuota(q, QUOTA_PER_UNIT);
+  assert.equal(postTextToolSurchargeQuota({ name: "web_search_preview", count: 1, price: 25 }, 1, QUOTA_PER_UNIT), 12500);
+  assert.equal(postTextAudioInputQuota(1, 50, 1, QUOTA_PER_UNIT), 25);
+  assert.equal(
+    postTextConsumeLogContent(
+      [],
+      postTextConsumeLogParts({
+        usageMissing: true,
+        groupRatio: 1,
+        quotaPerUnit: QUOTA_PER_UNIT,
+        formatQuota,
+        hasBillableUsage: false,
+        billingModelName: "gpt-4o-mini",
+      }),
+    ),
+    "上游无计费信息, 上游没有返回计费信息，无法扣费（可能是上游超时）",
+  );
+  assert.equal(
+    postTextConsumeLogParts({
+      toolSurcharges: [{ name: "web_search_preview", count: 2, price: 10 }],
+      groupRatio: 1,
+      quotaPerUnit: QUOTA_PER_UNIT,
+      formatQuota,
+      hasBillableUsage: true,
+      billingModelName: "gpt-5.1",
+    }).join(", "),
+    "web_search_preview 调用 2 次，调用花费 ＄0.020000 额度",
+  );
+  assert.equal(
+    postTextConsumeLogParts({
+      audioInputPrice: 1,
+      audioInputTokens: 50,
+      groupRatio: 1,
+      quotaPerUnit: QUOTA_PER_UNIT,
+      formatQuota,
+      hasBillableUsage: true,
+      billingModelName: "gemini-2.5-flash",
+    }).join(", "),
+    "Audio Input 花费 ＄0.000050 额度",
+  );
+  assert.equal(
+    postTextConsumeLogParts({
+      groupRatio: 1,
+      quotaPerUnit: QUOTA_PER_UNIT,
+      formatQuota,
+      hasBillableUsage: true,
+      billingModelName: "gpt-4-gizmo-abc",
+    }).join(", "),
+    "模型 gpt-4-gizmo-abc",
+  );
+  assert.equal(
+    postTextConsumeLogParts({
+      groupRatio: 1,
+      quotaPerUnit: QUOTA_PER_UNIT,
+      formatQuota,
+      hasBillableUsage: true,
+      billingModelName: "gpt-4o-gizmo-xyz",
+    }).join(", "),
+    "模型 gpt-4o-gizmo-xyz",
+  );
+  assert.equal(
+    postTextConsumeLogContent(
+      ["大小 1024x1024", "品质 hd", "生成数量 2"],
+      postTextConsumeLogParts({
+        groupRatio: 1,
+        quotaPerUnit: QUOTA_PER_UNIT,
+        formatQuota,
+        hasBillableUsage: true,
+        billingModelName: "dall-e-3",
+      }),
+    ),
+    "大小 1024x1024, 品质 hd, 生成数量 2",
+  );
+  assert.equal(textHasBillableUsage({ totalTokens: 0, toolCallSurchargeQuota: 5000 } as never), true);
+  assert.equal(textHasBillableUsage({ totalTokens: 0, toolCallSurchargeQuota: 0 } as never), false);
+  assert.equal(textHasBillableUsage({ totalTokens: 0, toolCallSurchargeQuota: 0 } as never, true), true);
+});
 
 test("original calculateTextQuotaSummary Claude semantic quota JSON 1488", () => {
   const summary = calculateTextQuotaSummary({
@@ -587,6 +672,7 @@ test("original search-preview HTTP tool_surcharges consume-log JSON", async () =
   });
   assert.equal(row.quota, 12500);
   assert.deepEqual(other.tool_surcharges, [{ name: BUILD_IN_TOOL_WEB_SEARCH_PREVIEW, count: 1, price: 25 }]);
+  assert.equal(row.content, "web_search_preview 调用 1 次，调用花费 ＄0.025000 额度");
   assert.equal("web_search" in other, false);
   assert.equal("web_search_call_count" in other, false);
   assert.equal("web_search_price" in other, false);
@@ -684,4 +770,21 @@ test("original Gemini audio_input_seperate_price HTTP consume-log JSON", async (
   assert.equal(other.audio_input_seperate_price, true);
   assert.equal(other.audio_input_token_count, 50);
   assert.equal(other.audio_input_price, 1);
+  assert.equal(row.content, "Audio Input 花费 ＄0.000050 额度");
+});
+
+test("original PostTextConsumeQuota zero TotalTokens consume-log Content JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e);
+  await putOption(e, auth, "ModelRatio", JSON.stringify({ "gpt-4o-mini": 0.075 }));
+  await createChannel(e, auth, { name: "zero-tokens", models: "gpt-4o-mini" });
+  const sk = await createSk(e, auth);
+  const { row } = await chatLog(e, auth, sk, "gpt-4o-mini", {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+  });
+  assert.equal(row.quota, 0);
+  assert.equal(row.content, "上游没有返回计费信息，无法扣费（可能是上游超时）");
 });

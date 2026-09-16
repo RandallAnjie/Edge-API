@@ -160,11 +160,17 @@ import {
   modelPriceHelperQuotaToPreConsumeFromStore,
   modelPriceHelperReject,
   resolveBillingModelNameFromStore,
+  storeLogQuota,
 } from "./quota.js";
 import {
   calculateTextQuotaFromStore,
   composeTieredTextQuota,
   noteQuotaClamp,
+  postTextAudioInputQuota,
+  postTextConsumeLogContent,
+  postTextConsumeLogParts,
+  postTextToolSurchargeQuota,
+  textHasBillableUsage,
 } from "./text-quota.js";
 import { decodeToolPricesJSON, TOOL_PRICE_OPTION_KEY } from "./tool-price.js";
 import {
@@ -232,7 +238,7 @@ import { tokenAllowsModel } from "./auth.js";
 import { OPENAI_MODELS_MAP } from "./channel-models.js";
 import { factoryPluginMeta, listRoutingPlugins } from "./task-plugin-factory.js";
 import { hasModelBillingConfig } from "./billing-setting.js";
-import { imageHelperFloorUsageTokens, imageHelperLogContent, imageRequestCount, openaiImageDataCount, refreshOutboundImageQuantity } from "./image-billing.js";
+import { imageHelperFloorUsageTokens, imageHelperLogParts, imageRequestCount, openaiImageDataCount, refreshOutboundImageQuantity } from "./image-billing.js";
 import {
   billingUsageFromOpenAICounts,
   cacheCreationTokensTotal,
@@ -1489,7 +1495,6 @@ async function settle(
   if (extra.relayMode === "images" && ok) {
     if (prompt === 0) prompt = 1;
     if (extra.billingUsage && (extra.billingUsage.prompt_tokens || 0) === 0) extra.billingUsage.prompt_tokens = 1;
-    content = imageHelperLogContent(extra.imageBody || {});
   }
   const originModel = model;
   const billingName = extra.billingModelName || originModel;
@@ -1603,6 +1608,37 @@ async function settle(
       totalTokens: audioTotalTokens,
       fixedPriceBilling: audioFixedPrice,
     });
+  } else if (ok && !useAudioOther && textSummary) {
+    const prefix = extra.relayMode === "images" ? imageHelperLogParts(extra.imageBody || {}) : [];
+    const quotaLabels = new Map<number, string>();
+    const labelQuota = async (q: number): Promise<string> => {
+      const hit = quotaLabels.get(q);
+      if (hit != null) return hit;
+      const formatted = await storeLogQuota(store, q);
+      quotaLabels.set(q, formatted);
+      return formatted;
+    };
+    for (const item of textSummary.toolSurchargeItems) {
+      await labelQuota(postTextToolSurchargeQuota(item, price.groupRatio, quotaPerUnit));
+    }
+    if (textSummary.audioInputPrice > 0 && textSummary.audioTokens > 0) {
+      await labelQuota(
+        postTextAudioInputQuota(textSummary.audioInputPrice, textSummary.audioTokens, price.groupRatio, quotaPerUnit),
+      );
+    }
+    content = postTextConsumeLogContent(
+      prefix,
+      postTextConsumeLogParts({
+        toolSurcharges: textSummary.toolSurchargeItems,
+        groupRatio: price.groupRatio,
+        quotaPerUnit,
+        formatQuota: (q) => quotaLabels.get(q) || "",
+        audioInputPrice: textSummary.audioInputPrice,
+        audioInputTokens: textSummary.audioTokens,
+        hasBillableUsage: textHasBillableUsage(textSummary, audioFixedPrice),
+        billingModelName: billingName,
+      }),
+    );
   }
   const publicExtra = tiered ? injectTieredBillingInfo({}, tiered.snap, tiered.result) : undefined;
   const logModel = useAudioOther ? billingName : consumeLogModelName(billingName);

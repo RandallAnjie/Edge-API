@@ -199,6 +199,7 @@ test("original HTTP ModelPriceHelper resolveBillingModelName consume-log JSON", 
     assert.equal(gizmo.res.status, 200, gizmo.text);
     const gizmoLog = await latestConsume(e, auth, "gpt-4-gizmo-*");
     assert.equal(gizmoLog.row.model_name, "gpt-4-gizmo-*");
+    assert.equal(gizmoLog.row.content, "模型 gpt-4-gizmo-abc");
     const gizmoAdmin = gizmoLog.other.admin_info as Record<string, unknown>;
     assert.equal("billing_model" in gizmoAdmin, false);
 

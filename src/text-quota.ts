@@ -6,7 +6,7 @@ import { CHANNEL_TYPE_OPENROUTER } from "./constants.js";
 import { defaultModelRatio } from "./ratio-defaults.js";
 import { textConsumePriceData, type TextConsumePriceData } from "./quota.js";
 import type { Store } from "./store.js";
-import { applyOtherRatiosToDecimal, quotaFromDecimalChecked, quotaRoundChecked, type QuotaClamp } from "./task-plugin-usage.js";
+import { applyOtherRatiosToDecimal, quotaFromDecimal, quotaFromDecimalChecked, quotaRoundChecked, type QuotaClamp } from "./task-plugin-usage.js";
 import { cacheCreationTokensTotal, type BillingUsage } from "./tiered-settle.js";
 import type { BillingSnapshot, TieredResult } from "./billing-expr.js";
 import {
@@ -193,6 +193,68 @@ export function calculateTextToolCallSurcharge(opts: {
 
 function hasBillableUsage(summary: TextQuotaSummary, fixedPriceBilling = false): boolean {
   return fixedPriceBilling || summary.totalTokens > 0 || summary.toolCallSurchargeQuota !== 0;
+}
+
+/** Original `textQuotaSummary.hasBillableUsage` after `TryTieredSettle`. */
+export { hasBillableUsage as textHasBillableUsage };
+
+export type PostTextConsumeLogPartsOpts = {
+  usageMissing?: boolean;
+  toolSurcharges?: ToolSurchargeItem[];
+  groupRatio: number;
+  quotaPerUnit: number;
+  formatQuota: (quota: number) => string;
+  audioInputPrice?: number;
+  audioInputTokens?: number;
+  hasBillableUsage: boolean;
+  billingModelName: string;
+};
+
+/** Original `PostTextConsumeQuota` tool-surcharge `QuotaFromDecimal` line. */
+export function postTextToolSurchargeQuota(
+  item: ToolSurchargeItem,
+  groupRatio: number,
+  quotaPerUnit: number,
+): number {
+  return quotaFromDecimal((item.price * item.count) / 1000 * groupRatio * quotaPerUnit);
+}
+
+/** Original `PostTextConsumeQuota` Audio Input `QuotaFromDecimal` line. */
+export function postTextAudioInputQuota(
+  audioInputPrice: number,
+  audioTokens: number,
+  groupRatio: number,
+  quotaPerUnit: number,
+): number {
+  return quotaFromDecimal((audioInputPrice / 1_000_000) * audioTokens * groupRatio * quotaPerUnit);
+}
+
+/**
+ * Original `PostTextConsumeQuota` extraContent append order, then
+ * `strings.Join(extraContent, ", ")`.
+ */
+export function postTextConsumeLogParts(opts: PostTextConsumeLogPartsOpts): string[] {
+  const parts: string[] = [];
+  if (opts.usageMissing) parts.push("上游无计费信息");
+  for (const item of opts.toolSurcharges || []) {
+    parts.push(
+      `${item.name} 调用 ${item.count} 次，调用花费 ${opts.formatQuota(postTextToolSurchargeQuota(item, opts.groupRatio, opts.quotaPerUnit))}`,
+    );
+  }
+  if ((opts.audioInputPrice || 0) > 0 && (opts.audioInputTokens || 0) > 0) {
+    parts.push(
+      `Audio Input 花费 ${opts.formatQuota(postTextAudioInputQuota(opts.audioInputPrice || 0, opts.audioInputTokens || 0, opts.groupRatio, opts.quotaPerUnit))}`,
+    );
+  }
+  if (!opts.hasBillableUsage) parts.push("上游没有返回计费信息，无法扣费（可能是上游超时）");
+  if (opts.billingModelName.startsWith("gpt-4-gizmo")) parts.push(`模型 ${opts.billingModelName}`);
+  else if (opts.billingModelName.startsWith("gpt-4o-gizmo")) parts.push(`模型 ${opts.billingModelName}`);
+  return parts;
+}
+
+/** Original `strings.Join(extraContent, ", ")`. */
+export function postTextConsumeLogContent(prefix: string[], extras: string[]): string {
+  return [...prefix, ...extras].join(", ");
 }
 
 /**

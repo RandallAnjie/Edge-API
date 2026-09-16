@@ -505,6 +505,10 @@ test("original Responses HTTP tool_surcharges from output calls not declarations
     { name: "priced_fn", count: 1, price: 5 },
     { name: BUILD_IN_TOOL_WEB_SEARCH_PREVIEW, count: 2, price: 10 },
   ]);
+  assert.equal(
+    row.content,
+    "priced_fn 调用 1 次，调用花费 ＄0.005000 额度, web_search_preview 调用 2 次，调用花费 ＄0.020000 额度",
+  );
 });
 
 test("original Responses HTTP image_generation_call consume-log JSON 150002", async () => {
@@ -549,6 +553,7 @@ test("original Responses HTTP image_generation_call consume-log JSON 150002", as
   const { row, other } = await lastConsume(e, auth, "gpt-5.1");
   assert.equal(row.quota, 150002);
   assert.deepEqual(other.tool_surcharges, [{ name: BUILD_IN_TOOL_IMAGE_GENERATION, count: 2, price: 150 }]);
+  assert.equal(row.content, "image_generation 调用 2 次，调用花费 ＄0.300000 额度");
 });
 
 test("original Claude HTTP tool_use + claude_web_search_requests consume-log JSON", async () => {
