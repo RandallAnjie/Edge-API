@@ -59,7 +59,7 @@ import { bindVerificationOperation, issueSecurityProof, securityProofError } fro
 import { applyAllChannelUpstreamModelUpdates, applyChannelUpstreamModelUpdatesForId, detectChannelUpstreamModelUpdates } from "./channel-upstream-update.js";
 import { enqueueSystemTask, SYSTEM_TASK_TYPE_MODEL_UPDATE, systemTaskIdOf } from "./system-task.js";
 import { headerNavModulePublicOrUserAuth, isHeaderNavDenied } from "./header-nav.js";
-import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
+import { apiErrorMsg, apiFail, apiFailCode, apiFailInvalidParams, apiOk, clientIp, i18nPair, json, MSG_PASSKEY_DISABLED, MSG_PASSKEY_INVALID_REQUEST, MSG_PASSKEY_NOT_BOUND, pageData, pageQuery, parsePasskeyFinishRequest, parseUnixQuery, payErr, readJson, strconvAtoi, strconvParseInt, taskArtifactError, taskPluginUnknownMetaFieldMessage, writeAuthSessionError, writeSecurityOperationError } from "./http.js";
 import type { Context } from "./router.js";
 import type { Router } from "./router.js";
 import {
@@ -1487,41 +1487,55 @@ export function registerParity(r: Router<Env>): void {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const targetTimestamp = Number(c.url.searchParams.get("target_timestamp") || 0);
-    if (!targetTimestamp) return apiFail("target timestamp is required");
+    const parsedTs = strconvParseInt(c.url.searchParams.get("target_timestamp") || "");
+    const targetTimestamp = parsedTs.ok ? parsedTs.n : 0;
+    if (!targetTimestamp) return apiErrorMsg("target timestamp is required");
     try {
       const task = await startLogCleanupTask(s, targetTimestamp);
       c.waitUntil(lazySystemTaskRun(() => runPendingLogCleanupSystemTask(s).catch(() => undefined)));
       return apiOk(publicSystemTask(task, Number(task.rowid || 0)));
     } catch (err) {
-      return apiFail(err instanceof Error ? err.message : String(err));
+      return apiErrorMsg(err instanceof Error ? err.message : String(err));
     }
   });
   r.get("/api/system-task/list", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    const limit = Number(c.url.searchParams.get("limit") || 20);
-    const items = await s.listSystemTasks(limit);
-    return apiOk(items.map((t) => publicSystemTask(t, Number(t.rowid || 0))));
+    const parsedLimit = strconvAtoi(c.url.searchParams.get("limit") || "");
+    const limit = parsedLimit.ok ? parsedLimit.n : 0;
+    try {
+      const items = await s.listSystemTasks(limit);
+      return apiOk(items.map((t) => publicSystemTask(t, Number(t.rowid || 0))));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
   r.get("/api/system-task/current", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
     const taskType = c.url.searchParams.get("type") || "";
-    if (!taskType) return apiFail("type is required");
-    const t = await s.currentSystemTask(taskType);
-    return apiOk(t ? publicSystemTask(t, Number(t.rowid || 0)) : null);
+    if (!taskType) return apiErrorMsg("type is required");
+    try {
+      const t = await s.currentSystemTask(taskType);
+      return apiOk(t ? publicSystemTask(t, Number(t.rowid || 0)) : null);
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
   r.get("/api/system-task/:task_id", async (c) => {
     const s = store(c);
     const u = await requireRoot(c, s);
     if (isResponse(u)) return u;
-    if (!c.params.task_id) return apiFail("task id is required");
-    const t = await s.getSystemTask(c.params.task_id);
-    if (!t) return json(404, { success: false, message: "task not found" });
-    return apiOk(publicSystemTask(t, Number(t.rowid || 0)));
+    if (!c.params.task_id) return apiErrorMsg("task id is required");
+    try {
+      const t = await s.getSystemTask(c.params.task_id);
+      if (!t) return json(404, { success: false, message: "task not found" });
+      return apiOk(publicSystemTask(t, Number(t.rowid || 0)));
+    } catch (e) {
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
+    }
   });
 
   r.get("/api/system-info/instances", async (c) => {
