@@ -112,7 +112,7 @@ import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-c
 import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
-import { abortWithOpenAiMessage, clientIp, groupAccessDeniedMessage, json, modelNameRequiredMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage } from "./http.js";
+import { abortWithOpenAiMessage, clientIp, ERROR_CODE_INVALID_REQUEST, groupAccessDeniedMessage, json, modelNameRequiredMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage, writeRelayNewAPIError } from "./http.js";
 import { applyGetAndValidateRequest } from "./valid-request.js";
 import { estimateRequestPromptTokens, getTokenCountMeta } from "./token-count.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, channelParamOverrideMap, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
@@ -1789,7 +1789,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     opts.body = applyGetAndValidateRequest(mode, path, opts.body);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return openaiError(400, message, "invalid_request");
+    return writeRelayNewAPIError(opts.req, 400, message, ERROR_CODE_INVALID_REQUEST);
   }
 
   const requestPath = opts.requestPath || path;

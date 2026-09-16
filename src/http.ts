@@ -778,6 +778,41 @@ export function openaiError(
   );
 }
 
+/** Original `types.ErrorCodeInvalidRequest`. */
+export const ERROR_CODE_INVALID_REQUEST = "invalid_request";
+
+/** Original `types.ErrorTypeNewAPIError`. */
+export const ERROR_TYPE_NEW_API_ERROR = "new_api_error";
+
+/**
+ * Original `controller.Relay` `RelayFormatClaude` is POST `/v1/messages`
+ * (`httpRouter.POST("/messages")`). Extra-OK: trailing slash.
+ */
+export function relayUsesClaudeError(path: string): boolean {
+  return path === "/v1/messages" || path === "/v1/messages/";
+}
+
+/** Original `NewAPIError.ToClaudeError` default branch (omitempty, no param/code). */
+export function toClaudeRelayError(message: string): { type: string; message: string } {
+  return { type: ERROR_TYPE_NEW_API_ERROR, message };
+}
+
+/**
+ * Original leftover Relay defer `c.JSON` gin.H after `GetAndValidateRequest`
+ * `NewError(..., ErrorCodeInvalidRequest, 400)`:
+ * Claude `{type:"error",error:ToClaudeError()}`; else `{error:ToOpenAIError()}`.
+ * Extra-OK: generated RequestId is not appended (hop 314); honor client header.
+ */
+export function writeRelayNewAPIError(req: Request, status: number, message: string, code: string): Response {
+  const rid = req.headers.get("x-oneapi-request-id") || "";
+  const msg = rid ? messageWithRequestId(message, rid) : message;
+  const path = new URL(req.url).pathname;
+  if (relayUsesClaudeError(path)) {
+    return json(status, { type: "error", error: toClaudeRelayError(msg) });
+  }
+  return openaiError(status, msg, code);
+}
+
 /** Original `service.RelayErrorHandler` + `ResetStatusCode`. */
 export function relayErrorHandler(status: number, bodyText: string, statusCodeMapping = ""): Response {
   let message = `bad response status code ${status}`;
