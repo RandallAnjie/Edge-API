@@ -551,7 +551,7 @@ export async function recordPasskeyDomainAudit(
 export async function recordUserSecurityAudit(
   store: Store,
   req: Request,
-  user: SessionUser,
+  user: { id: number; username: string; role: number; useAccessToken?: boolean },
   action: string,
   params: Record<string, unknown> | null = null,
 ): Promise<void> {

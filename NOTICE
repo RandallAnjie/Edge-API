@@ -413,6 +413,21 @@ Material changes from upstream:
   Extra-OK: audit write failure must not fail the request.
   requireUser/requireAdmin/requireRoot and UserAuth
   `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordUserSecurityAudit` leftover security audit-log
+  JSON on Setup2FA `user.2fa_setup`, Enable2FA `user.2fa_enable`, Disable2FA
+  `user.2fa_disable_self`, RegenerateBackupCodes `user.2fa_backup_codes`,
+  PasskeyRegisterFinish `user.passkey_register`, and PasskeyDelete
+  `user.passkey_delete`. Nil params so `other.op` is `{action}` without
+  `params`, no `admin_info`, no `audit_info`, category `security`, Status
+  200 Success true, English Content from templates, gin FullPath
+  `/api/user/2fa/setup` / `enable` / `disable` / `backup_codes`,
+  `/api/user/passkey/register/finish`, `/api/user/passkey`. Failed
+  already-enabled setup / empty enable / not-enabled disable / missing
+  passkey delete add no security audit (UserAuth has no AdminAuth
+  fallback). Extra-OK: hop 323 vendor.create/delete fallback tests stay
+  unchanged. Extra-OK: audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

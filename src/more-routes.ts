@@ -596,6 +596,7 @@ export function registerMore(r: Router<Env>): void {
       session_id: proof.sessionId,
     });
     const issuer = (await s.option("SystemName")) || "New API";
+    await recordUserSecurityAudit(s, c.req, u, "user.2fa_setup", null);
     return apiOk({
       secret,
       qr_code_data: generateQrCodeData(secret, u.username, issuer),
@@ -660,6 +661,7 @@ export function registerMore(r: Router<Env>): void {
     const fresh = await s.getUserById(identity.userId);
     const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "twofa_enabled", identity.sessionId);
     if (issued instanceof Response) return issued;
+    await recordUserSecurityAudit(s, c.req, user, "user.2fa_enable", null);
     return authRotationResponse(issued);
   });
 
@@ -684,6 +686,7 @@ export function registerMore(r: Router<Env>): void {
     const fresh = await s.getUserById(u.id);
     const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "twofa_disabled", u.sid);
     if (issued instanceof Response) return issued;
+    await recordUserSecurityAudit(s, c.req, u, "user.2fa_disable_self", null);
     return authRotationResponse(issued, "两步验证已禁用");
   });
 
@@ -702,6 +705,7 @@ export function registerMore(r: Router<Env>): void {
     await s.updateUser(u.id, { totp_backup: codes.join(",") });
     const issued = await issueSessionSafe(s, c.env, user, c.req, "twofa_backup_codes_regenerated", u.sid);
     if (issued instanceof Response) return issued;
+    await recordUserSecurityAudit(s, c.req, u, "user.2fa_backup_codes", null);
     return authRotationResponse(issued, "备用码重新生成成功", { backup_codes: codes });
   });
 
@@ -880,6 +884,7 @@ export function registerMore(r: Router<Env>): void {
     if (!user) return writeAuthSessionError(500, "AUTH_INTERNAL_ERROR");
     const issued = await issueSessionSafe(s, c.env, user, c.req, "passkey_registered", u.sid);
     if (issued instanceof Response) return issued;
+    await recordUserSecurityAudit(s, c.req, u, "user.passkey_register", null);
     return authRotationResponse(issued, "Passkey 注册成功");
   });
 
@@ -1077,6 +1082,7 @@ export function registerMore(r: Router<Env>): void {
     if (!user) return writeAuthSessionError(500, "AUTH_INTERNAL_ERROR");
     const issued = await issueSessionSafe(s, c.env, user, c.req, "passkey_deleted", u.sid);
     if (issued instanceof Response) return issued;
+    await recordUserSecurityAudit(s, c.req, u, "user.passkey_delete", null);
     return authRotationResponse(issued, "Passkey 已解绑");
   });
 
