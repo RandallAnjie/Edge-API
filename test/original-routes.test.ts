@@ -4397,6 +4397,11 @@ test("original TestChannel POSTs gin httptest chat/embeddings/responses bodies",
   resetSchemaFlag();
   const e = env();
   const { auth } = await boot(e);
+  const store = new Store(e.DB);
+  const ratios = JSON.parse((await store.option("ModelRatio")) || "{}") as Record<string, number>;
+  ratios["openai/gpt-4o-mini"] = ratios["gpt-4o-mini"] ?? 0.075;
+  ratios["gpt-5.1-codex"] = ratios["gpt-5"] ?? 0.625;
+  await store.setOption("ModelRatio", JSON.stringify(ratios));
 
   const openaiChat = buildTestRequest("gpt-4o-mini", "openai", false);
   assert.equal(openaiChat.kind, "chat");
@@ -4454,7 +4459,7 @@ test("original TestChannel POSTs gin httptest chat/embeddings/responses bodies",
     seen.push({ url, method: String(init?.method || "GET"), headers, body });
     if (url.includes("/v1/chat/completions")) {
       const req = (body || {}) as { model?: string; stream?: boolean };
-      if (req.model === "fail-me") {
+      if (req.model === "gpt-4o") {
         return new Response(JSON.stringify({ error: { message: "upstream rejected" } }), {
           status: 401,
           headers: { "content-type": "application/json" },
@@ -4617,11 +4622,19 @@ test("original TestChannel POSTs gin httptest chat/embeddings/responses bodies",
     assert.deepEqual((embedHit.body as { input?: unknown }).input, ["hello world"]);
 
     seen.length = 0;
-    const failed = await json(new Request("http://local/api/channel/test/" + openaiRow.id + "?model=fail-me", { headers: auth }), e);
+    const failed = await json(new Request("http://local/api/channel/test/" + openaiRow.id + "?model=gpt-4o", { headers: auth }), e);
     assert.equal(failed.body.success, false);
     assert.equal(failed.body.message, "upstream rejected");
     assert.equal(failed.body.time, 0);
     assert.equal(failed.body.error_code, "bad_response_status_code");
+
+    seen.length = 0;
+    const unpriced = await json(new Request("http://local/api/channel/test/" + openaiRow.id + "?model=fail-me", { headers: auth }), e);
+    assert.equal(unpriced.body.success, false);
+    assert.match(String(unpriced.body.message), /Model fail-me price not configured/);
+    assert.equal(unpriced.body.time, 0);
+    assert.equal(unpriced.body.error_code, "model_price_error");
+    assert.equal(seen.length, 0, "ModelPriceHelper must reject before adaptor Convert* / DoRequest");
 
     const mj = await json(
       new Request("http://local/api/channel/", {

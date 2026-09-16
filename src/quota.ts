@@ -1,6 +1,7 @@
 import { BILLING_MODE_TIERED_EXPR, getBillingExpr, getBillingMode } from "./billing-setting.js";
-import { DEFAULT_GROUP_RATIO, parseJson } from "./constants.js";
+import { DEFAULT_GROUP_RATIO, parseJson, ROLE_ADMIN } from "./constants.js";
 import {
+  formatMatchingModelName,
   getAudioCompletionRatioFromMap,
   getAudioRatioFromMap,
   getCacheRatioFromMap,
@@ -9,7 +10,14 @@ import {
   getImageRatioFromMap,
   getModelPriceFromMap,
   getModelRatioFromMap,
+  hasConfiguredModelRatio,
 } from "./ratio-setting.js";
+import {
+  baseModelName,
+  canonicalBillingModelNames,
+  parseModelModifiers,
+  type ReasoningHostSettings,
+} from "./reasoning.js";
 import type { Store } from "./store.js";
 
 /** Original `helper.claudeCacheCreation1hMultiplier` (`6 / 3.75`). */
@@ -270,6 +278,121 @@ export function insufficientWalletQuotaMessage(remain: number, need: number, for
 /** Original `PreConsumeTokenQuota` insufficient message. */
 export function insufficientTokenQuotaMessage(formattedRemain: string, formattedNeed: string): string {
   return `token quota is not enough, token remain quota: ${formattedRemain}, need quota: ${formattedNeed}`;
+}
+
+/** Original `helper.modelPriceNotConfiguredError`. */
+export function modelPriceNotConfiguredMessage(modelName: string, userRole: number): string {
+  if (userRole >= ROLE_ADMIN) {
+    return (
+      `模型 ${modelName} 的价格未配置。请前往「系统设置 → 运营设置」开启自用模式，或在「系统设置 → 分组与模型定价设置」中为该模型配置价格；` +
+      `Model ${modelName} price not configured. Go to System Settings → Operation Settings to enable self-use mode, or configure the model price in System Settings → Group & Model Pricing.`
+    );
+  }
+  return (
+    `模型 ${modelName} 的价格尚未由管理员配置，暂时无法使用，请联系站点管理员开启该模型；` +
+    `Model ${modelName} has not been priced by the administrator yet. Please contact the site administrator to enable this model.`
+  );
+}
+
+/** Original `helper.HasPriceOrRatioEntry` maps. */
+export type BillingLookupMaps = {
+  modelPrice: Record<string, unknown>;
+  modelRatio: Record<string, unknown>;
+  modes: Record<string, string>;
+  exprs?: Record<string, string>;
+};
+
+/** Original `helper.HasPriceOrRatioEntry`. */
+export function hasPriceOrRatioEntry(name: string, maps: BillingLookupMaps): boolean {
+  const formatted = formatMatchingModelName(name);
+  if (getModelPriceFromMap(formatted, maps.modelPrice).configured) return true;
+  if (hasConfiguredModelRatio(formatted, maps.modelRatio)) return true;
+  return getBillingMode(formatted, maps.modes, maps.modelRatio, maps.modelPrice) === BILLING_MODE_TIERED_EXPR;
+}
+
+/** Original `helper.resolveBillingModelName`. */
+export function resolveBillingModelName(
+  origin: string,
+  maps: BillingLookupMaps,
+  settings: ReasoningHostSettings = {},
+): string {
+  const candidates: string[] = [];
+  if (parseModelModifiers(origin).modifiers.length === 0) candidates.push(origin);
+  candidates.push(...canonicalBillingModelNames(origin, settings));
+  const base = baseModelName(origin, settings);
+  candidates.push(base);
+  const seen = new Set<string>();
+  let matched = "";
+  for (const name of candidates) {
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    if (hasPriceOrRatioEntry(name, maps)) {
+      matched = name;
+      break;
+    }
+  }
+  return matched || base;
+}
+
+export async function billingLookupMapsFromStore(store: Store): Promise<BillingLookupMaps> {
+  return {
+    modelRatio: parseJson<Record<string, unknown>>(await store.option("ModelRatio"), {}),
+    modelPrice: parseJson<Record<string, unknown>>(await store.option("ModelPrice"), {}),
+    modes: parseJson<Record<string, string>>(await store.option("billing_setting.billing_mode"), {}),
+    exprs: parseJson<Record<string, string>>(await store.option("billing_setting.billing_expr"), {}),
+  };
+}
+
+/** Original ModelPriceHelper `info.GetBillingModelName()` after `resolveBillingModelName`. */
+export async function resolveBillingModelNameFromStore(
+  store: Store,
+  origin: string,
+  settings: ReasoningHostSettings = {},
+): Promise<string> {
+  const maps = await billingLookupMapsFromStore(store);
+  const matched = resolveBillingModelName(origin, maps, settings);
+  return matched && matched !== origin ? matched : origin;
+}
+
+/** Original `helper.ModelPriceHelper` reject when ratio/price/tiered expr is missing. */
+export async function modelPriceHelperReject(
+  store: Store,
+  modelName: string,
+  userRole: number,
+  userSettings: unknown,
+  reasoningSettings: ReasoningHostSettings = {},
+): Promise<string | null> {
+  const maps = await billingLookupMapsFromStore(store);
+  const billingModelName = resolveBillingModelNameFromStoreSync(modelName, maps, reasoningSettings);
+  const exprs = maps.exprs || {};
+  if (
+    getBillingMode(billingModelName, maps.modes, maps.modelRatio, maps.modelPrice) === BILLING_MODE_TIERED_EXPR &&
+    getBillingExpr(billingModelName, maps.modes, exprs, maps.modelRatio, maps.modelPrice)
+  ) {
+    return null;
+  }
+  if (getModelPriceFromMap(billingModelName, maps.modelPrice).configured) return null;
+  const selfUse = await store.optionBool("SelfUseModeEnabled", false);
+  const ratio = getModelRatioFromMap(billingModelName, maps.modelRatio, selfUse);
+  const settings =
+    typeof userSettings === "string"
+      ? parseJson<Record<string, unknown>>(userSettings, {})
+      : userSettings && typeof userSettings === "object"
+        ? (userSettings as Record<string, unknown>)
+        : {};
+  if (!ratio.configured && !Boolean(settings.accept_unset_model_ratio_model)) {
+    return modelPriceNotConfiguredMessage(ratio.name || billingModelName, userRole);
+  }
+  return null;
+}
+
+function resolveBillingModelNameFromStoreSync(
+  origin: string,
+  maps: BillingLookupMaps,
+  settings: ReasoningHostSettings = {},
+): string {
+  const matched = resolveBillingModelName(origin, maps, settings);
+  return matched && matched !== origin ? matched : origin;
 }
 
 /** Original `service.PreWssConsumeQuota` user insufficient message. */

@@ -33,12 +33,12 @@ import { completeCozeNonStreamChat } from "./coze-convert.js";
 import { convertOutbound, reasoningSettingsFromStore, type ClientFormat } from "./relay.js";
 import { consumeLogOther, DEFAULT_ENDPOINT_INFO } from "./dto.js";
 import { calculateAudioQuota } from "./openai-realtime-usage.js";
-import { computeQuota, textConsumePriceData, audioConsumeLogRatios } from "./quota.js";
+import { computeQuota, textConsumePriceData, audioConsumeLogRatios, modelPriceHelperReject, resolveBillingModelNameFromStore } from "./quota.js";
 import { calculateTextQuotaFromStore, composeTieredTextQuota, noteQuotaClamp } from "./text-quota.js";
 import { decodeToolPricesJSON, TOOL_PRICE_OPTION_KEY } from "./tool-price.js";
 import { builtInToolCallCounts, createToolUsageState, ingestUpstreamToolUsage } from "./tool-usage.js";
 import { openaiImageDataCount } from "./image-billing.js";
-import { billingUsageFromOpenAICounts, cacheCreationTokensTotal, injectTieredBillingInfo, isFixedPriceSettlement, resolveRelayTieredQuota } from "./tiered-settle.js";
+import { billingUsageFromOpenAICounts, cacheCreationTokensTotal, captureTieredBillingSnapshot, injectTieredBillingInfo, isFixedPriceSettlement, resolveRelayTieredQuota } from "./tiered-settle.js";
 import { applyModelMapping, buildUpstream, type RelayMode, type UpstreamTarget } from "./upstream.js";
 import { relayFormatForClient, requestConversionChain, shouldPostAudioConsumeQuota } from "./log-info-generate.js";
 import { applyChannelParamOverride, type ParamOverrideRelayInfo } from "./param-override.js";
@@ -46,6 +46,7 @@ import { applySseScannerEndReason, StreamStatus } from "./stream-status.js";
 import { buildAdvancedCustomRelayTarget, resolveAdvancedCustomConverter, shouldApplyAdvancedCustomClaudeHeaders } from "./channel-validate.js";
 import { buildCodexRelayTarget } from "./codex-models.js";
 import { pickChannelKey } from "./select.js";
+import { getTokenCountMeta } from "./token-count.js";
 import { DEFAULT_GEMINI_VERSION_SETTINGS } from "./reasoning.js";
 import {
   claimAndRunSystemTask,
@@ -567,6 +568,50 @@ export async function testChannel(
 
   const mappedModel = applyModelMapping(channel, originModel);
   const built = buildTestRequest(originModel, endpointType, isStream);
+  if (mappedModel) built.body.model = mappedModel;
+  const clientFormat = testClientFormat(built.kind);
+  let user: UserRow | null = null;
+  if (opts.userId) user = await store.getUserById(opts.userId);
+  if (!user) user = await store.getRootUser();
+  const group = opts.group || user?.group || "default";
+  const reasoningSettings = await reasoningSettingsFromStore(store);
+  const billingModelName = await resolveBillingModelNameFromStore(store, originModel, reasoningSettings);
+  const priceReject = user
+    ? await modelPriceHelperReject(store, originModel, Number(user.role || 0), user.settings, reasoningSettings)
+    : null;
+  if (priceReject) {
+    return fail(priceReject, {
+      ...testMeta,
+      errorCode: "model_price_error",
+      newAPIError: channelAttemptFromNewApi(priceReject, 400, "model_price_error"),
+    });
+  }
+  const tokenMeta = getTokenCountMeta({
+    mode,
+    clientFormat,
+    path: requestPath,
+    body: built.body,
+    model: mappedModel || originModel,
+  });
+  let tieredSnapshot: import("./billing-expr.js").BillingSnapshot | null = null;
+  try {
+    tieredSnapshot = await captureTieredBillingSnapshot(
+      store,
+      billingModelName,
+      group,
+      0,
+      { maxTokens: tokenMeta.maxTokens },
+      { body: built.body },
+      { relayMode: mode, channelType: channel.type, imageBody: built.body },
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return fail(message, {
+      ...testMeta,
+      errorCode: "model_price_error",
+      newAPIError: channelAttemptFromNewApi(message, 400, "model_price_error"),
+    });
+  }
   const paramOverrideAudit: string[] = [];
   let target: UpstreamTarget;
   try {
@@ -678,11 +723,7 @@ export async function testChannel(
 
   await store.updateChannelResponseTime(channel.id, milliseconds);
 
-  let user: UserRow | null = null;
-  if (opts.userId) user = await store.getUserById(opts.userId);
-  if (!user) user = await store.getRootUser();
   if (user && (await store.optionBool("LogConsumeEnabled", true))) {
-    const group = opts.group || user.group || "default";
     const billingUsage = billingUsageFromOpenAICounts(usage);
     const isClaude = built.kind === "anthropic" || billingUsage.usage_semantic === "anthropic";
     let actualImageCount = 0;
@@ -696,6 +737,7 @@ export async function testChannel(
       imageBody: built.body,
       channelType: channel.type,
       actualImageCount,
+      snapshot: tieredSnapshot,
     });
     const price = await textConsumePriceData(store, originModel, group, user.group);
     const audioLog = await audioConsumeLogRatios(store, originModel);

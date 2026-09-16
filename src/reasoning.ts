@@ -667,6 +667,111 @@ export function baseModelName(modelName: string, settings: ReasoningHostSettings
   return base;
 }
 
+function billingIntentFromModifiers(spec: ModelModifierSpec): { intent: ReasoningIntent; hasThinking: boolean } {
+  const last = new Map<string, number>();
+  spec.modifiers.forEach((modifier, index) => last.set(modifier.key, index));
+  let intent = emptyIntent();
+  let hasThinking = false;
+  for (let index = 0; index < spec.modifiers.length; index++) {
+    const modifier = spec.modifiers[index];
+    if (last.get(modifier.key) !== index) continue;
+    switch (modifier.key) {
+      case "thinking": {
+        const parsed = parseThinkingModifier(modifier.value);
+        if (!parsed) continue;
+        if (hasThinking && parsed.mode !== MODE_DISABLED && parsed.budgetTokens == null) {
+          intent.mode = parsed.mode;
+          intent.source = SOURCE_SUFFIX;
+        } else if (hasThinking && parsed.mode !== MODE_DISABLED) {
+          intent.mode = parsed.mode;
+          intent.budgetTokens = parsed.budgetTokens;
+          intent.budgetSource = parsed.budgetSource;
+          intent.source = SOURCE_SUFFIX;
+        } else {
+          intent = parsed;
+        }
+        hasThinking = true;
+        break;
+      }
+      case "effort": {
+        let effort = "";
+        try {
+          effort = parseEffort(modifier.value);
+        } catch {
+          continue;
+        }
+        if (!effort) continue;
+        if (effort === EFFORT_NONE) {
+          intent = { mode: MODE_DISABLED, effort: EFFORT_NONE, source: SOURCE_SUFFIX, budgetSource: "" };
+        } else {
+          if (intent.mode === MODE_UNSET || intent.mode === MODE_DISABLED) intent.mode = MODE_ENABLED;
+          intent.effort = effort;
+          intent.source = SOURCE_SUFFIX;
+        }
+        hasThinking = true;
+        break;
+      }
+    }
+  }
+  return { intent, hasThinking };
+}
+
+function normalizeBillingThinking(intent: ReasoningIntent): { thinking: string; effort: string; ok: boolean } {
+  if (intent.effort === EFFORT_NONE || intent.mode === MODE_DISABLED) return { thinking: "off", effort: "", ok: true };
+  if (intent.budgetTokens === 0) return { thinking: "off", effort: "", ok: true };
+  if (intent.effort && intent.effort !== EFFORT_NONE) return { thinking: "on", effort: intent.effort.toLowerCase(), ok: true };
+  if (intent.mode === MODE_ENABLED || intent.mode === MODE_ADAPTIVE || intent.budgetTokens != null) {
+    return { thinking: "on", effort: "", ok: true };
+  }
+  return { thinking: "", effort: "", ok: false };
+}
+
+function canonicalNamesFromIntent(base: string, intent: ReasoningIntent): string[] {
+  const normalized = normalizeBillingThinking(intent);
+  if (!normalized.ok || !base) return [];
+  const names: string[] = [];
+  if (normalized.effort) names.push(`${base}@effort:${normalized.effort}@thinking:${normalized.thinking}`);
+  const thinkingForm = `${base}@thinking:${normalized.thinking}`;
+  if (thinkingForm !== base) names.push(thinkingForm);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of names) {
+    if (!name || name === base || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+/** Original `setting/reasoning.CanonicalBillingModelNames`. */
+export function canonicalBillingModelNames(modelName: string, settings: ReasoningHostSettings = {}): string[] {
+  if (shouldPreserveThinkingSuffix(modelName, settings)) return [];
+  const spec = parseModelModifiers(modelName);
+  let base = spec.base;
+  let { intent, hasThinking } = billingIntentFromModifiers(spec);
+  if (!shouldPreserveThinkingSuffix(base, settings)) {
+    try {
+      const legacy = parseLegacyModelSuffix(
+        base,
+        settings.claudeThinkingAdapterEnabled !== false,
+        Boolean(settings.geminiThinkingAdapterEnabled),
+        settings,
+      );
+      if (legacy.found) {
+        base = legacy.base;
+        if (!hasThinking) {
+          intent = legacy.intent;
+          hasThinking = true;
+        }
+      }
+    } catch {
+      /* original ParseLegacyModelSuffix err leaves the explicit base intact */
+    }
+  }
+  if (!hasThinking) return [];
+  return canonicalNamesFromIntent(base, intent);
+}
+
 export type ParsedModelModifiers = {
   base: string;
   hasSyntax: boolean;

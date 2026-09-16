@@ -119,7 +119,7 @@ test("original TestChannel adaptor ConvertClaudeRequest / ConvertGeminiRequest /
         name: "convert-claude",
         type: CHANNEL_TYPE_ANTHROPIC,
         key: "sk-ant",
-        models: "claude-3-5-sonnet",
+        models: "claude-3-5-sonnet-20241022",
         group: "default",
         base_url: "https://api.anthropic.example",
       }),
@@ -151,7 +151,7 @@ test("original TestChannel adaptor ConvertClaudeRequest / ConvertGeminiRequest /
         name: "convert-coze",
         type: CHANNEL_TYPE_COZE,
         key: "coze-key",
-        models: "coze-bot",
+        models: "gpt-4o-mini",
         group: "default",
         base_url: "https://api.coze.example",
       }),
@@ -229,17 +229,17 @@ test("original TestChannel adaptor ConvertClaudeRequest / ConvertGeminiRequest /
 
     seen.length = 0;
     const openaiOnClaude = await json(
-      new Request("http://local/api/channel/test/" + claudeRow.id + "?model=claude-3-5-sonnet&endpoint_type=openai", { headers: auth }),
+      new Request("http://local/api/channel/test/" + claudeRow.id + "?model=claude-3-5-sonnet-20241022&endpoint_type=openai", { headers: auth }),
       e,
     );
     assert.equal(openaiOnClaude.body.success, true, String(openaiOnClaude.body.message));
     const openaiClaudeHit = seen.find((s) => s.url === "https://api.anthropic.example/v1/messages");
     assert.ok(openaiClaudeHit, JSON.stringify(seen.map((s) => s.url)));
-    const openaiBuilt = buildTestRequest("claude-3-5-sonnet", "openai", false);
+    const openaiBuilt = buildTestRequest("claude-3-5-sonnet-20241022", "openai", false);
     const expectedOpenAIClaude = convertOpenAIRequest(openaiBuilt.body, {
       channelType: CHANNEL_TYPE_ANTHROPIC,
-      originModelName: "claude-3-5-sonnet",
-      upstreamModelName: "claude-3-5-sonnet",
+      originModelName: "claude-3-5-sonnet-20241022",
+      upstreamModelName: "claude-3-5-sonnet-20241022",
       relayMode: "chat",
     });
     assert.deepEqual(openaiClaudeHit.body, expectedOpenAIClaude);
@@ -247,13 +247,13 @@ test("original TestChannel adaptor ConvertClaudeRequest / ConvertGeminiRequest /
 
     seen.length = 0;
     const nativeClaude = await json(
-      new Request("http://local/api/channel/test/" + claudeRow.id + "?model=claude-3-5-sonnet&endpoint_type=anthropic", { headers: auth }),
+      new Request("http://local/api/channel/test/" + claudeRow.id + "?model=claude-3-5-sonnet-20241022&endpoint_type=anthropic", { headers: auth }),
       e,
     );
     assert.equal(nativeClaude.body.success, true, String(nativeClaude.body.message));
     const nativeClaudeHit = seen.find((s) => s.url === "https://api.anthropic.example/v1/messages");
     assert.ok(nativeClaudeHit, JSON.stringify(seen.map((s) => s.url)));
-    assert.equal(nativeClaudeHit.body.model, "claude-3-5-sonnet");
+    assert.equal(nativeClaudeHit.body.model, "claude-3-5-sonnet-20241022");
     assert.equal(nativeClaudeHit.body.max_tokens, 16);
     assert.deepEqual(nativeClaudeHit.body.messages, [{ role: "user", content: "hi" }]);
 
@@ -268,7 +268,7 @@ test("original TestChannel adaptor ConvertClaudeRequest / ConvertGeminiRequest /
     assert.deepEqual((nativeGeminiHit.body.contents as unknown[])[0], { role: "user", parts: [{ text: "hi" }] });
 
     const cozeImage = await json(
-      new Request("http://local/api/channel/test/" + cozeRow.id + "?model=coze-bot&endpoint_type=image-generation", { headers: auth }),
+      new Request("http://local/api/channel/test/" + cozeRow.id + "?model=gpt-4o-mini&endpoint_type=image-generation", { headers: auth }),
       e,
     );
     assert.equal(cozeImage.body.success, false);
