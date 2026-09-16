@@ -4,13 +4,18 @@ import { createMemoryD1 } from "./d1-memory.js";
 import { handleFetch } from "../src/worker.js";
 import { resetSchemaFlag } from "../src/schema.js";
 import {
+  ERROR_CODE_BAD_RESPONSE_BODY,
+  ERROR_CODE_CONVERT_REQUEST_FAILED,
+  ERROR_CODE_DO_REQUEST_FAILED,
   ERROR_CODE_INVALID_REQUEST,
+  ERROR_CODE_MODEL_PRICE_ERROR,
   ERROR_TYPE_NEW_API_ERROR,
   messageWithRequestId,
   relayUsesClaudeError,
   toClaudeRelayError,
   writeRelayNewAPIError,
 } from "../src/http.js";
+import { CHANNEL_TYPE_OPENAI } from "../src/constants.js";
 import { MAX_TOKENS_LIMIT } from "../src/valid-request.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
@@ -191,6 +196,159 @@ test("original Relay leftover GetAndValidateRequest does not change AUTH StatusT
   assert.equal(created.body.success, true, created.text);
   const listed = await send(
     new Request("http://local/api/audit?page_size=100&request_id=hop349-vendor-create", { headers: auth }),
+    e,
+  );
+  const items = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(items.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original Relay leftover convert/price/do_request/bad_response_body Claude vs OpenAI gin.H", async () => {
+  async function assertClaudeEnvelope(status: number, message: string, code: string) {
+    const req = new Request("http://local/v1/messages", { method: "POST" });
+    const res = writeRelayNewAPIError(req, status, message, code);
+    assert.equal(res.status, status);
+    const body = (await res.json()) as { type: string; error: Record<string, unknown> };
+    assert.equal(body.type, "error");
+    assert.deepEqual(Object.keys(body), ["type", "error"]);
+    assert.deepEqual(Object.keys(body.error).sort(), ["message", "type"]);
+    assert.equal("param" in body.error, false);
+    assert.equal("code" in body.error, false);
+    assert.deepEqual(body.error, { type: ERROR_TYPE_NEW_API_ERROR, message });
+  }
+
+  async function assertOpenAIEnvelope(status: number, message: string, code: string) {
+    const req = new Request("http://local/v1/chat/completions", { method: "POST" });
+    const res = writeRelayNewAPIError(req, status, message, code);
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    assert.equal("type" in body, false);
+    assert.deepEqual(body.error, {
+      message,
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code,
+    });
+  }
+
+  await assertClaudeEnvelope(400, "Model hop350-unpriced price not configured", ERROR_CODE_MODEL_PRICE_ERROR);
+  await assertOpenAIEnvelope(400, "Model hop350-unpriced price not configured", ERROR_CODE_MODEL_PRICE_ERROR);
+  await assertClaudeEnvelope(500, "not implemented", ERROR_CODE_CONVERT_REQUEST_FAILED);
+  await assertOpenAIEnvelope(500, "not implemented", ERROR_CODE_CONVERT_REQUEST_FAILED);
+  await assertClaudeEnvelope(500, "dial failed", ERROR_CODE_DO_REQUEST_FAILED);
+  await assertOpenAIEnvelope(500, "dial failed", ERROR_CODE_DO_REQUEST_FAILED);
+  await assertClaudeEnvelope(500, "bad_response_body", ERROR_CODE_BAD_RESPONSE_BODY);
+  await assertOpenAIEnvelope(500, "bad_response_body", ERROR_CODE_BAD_RESPONSE_BODY);
+});
+
+test("original Relay leftover ModelPriceHelper Claude envelope JSON", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.130" });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.131" },
+      body: JSON.stringify({
+        name: "hop350-unpriced",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop350",
+        models: "hop350-unpriced",
+        group: "default",
+        base_url: "https://hop350.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const origFetch = globalThis.fetch;
+  let fetchHits = 0;
+  globalThis.fetch = (async () => {
+    fetchHits += 1;
+    return new Response("should-not-fetch");
+  }) as typeof fetch;
+  try {
+    const claude = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "192.0.2.132",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop350-claude-price",
+        },
+        body: JSON.stringify({
+          model: "hop350-unpriced",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 400, claude.text);
+    assert.equal(claude.body.type, "error");
+    const err = claude.body.error as { type: string; message: string; code?: string; param?: string };
+    assert.equal(err.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.match(err.message, /Model hop350-unpriced price not configured/);
+    assert.ok(err.message.endsWith("(request id: hop350-claude-price)"), err.message);
+    assert.equal(err.code, undefined);
+    assert.equal(err.param, undefined);
+    assert.deepEqual(Object.keys(err).sort(), ["message", "type"]);
+    assert.equal(fetchHits, 0);
+
+    const chat = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.133" },
+        body: JSON.stringify({
+          model: "hop350-unpriced",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chat.res.status, 400, chat.text);
+    assert.equal("type" in chat.body && chat.body.type === "error", false, chat.text);
+    const chatErr = chat.body.error as { message: string; type: string; param: string; code: string };
+    assert.match(chatErr.message, /Model hop350-unpriced price not configured/);
+    assert.equal(chatErr.message.includes("(request id:"), false, chatErr.message);
+    assert.equal(chatErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_MODEL_PRICE_ERROR);
+    assert.equal(fetchHits, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original Relay leftover convert/price does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.134" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.135", "x-oneapi-request-id": "hop350-vendor-create" },
+      body: JSON.stringify({ name: "relay-newapi-convert-vendor", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop350-vendor-create", { headers: auth }),
     e,
   );
   const items = ((listed.body.data as { items: { action: string }[] }).items || []);

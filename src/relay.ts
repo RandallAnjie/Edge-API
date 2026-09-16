@@ -1837,7 +1837,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     auth.user.settings,
     convertSettings,
   );
-  if (priceReject) return openaiError(400, priceReject, "model_price_error");
+  if (priceReject) return writeRelayNewAPIError(opts.req, 400, priceReject, "model_price_error");
 
   const tokenMeta = getTokenCountMeta({
     mode,
@@ -1871,7 +1871,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return openaiError(400, message, "model_price_error");
+    return writeRelayNewAPIError(opts.req, 400, message, "model_price_error");
   }
   const priceQuota = await modelPriceHelperQuotaToPreConsumeFromStore(store, {
     billingModelName,
@@ -1888,7 +1888,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     body: asObj(opts.body),
     tieredQuotaToPreConsume: tieredSnapshot?.estimatedQuotaAfterGroup,
   });
-  if (priceQuota.error) return openaiError(400, priceQuota.error, "model_price_error");
+  if (priceQuota.error) return writeRelayNewAPIError(opts.req, 400, priceQuota.error, "model_price_error");
   const preNeed = priceQuota.freeModel ? 0 : priceQuota.quotaToPreConsume;
   let billing: BillingSession | null = null;
   if (!priceQuota.freeModel) {
@@ -1898,7 +1898,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       playground: Boolean(opts.playground),
       billingModelName,
     });
-    if (held.error) return openaiError(held.error.status, held.error.message, held.error.code);
+    if (held.error) return writeRelayNewAPIError(opts.req, held.error.status, held.error.message, held.error.code);
     billing = held.session;
   }
   let pendingStreamSettle = false;
@@ -2104,7 +2104,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     } catch (err) {
       const ret = convertRequestFailed(err);
       await noteAttempt(channelAttemptFromNewApi(ret.message, ret.statusCode, ret.code, ret.skipRetry));
-      if (ret.skipRetry || lastAttempt) return openaiError(ret.statusCode, ret.message, ret.code, ret.type);
+      if (ret.skipRetry || lastAttempt) return writeRelayNewAPIError(opts.req, ret.statusCode, ret.message, ret.code, ret.type);
       lastErr = ret.message;
       lastStatus = ret.statusCode;
       continue;
@@ -2156,7 +2156,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       const ret = asParamOverrideReturnError(err);
       if (ret) {
         await noteAttempt(channelAttemptFromNewApi(ret.message, ret.statusCode, ret.code, ret.skipRetry));
-        if (ret.skipRetry || lastAttempt) return openaiError(ret.statusCode, ret.message, ret.code, ret.type);
+        if (ret.skipRetry || lastAttempt) return writeRelayNewAPIError(opts.req, ret.statusCode, ret.message, ret.code, ret.type);
         lastErr = ret.message;
         lastStatus = ret.statusCode;
         continue;
@@ -2186,7 +2186,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           const ret = asParamOverrideReturnError(err);
           if (ret) {
             await noteAttempt(channelAttemptFromNewApi(ret.message, ret.statusCode, ret.code, ret.skipRetry));
-            if (ret.skipRetry || lastAttempt) return openaiError(ret.statusCode, ret.message, ret.code, ret.type);
+            if (ret.skipRetry || lastAttempt) return writeRelayNewAPIError(opts.req, ret.statusCode, ret.message, ret.code, ret.type);
             lastErr = ret.message;
             lastStatus = ret.statusCode;
             continue;
@@ -2285,7 +2285,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           lastStatus = 500;
           await noteAttempt(channelAttemptFromNewApi(message, 500, "do_request_failed"));
           if (!lastAttempt && retryable(500, retryRanges)) continue;
-          return openaiError(500, message, "do_request_failed");
+          return writeRelayNewAPIError(opts.req, 500, message, "do_request_failed");
         }
       } else if (channel.type === CHANNEL_TYPE_VOLC && mode === "audio_speech" && volcTtsIsStream(asObj(outbound))) {
         try {
@@ -2383,7 +2383,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, message.slice(0, 2000), extra);
-        return openaiError(500, message, "bad_response_body");
+        return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
       }
     }
 
@@ -2450,7 +2450,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
-          return openaiError(500, message, "bad_response_body");
+          return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
@@ -2482,7 +2482,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
-          return openaiError(500, message, "bad_response_body");
+          return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
@@ -2506,7 +2506,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
-          return openaiError(500, message, "bad_response_body");
+          return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
@@ -2537,7 +2537,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
-          return openaiError(500, message, "bad_response_body");
+          return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
@@ -2561,7 +2561,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
-          return openaiError(500, message, "bad_response_body");
+          return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
@@ -2594,7 +2594,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
-          return openaiError(500, message, "bad_response_body");
+          return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
@@ -2623,7 +2623,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
-          return openaiError(500, message, "bad_response_body");
+          return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody && Object.keys(converted.usageBody).length ? { usage: converted.usageBody } : {});
         attachSettleUsage(extra, usage);
@@ -2660,7 +2660,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           if (message.startsWith("unsupported advanced custom converter:")) {
             return openaiError(400, message, "invalid_request");
           }
-          return openaiError(500, message, "bad_response_body");
+          return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
         }
         const usage = usageFromOpenAI(converted.usageBody);
         attachSettleUsage(extra, usage);
@@ -2719,11 +2719,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       } else {
         if (channel.type === CHANNEL_TYPE_OLLAMA && mode === "embeddings") {
           await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, "bad_response_body", extra);
-          return openaiError(500, "bad_response_body", "bad_response_body");
+          return writeRelayNewAPIError(opts.req, 500, "bad_response_body", "bad_response_body");
         }
         if (channel.type === CHANNEL_TYPE_CLOUDFLARE && isCloudflareSTTRelayMode(mode)) {
           await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, "bad_response_body", extra);
-          return openaiError(500, "bad_response_body", "bad_response_body");
+          return writeRelayNewAPIError(opts.req, 500, "bad_response_body", "bad_response_body");
         }
         await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, true, "", extra);
         return new Response(text, {
@@ -2801,7 +2801,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         const status = Number((err as Error & { status?: number }).status || 500);
         return openaiError(status, message, code, type);
       }
-      return openaiError(500, message, "bad_response_body");
+      return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
     }
     let usage = usageFromOpenAI(converted);
     if (mapped.startsWith("imagen") && Array.isArray(converted.data)) {

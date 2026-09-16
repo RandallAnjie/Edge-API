@@ -781,6 +781,18 @@ export function openaiError(
 /** Original `types.ErrorCodeInvalidRequest`. */
 export const ERROR_CODE_INVALID_REQUEST = "invalid_request";
 
+/** Original `types.ErrorCodeModelPriceError`. */
+export const ERROR_CODE_MODEL_PRICE_ERROR = "model_price_error";
+
+/** Original `types.ErrorCodeConvertRequestFailed`. */
+export const ERROR_CODE_CONVERT_REQUEST_FAILED = "convert_request_failed";
+
+/** Original `types.ErrorCodeDoRequestFailed`. */
+export const ERROR_CODE_DO_REQUEST_FAILED = "do_request_failed";
+
+/** Original `types.ErrorCodeBadResponseBody`. */
+export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
+
 /** Original `types.ErrorTypeNewAPIError`. */
 export const ERROR_TYPE_NEW_API_ERROR = "new_api_error";
 
@@ -798,19 +810,27 @@ export function toClaudeRelayError(message: string): { type: string; message: st
 }
 
 /**
- * Original leftover Relay defer `c.JSON` gin.H after `GetAndValidateRequest`
- * `NewError(..., ErrorCodeInvalidRequest, 400)`:
+ * Original leftover Relay defer `c.JSON` gin.H for `newAPIError`
+ * (`GetAndValidateRequest`, `ModelPriceHelper`, convert/do_request/bad_response_body):
  * Claude `{type:"error",error:ToClaudeError()}`; else `{error:ToOpenAIError()}`.
  * Extra-OK: generated RequestId is not appended (hop 314); honor client header.
+ * Extra-OK: Claude `ToClaudeError` default type stays `new_api_error` (hop 349 envelope)
+ * even when OpenAI `error.type` is a `NewOpenAIError` code.
  */
-export function writeRelayNewAPIError(req: Request, status: number, message: string, code: string): Response {
+export function writeRelayNewAPIError(
+  req: Request,
+  status: number,
+  message: string,
+  code: string,
+  type = ERROR_TYPE_NEW_API_ERROR,
+): Response {
   const rid = req.headers.get("x-oneapi-request-id") || "";
   const msg = rid ? messageWithRequestId(message, rid) : message;
   const path = new URL(req.url).pathname;
   if (relayUsesClaudeError(path)) {
     return json(status, { type: "error", error: toClaudeRelayError(msg) });
   }
-  return openaiError(status, msg, code);
+  return openaiError(status, msg, code, type);
 }
 
 /** Original `service.RelayErrorHandler` + `ResetStatusCode`. */

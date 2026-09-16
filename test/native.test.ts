@@ -445,8 +445,10 @@ test("original Cohere, Dify, Coze, and Baidu ConvertOpenAIRequest JSON is sent u
       e,
     );
     assert.equal(cozeClaude.res.status, 500, cozeClaude.text);
+    assert.equal(cozeClaude.body.type, "error");
     assert.equal((cozeClaude.body.error as { message: string }).message, "not implemented");
-    assert.equal((cozeClaude.body.error as { code: string }).code, "convert_request_failed");
+    assert.equal((cozeClaude.body.error as { type: string }).type, "new_api_error");
+    assert.equal("code" in (cozeClaude.body.error as object), false);
 
     const cozeGemini = await json(
       new Request("http://local/v1beta/models/moonshot-v1-8k:generateContent", {

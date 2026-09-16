@@ -453,8 +453,10 @@ test("original Tencent, Mistral, Moka, Jina, SiliconFlow, and PaLM ConvertOpenAI
       e,
     );
     assert.equal(mistralClaude.res.status, 500, mistralClaude.text);
+    assert.equal(mistralClaude.body.type, "error");
     assert.equal((mistralClaude.body.error as { message: string }).message, "implement me");
-    assert.equal((mistralClaude.body.error as { code: string }).code, "convert_request_failed");
+    assert.equal((mistralClaude.body.error as { type: string }).type, "new_api_error");
+    assert.equal("code" in (mistralClaude.body.error as object), false);
 
     const palmClaude = await json(
       new Request("http://local/v1/messages", {

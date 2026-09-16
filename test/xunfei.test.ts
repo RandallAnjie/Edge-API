@@ -449,8 +449,10 @@ test("original Xunfei, Submodel, Replicate, Sub2API, NewAPI, and Jimeng ConvertO
       e,
     );
     assert.equal(jimengClaude.res.status, 500, jimengClaude.text);
+    assert.equal(jimengClaude.body.type, "error");
     assert.equal((jimengClaude.body.error as { message: string }).message, "not implemented");
-    assert.equal((jimengClaude.body.error as { code: string }).code, "convert_request_failed");
+    assert.equal((jimengClaude.body.error as { type: string }).type, "new_api_error");
+    assert.equal("code" in (jimengClaude.body.error as object), false);
 
     const replicateClaude = await json(
       new Request("http://local/v1/messages", {

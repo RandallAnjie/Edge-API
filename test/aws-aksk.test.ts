@@ -605,7 +605,9 @@ test("original AWS /v1/messages ConvertClaudeRequest URL image JSON is sent upst
       e,
     );
     assert.equal(fail.res.status, 500, fail.text);
-    assert.equal((fail.body.error as { code: string }).code, "convert_request_failed");
+    assert.equal(fail.body.type, "error");
+    assert.equal("code" in (fail.body.error as object), false);
+    assert.equal((fail.body.error as { type: string }).type, "new_api_error");
     assert.equal(
       (fail.body.error as { message: string }).message,
       "get file base64 from url failed: failed to download file, status code: 404",

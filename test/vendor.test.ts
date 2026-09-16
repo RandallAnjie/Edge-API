@@ -686,8 +686,10 @@ test("original xAI ConvertImageRequest JSON, ConvertClaudeRequest not available,
       e,
     );
     assert.equal(claude.res.status, 500, claude.text);
+    assert.equal(claude.body.type, "error");
     assert.equal((claude.body.error as { message: string }).message, "not available");
-    assert.equal((claude.body.error as { code: string }).code, "convert_request_failed");
+    assert.equal((claude.body.error as { type: string }).type, "new_api_error");
+    assert.equal("code" in (claude.body.error as object), false);
     assert.equal(calls.length, 1);
 
     const gemini = await json(
