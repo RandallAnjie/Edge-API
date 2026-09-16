@@ -36,6 +36,7 @@ import { globalApiRateLimit } from "./global-api-rate-limit.js";
 import { globalWebRateLimit } from "./global-web-rate-limit.js";
 import { withRelayNotFoundWebCache, withSpaCacheHeaders, withWebCacheHeaders } from "./web-cache.js";
 import { embedFolderExists, withIndexAnalytics } from "./index-analytics.js";
+import { emitSetUpLogger } from "./gin-logger.js";
 import { searchRateLimit, searchRateLimitApplies } from "./search-rate-limit.js";
 import { userCriticalRateLimit, userCriticalRateLimitScope } from "./user-critical-rate-limit.js";
 import { modelRequestRateLimitApplies, withModelRequestRateLimit } from "./model-rate-limit.js";
@@ -781,6 +782,8 @@ async function limitedSystemPerformanceBeforeAuth(
 
 async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
   rememberRequestTrustedProxies(req, env);
+  const inbound = req;
+  const startedMs = performance.now();
   const requestId = requestIdFor(req);
   let res: Response;
   try {
@@ -808,7 +811,17 @@ async function handleFetch(req: Request, env: Env, ctx: ExecutionContextLike): P
     }
   }
   res = await withGzipResponse(req, res);
-  return withRequestIdAndVersionHeaders(res, requestId, newApiVersion(env));
+  res = withRequestIdAndVersionHeaders(res, requestId, newApiVersion(env));
+  const path = new URL(inbound.url).pathname;
+  emitSetUpLogger({
+    req: inbound,
+    env,
+    res,
+    requestId,
+    startedMs,
+    registeredRelay: isRegisteredRelay(inbound.method, path),
+  });
+  return res;
 }
 
 async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
