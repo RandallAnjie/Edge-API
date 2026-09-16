@@ -269,15 +269,10 @@ test("original recordUserSecurityAudit leftover 2FA self JSON", async () => {
   );
 
   const notEnabledRid = "twofa-security-audit-disable-fail-1";
-  const notEnabledProof = await passwordProof(e, disableAuth, "2fa.disable");
   const notEnabled = await json(
     new Request("http://local/api/user/2fa/disable", {
       method: "POST",
-      headers: {
-        ...disableAuth,
-        "X-Security-Proof": notEnabledProof.proof_token,
-        "x-oneapi-request-id": notEnabledRid,
-      },
+      headers: { ...disableAuth, "x-oneapi-request-id": notEnabledRid },
     }),
     e,
   );
@@ -291,15 +286,10 @@ test("original recordUserSecurityAudit leftover 2FA self JSON", async () => {
 test("original recordUserSecurityAudit leftover passkey register/delete JSON", async () => {
   const { e, auth } = await boot();
   const missingRid = "passkey-security-audit-delete-missing-1";
-  const missingProof = await passwordProof(e, auth, "passkey.delete");
   const missing = await json(
     new Request("http://local/api/user/passkey", {
       method: "DELETE",
-      headers: {
-        ...auth,
-        "X-Security-Proof": missingProof.proof_token,
-        "x-oneapi-request-id": missingRid,
-      },
+      headers: { ...auth, "x-oneapi-request-id": missingRid },
     }),
     e,
   );
