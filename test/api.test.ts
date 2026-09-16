@@ -228,7 +228,7 @@ test("2FA setup then login challenge", async () => {
     e,
   );
   assert.equal(en.body.success, true, en.body.message);
-  assert.ok(Array.isArray(en.body.data.backup_codes));
+  assert.equal("backup_codes" in en.body.data, false);
   assert.equal(typeof en.body.data.access_token, "string");
   assert.equal(en.body.data.token_type, "Bearer");
   assert.equal(typeof en.body.data.session.sid, "string");

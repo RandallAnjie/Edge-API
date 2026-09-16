@@ -18,6 +18,8 @@ import {
   verifyTotp,
   verifyTwoFactorCode,
   ERR_VERIFICATION_FAILED,
+  ERR_TWOFA_CODE_INVALID,
+  ERR_TWOFA_SETUP_INVALID,
 } from "./totp.js";
 import { notifyAccountSecurityChange, sendMail, sixDigitCode, validateAccountEmail, normalizeEmail } from "./mail.js";
 import { newChallenge, rpFromRequest, verifyAssertion } from "./passkey.js";
@@ -380,6 +382,7 @@ export function registerMore(r: Router<Env>): void {
       user_id: u.id,
       expires_at: expiresAt,
       payload: JSON.stringify({ secret, backup_codes: codes }),
+      session_id: proof.sessionId,
     });
     const issuer = (await s.option("SystemName")) || "Edge API";
     const qr = otpauthUrl(secret, u.username, issuer);
@@ -395,34 +398,59 @@ export function registerMore(r: Router<Env>): void {
 
   r.post("/api/user/2fa/enable", async (c) => {
     const s = store(c);
-    const u = await requireUser(c, s);
-    if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { code?: string; flow_token?: string };
-    const user = await s.getUserById(u.id);
-    if (!user) return apiFail("用户不存在");
-    if (!body.flow_token) return apiFailCode("The two-factor setup has expired or changed. Start setup again.", "TWOFA_SETUP_INVALID");
-    const flow = await s.getAuthFlow(body.flow_token);
-    if (!flow || flow.type !== "2fa_setup" || flow.user_id !== u.id || flow.expires_at < nowSec()) {
-      return apiFailCode("The two-factor setup has expired or changed. Start setup again.", "TWOFA_SETUP_INVALID");
+    const identity = await dashboardIdentity(c, s);
+    if (!identity) return writeAuthSessionError(401, "AUTH_UNAUTHORIZED");
+    let body: { code?: unknown; flow_token?: unknown };
+    try {
+      const raw = await c.req.text();
+      if (!raw.trim()) return apiErrorMsg("参数错误");
+      body = JSON.parse(raw) as { code?: unknown; flow_token?: unknown };
+    } catch {
+      return apiErrorMsg("参数错误");
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return apiErrorMsg("参数错误");
+    if ("code" in body && body.code != null && typeof body.code !== "string") return apiErrorMsg("参数错误");
+    if ("flow_token" in body && body.flow_token != null && typeof body.flow_token !== "string") return apiErrorMsg("参数错误");
+    const flowToken = typeof body.flow_token === "string" ? body.flow_token : "";
+    const code = typeof body.code === "string" ? body.code : "";
+    const twoFASetupInvalid = () => writeSecurityOperationError("TWOFA_SETUP_INVALID", ERR_TWOFA_SETUP_INVALID, 409);
+    const flow = flowToken ? await s.getAuthFlow(flowToken) : null;
+    if (
+      !flow ||
+      flow.type !== "2fa_setup" ||
+      Number(flow.user_id) !== identity.userId ||
+      String(flow.session_id || "") !== identity.sessionId ||
+      flow.expires_at < nowSec() ||
+      Number(flow.consumed_at || 0) > 0
+    ) {
+      return twoFASetupInvalid();
     }
     const payload = parseJson<{ secret?: string; backup_codes?: string[] }>(flow.payload, {});
     const secret = payload.secret || "";
-    const codes = payload.backup_codes;
-    await s.deleteAuthFlow(body.flow_token);
-    if (!secret) return apiFailCode("The two-factor setup has expired or changed. Start setup again.", "TWOFA_SETUP_INVALID");
-    if (!(await verifyTotp(secret, body.code || ""))) return apiFail("验证码错误");
-    const backup = codes || generateBackupCodes();
-    await s.updateUser(u.id, {
+    if (!secret) return twoFASetupInvalid();
+    const numeric = validateNumericCode(code);
+    if (!numeric || !(await verifyTotp(secret, numeric))) {
+      return writeSecurityOperationError("TWOFA_CODE_INVALID", ERR_TWOFA_CODE_INVALID);
+    }
+    const consumed = await s.consumeAuthFlow(flowToken, {
+      type: "2fa_setup",
+      user_id: identity.userId,
+      session_id: identity.sessionId,
+    });
+    if (consumed !== "ok") return twoFASetupInvalid();
+    const user = await s.getUserById(identity.userId);
+    if (!user) return writeAuthSessionError(401, "AUTH_UNAUTHORIZED");
+    const backup = payload.backup_codes || generateBackupCodes();
+    await s.updateUser(identity.userId, {
       totp_secret: secret,
       totp_enabled: 1,
       totp_backup: backup.join(","),
       totp_failed_attempts: 0,
       totp_locked_until: 0,
     });
-    const fresh = await s.getUserById(u.id);
-    const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "twofa_enabled", u.sid);
+    const fresh = await s.getUserById(identity.userId);
+    const issued = await issueSessionSafe(s, c.env, fresh || user, c.req, "twofa_enabled", identity.sessionId);
     if (issued instanceof Response) return issued;
-    issued.data.backup_codes = backup;
     return sessionResponse(issued);
   });
 

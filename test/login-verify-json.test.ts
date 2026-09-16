@@ -173,6 +173,7 @@ test("original VerifyLogin JSON uses flow payload login_method and security erro
   assert.equal(badCode.body.success, false);
   assert.equal(badCode.body.code, "SECURITY_VERIFICATION_FAILED");
   assert.equal(badCode.body.message, "Verification failed. Please try again.");
+  assert.equal("data" in badCode.body, false);
   assert.equal(JSON.stringify(badCode.body).includes("验证码错误"), false);
 
   const done = await json(
@@ -201,6 +202,7 @@ test("original VerifyLogin JSON uses flow payload login_method and security erro
   assert.equal(replay.body.success, false);
   assert.equal(replay.body.code, "AUTH_FLOW_INVALID");
   assert.equal(replay.body.message, "Verification flow expired");
+  assert.equal("data" in replay.body, false);
   assert.equal(setCookies(replay.res).length, 0);
 
   const aliasChallenge = await json(

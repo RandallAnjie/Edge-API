@@ -178,6 +178,7 @@ test("original EmailBindStart/Finish JSON: EmailBindingData, old_code, hashed co
     assert.equal(tooSoon.res.status, 429);
     assert.equal(tooSoon.body.code, "EMAIL_BINDING_RESEND_WAIT");
     assert.equal(tooSoon.body.message, "Please wait before requesting another verification code.");
+    assert.equal("data" in tooSoon.body, false);
 
     const missingOld = await json(
       new Request("http://local/api/oauth/email/bind", {
@@ -190,6 +191,7 @@ test("original EmailBindStart/Finish JSON: EmailBindingData, old_code, hashed co
     assert.equal(missingOld.body.success, false);
     assert.equal(missingOld.body.code, "EMAIL_BINDING_CODE_INVALID");
     assert.equal(missingOld.body.message, "Email verification code is incorrect.");
+    assert.equal("data" in missingOld.body, false);
 
     const finished = await json(
       new Request("http://local/api/oauth/email/bind", {

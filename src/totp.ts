@@ -9,6 +9,10 @@ export const ERR_VERIFICATION_LOCKED = "Two-factor authentication is temporarily
 export const ERR_VERIFICATION_FAILED = "Verification failed. Please try again.";
 /** Original `model.ErrTwoFANotEnabled` via `writeSecurityOperationError`. */
 export const ERR_TWOFA_NOT_ENABLED = "Two-factor authentication is not enabled.";
+/** Original `model.ErrTwoFASetupInvalid`. */
+export const ERR_TWOFA_SETUP_INVALID = "The two-factor setup has expired or changed. Start setup again.";
+/** Original `model.ErrTwoFACodeInvalid`. */
+export const ERR_TWOFA_CODE_INVALID = "The authenticator code is incorrect.";
 /** Original `common.BackupCodeLength`. */
 const BACKUP_CODE_LENGTH = 8;
 
