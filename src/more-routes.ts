@@ -1407,7 +1407,7 @@ export function registerMore(r: Router<Env>): void {
       );
       return apiOk(pageData(items.map(publicToken), total, q));
     } catch (e) {
-      return apiFail(e instanceof Error ? e.message : String(e));
+      return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
   });
 
@@ -1426,9 +1426,9 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { ids?: number[] };
-    if (!body.ids?.length) return apiFail("无效的参数");
-    const n = await s.deleteTokensBatch(u.id, body.ids);
+    const ids = bindTokenBatchIds(c.req, await c.req.text());
+    if (ids instanceof Response) return ids;
+    const n = await s.deleteTokensBatch(u.id, ids);
     return apiOk(n);
   });
 
@@ -1436,11 +1436,13 @@ export function registerMore(r: Router<Env>): void {
     const s = store(c);
     const u = await requireUser(c, s);
     if (isResponse(u)) return u;
-    const body = (await readJson(c.req)) as { ids?: number[] };
-    if (!body.ids?.length) return apiFail("无效的参数");
-    if (body.ids.length > 100) return apiFail("批量请求数量过多，最多 100 条");
+    const ids = bindTokenBatchIds(c.req, await c.req.text());
+    if (ids instanceof Response) return ids;
+    if (ids.length > 100) {
+      return apiErrorMsg(i18nPair(c.req, "批量请求数量过多，最多 100 条", "Too many items in batch request, maximum is 100"));
+    }
     const keys: Record<string, string> = {};
-    for (const id of body.ids) {
+    for (const id of ids) {
       const t = await s.getTokenById(id, u.id);
       if (t) keys[String(id)] = t.key;
     }
@@ -2374,6 +2376,25 @@ async function bindPasswordResetRequest(req: Request): Promise<{ email: string; 
     email: rec.email == null ? "" : String(rec.email),
     token: rec.token == null ? "" : String(rec.token),
   };
+}
+
+/** Original `controller.TokenBatch` `ShouldBindJSON`; empty ids is `MsgInvalidParams`. */
+function bindTokenBatchIds(req: Request, raw: string): number[] | Response {
+  const invalid = () => apiFailInvalidParams(req);
+  if (!raw.trim()) return invalid();
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return invalid();
+  if (parsed.value === null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) return invalid();
+  const ids = (parsed.value as { ids?: unknown }).ids;
+  if (ids == null) return invalid();
+  if (!Array.isArray(ids)) return invalid();
+  const out: number[] = [];
+  for (const id of ids) {
+    if (typeof id !== "number" || !Number.isInteger(id)) return invalid();
+    out.push(id);
+  }
+  if (!out.length) return invalid();
+  return out;
 }
 
 /** Original `DeleteRedemptionBatch` `ShouldBindJSON` `ids` `required,min=1,max=1000,dive,gt=0`. */

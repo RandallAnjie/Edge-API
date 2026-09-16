@@ -2296,7 +2296,7 @@ test("original FetchUpstreamRatios, UpdateChannel, email, sessions, token batch,
     }),
     e,
   );
-  assert.equal(tooMany.body.message, "批量请求数量过多，最多 100 条");
+  assert.equal(tooMany.body.message, "Too many items in batch request, maximum is 100");
 
   const logStat = await json(new Request("http://local/api/log/stat", { headers: auth }), e);
   const ls = logStat.body.data as { quota: number; rpm: number; tpm: number };
