@@ -285,6 +285,18 @@ Material changes from upstream:
   vendor.create/delete fallback tests stay unchanged. Extra-OK: audit
   write failure must not fail the request. requireUser/requireAdmin/requireRoot
   and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on AddChannel `channel.create` (“Created channel ${name} (type ${type},
+  count ${count})”). Params are `name`/`type`/`count` plus
+  `base_url_source=plugin_default` when a task-plugin channel has an empty
+  BaseURL. Category `operation`, `other.op` + `other.admin_info` (no
+  `audit_info`), Status 200 Success true, then `markAuditLogged`. Failed
+  writes (unsupported mode) still use generic `finishAdminAudit`. Extra-OK:
+  unwrapped `{name,type,key,mode}` bodies and success `data.id` stay as
+  existing tests require. Extra-OK: hop 323 vendor.create/delete fallback
+  tests stay unchanged. Extra-OK: audit write failure must not fail the
+  request. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
   Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
   When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
   429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).

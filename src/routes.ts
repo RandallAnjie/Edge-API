@@ -1196,8 +1196,11 @@ export function adminRouter(): Router<Env> {
       return apiErrorMsg(e instanceof Error ? e.message : String(e));
     }
     const prefixName = Boolean(body.batch_add_set_key_prefix_2_name) && expanded.keys.length > 1;
+    const baseURLFromPluginDefault =
+      Number(ch.type) === CHANNEL_TYPE_TASK_PLUGIN && !String(ch.base_url ?? fields.base_url ?? "").trim();
     let id = 0;
     let count = 0;
+    let auditName = String(fields.name || "");
     for (const key of expanded.keys) {
       if (!key) continue;
       let name = String(fields.name || "");
@@ -1208,15 +1211,21 @@ export function adminRouter(): Router<Env> {
       id = await s.insertChannel({
         ...fields,
         name,
-        key: mode === "multi_to_single" ? expanded.key : key,
+        key: mode === "multi_to_single" ? expanded.key : key;
         channel_info: expanded.multiKey
           ? stringifyChannelInfo(multiKeyInfoFromKeys(expanded.key.split("\n").filter(Boolean), String(body.multi_key_mode || "random")))
           : "",
       });
       count += 1;
+      auditName = name;
     }
-    await s.audit(u.id, u.username, "channel.create", `create channel ${fields.name}`, clientIp(c.req));
-    markAuditLogged(c.req);
+    const createAudit: Record<string, unknown> = {
+      name: auditName,
+      type: Number(fields.type || 1),
+      count,
+    };
+    if (baseURLFromPluginDefault) createAudit.base_url_source = "plugin_default";
+    await recordManageAudit(s, c.req, u, "channel.create", createAudit);
     return apiOk({ id, count });
   });
 

@@ -346,13 +346,10 @@ test("original finishAdminAudit skips markAuditLogged, records generic, and PAT 
   );
   assert.equal(created.body.success, true, String(created.body.message));
   const chEvents = await auditsFor(e, auth, chRid);
-  assert.equal(chEvents.length, 0, JSON.stringify(chEvents));
-  const listed = await json(new Request("http://local/api/audit?page_size=100", { headers: auth }), e);
-  const allItems = ((listed.body.data as { items: AuditItem[] }).items || []) as AuditItem[];
-  assert.ok(
-    allItems.some((row) => row.action === "channel.create" || row.category === "channel.create"),
-    "handler channel.create audit missing",
-  );
+  const chOp = operationEvent(chEvents);
+  assert.equal(chOp.action, "channel.create");
+  assert.notEqual(chOp.action, "generic");
+  assert.equal(chOp.other.audit_info, undefined);
 
   const genRid = "admin-audit-generic-1";
   const resetStats = await json(
