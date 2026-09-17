@@ -628,6 +628,36 @@ export function ollamaResponseUnmarshalError(text: string, mode: string): string
 }
 
 /**
+ * Original `zhipu_4v.zhipu4vImageHandler` `common.Unmarshal` (`NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Chat / embeddings / responses use
+ * `openai.Adaptor.DoResponse`. Claude format uses `claude.Adaptor.DoResponse`.
+ * Audio Convert is `"not implemented"` before DoResponse.
+ */
+export function usesZhipuV4ImageUnmarshal(channelType: number, mode: string): boolean {
+  return channelType === CHANNEL_TYPE_ZHIPU_V4 && mode === "images";
+}
+
+/** Original `common.Unmarshal` target type name for Zhipu v4 images. */
+export function zhipuV4ImageUnmarshalTypeName(): string {
+  return "zhipu_4v.zhipuImageResponse";
+}
+
+/**
+ * Original `common.Unmarshal` into `zhipu_4v.zhipuImageResponse`. Syntax errors
+ * match `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function zhipuV4ImageResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${zhipuV4ImageUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */
