@@ -1005,7 +1005,8 @@ export function adminRouter(): Router<Env> {
       params.from = existing!.status;
       params.to = Number(body.status);
       setTokenAuditSucceeded(c.req);
-      return apiOk(null);
+      const updated = await s.getTokenById(id, u.id);
+      return apiOk(updated ? publicToken(updated) : null);
     }
     const previous = snapshotTokenAuditFields(existing!);
     const patch: Record<string, unknown> = {};
@@ -1044,7 +1045,8 @@ export function adminRouter(): Router<Env> {
     params.name = next.name;
     params.changed_fields = tokenUpdateChangedFields(previous, next);
     setTokenAuditSucceeded(c.req);
-    return apiOk(null, "更新成功");
+    const updated = await s.getTokenById(id, u.id);
+    return apiOk(updated ? publicToken(updated) : null);
   });
 
   r.slash("DELETE", "/api/token/:id/", async (c) => {
