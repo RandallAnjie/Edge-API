@@ -1917,7 +1917,8 @@ export function advancedCustomGeminiResponseUnmarshalError(text: string): string
  * `unmarshal Gemini stream response: %w` then `NewOpenAIError`
  * `ErrorCodeBadResponseBody` into `dto.GeminiChatResponse`). OpenAI-shaped
  * inbound stream stays Extra-OK `OaiStreamHandler` log/continue. Responses
- * stream stays `GeminiResponsesStreamHandler` (later hop). Extra-OK: hop 420
+ * stream stays `GeminiResponsesStreamHandler` (hop 440 typically
+ * `FailResponsesStream`). Extra-OK: hop 420
  * non-stream `GeminiChatHandler` stays. Extra-OK: hop 423 Gemini channel stream
  * stays. Extra-OK: hop 436 Claude stream stays.
  */

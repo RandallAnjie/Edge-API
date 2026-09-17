@@ -1291,7 +1291,8 @@ export function geminiChatEmptyCandidatesError(
  * Extra-OK: nested field type mismatches are left to convert (original fails).
  * Stream uses `geminiStreamHandler` wrap `unmarshal Gemini stream response: %w`
  * then `NewOpenAIError` (hop 423). Extra-OK: `GeminiResponsesStreamHandler`
- * may `FailResponsesStream` instead of leftover gin.H (later hop).
+ * typically `FailResponsesStream` (hop 440 leftover `NewOpenAIError` when
+ * unhandled).
  */
 export function geminiChatResponseUnmarshalError(text: string): string | null {
   const parsed = goUnmarshalJSON(text);
@@ -1308,11 +1309,12 @@ export function geminiChatResponseUnmarshalError(text: string): string | null {
  * `GeminiTextGenerationStreamHandler` → `geminiStreamHandler`
  * (`UnmarshalJsonStr` wrap `unmarshal Gemini stream response: %w` then
  * `NewOpenAIError` `ErrorCodeBadResponseBody` into `dto.GeminiChatResponse`).
- * `GeminiResponsesStreamHandler` also calls `geminiStreamHandler` but may
- * `FailResponsesStream` instead of leftover gin.H (later hop). Images /
- * embeddings / imagen / embedding models stay hop 350 Convert. Extra-OK: hop
- * 360 non-stream `GeminiChatHandler` stays. Extra-OK: hop 422 Claude stream
- * stays. Extra-OK: hop 421 responses-to-Gemini stays.
+ * `GeminiResponsesStreamHandler` also calls `geminiStreamHandler` then typically
+ * `FailResponsesStream` (hop 440 leftover `NewOpenAIError` when unhandled).
+ * Images / embeddings / imagen / embedding models stay hop 350 Convert.
+ * Extra-OK: hop 360 non-stream `GeminiChatHandler` stays. Extra-OK: hop 422
+ * Claude stream stays. Extra-OK: hop 421 responses-to-Gemini stays. Extra-OK:
+ * hop 439 ClaudeResponsesStreamHandler stays.
  */
 export function usesGeminiChatStreamUnmarshal(
   channelType: number,
@@ -1334,6 +1336,50 @@ export function usesGeminiChatStreamUnmarshal(
   if (channelType === CHANNEL_TYPE_GEMINI) return true;
   if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini") return true;
   return false;
+}
+
+/**
+ * Original `gemini.Adaptor.DoResponse` OpenAIResponses stream uses
+ * `GeminiResponsesStreamHandler` (`geminiStreamHandler` wrap
+ * `unmarshal Gemini stream response: %w` into `dto.GeminiChatResponse` then
+ * `FailResponsesStream("server_error", streamAPIError.Error(), "")`). Typical
+ * path is HTTP 200 SSE, not leftover gin.H. Leftover `NewOpenAIError`
+ * `ErrorCodeBadResponseBody` only when `FailResponsesStream` is unhandled.
+ * Extra-OK: hop 423 `GeminiChatStreamHandler` leftover gin.H stays. Extra-OK:
+ * hop 360 non-stream `GeminiChatHandler` stays. Extra-OK: hop 439 Claude
+ * responses stream stays. Extra-OK: replica convert always has
+ * `ChatToResponsesStreamState` so `FailResponsesStream` is handled for
+ * `/v1/responses`. Extra-OK: Vertex RequestModeGemini HTTP coverage stays later
+ * hop (predicate MATCH). Extra-OK: hop 421 non-stream responses-to-Gemini stays.
+ */
+export function usesGeminiResponsesStreamUnmarshal(
+  channelType: number,
+  mapped: string,
+  mode: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode !== "responses") return false;
+  if (mapped.startsWith("imagen")) return false;
+  if (
+    mapped.startsWith("text-embedding") ||
+    mapped.startsWith("embedding") ||
+    mapped.startsWith("gemini-embedding")
+  ) {
+    return false;
+  }
+  if (channelType === CHANNEL_TYPE_GEMINI) return true;
+  if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini") return true;
+  return false;
+}
+
+/**
+ * Original `GeminiResponsesStreamHandler` first invalid SSE `data:` payload.
+ * Same wrap as `geminiStreamHandler` / hop 423. `FailResponsesStream` then uses
+ * `NewOpenAIError.Error()` which is that wrap (no request-id append).
+ */
+export function geminiResponsesStreamSseUnmarshalError(text: string): string | null {
+  return geminiChatStreamSseUnmarshalError(text);
 }
 
 /**

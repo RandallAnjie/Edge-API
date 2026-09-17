@@ -20,6 +20,7 @@ import {
 import {
   groundingWebSearchQueries,
   GeminiToChatStreamState,
+  geminiChatResponseUnmarshalError,
   usageFromGeminiMetadata,
 } from "./gemini-response.js";
 import { hostedResponsesOutputJson, normalizeResponsesWebSearchAction } from "./hosted-response.js";
@@ -1822,8 +1823,9 @@ export function geminiSseToResponsesSse(
   const fallback = opts.fallbackPromptTokens || 0;
   const payloads = looksLikeSse(text) ? parseSseDataLines(text) : [text];
   for (const payload of payloads) {
-    const parsed = parseJsonObject(payload);
-    if (!parsed) return fail(new Error("unmarshal Gemini stream response"));
+    const unmarshalErr = geminiChatResponseUnmarshalError(payload);
+    if (unmarshalErr) return fail(new Error(`unmarshal Gemini stream response: ${unmarshalErr}`));
+    const parsed = parseJsonObject(payload) ?? {};
     hosted.observe(parsed);
     try {
       const chunks = geminiChat.convertChunk(parsed, opts.model, geminiStreamUsage(parsed, fallback));
