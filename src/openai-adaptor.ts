@@ -1937,7 +1937,8 @@ export function usesAwsAkskClaudeStreamUnmarshal(
  * `dto.ClaudeResponse`). Gemini RequestMode stays hop 360. OpenSource stays
  * hop 390. Audio / embeddings / responses Convert `"not implemented"` before
  * DoResponse (hop 350). ConvertRerank is `nil,nil` leftover. Extra-OK: hop 407
- * AWS API-key stays. Extra-OK: stream `ClaudeStreamHandler` later hop.
+ * AWS API-key stays. Stream stays hop 426 (`ClaudeStreamHandler`). Extra-OK:
+ * hop 425 AWS API-key stream stays. Extra-OK: hop 423 Gemini stream stays.
  */
 export function usesVertexClaudeUnmarshal(channelType: number, mode: string, model: string): boolean {
   if (channelType !== CHANNEL_TYPE_VERTEX) return false;
@@ -1966,6 +1967,25 @@ export function usesVertexClaudeUnmarshal(channelType: number, mode: string, mod
  */
 export function vertexClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original Vertex `RequestModeClaude` `vertex.Adaptor.DoResponse` stream
+ * delegates to `claude.Adaptor.DoResponse` (`ClaudeStreamHandler`
+ * `HandleStreamResponseData` `UnmarshalJsonStr` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). Gemini stream stays
+ * hop 423. OpenSource stream is Extra-OK OaiStreamHandler log/continue. Extra-OK:
+ * hop 408 non-stream `ClaudeHandler` stays. Extra-OK: hop 425 AWS API-key
+ * stream stays. Extra-OK: hop 422 Anthropic stream stays.
+ */
+export function usesVertexClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  model: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  return usesVertexClaudeUnmarshal(channelType, mode, model);
 }
 
 /**
