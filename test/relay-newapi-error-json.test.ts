@@ -30,9 +30,10 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
+  CHANNEL_TYPE_BAIDU,
   CHANNEL_TYPE_COHERE,
   CHANNEL_TYPE_GEMINI,
   CHANNEL_TYPE_JIMENG,
@@ -50,6 +51,7 @@ import {
 } from "../src/constants.js";
 import { MAX_TOKENS_LIMIT } from "../src/valid-request.js";
 import { Store } from "../src/store.js";
+import { clearBaiduAccessTokenCache } from "../src/baidu-convert.js";
 import { mergeModelRatio } from "./merge-model-ratio.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
@@ -3667,5 +3669,172 @@ test("original leftover Palm/Tencent/Zhipu Unmarshal gin.H does not change AUTH 
   );
   const vendorItemsHop373 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop373.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Baidu Unmarshal NewError gin.H", async () => {
+  assert.equal(usesBaiduUnmarshal(CHANNEL_TYPE_BAIDU, "chat"), true);
+  assert.equal(usesBaiduUnmarshal(CHANNEL_TYPE_BAIDU, "embeddings"), true);
+  assert.equal(usesBaiduUnmarshal(CHANNEL_TYPE_BAIDU, "images"), false);
+  assert.equal(usesBaiduUnmarshal(CHANNEL_TYPE_OPENAI, "chat"), false);
+  assert.equal(baiduResponseUnmarshalError("not-json", "chat"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    baiduResponseUnmarshalError("[]", "chat"),
+    "json: cannot unmarshal array into Go value of type baidu.BaiduChatResponse",
+  );
+  assert.equal(
+    baiduResponseUnmarshalError("[]", "embeddings"),
+    "json: cannot unmarshal array into Go value of type baidu.BaiduEmbeddingResponse",
+  );
+  assert.equal(baiduResponseUnmarshalError("null", "chat"), null);
+  assert.equal(baiduResponseUnmarshalError("{}", "chat"), null);
+
+  const chatHelper = writeRelayNewAPIError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop374-helper" } }),
+    500,
+    "invalid character 'o' looking for beginning of value",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(chatHelper.status, 500);
+  assert.deepEqual(await chatHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value (request id: hop374-helper)",
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  clearBaiduAccessTokenCache();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.119" });
+  await mergeModelRatio(new Store(e.DB), { "hop374-ernie": 1, "Embedding-hop374": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const baidu = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.120" },
+      body: JSON.stringify({
+        name: "hop374-baidu",
+        type: CHANNEL_TYPE_BAIDU,
+        key: "ak|sk-hop374",
+        models: "hop374-ernie,Embedding-hop374",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(baidu.body.success, true, baidu.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/oauth/2.0/token")) {
+      return new Response(JSON.stringify({ access_token: "bd-token", expires_in: 2592000 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const chatHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.121", "x-oneapi-request-id": "hop374-baidu-unmarshal" },
+        body: JSON.stringify({ model: "hop374-ernie", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatHit.res.status, 500, chatHit.text);
+    assert.equal("type" in chatHit.body && chatHit.body.type === "error", false, chatHit.text);
+    const chatErr = chatHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, "invalid character 'o' looking for beginning of value (request id: hop374-baidu-unmarshal)");
+    assert.equal(chatErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const chatArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.122", "x-oneapi-request-id": "hop374-baidu-array" },
+        body: JSON.stringify({ model: "hop374-ernie", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatArray.res.status, 500, chatArray.text);
+    const chatArrayErr = chatArray.body.error as { message: string };
+    assert.equal(
+      chatArrayErr.message,
+      "json: cannot unmarshal array into Go value of type baidu.BaiduChatResponse (request id: hop374-baidu-array)",
+    );
+
+    const embedHit = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.123", "x-oneapi-request-id": "hop374-baidu-embed" },
+        body: JSON.stringify({ model: "Embedding-hop374", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(embedHit.res.status, 500, embedHit.text);
+    const embedErr = embedHit.body.error as { message: string; type: string; code: string };
+    assert.equal(embedErr.message, "invalid character 'o' looking for beginning of value (request id: hop374-baidu-embed)");
+    assert.equal(embedErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(embedErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const embedArray = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.124", "x-oneapi-request-id": "hop374-baidu-embed-array" },
+        body: JSON.stringify({ model: "Embedding-hop374", input: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(embedArray.res.status, 500, embedArray.text);
+    const embedArrayErr = embedArray.body.error as { message: string };
+    assert.equal(
+      embedArrayErr.message,
+      "json: cannot unmarshal array into Go value of type baidu.BaiduEmbeddingResponse (request id: hop374-baidu-embed-array)",
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Baidu Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.125" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.126", "x-oneapi-request-id": "hop374-vendor-create" },
+      body: JSON.stringify({ name: "hop374-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop374-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop374 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop374.some((item) => item.action === "vendor.create"), listed.text);
 });
 

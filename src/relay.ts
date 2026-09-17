@@ -109,7 +109,7 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions } from "./openai-adaptor.js";
+import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import {
@@ -2847,6 +2847,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         return writeOpenaiHandlerUnmarshalError(opts.req, unmarshalErr);
       }
     }
+    if (usesBaiduUnmarshal(channel.type, mode)) {
+      const unmarshalErr = baiduResponseUnmarshalError(text, mode);
+      if (unmarshalErr) {
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
+        return writeRelayNewAPIError(opts.req, 500, unmarshalErr, ERROR_CODE_BAD_RESPONSE_BODY);
+      }
+    }
     let parsed: Record<string, unknown> = {};
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
@@ -2886,6 +2893,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       if (
         usesPalmTencentZhipuUnmarshal(channel.type, mode, tencentUsesNativeAdaptor(pickChannelKey(channel.key))) &&
+        (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
+      ) {
+        parsed = {};
+      }
+      if (
+        usesBaiduUnmarshal(channel.type, mode) &&
         (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
       ) {
         parsed = {};

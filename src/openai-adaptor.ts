@@ -285,6 +285,48 @@ export function palmTencentZhipuResponseUnmarshalError(text: string, channelType
 }
 
 /**
+ * Original `baidu.baiduHandler` / `baidu.baiduEmbeddingHandler` `json.Unmarshal`
+ * (`NewError` `ErrorCodeBadResponseBody`, not `NewOpenAIError`). Stream uses
+ * `baiduStreamHandler` (log/continue, not leftover gin.H).
+ */
+export function usesBaiduUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_BAIDU) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "images":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/** Original `json.Unmarshal` target type name for Baidu chat / embeddings. */
+export function baiduUnmarshalTypeName(mode: string): string {
+  if (mode === "embeddings") return "baidu.BaiduEmbeddingResponse";
+  return "baidu.BaiduChatResponse";
+}
+
+/**
+ * Original `json.Unmarshal` into `baidu.BaiduChatResponse` /
+ * `baidu.BaiduEmbeddingResponse`. Syntax errors match `encoding/json`. JSON
+ * `null` succeeds as a zero-value struct. Extra-OK: nested field type
+ * mismatches are left to convert (original fails).
+ */
+export function baiduResponseUnmarshalError(text: string, mode: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${baiduUnmarshalTypeName(mode)}`;
+  }
+  return null;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */
