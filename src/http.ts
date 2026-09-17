@@ -802,6 +802,12 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
 /** Original `types.ErrorCodeBadResponseStatusCode`. */
 export const ERROR_CODE_BAD_RESPONSE_STATUS_CODE = "bad_response_status_code";
 
+/** Original `types.ErrorCodeEmptyResponse`. */
+export const ERROR_CODE_EMPTY_RESPONSE = "empty_response";
+
+/** Original `types.ErrorCodePromptBlocked`. */
+export const ERROR_CODE_PROMPT_BLOCKED = "prompt_blocked";
+
 /** Original `types.ErrorTypeNewAPIError`. */
 export const ERROR_TYPE_NEW_API_ERROR = "new_api_error";
 
@@ -816,6 +822,42 @@ export function relayUsesClaudeError(path: string): boolean {
 /** Original `NewAPIError.ToClaudeError` default branch (omitempty, no param/code). */
 export function toClaudeRelayError(message: string): { type: string; message: string } {
   return { type: ERROR_TYPE_NEW_API_ERROR, message };
+}
+
+/**
+ * Original leftover `GeminiChatHandler` empty-candidates gin.H after `NewOpenAIError`
+ * + `ResetStatusCode`. Claude is `{type:"error",error:ToClaudeError()}` with
+ * `ErrorTypeOpenAIError` (`fmt.Sprintf("%v", OpenAIError.Code)`). Else
+ * `{error:ToOpenAIError()}` (`type`/`code` are the ErrorCode, `param:""`).
+ * Extra-OK: no MessageWithRequestId (GeminiChatHandler writes before Relay defer).
+ */
+export function writeGeminiChatEmptyCandidatesError(
+  req: Request,
+  status: number,
+  message: string,
+  code: string,
+): Response {
+  const path = new URL(req.url).pathname;
+  if (relayUsesClaudeError(path)) {
+    return json(status, { type: "error", error: { type: code, message } });
+  }
+  return openaiError(status, message, code, code);
+}
+
+/** Original `service.ResetStatusCode` for leftover GeminiChatHandler / GeminiResponsesHandler. */
+export function resetNewAPIErrorStatusCode(status: number, statusCodeMapping = ""): number {
+  if (status === 200) return status;
+  if (!statusCodeMapping || statusCodeMapping === "{}") return status;
+  try {
+    const mapping = JSON.parse(statusCodeMapping) as Record<string, unknown>;
+    const mappedVal = mapping[String(status)];
+    if (mappedVal == null) return status;
+    const n = typeof mappedVal === "number" ? mappedVal : Number(mappedVal);
+    if (Number.isInteger(n) && n >= 100 && n <= 599) return n;
+  } catch {
+    /* invalid mapping */
+  }
+  return status;
 }
 
 /**

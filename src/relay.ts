@@ -48,7 +48,7 @@ import {
   getOpenAISystemRoleName,
 } from "./convert.js";
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
-import { geminiUpstreamToOpenAIChat } from "./gemini-response.js";
+import { geminiChatEmptyCandidatesError, geminiUpstreamToOpenAIChat } from "./gemini-response.js";
 import { compactUuid, looksLikeSse } from "./openai-usage.js";
 import { convertAwsClaudeRequest, isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
 import { openAIHttpMediaDialect, prefetchOpenAIHttpMedia } from "./openai-media.js";
@@ -122,6 +122,7 @@ import {
   ERROR_CODE_INVALID_REQUEST,
   ERROR_TYPE_NEW_API_ERROR,
   getChannelRetryFailedMessage,
+  resetNewAPIErrorStatusCode,
   groupAccessDeniedMessage,
   json,
   modelNameRequiredMessage,
@@ -130,6 +131,7 @@ import {
   openaiError,
   relayErrorHandler,
   tokenModelForbiddenMessage,
+  writeGeminiChatEmptyCandidatesError,
   writeRelayNewAPIError,
 } from "./http.js";
 import { applyGetAndValidateRequest } from "./valid-request.js";
@@ -1427,6 +1429,21 @@ function attachSettleUsage(
   extra.cachedTokens = usage.cachedTokens;
   extra.promptCacheHitTokens = usage.promptCacheHitTokens;
   extra.billingUsage = billingUsageFromOpenAICounts(usage);
+}
+
+/**
+ * Original Gemini adaptor DoResponse uses GeminiChatHandler / GeminiResponsesHandler
+ * (not native GeminiTextGenerationHandler / imagen / embedding).
+ */
+function usesGeminiEmptyCandidatesHandler(channelType: number, mapped: string, mode: string): boolean {
+  if (mode === "gemini" || mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
+  if (mapped.startsWith("imagen")) return false;
+  if (mapped.startsWith("text-embedding") || mapped.startsWith("embedding") || mapped.startsWith("gemini-embedding")) {
+    return false;
+  }
+  if (channelType === CHANNEL_TYPE_GEMINI) return true;
+  if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini") return true;
+  return false;
 }
 
 /** Original adaptor request format after ConvertRequest; client format is InitRequestConversionChain. */
@@ -2777,6 +2794,34 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           status: 200,
           headers: { "content-type": ct || "application/json", "x-oneapi-request-id": rid },
         });
+      }
+    }
+    if (usesGeminiEmptyCandidatesHandler(channel.type, mapped, mode)) {
+      const empty = geminiChatEmptyCandidatesError(parsed);
+      if (empty) {
+        const status = resetNewAPIErrorStatusCode(empty.status, String(channel.status_code_mapping || ""));
+        if (mode === "responses") {
+          await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, empty.message.slice(0, 2000), extra);
+          return writeRelayNewAPIError(opts.req, status, empty.message, empty.code);
+        }
+        const usage = usageFromOpenAI(parsed);
+        attachSettleUsage(extra, usage);
+        await settle(
+          store,
+          auth,
+          channel,
+          model,
+          usage.prompt || promptEst,
+          usage.completion,
+          useTime,
+          false,
+          ip,
+          rid,
+          true,
+          "",
+          extra,
+        );
+        return writeGeminiChatEmptyCandidatesError(opts.req, status, empty.message, empty.code);
       }
     }
     if (channel.type === CHANNEL_TYPE_MINIMAX && mode === "audio_speech") {

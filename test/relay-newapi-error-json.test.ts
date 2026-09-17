@@ -9,18 +9,23 @@ import {
   ERROR_CODE_CHANNEL_INVALID_KEY,
   ERROR_CODE_CONVERT_REQUEST_FAILED,
   ERROR_CODE_DO_REQUEST_FAILED,
+  ERROR_CODE_EMPTY_RESPONSE,
   ERROR_CODE_GET_CHANNEL_FAILED,
   ERROR_CODE_INVALID_REQUEST,
   ERROR_CODE_MODEL_PRICE_ERROR,
+  ERROR_CODE_PROMPT_BLOCKED,
   ERROR_TYPE_NEW_API_ERROR,
   messageWithRequestId,
   noAvailableChannelRetryMessage,
   relayErrorHandler,
   relayUsesClaudeError,
+  resetNewAPIErrorStatusCode,
   toClaudeRelayError,
+  writeGeminiChatEmptyCandidatesError,
   writeRelayNewAPIError,
 } from "../src/http.js";
-import { CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_XUNFEI } from "../src/constants.js";
+import { geminiChatEmptyCandidatesError } from "../src/gemini-response.js";
+import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_XUNFEI } from "../src/constants.js";
 import { MAX_TOKENS_LIMIT } from "../src/valid-request.js";
 import { Store } from "../src/store.js";
 import { mergeModelRatio } from "./merge-model-ratio.js";
@@ -946,5 +951,204 @@ test("original leftover handleRelay GetAndValidate NewError does not change AUTH
   );
   const items = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(items.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover GeminiChatHandler empty-candidates gin.H", async () => {
+  const chatReq = new Request("http://local/v1/chat/completions", { method: "POST" });
+  const chatEmpty = writeGeminiChatEmptyCandidatesError(chatReq, 500, "empty response from Gemini API", ERROR_CODE_EMPTY_RESPONSE);
+  assert.equal(chatEmpty.status, 500);
+  const chatEmptyBody = (await chatEmpty.json()) as { error: Record<string, unknown> };
+  assert.equal("type" in chatEmptyBody, false);
+  assert.deepEqual(chatEmptyBody.error, {
+    message: "empty response from Gemini API",
+    type: ERROR_CODE_EMPTY_RESPONSE,
+    param: "",
+    code: ERROR_CODE_EMPTY_RESPONSE,
+  });
+
+  const claudeReq = new Request("http://local/v1/messages", { method: "POST" });
+  const claudeBlocked = writeGeminiChatEmptyCandidatesError(
+    claudeReq,
+    400,
+    "request blocked by Gemini API: SAFETY",
+    ERROR_CODE_PROMPT_BLOCKED,
+  );
+  assert.equal(claudeBlocked.status, 400);
+  const claudeBody = (await claudeBlocked.json()) as { type: string; error: Record<string, unknown> };
+  assert.equal(claudeBody.type, "error");
+  assert.deepEqual(Object.keys(claudeBody), ["type", "error"]);
+  assert.deepEqual(Object.keys(claudeBody.error).sort(), ["message", "type"]);
+  assert.equal("param" in claudeBody.error, false);
+  assert.equal("code" in claudeBody.error, false);
+  assert.deepEqual(claudeBody.error, {
+    type: ERROR_CODE_PROMPT_BLOCKED,
+    message: "request blocked by Gemini API: SAFETY",
+  });
+
+  assert.equal(resetNewAPIErrorStatusCode(500, '{"500":"503"}'), 503);
+  assert.equal(resetNewAPIErrorStatusCode(500, '{"500":503}'), 503);
+  assert.equal(resetNewAPIErrorStatusCode(400, '{"500":"503"}'), 400);
+  assert.deepEqual(geminiChatEmptyCandidatesError({ candidates: [] })?.code, ERROR_CODE_EMPTY_RESPONSE);
+  assert.deepEqual(geminiChatEmptyCandidatesError({})?.code, ERROR_CODE_EMPTY_RESPONSE);
+  assert.equal(geminiChatEmptyCandidatesError({ candidates: [{ content: {} }] }), null);
+  assert.equal(
+    geminiChatEmptyCandidatesError({ candidates: [], promptFeedback: { blockReason: "SAFETY" } })?.code,
+    ERROR_CODE_PROMPT_BLOCKED,
+  );
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.204" });
+  await mergeModelRatio(new Store(e.DB), { "gemini-1.0-pro": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.205" },
+      body: JSON.stringify({
+        name: "hop359-gemini",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey",
+        models: "gemini-1.0-pro",
+        group: "default",
+        status_code_mapping: JSON.stringify({ "500": "503" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("generativelanguage.googleapis.com")) return origFetch(input, init);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("block-me")) {
+      return new Response(JSON.stringify({ candidates: [], promptFeedback: { blockReason: "SAFETY" } }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ candidates: [] }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const empty = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.206", "x-oneapi-request-id": "hop359-chat-empty" },
+        body: JSON.stringify({ model: "gemini-1.0-pro", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(empty.res.status, 503, empty.text);
+    assert.equal("type" in empty.body && empty.body.type === "error", false, empty.text);
+    const emptyErr = empty.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(emptyErr.message, "empty response from Gemini API");
+    assert.equal(emptyErr.type, ERROR_CODE_EMPTY_RESPONSE);
+    assert.equal(emptyErr.param, "");
+    assert.equal(emptyErr.code, ERROR_CODE_EMPTY_RESPONSE);
+
+    const blocked = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.207" },
+        body: JSON.stringify({ model: "gemini-1.0-pro", messages: [{ role: "user", content: "block-me" }] }),
+      }),
+      e,
+    );
+    assert.equal(blocked.res.status, 400, blocked.text);
+    const blockedErr = blocked.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(blockedErr.message, "request blocked by Gemini API: SAFETY");
+    assert.equal(blockedErr.type, ERROR_CODE_PROMPT_BLOCKED);
+    assert.equal(blockedErr.param, "");
+    assert.equal(blockedErr.code, ERROR_CODE_PROMPT_BLOCKED);
+
+    const claude = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "192.0.2.208",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop359-claude-empty",
+        },
+        body: JSON.stringify({
+          model: "gemini-1.0-pro",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 503, claude.text);
+    assert.equal(claude.body.type, "error");
+    const claudeErr = claude.body.error as { type: string; message: string; code?: string; param?: string };
+    assert.equal(claudeErr.type, ERROR_CODE_EMPTY_RESPONSE);
+    assert.equal(claudeErr.message, "empty response from Gemini API");
+    assert.equal(claudeErr.code, undefined);
+    assert.equal(claudeErr.param, undefined);
+    assert.deepEqual(Object.keys(claudeErr).sort(), ["message", "type"]);
+
+    const responses = await send(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.209", "x-oneapi-request-id": "hop359-responses-empty" },
+        body: JSON.stringify({ model: "gemini-1.0-pro", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(responses.res.status, 503, responses.text);
+    const responsesErr = responses.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(responsesErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(responsesErr.code, ERROR_CODE_EMPTY_RESPONSE);
+    assert.equal(responsesErr.param, "");
+    assert.equal(responsesErr.message, messageWithRequestId("empty response from Gemini API", "hop359-responses-empty"));
+
+    const native = await send(
+      new Request("http://local/v1beta/models/gemini-1.0-pro:generateContent", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.210" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(native.res.status, 200, native.text);
+    assert.deepEqual(native.body.candidates, []);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover GeminiChatHandler gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.211" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.212", "x-oneapi-request-id": "hop359-vendor-create" },
+      body: JSON.stringify({ name: "hop359-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop359-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItems = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItems.some((item) => item.action === "vendor.create"), listed.text);
 });
 

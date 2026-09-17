@@ -1239,6 +1239,46 @@ export function geminiSseToOpenAIChat(sseText: string, opts: GeminiToOpenAIOpts 
   return { body, usage: latestUsage };
 }
 
+export type GeminiChatEmptyCandidatesError = {
+  status: number;
+  message: string;
+  code: string;
+  rejectReason: string;
+};
+
+/**
+ * Original `GeminiChatHandler` / `GeminiResponsesHandler` leftover when
+ * `len(Candidates)==0` after HTTP 200 unmarshal (`promptFeedback.blockReason`
+ * → `prompt_blocked` HTTP 400; else `empty_response` HTTP 500).
+ * Extra-OK: non-array `candidates` is left to convert/unmarshal (original fails).
+ */
+export function geminiChatEmptyCandidatesError(
+  parsed: Record<string, unknown>,
+): GeminiChatEmptyCandidatesError | null {
+  const candidates = parsed.candidates;
+  if (candidates != null && !Array.isArray(candidates)) return null;
+  if (Array.isArray(candidates) && candidates.length > 0) return null;
+  const feedback =
+    parsed.promptFeedback && typeof parsed.promptFeedback === "object" && !Array.isArray(parsed.promptFeedback)
+      ? (parsed.promptFeedback as Record<string, unknown>)
+      : null;
+  const blockReason = feedback ? feedback.blockReason : undefined;
+  if (typeof blockReason === "string") {
+    return {
+      status: 400,
+      message: "request blocked by Gemini API: " + blockReason,
+      code: "prompt_blocked",
+      rejectReason: `gemini_block_reason=${blockReason}`,
+    };
+  }
+  return {
+    status: 500,
+    message: "empty response from Gemini API",
+    code: "empty_response",
+    rejectReason: "gemini_empty_candidates",
+  };
+}
+
 export function geminiUpstreamToOpenAIChat(
   text: string,
   model: string,
