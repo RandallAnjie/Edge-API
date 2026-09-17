@@ -1145,7 +1145,7 @@ export function aliImageResponseUnmarshalError(text: string): string | null {
  * Audio transcription / translation Convert `"unsupported audio relay mode"`
  * before DoResponse (hop 350). Extra-OK: ConvertRerankRequest `nil, nil`
  * rerank Unmarshal stays leftover. Extra-OK: ConvertGeminiRequest
- * `"not implemented"` stays hop 350. Extra-OK: hop 397 Ali image stays.
+ * `"not implemented"` stays hop 350. Extra-OK: hop 397 Ali image stays. Extra-OK: hop 456 Volc `handleTTSResponse` leftover stays.
  */
 export function usesVolcUnmarshal(channelType: number, mode: string): boolean {
   if (channelType !== CHANNEL_TYPE_VOLC) return false;
@@ -2643,7 +2643,8 @@ export function replicateResponseUnmarshalError(text: string): string | null {
  * Original `minimax.handleTTSResponse` `json.Unmarshal` (`NewErrorWithStatusCode`
  * `ErrorCodeBadResponseBody` HTTP 500, wrap `"failed to unmarshal minimax TTS
  * response: %w"`). Chat / images use other DoResponse handlers. Extra-OK:
- * `base_resp` / empty audio stay hop 356 `bad_response` HTTP 400.
+ * `base_resp` / empty audio stay hop 356 `bad_response` HTTP 400. Extra-OK:
+ * hop 456 Volc `handleTTSResponse` leftover stays generic parse message.
  */
 export function usesMiniMaxTTSUnmarshal(channelType: number, mode: string): boolean {
   return channelType === CHANNEL_TYPE_MINIMAX && mode === "audio_speech";

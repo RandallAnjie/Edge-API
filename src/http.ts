@@ -923,7 +923,8 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * `zhipu4vImageHandler` unmarshal also uses this envelope. Extra-OK: Replicate
  * `Adaptor.DoResponse` unmarshal uses `NewError` + `writeRelayNewAPIError`
  * instead. Extra-OK: MiniMax `handleTTSResponse` unmarshal uses `NewError` +
- * `writeRelayNewAPIError` instead. Extra-OK: AWS Nova `handleNovaRequest`
+ * `writeRelayNewAPIError` instead. Extra-OK: Volc `handleTTSResponse` unmarshal uses
+ * `NewErrorWithStatusCode` + `writeRelayNewAPIError` instead (hop 456). Extra-OK: AWS Nova `handleNovaRequest`
  * unmarshal uses `NewError` + `writeRelayNewAPIError` instead.
  */
 export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {
@@ -1030,7 +1031,10 @@ export function resetNewAPIErrorStatusCode(status: number, statusCodeMapping = "
  * Claude `{type:"error",error:ToClaudeError()}`; else `{error:ToOpenAIError()}`.
  * Extra-OK: generated RequestId is not appended (hop 314); honor client header.
  * Extra-OK: Claude `ToClaudeError` default type stays `new_api_error` (hop 349 envelope)
- * even when OpenAI `error.type` is a `NewOpenAIError` code.
+ * even when OpenAI `error.type` is a `NewOpenAIError` code. Extra-OK: hop 456 Volc
+ * `handleTTSResponse` leftover Unmarshal uses this envelope (`NewErrorWithStatusCode`
+ * generic `"failed to parse volcengine response"`, discards encoding/json details).
+ * Extra-OK: hop 384 MiniMax TTS wrap stays. Extra-OK: hop 398 Volc chat leftover stays.
  */
 export function writeRelayNewAPIError(
   req: Request,

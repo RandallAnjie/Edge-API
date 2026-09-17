@@ -30,6 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiEmbeddingResponseUnmarshalError, geminiImageResponseUnmarshalError, geminiResponsesStreamSseUnmarshalError, nativeGeminiEmbeddingResponseUnmarshalError, usesGeminiChatStreamUnmarshal, usesGeminiEmbeddingUnmarshal, usesGeminiImageUnmarshal, usesGeminiResponsesStreamUnmarshal, usesNativeGeminiEmbeddingUnmarshal } from "../src/gemini-response.js";
+import { usesVolcTTSUnmarshal, volcTtsResponseUnmarshalError, VOLC_TTS_PARSE_ERROR } from "../src/volc-tts.js";
 import { claudeSseToResponsesSse, geminiSseToResponsesSse, oaiChatSseToResponsesSse } from "../src/responses-stream.js";
 import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesAdvancedCustomClaudeUnmarshal, usesAdvancedCustomClaudeStreamUnmarshal, usesAdvancedCustomGeminiUnmarshal, usesAdvancedCustomGeminiEmbeddingUnmarshal, usesAdvancedCustomGeminiImageUnmarshal, usesAdvancedCustomGeminiStreamUnmarshal, usesAdvancedCustomGeminiResponsesStreamUnmarshal, advancedCustomGeminiResponsesStreamSseUnmarshalError, usesOaiChatToResponsesStreamUnmarshal, oaiChatToResponsesStreamSseUnmarshalError, usesOaiChatToResponsesUnmarshal, oaiChatToResponsesResponseUnmarshalError, usesOaiResponsesToChatStreamUnmarshal, oaiResponsesToChatStreamSseUnmarshalError, usesOaiResponsesToChatUnmarshal, oaiResponsesToChatResponseUnmarshalError, usesOaiResponsesToChatBufferedStreamUnmarshal, oaiResponsesToChatBufferedStreamSseUnmarshalError, usesOpenaiImageJSONAsStreamUnmarshal, openaiImageJSONAsStreamResponseUnmarshalError, usesCodexUnmarshal, usesClaudeHandlerUnmarshal, usesClaudeStreamUnmarshal, usesClaudeResponsesStreamUnmarshal, claudeResponsesStreamSseUnmarshalError, usesAwsClaudeUnmarshal, usesAwsClaudeStreamUnmarshal, usesAwsAkskClaudeUnmarshal, usesAwsAkskClaudeStreamUnmarshal, usesVertexClaudeUnmarshal, usesVertexClaudeStreamUnmarshal, usesMoonshotClaudeUnmarshal, usesMoonshotClaudeStreamUnmarshal, usesMiniMaxClaudeUnmarshal, usesMiniMaxClaudeStreamUnmarshal, usesDeepseekClaudeUnmarshal, usesDeepseekClaudeStreamUnmarshal, usesZhipuV4ClaudeUnmarshal, usesZhipuV4ClaudeStreamUnmarshal, usesNewApiClaudeUnmarshal, usesNewApiClaudeStreamUnmarshal, usesSub2apiClaudeUnmarshal, usesSub2apiClaudeStreamUnmarshal, usesOllamaClaudeUnmarshal, usesOllamaClaudeStreamUnmarshal, usesOllamaStreamUnmarshal, ollamaStreamUnmarshalError, usesAliClaudeUnmarshal, usesAliClaudeStreamUnmarshal, usesVolcClaudeUnmarshal, usesVolcClaudeStreamUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, advancedCustomClaudeResponseUnmarshalError, advancedCustomGeminiResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, claudeStreamSseUnmarshalError, awsClaudeResponseUnmarshalError, awsAkskClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
@@ -18225,4 +18226,194 @@ test("original leftover Vertex RequestModeGemini stream imagen Unmarshal gin.H d
   );
   const vendorItemsHop455 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop455.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Volc handleTTSResponse Unmarshal NewError gin.H", async () => {
+  assert.equal(usesVolcTTSUnmarshal(CHANNEL_TYPE_VOLC, "audio_speech"), true);
+  assert.equal(usesVolcTTSUnmarshal(CHANNEL_TYPE_VOLC, "chat"), false);
+  assert.equal(usesVolcTTSUnmarshal(CHANNEL_TYPE_VOLC, "images"), false);
+  assert.equal(usesVolcTTSUnmarshal(CHANNEL_TYPE_VOLC, "embeddings"), false);
+  assert.equal(usesVolcTTSUnmarshal(CHANNEL_TYPE_VOLC, "responses"), false);
+  assert.equal(usesVolcTTSUnmarshal(CHANNEL_TYPE_MINIMAX, "audio_speech"), false);
+  assert.equal(usesVolcTTSUnmarshal(CHANNEL_TYPE_OPENAI, "audio_speech"), false);
+  assert.equal(usesVolcUnmarshal(CHANNEL_TYPE_VOLC, "audio_speech"), false);
+  assert.equal(usesVolcUnmarshal(CHANNEL_TYPE_VOLC, "chat"), true);
+  assert.equal(usesMiniMaxTTSUnmarshal(CHANNEL_TYPE_MINIMAX, "audio_speech"), true);
+  assert.equal(usesMiniMaxTTSUnmarshal(CHANNEL_TYPE_VOLC, "audio_speech"), false);
+  assert.equal(volcTtsResponseUnmarshalError("not-json"), VOLC_TTS_PARSE_ERROR);
+  assert.equal(volcTtsResponseUnmarshalError("[]"), VOLC_TTS_PARSE_ERROR);
+  assert.equal(volcTtsResponseUnmarshalError("123"), VOLC_TTS_PARSE_ERROR);
+  assert.equal(volcTtsResponseUnmarshalError("true"), VOLC_TTS_PARSE_ERROR);
+  assert.equal(volcTtsResponseUnmarshalError('"str"'), VOLC_TTS_PARSE_ERROR);
+  assert.equal(volcTtsResponseUnmarshalError("null"), null);
+  assert.equal(volcTtsResponseUnmarshalError("{}"), null);
+  assert.equal(volcTtsResponseUnmarshalError("[]")?.includes("json: cannot unmarshal"), false);
+  assert.equal(volcTtsResponseUnmarshalError("[]")?.includes("volcengine.VolcengineTTSResponse"), false);
+
+  const ttsHelper = writeRelayNewAPIError(
+    new Request("http://local/v1/audio/speech", { headers: { "x-oneapi-request-id": "hop456-helper" } }),
+    500,
+    VOLC_TTS_PARSE_ERROR,
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(ttsHelper.status, 500);
+  assert.deepEqual(await ttsHelper.json(), {
+    error: {
+      message: messageWithRequestId(VOLC_TTS_PARSE_ERROR, "hop456-helper"),
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "198.51.100.227" });
+  await mergeModelRatio(new Store(e.DB), { "hop456-tts": 1, "hop456-volc": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const created = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.228" },
+      body: JSON.stringify({
+        name: "hop456-volc-tts",
+        type: CHANNEL_TYPE_VOLC,
+        key: "appid|token",
+        models: "hop456-tts,hop456-volc",
+        group: "default",
+        base_url: "https://tts.example",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("null-stay-hop456")) {
+      return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const ttsHit = await send(
+      new Request("http://local/v1/audio/speech", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.229", "x-oneapi-request-id": "hop456-volc-unmarshal" },
+        body: JSON.stringify({
+          model: "hop456-tts",
+          input: "hello",
+          voice: "alloy",
+          metadata: { request: { operation: "query" } },
+        }),
+      }),
+      e,
+    );
+    assert.equal(ttsHit.res.status, 500, ttsHit.text);
+    assert.equal("type" in ttsHit.body && ttsHit.body.type === "error", false, ttsHit.text);
+    const ttsErr = ttsHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(ttsErr.message, messageWithRequestId(VOLC_TTS_PARSE_ERROR, "hop456-volc-unmarshal"));
+    assert.equal(ttsErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(ttsErr.param, "");
+    assert.equal(ttsErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(ttsErr.message.includes("json: cannot unmarshal"), false, ttsHit.text);
+    assert.equal(ttsErr.message.includes("volcengine.VolcengineTTSResponse"), false, ttsHit.text);
+
+    const ttsArray = await send(
+      new Request("http://local/v1/audio/speech", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.231", "x-oneapi-request-id": "hop456-volc-array" },
+        body: JSON.stringify({
+          model: "hop456-tts",
+          input: "as-array",
+          voice: "alloy",
+          metadata: { request: { operation: "query" } },
+        }),
+      }),
+      e,
+    );
+    assert.equal(ttsArray.res.status, 500, ttsArray.text);
+    const ttsArrayErr = ttsArray.body.error as { message: string; type: string };
+    assert.equal(ttsArrayErr.message, messageWithRequestId(VOLC_TTS_PARSE_ERROR, "hop456-volc-array"));
+    assert.equal(ttsArrayErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(ttsArrayErr.message.includes("json: cannot unmarshal"), false, ttsArray.text);
+
+    const ttsNull = await send(
+      new Request("http://local/v1/audio/speech", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.232", "x-oneapi-request-id": "hop456-null-stay" },
+        body: JSON.stringify({
+          model: "hop456-tts",
+          input: "null-stay-hop456",
+          voice: "alloy",
+          metadata: { request: { operation: "query" } },
+        }),
+      }),
+      e,
+    );
+    assert.equal(ttsNull.res.status, 400, ttsNull.text);
+    const ttsNullErr = ttsNull.body.error as { message: string; type: string; code: string };
+    assert.equal(ttsNullErr.message, messageWithRequestId("", "hop456-null-stay"));
+    assert.equal(ttsNullErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(ttsNullErr.code, "bad_response");
+    assert.equal(ttsNullErr.message.includes(VOLC_TTS_PARSE_ERROR), false, ttsNull.text);
+
+    const chatStay = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.233", "x-oneapi-request-id": "hop456-hop398-stay" },
+        body: JSON.stringify({
+          model: "hop456-volc",
+          messages: [{ role: "user", content: "non-stream-hop398" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chatStay.res.status, 500, chatStay.text);
+    const chatStayErr = chatStay.body.error as { message: string; type: string };
+    assert.equal(chatStayErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(chatStayErr.message.includes("hop456-hop398-stay"), false);
+    assert.equal(chatStayErr.message.includes(VOLC_TTS_PARSE_ERROR), false, chatStay.text);
+    assert.equal(chatStayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Volc handleTTSResponse Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "198.51.100.234" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.236", "x-oneapi-request-id": "hop456-vendor-create" },
+      body: JSON.stringify({ name: "hop456-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop456-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop456 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop456.some((item) => item.action === "vendor.create"), listed.text);
 });

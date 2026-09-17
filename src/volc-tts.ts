@@ -2,6 +2,7 @@
 
 import { CHANNEL_TYPE_VOLC } from "./constants.js";
 import { defaultBaseUrl } from "./catalog.js";
+import { goUnmarshalJSON } from "./channel-validate.js";
 
 export const VOLC_TTS_WS_URL = "wss://openspeech.bytedance.com/api/v1/tts/ws_binary";
 export const VOLC_TTS_INVALID_KEY = "invalid api key format, expected: appid|access_token";
@@ -9,6 +10,8 @@ export const VOLC_TTS_UNSUPPORTED_AUDIO = "unsupported audio relay mode";
 export const VOLC_TTS_CLUSTER = "volcano_tts";
 export const VOLC_TTS_USER_UID = "openai_relay_user";
 export const VOLC_TTS_SUCCESS_CODE = 3000;
+/** Original leftover `handleTTSResponse` unmarshal message (discards encoding/json details). */
+export const VOLC_TTS_PARSE_ERROR = "failed to parse volcengine response";
 
 export const MSG_TYPE_FLAG_NO_SEQ = 0;
 export const MSG_TYPE_FLAG_POSITIVE_SEQ = 0b1;
@@ -293,6 +296,42 @@ export function volcTtsIsStream(body: Record<string, unknown>): boolean {
   return String(asObj(body.request).operation || "") === "submit";
 }
 
+/**
+ * Original `volcengine.Adaptor.DoResponse` audio speech non-stream uses
+ * `handleTTSResponse` (`json.Unmarshal` `NewErrorWithStatusCode`
+ * `ErrorCodeBadResponseBody` HTTP 500, generic `"failed to parse volcengine
+ * response"` — discards encoding/json details). Stream uses
+ * `handleTTSWebSocketResponse` (not leftover Unmarshal gin.H). Chat /
+ * embeddings / images / responses stay hop 398 `openai.Adaptor`. Extra-OK:
+ * hop 384 MiniMax TTS wrap stays. Extra-OK: `code != 3000` / decode fail stay
+ * convert after successful Unmarshal.
+ */
+export function usesVolcTTSUnmarshal(channelType: number, mode: string): boolean {
+  return channelType === CHANNEL_TYPE_VOLC && mode === "audio_speech";
+}
+
+/** Original `json.Unmarshal` target type name for Volc TTS. Extra-OK: leftover message discards this type name. */
+export function volcTtsUnmarshalTypeName(): string {
+  return "volcengine.VolcengineTTSResponse";
+}
+
+/**
+ * Original `json.Unmarshal` into `volcengine.VolcengineTTSResponse`. Syntax
+ * and type mismatches both become generic `"failed to parse volcengine
+ * response"` (original `errors.New`, not `%w`). JSON `null` succeeds as a
+ * zero-value struct. Extra-OK: nested field type mismatches are left to
+ * convert (original fails).
+ */
+export function volcTtsResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return VOLC_TTS_PARSE_ERROR;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return VOLC_TTS_PARSE_ERROR;
+  }
+  return null;
+}
+
 export function newVolcBinaryMessage(msgType: number, flag: number): VolcBinaryMessage {
   return {
     version: VERSION1,
@@ -504,11 +543,18 @@ export async function wrapVolcTtsHttpResponse(res: Response, encoding: string): 
   } catch {
     throw Object.assign(new Error("failed to read volcengine response"), { status: 500, code: "read_response_body_failed" });
   }
-  let parsed: Record<string, unknown>;
+  const unmarshalErr = volcTtsResponseUnmarshalError(text);
+  if (unmarshalErr) {
+    throw Object.assign(new Error(unmarshalErr), { status: 500, code: "bad_response_body" });
+  }
+  let parsed: Record<string, unknown> = {};
   try {
     parsed = JSON.parse(text) as Record<string, unknown>;
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      parsed = {};
+    }
   } catch {
-    throw Object.assign(new Error("failed to parse volcengine response"), { status: 500, code: "bad_response_body" });
+    parsed = {};
   }
   const audio = volcTtsHttpDoResponse(parsed, encoding);
   return new Response(audio.body as unknown as BodyInit, {
