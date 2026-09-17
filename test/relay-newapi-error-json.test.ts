@@ -14706,7 +14706,13 @@ test("original leftover ClaudeResponsesStreamHandler Unmarshal FailResponsesStre
     assert.ok(responsesHit.text.includes("invalid character 'o' looking for beginning of value"), responsesHit.text);
     assert.ok(responsesHit.text.includes("event: error"), responsesHit.text);
     assert.ok(responsesHit.text.includes("response.failed"), responsesHit.text);
-    assert.equal(responsesHit.text.includes("hop439-responses-unmarshal"), false, responsesHit.text);
+    assert.equal(
+      responsesHit.text.includes(
+        messageWithRequestId("invalid character 'o' looking for beginning of value", "hop439-responses-unmarshal"),
+      ),
+      false,
+      responsesHit.text,
+    );
 
     const responsesArray = await send(
       new Request("http://local/v1/responses", {
