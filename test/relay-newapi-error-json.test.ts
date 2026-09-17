@@ -22177,8 +22177,8 @@ test("original leftover GeminiEmbeddingHandler write OpenAI embedding JSON even 
       e,
     );
     assert.equal(chatStream.res.status, 200, chatStream.text);
-    assert.equal((chatStream.res.headers.get("content-type") || "").includes("application/json"), true, chatStream.res.headers.get("content-type"));
-    assert.equal((chatStream.res.headers.get("content-type") || "").includes("text/event-stream"), false, chatStream.res.headers.get("content-type"));
+    assert.equal((chatStream.res.headers.get("content-type") || "").includes("application/json"), true, String(chatStream.res.headers.get("content-type")));
+    assert.equal((chatStream.res.headers.get("content-type") || "").includes("text/event-stream"), false, String(chatStream.res.headers.get("content-type")));
     assert.equal(chatStream.body.object, "list");
     assert.equal(chatStream.body.model, "text-embedding-hop471");
     assert.deepEqual(chatStream.body.data, [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }]);
@@ -22222,7 +22222,7 @@ test("original leftover GeminiEmbeddingHandler write OpenAI embedding JSON even 
       e,
     );
     assert.equal(embeddingsStream.res.status, 200, embeddingsStream.text);
-    assert.equal((embeddingsStream.res.headers.get("content-type") || "").includes("application/json"), true, embeddingsStream.res.headers.get("content-type"));
+    assert.equal((embeddingsStream.res.headers.get("content-type") || "").includes("application/json"), true, String(embeddingsStream.res.headers.get("content-type")));
     assert.equal(embeddingsStream.body.object, "list");
     assert.deepEqual(embeddingsStream.body.data, [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }]);
     assert.equal(embeddingsStream.text.startsWith("data:"), false, embeddingsStream.text);
@@ -22267,8 +22267,8 @@ test("original leftover GeminiEmbeddingHandler write OpenAI embedding JSON even 
       e,
     );
     assert.equal(advStream.res.status, 200, advStream.text);
-    assert.equal((advStream.res.headers.get("content-type") || "").includes("application/json"), true, advStream.res.headers.get("content-type"));
-    assert.equal((advStream.res.headers.get("content-type") || "").includes("text/event-stream"), false, advStream.res.headers.get("content-type"));
+    assert.equal((advStream.res.headers.get("content-type") || "").includes("application/json"), true, String(advStream.res.headers.get("content-type")));
+    assert.equal((advStream.res.headers.get("content-type") || "").includes("text/event-stream"), false, String(advStream.res.headers.get("content-type")));
     assert.equal(advStream.body.object, "list");
     assert.equal(advStream.body.model, "text-embedding-hop471-adv");
     assert.deepEqual(advStream.body.data, [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }]);
