@@ -369,6 +369,48 @@ export function cozeResponseUnmarshalError(text: string): string | null {
 }
 
 /**
+ * Original `dify.difyHandler` `json.Unmarshal` (`NewError`
+ * `ErrorCodeBadResponseBody`, not `NewOpenAIError`). Stream uses
+ * `difyStreamHandler` (log/continue, not leftover gin.H). Images / audio /
+ * embeddings / responses convert `"not implemented"` before DoResponse.
+ */
+export function usesDifyUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_DIFY) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "images":
+    case "embeddings":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/** Original `json.Unmarshal` target type name for Dify chat. */
+export function difyUnmarshalTypeName(): string {
+  return "dify.DifyChatCompletionResponse";
+}
+
+/**
+ * Original `json.Unmarshal` into `dify.DifyChatCompletionResponse`. Syntax
+ * errors match `encoding/json`. JSON `null` succeeds as a zero-value struct.
+ * Extra-OK: nested field type mismatches are left to convert (original fails).
+ */
+export function difyResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${difyUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */

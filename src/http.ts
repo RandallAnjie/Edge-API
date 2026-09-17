@@ -907,7 +907,8 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * Zhipu v3 `json.Unmarshal` also uses this envelope. Extra-OK: Baidu
  * `baiduHandler` / `baiduEmbeddingHandler` use `NewError` +
  * `writeRelayNewAPIError` instead. Extra-OK: Coze `cozeChatHandler` uses
- * `NewError` + `writeRelayNewAPIError` instead.
+ * `NewError` + `writeRelayNewAPIError` instead. Extra-OK: Dify `difyHandler`
+ * uses `NewError` + `writeRelayNewAPIError` instead.
  */
 export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {
   return writeOpenaiHandlerOpenAIError(req, 500, {
