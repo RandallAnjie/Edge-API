@@ -1371,7 +1371,8 @@ export function usesGeminiChatStreamUnmarshal(
  * `/v1/responses`. Extra-OK: Vertex RequestModeGemini HTTP coverage stays later
  * hop (predicate MATCH; Convert `"not implemented"` hop 350). Extra-OK: hop 421
  * non-stream responses-to-Gemini stays. Extra-OK: hop 441 advanced-custom
- * responses-to-Gemini stream stays.
+ * responses-to-Gemini stream stays. Extra-OK: hop 457 `/v1/responses` imagen
+ * uses this handler (RelayModeResponses first, not hop 448 GeminiImageHandler).
  */
 export function usesGeminiResponsesStreamUnmarshal(
   channelType: number,
@@ -1381,7 +1382,6 @@ export function usesGeminiResponsesStreamUnmarshal(
 ): boolean {
   if (!isStream) return false;
   if (mode !== "responses") return false;
-  if (mapped.startsWith("imagen")) return false;
   if (
     mapped.startsWith("text-embedding") ||
     mapped.startsWith("embedding") ||
@@ -1431,7 +1431,8 @@ export function geminiChatStreamSseUnmarshalError(text: string): string | null {
  * Extra-OK: hop 449 embedding-model `GeminiEmbeddingHandler` stays.
  * Extra-OK: hop 453 advanced-custom imagen `GeminiImageHandler` stays.
  * Extra-OK: hop 454 native `RelayModeGemini` `:predict` imagen stays
- * `GeminiTextGenerationHandler` (RelayModeGemini first).
+ * `GeminiTextGenerationHandler` (RelayModeGemini first). Extra-OK: hop 457
+ * `/v1/responses` imagen stays `GeminiResponsesHandler` (RelayModeResponses first).
  */
 export function usesGeminiImageUnmarshal(
   channelType: number,
@@ -1439,7 +1440,7 @@ export function usesGeminiImageUnmarshal(
   isStream = false,
   mode = "",
 ): boolean {
-  if (mode === "gemini") return false;
+  if (mode === "gemini" || mode === "responses") return false;
   if (!String(mapped || "").startsWith("imagen")) return false;
   if (channelType === CHANNEL_TYPE_GEMINI) return true;
   if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini" && !isStream) return true;
