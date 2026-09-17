@@ -6082,7 +6082,7 @@ test("original leftover Vertex RequestModeOpenSource OpenaiHandler Unmarshal New
   );
   assert.equal(vertex.body.success, true, vertex.text);
 
-  resetVertexAuthForTests({ acquireAccessToken: async () => "hop390-token" });
+  resetVertexAuthForTests({ getVertexAccessToken: async () => "hop390-token" });
   const origFetch = globalThis.fetch;
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof init?.body === "string" ? init.body : "";

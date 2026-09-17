@@ -249,7 +249,7 @@ function vertexChatCacheKey(channel: Pick<ChannelRow, "id" | "key" | "channel_in
 }
 
 /** Original `vertex.getAccessToken` (channel cache, 30-minute expire). */
-export async function getVertexAccessToken(
+async function defaultGetVertexAccessToken(
   channel: Pick<ChannelRow, "id" | "key" | "channel_info">,
   credentials: VertexCredentials,
   apiKey: string,
@@ -273,6 +273,13 @@ export async function getVertexAccessToken(
   chatTokenCache.set(cacheKey, { token, expiresAt: Date.now() + CHAT_TOKEN_TTL_MS });
   return token;
 }
+
+/**
+ * Original `vertex.getAccessToken`. Overridable in tests. Extra-OK: hop 390 ADC
+ * unmarshal stubs this to skip RSA/OAuth. Plugin `AcquireAccessToken` is a
+ * different path (`acquireAccessToken`) and does not cover SetupRequestHeader.
+ */
+export let getVertexAccessToken = defaultGetVertexAccessToken;
 
 export function channelSettingProxy(setting: string | undefined | null): string {
   return String(parseJson<Record<string, unknown>>(String(setting || ""), {}).proxy || "");
@@ -299,9 +306,11 @@ export async function applyVertexAdcAuth(
 export function resetVertexAuthForTests(overrides?: {
   acquireAccessToken?: typeof acquireAccessToken;
   exchangeJwtForAccessToken?: typeof exchangeJwtForAccessToken;
+  getVertexAccessToken?: typeof getVertexAccessToken;
 }): void {
   pluginAuthCache.clear();
   chatTokenCache.clear();
   acquireAccessToken = overrides?.acquireAccessToken ?? defaultAcquireAccessToken;
   exchangeJwtForAccessToken = overrides?.exchangeJwtForAccessToken ?? defaultExchangeJwtForAccessToken;
+  getVertexAccessToken = overrides?.getVertexAccessToken ?? defaultGetVertexAccessToken;
 }
