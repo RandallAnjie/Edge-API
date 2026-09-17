@@ -377,7 +377,8 @@ test("original recordManageAudit leftover channel.delete JSON including missing 
   );
   assert.equal(deleted.body.success, true, String(deleted.body.message));
   assert.equal(deleted.body.message, "");
-  assert.equal(deleted.body.data, null);
+  assert.equal("data" in deleted.body, false);
+  assert.deepEqual(Object.keys(deleted.body).sort(), ["message", "success"]);
   const privileged = operationEvent(await auditsFor(e, auth, rid));
   assert.equal(privileged.action, "channel.delete");
   assert.equal(privileged.success, true);

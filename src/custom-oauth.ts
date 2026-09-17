@@ -1,5 +1,5 @@
 import { nowSec } from "./constants.js";
-import { apiErrorMsg, apiOk, OAuthAccessDeniedError, OAuthI18nError, readJson } from "./http.js";
+import { apiErrorMsg, apiOk, json, OAuthAccessDeniedError, OAuthI18nError, readJson } from "./http.js";
 import type { OAuthProfile } from "./oauth.js";
 import type { Context } from "./router.js";
 import type { Store } from "./store.js";
@@ -547,7 +547,7 @@ export async function deleteCustomOAuthProvider(store: Store, id: number): Promi
   const count = await store.countOAuthBindings(id);
   if (count > 0) return apiErrorMsg("该 OAuth 提供商还有用户绑定，无法删除。请先解除所有用户绑定。");
   await store.deleteOAuthProvider(id);
-  return apiOk(null, "删除成功");
+  return json(200, { success: true, message: "删除成功" });
 }
 
 export async function handleCustomOAuthDiscovery(c: Context<Env>): Promise<Response> {

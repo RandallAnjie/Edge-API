@@ -1351,7 +1351,7 @@ export function adminRouter(): Router<Env> {
     const existing = await s.getChannel(id);
     await s.deleteChannel(id);
     await recordManageAudit(s, c.req, u, "channel.delete", { id, name: existing?.name ?? "" });
-    return apiOk(null);
+    return json(200, { success: true, message: "" });
   });
 
   r.post("/api/channel/:id/status", async (c) => {
