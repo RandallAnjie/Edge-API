@@ -2,7 +2,7 @@
 
 import { advancedCustomOpenaiShapedInbound } from "./advanced-custom-response.js";
 import { geminiChatResponseUnmarshalError } from "./gemini-response.js";
-import { CONVERTER_CHAT_TO_CLAUDE, CONVERTER_CHAT_TO_GEMINI, CONVERTER_NONE } from "./advanced-custom-convert.js";
+import { CONVERTER_CHAT_TO_CLAUDE, CONVERTER_CHAT_TO_GEMINI, CONVERTER_NONE, CONVERTER_RESPONSES_TO_GEMINI } from "./advanced-custom-convert.js";
 import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { supportsAliAnthropicMessages } from "./ali-convert.js";
@@ -1617,7 +1617,7 @@ export function advancedCustomClaudeResponseUnmarshalError(text: string): string
  * (`GeminiChatHandler` `common.Unmarshal` `NewOpenAIError`
  * `ErrorCodeBadResponseBody` into `dto.GeminiChatResponse`). OpenAI-shaped
  * inbound stays hop 404. Chat-to-Claude stays hop 419. Stream stays
- * `GeminiChatStreamHandler` (later hop). Responses-to-Gemini stays later hop.
+ * `GeminiChatStreamHandler` (later hop). Responses-to-Gemini uses the same `GeminiResponsesHandler` leftover (hop 421).
  * Extra-OK: hop 360 Gemini channel stays. Extra-OK: hop 419 Claude stays.
  */
 export function usesAdvancedCustomGeminiUnmarshal(
@@ -1639,8 +1639,9 @@ export function usesAdvancedCustomGeminiUnmarshal(
   }
   const id = String(converter || CONVERTER_NONE).trim() || CONVERTER_NONE;
   const chatToGemini = id === CONVERTER_CHAT_TO_GEMINI;
+  const responsesToGemini = id === CONVERTER_RESPONSES_TO_GEMINI;
   const nativeGemini = id === CONVERTER_NONE && clientFormat === "gemini";
-  if (!chatToGemini && !nativeGemini) return false;
+  if (!chatToGemini && !responsesToGemini && !nativeGemini) return false;
   switch (mode) {
     case "realtime":
     case "audio_speech":

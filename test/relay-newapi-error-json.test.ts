@@ -10961,3 +10961,152 @@ test("original leftover advanced-custom gemini.Adaptor Unmarshal gin.H does not 
   const vendorItemsHop420 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop420.some((item) => item.action === "vendor.create"), listed.text);
 });
+
+test("original leftover advanced-custom responses-to-Gemini Unmarshal NewOpenAIError gin.H", async () => {
+  const responsesToGemini = "openai_responses_to_gemini_generate_content";
+  const chatToGemini = "openai_chat_completions_to_gemini_generate_content";
+  assert.equal(usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "responses", responsesToGemini, "openai"), true);
+  assert.equal(usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "openai"), true);
+  assert.equal(usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "responses", "none", "openai"), false);
+  assert.equal(usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "images", responsesToGemini), false);
+  assert.equal(usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "embeddings", responsesToGemini), false);
+  assert.equal(usesAdvancedCustomUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "responses", responsesToGemini), false);
+  assert.equal(usesAdvancedCustomUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "responses", "none"), true);
+  assert.equal(
+    advancedCustomGeminiResponseUnmarshalError("not-json"),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(
+    advancedCustomGeminiResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type dto.GeminiChatResponse",
+  );
+
+  const helper = writeGeminiChatUnmarshalError(
+    new Request("http://local/v1/responses", { headers: { "x-oneapi-request-id": "hop421-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(helper.status, 500);
+  assert.deepEqual(await helper.json(), {
+    error: {
+      message: messageWithRequestId("invalid character 'o' looking for beginning of value", "hop421-helper"),
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "203.0.113.171" });
+  await mergeModelRatio(new Store(e.DB), { "hop421-gemini": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const created = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "203.0.113.172" },
+      body: JSON.stringify({
+        name: "hop421-gemini",
+        type: CHANNEL_TYPE_ADVANCED_CUSTOM,
+        key: "sk-hop421",
+        models: "hop421-gemini",
+        group: "default",
+        base_url: "https://generativelanguage.googleapis.com",
+        settings: JSON.stringify({
+          advanced_custom: {
+            advanced_routes: [
+              {
+                incoming_path: "/v1/responses",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                converter: "openai_responses_to_gemini_generate_content",
+                models: ["hop421-gemini"],
+              },
+            ],
+          },
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const hit = await send(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "203.0.113.173", "x-oneapi-request-id": "hop421-adv-unmarshal" },
+        body: JSON.stringify({ model: "hop421-gemini", input: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 500, hit.text);
+    assert.equal("type" in hit.body && hit.body.type === "error", false, hit.text);
+    const err = hit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(
+      err.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop421-adv-unmarshal"),
+    );
+    assert.equal(err.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(err.param, "");
+    assert.equal(err.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const arr = await send(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "203.0.113.174", "x-oneapi-request-id": "hop421-adv-array" },
+        body: JSON.stringify({ model: "hop421-gemini", input: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(arr.res.status, 500, arr.text);
+    const arrErr = arr.body.error as { message: string; type: string };
+    assert.equal(
+      arrErr.message,
+      messageWithRequestId("json: cannot unmarshal array into Go value of type dto.GeminiChatResponse", "hop421-adv-array"),
+    );
+    assert.equal(arrErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover advanced-custom responses-to-Gemini Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "203.0.113.175" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "203.0.113.176", "x-oneapi-request-id": "hop421-vendor-create" },
+      body: JSON.stringify({ name: "hop421-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop421-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop421 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop421.some((item) => item.action === "vendor.create"), listed.text);
+});
