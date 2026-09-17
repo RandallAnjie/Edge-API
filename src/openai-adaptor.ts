@@ -632,6 +632,43 @@ export function mistralChatResponseUnmarshalError(text: string, mode = "chat"): 
 }
 
 /**
+ * Original `submodel.Adaptor.DoResponse` non-stream path (`openai.OpenaiHandler`
+ * `common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
+ * `openai.OaiStreamHandler` (log/continue, not leftover gin.H). Images / audio
+ * / embeddings / rerank / responses convert `"submodel channel: endpoint not
+ * supported"` before DoResponse (hop 350). Extra-OK: ConvertClaudeRequest /
+ * ConvertGeminiRequest `"submodel channel: endpoint not supported"` stay hop
+ * 350. Extra-OK: completions Convert `"submodel channel: endpoint not
+ * supported"` stays hop 350 when `relayMode !== "chat"`.
+ */
+export function usesSubmodelChatUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_SUBMODEL) return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "embeddings":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.OpenaiHandler` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` for Submodel chat / completions. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function submodelChatResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
