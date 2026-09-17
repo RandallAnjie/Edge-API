@@ -20388,7 +20388,7 @@ test("original leftover GeminiResponsesHandler empty-candidates NewOpenAIError g
       }),
       e,
     );
-    assert.equal(imageStay.res.status, 500, imageStay.text);
+    assert.equal(imageStay.res.status, 503, imageStay.text);
     const imageStayErr = imageStay.body.error as { message: string; type: string; code: string };
     assert.equal(imageStayErr.message, "no images generated");
     assert.equal(imageStayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
