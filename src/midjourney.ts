@@ -4,6 +4,7 @@
 import { tokenAllowsModel } from "./auth.js";
 import { resolveBaseUrl } from "./catalog.js";
 import { selectDistributedChannel } from "./channel-select.js";
+import { parseProxyURLRuntime } from "./channel-validate.js";
 import { CHANNEL_ENABLED, CHANNEL_MANUAL_DISABLED, nowMs } from "./constants.js";
 import {
   abortWithOpenAiMessage,
@@ -25,7 +26,12 @@ import {
   type MjPriceInfo,
 } from "./midjourney-billing.js";
 import { pickChannelKey } from "./select.js";
+import {
+  validateSSRFProtectedFetchURLFromStore,
+  validateURLWithFetchSettingFromStore,
+} from "./ssrf-protection.js";
 import type { Store } from "./store.js";
+import { channelSettingProxy } from "./vertex-auth.js";
 import { modelPriceHelperPerCall, type NativeTaskError } from "./task-plugin-submit.js";
 import type { TaskPriceData } from "./task-plugin-billing.js";
 import type { AuthToken, ChannelRow, Env } from "./types.js";
@@ -382,10 +388,28 @@ async function relayNotify(store: Store, req: Request): Promise<Response> {
   return new Response(null, { status: 200 });
 }
 
+/**
+ * Original `relay.RelayMidjourneyImage` leftover gin.H:
+ * `{error:"midjourney_task_not_found"}` / `{error:"proxy_url_invalid"}` /
+ * `{error:"request blocked: %v"}` / `{error:"http_get_image_failed"}` /
+ * `{error: string(responseBody)}`.
+ * Extra-OK: workerd has no HTTP/SOCKS proxy client so a valid proxy still
+ * uses `fetch` after ParseProxyURLRuntime. Extra-OK: skip DNS LookupIP.
+ */
 async function relayImage(store: Store, mjId: string): Promise<Response> {
   const task = await store.getMjByMjId(mjId);
   if (!task) return json(400, { error: "midjourney_task_not_found" });
   const imageUrl = String(task.image_url || "");
+  let proxy = "";
+  const channel = await store.getChannel(Number(task.channel_id || 0));
+  if (channel) {
+    proxy = channelSettingProxy(channel.setting);
+    if (proxy && parseProxyURLRuntime(proxy)) return json(400, { error: "proxy_url_invalid" });
+  }
+  const validateErr = proxy
+    ? await validateURLWithFetchSettingFromStore(store, imageUrl)
+    : await validateSSRFProtectedFetchURLFromStore(store, imageUrl);
+  if (validateErr) return json(403, { error: `request blocked: ${validateErr}` });
   try {
     const res = await fetch(imageUrl);
     if (res.status !== 200) {

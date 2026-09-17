@@ -655,3 +655,71 @@ test("original coverMidjourneyTaskDto forwarded imageUrl JSON", async () => {
   const pending = await runPendingMidjourneyPoll(store);
   assert.ok(pending);
 });
+
+test("original RelayMidjourneyImage leftover proxy_url_invalid / request blocked gin.H", async () => {
+  const { e, store } = await boot();
+  const badProxyId = await store.insertChannel({
+    name: "mj-bad-proxy",
+    type: CHANNEL_TYPE_MIDJOURNEY,
+    key: "mj-secret",
+    setting: JSON.stringify({ proxy: "ftp://proxy.example" }),
+  });
+  await store.insertMj({
+    action: "IMAGINE",
+    user_id: 1,
+    mj_id: "mj-bad-proxy",
+    image_url: "https://cdn.example/cat.png",
+    channel_id: badProxyId,
+  });
+  const badProxy = await json(new Request("http://local/mj/image/mj-bad-proxy"), e);
+  assert.equal(badProxy.res.status, 400, badProxy.text);
+  assert.deepEqual(Object.keys(badProxy.body).sort(), ["error"]);
+  assert.equal(badProxy.body.error, "proxy_url_invalid");
+
+  await store.insertMj({
+    action: "IMAGINE",
+    user_id: 1,
+    mj_id: "mj-ssrf",
+    image_url: "http://127.0.0.1/secret.png",
+    channel_id: 0,
+  });
+  const blocked = await json(new Request("http://local/mj/image/mj-ssrf"), e);
+  assert.equal(blocked.res.status, 403, blocked.text);
+  assert.deepEqual(Object.keys(blocked.body).sort(), ["error"]);
+  assert.equal(blocked.body.error, "request blocked: private IP address not allowed: 127.0.0.1");
+
+  const missing = await json(new Request("http://local/mj/image/missing-hop358"), e);
+  assert.equal(missing.res.status, 400);
+  assert.equal(missing.body.error, "midjourney_task_not_found");
+});
+
+test("original leftover RelayMidjourneyImage gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  const { e, auth } = await boot();
+  const unauth = await json(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await json(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.203", "x-oneapi-request-id": "hop358-vendor-create" },
+      body: JSON.stringify({ name: "hop358-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await json(
+    new Request("http://local/api/audit?page_size=100&request_id=hop358-vendor-create", { headers: auth }),
+    e,
+  );
+  const items = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(items.some((item) => item.action === "vendor.create"), listed.text);
+});

@@ -97,8 +97,7 @@ function goUnmarshalNamed(raw: string, goType: string): { ok: true; value: unkno
   return parsed;
 }
 
-/** Original `common.ParseProxyURLStrict`. */
-export function parseProxyURLStrict(raw: string): Error | null {
+function parseProxyURL(raw: string, allowLegacySuffix: boolean): Error | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   let parsed: URL;
@@ -116,11 +115,22 @@ export function parseProxyURLStrict(raw: string): Error | null {
     const port = Number(parsed.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) return new Error("proxy URL must include a valid port");
   }
+  if (allowLegacySuffix) return null;
   if (parsed.search || trimmed.includes("?")) return new Error("proxy URL must not include a query");
   if (trimmed.includes("#")) return new Error("proxy URL must not include a fragment");
   const path = parsed.pathname || "";
   if (path && path !== "/") return new Error("proxy URL must not include a path");
   return null;
+}
+
+/** Original `common.ParseProxyURLStrict`. */
+export function parseProxyURLStrict(raw: string): Error | null {
+  return parseProxyURL(raw, false);
+}
+
+/** Original `common.ParseProxyURLRuntime` used by `GetHttpClientWithProxy`. */
+export function parseProxyURLRuntime(raw: string): Error | null {
+  return parseProxyURL(raw, true);
 }
 
 function validateHTTPTransport(setting: Record<string, unknown>): Error | null {
