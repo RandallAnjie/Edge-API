@@ -1192,7 +1192,8 @@ export function miniMaxResponseUnmarshalError(text: string, mode = "chat"): stri
  * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
  * `dto.ClaudeResponse`). OpenAI-format chat stays hop 399. Images stay hop 400.
  * TTS stays hop 356 / MiniMax TTS unmarshal. Extra-OK: hop 409 Moonshot Claude
- * stays.
+ * stays. Stream stays hop 428 (`ClaudeStreamHandler`). Extra-OK: hop 427
+ * Moonshot stream stays.
  */
 export function usesMiniMaxClaudeUnmarshal(channelType: number, mode: string): boolean {
   if (channelType !== CHANNEL_TYPE_MINIMAX) return false;
@@ -1207,6 +1208,24 @@ export function usesMiniMaxClaudeUnmarshal(channelType: number, mode: string): b
  */
 export function miniMaxClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original MiniMax Claude-format `minimax.Adaptor.DoResponse` stream delegates
+ * to `claude.Adaptor.DoResponse` (`ClaudeStreamHandler`
+ * `HandleStreamResponseData` `UnmarshalJsonStr` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-format stream
+ * stays Extra-OK `OaiStreamHandler` log/continue. Extra-OK: hop 410 non-stream
+ * `ClaudeHandler` stays. Extra-OK: hop 427 Moonshot stream stays. Extra-OK:
+ * hop 422 Anthropic stream stays.
+ */
+export function usesMiniMaxClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  return usesMiniMaxClaudeUnmarshal(channelType, mode);
 }
 
 /**
