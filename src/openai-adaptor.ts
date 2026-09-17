@@ -1172,10 +1172,50 @@ export function ollamaResponseUnmarshalError(text: string, mode: string): string
 }
 
 /**
+ * Original `zhipu_4v.Adaptor.DoResponse` default path always delegates to
+ * `openai.Adaptor.DoResponse`. Claude format uses `claude.Adaptor.DoResponse`
+ * (`clientFormat === "openai"` gate in relay). Non-stream chat / completions /
+ * embeddings use `openai.OpenaiHandler` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Images stay `zhipu4vImageHandler` (hop 382).
+ * Responses use `openai.OaiResponsesHandler` (`dto.OpenAIResponsesResponse`).
+ * Stream uses `openai.OaiStreamHandler` (log/continue, not leftover gin.H).
+ * Audio Convert `"not implemented"` before DoResponse (hop 350). Extra-OK:
+ * ConvertClaudeRequest uses `claude.Adaptor`. Extra-OK: ConvertGeminiRequest
+ * `"not implemented"` stays hop 350. Extra-OK: ConvertRerankRequest `nil, nil`
+ * leftover. Extra-OK: hop 400 MiniMax image stays.
+ */
+export function usesZhipuV4Unmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_ZHIPU_V4) return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` / `dto.OpenAIResponsesResponse` for Zhipu v4
+ * OpenAI-format. Syntax errors match `encoding/json`. JSON `null` succeeds as
+ * a zero-value struct. Extra-OK: nested field type mismatches are left to
+ * convert (original fails).
+ */
+export function zhipuV4ResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `zhipu_4v.zhipu4vImageHandler` `common.Unmarshal` (`NewOpenAIError`
- * `ErrorCodeBadResponseBody`). Chat / embeddings / responses use
- * `openai.Adaptor.DoResponse`. Claude format uses `claude.Adaptor.DoResponse`.
- * Audio Convert is `"not implemented"` before DoResponse.
+ * `ErrorCodeBadResponseBody`). Chat / embeddings / responses stay
+ * `openai.Adaptor.DoResponse` (hop 401). Claude format uses
+ * `claude.Adaptor.DoResponse`. Audio Convert is `"not implemented"` before
+ * DoResponse.
  */
 export function usesZhipuV4ImageUnmarshal(channelType: number, mode: string): boolean {
   return channelType === CHANNEL_TYPE_ZHIPU_V4 && mode === "images";
