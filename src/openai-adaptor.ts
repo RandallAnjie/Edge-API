@@ -1828,10 +1828,10 @@ export function usesAdvancedCustomClaudeStreamUnmarshal(
  * ConverterNone+`RelayFormatGemini` delegate to `gemini.Adaptor.DoResponse`
  * (`GeminiChatHandler` `common.Unmarshal` `NewOpenAIError`
  * `ErrorCodeBadResponseBody` into `dto.GeminiChatResponse`). OpenAI-shaped
- * inbound stays hop 404. Chat-to-Claude stays hop 419. Stream stays
- * `GeminiChatStreamHandler` (later hop). Responses-to-Gemini uses the same `GeminiResponsesHandler` leftover (hop 421).
+ * inbound stays hop 404. Chat-to-Claude stays hop 419. Stream stays hop 437
+ * (`GeminiChatStreamHandler`). Responses-to-Gemini uses the same `GeminiResponsesHandler` leftover (hop 421).
  * Extra-OK: hop 360 Gemini channel stays. Extra-OK: hop 419 Claude stays.
- * Extra-OK: hop 423 Gemini channel stream stays.
+ * Extra-OK: hop 423 Gemini channel stream stays. Extra-OK: hop 436 Claude stream stays.
  */
 export function usesAdvancedCustomGeminiUnmarshal(
   channelType: number,
@@ -1875,6 +1875,30 @@ export function usesAdvancedCustomGeminiUnmarshal(
  */
 export function advancedCustomGeminiResponseUnmarshalError(text: string): string | null {
   return geminiChatResponseUnmarshalError(text);
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` stream chat-to-Gemini converter
+ * and ConverterNone+`RelayFormatGemini` delegate to `gemini.Adaptor.DoResponse`
+ * (`GeminiChatStreamHandler` `geminiStreamHandler` wrap
+ * `unmarshal Gemini stream response: %w` then `NewOpenAIError`
+ * `ErrorCodeBadResponseBody` into `dto.GeminiChatResponse`). OpenAI-shaped
+ * inbound stream stays Extra-OK `OaiStreamHandler` log/continue. Responses
+ * stream stays `GeminiResponsesStreamHandler` (later hop). Extra-OK: hop 420
+ * non-stream `GeminiChatHandler` stays. Extra-OK: hop 423 Gemini channel stream
+ * stays. Extra-OK: hop 436 Claude stream stays.
+ */
+export function usesAdvancedCustomGeminiStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  clientFormat?: string,
+  mapped = "",
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  return usesAdvancedCustomGeminiUnmarshal(channelType, mode, converter, clientFormat, mapped);
 }
 
 /**
