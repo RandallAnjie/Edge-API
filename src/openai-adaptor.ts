@@ -328,6 +328,14 @@ export function openaiHandlerUnmarshalTypeName(mode: string): string {
 }
 
 /**
+ * Original `OpenaiHandler` vs `OaiResponsesToChatHandler` unmarshal target.
+ * Chat via-responses unmarshals `dto.OpenAIResponsesResponse` (not chat).
+ */
+export function openaiDoResponseUnmarshalMode(mode: string, viaResponses = false): string {
+  return viaResponses ? "responses" : mode;
+}
+
+/**
  * Original `common.Unmarshal` into `OpenAITextResponse` / `SimpleResponse` /
  * `OpenAIResponsesResponse`. Syntax errors match `encoding/json`. JSON `null`
  * succeeds as a zero-value struct. Non-object JSON is

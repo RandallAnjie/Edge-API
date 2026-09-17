@@ -109,7 +109,7 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesOpenRouterEnterpriseUnwrap, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions } from "./openai-adaptor.js";
+import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesOpenRouterEnterpriseUnwrap, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import {
@@ -2789,7 +2789,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     }
 
     let text = await res.text();
-    if (usesOpenRouterEnterpriseUnwrap(channel.type, channel.settings, mode)) {
+    if (usesOpenRouterEnterpriseUnwrap(channel.type, channel.settings, mode) && !viaResponses) {
       const unwrapped = unwrapOpenRouterEnterpriseResponse(text);
       if (!unwrapped.ok) {
         await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unwrapped.message.slice(0, 2000), extra);
@@ -2797,6 +2797,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       text = unwrapped.body;
     }
+    const openaiUnmarshalMode = openaiDoResponseUnmarshalMode(mode, viaResponses);
     if (usesGeminiChatResponseUnmarshal(channel.type, mapped, mode)) {
       const unmarshalErr = geminiChatResponseUnmarshalError(text);
       if (unmarshalErr) {
@@ -2804,8 +2805,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
       }
     }
-    if (usesOpenAIAdaptor(channel.type) && usesOpenaiHandlerGetOpenAIError(mode)) {
-      const unmarshalErr = openaiHandlerResponseUnmarshalError(text, mode);
+    if (usesOpenAIAdaptor(channel.type) && usesOpenaiHandlerGetOpenAIError(openaiUnmarshalMode)) {
+      const unmarshalErr = openaiHandlerResponseUnmarshalError(text, openaiUnmarshalMode);
       if (unmarshalErr) {
         await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
         return writeOpenaiHandlerUnmarshalError(opts.req, unmarshalErr);
@@ -2847,7 +2848,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       if (
         usesOpenAIAdaptor(channel.type) &&
-        usesOpenaiHandlerGetOpenAIError(mode) &&
+        usesOpenaiHandlerGetOpenAIError(openaiUnmarshalMode) &&
         (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
       ) {
         parsed = {};
@@ -2924,7 +2925,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         return writeGeminiChatEmptyCandidatesError(opts.req, status, empty.message, empty.code);
       }
     }
-    if (usesOpenAIAdaptor(channel.type) && usesOpenaiHandlerGetOpenAIError(mode)) {
+    if (usesOpenAIAdaptor(channel.type) && usesOpenaiHandlerGetOpenAIError(openaiUnmarshalMode)) {
       const oai = getOpenAIError(parsed.error);
       if (oai && oai.type) {
         await settle(

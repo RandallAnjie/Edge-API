@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenRouterEnterpriseUnwrap, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenRouterEnterpriseUnwrap, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_COHERE,
@@ -3112,5 +3112,196 @@ test("original leftover OpenRouter enterprise unwrap gin.H does not change AUTH 
   );
   const vendorItemsHop370 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop370.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover OaiResponsesToChatHandler Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(openaiDoResponseUnmarshalMode("chat"), "chat");
+  assert.equal(openaiDoResponseUnmarshalMode("chat", true), "responses");
+  assert.equal(openaiDoResponseUnmarshalMode("images", true), "responses");
+  assert.equal(openaiDoResponseUnmarshalMode("responses", false), "responses");
+  assert.equal(
+    openaiHandlerResponseUnmarshalError("[]", openaiDoResponseUnmarshalMode("chat", true)),
+    "json: cannot unmarshal array into Go value of type dto.OpenAIResponsesResponse",
+  );
+  assert.equal(
+    openaiHandlerResponseUnmarshalError("[]", openaiDoResponseUnmarshalMode("chat", false)),
+    "json: cannot unmarshal array into Go value of type dto.OpenAITextResponse",
+  );
+  assert.equal(openaiHandlerResponseUnmarshalError("null", openaiDoResponseUnmarshalMode("chat", true)), null);
+
+  const chatHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop371-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(chatHelper.status, 500);
+  assert.deepEqual(await chatHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+  const claudeHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/messages", { headers: { "x-oneapi-request-id": "hop371-helper-claude" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(claudeHelper.status, 500);
+  assert.deepEqual(await claudeHelper.json(), {
+    type: "error",
+    error: {
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      message: messageWithRequestId("invalid character 'o' looking for beginning of value", "hop371-helper-claude"),
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.91" });
+  await mergeModelRatio(new Store(e.DB), { "hop371-via-chat": 1, "hop371-plain": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const policy = await send(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.92" },
+      body: JSON.stringify({
+        key: "global.chat_completions_to_responses_policy",
+        value: JSON.stringify({ enabled: true, all_channels: true, model_patterns: ["^hop371-via-chat$"] }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(policy.body.success, true, policy.text);
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.93" },
+      body: JSON.stringify({
+        name: "hop371-via",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop371",
+        models: "hop371-via-chat,hop371-plain",
+        group: "default",
+        status_code_mapping: JSON.stringify({ "500": "503" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const viaChat = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.94", "x-oneapi-request-id": "hop371-via-unmarshal" },
+        body: JSON.stringify({ model: "hop371-via-chat", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(viaChat.res.status, 500, viaChat.text);
+    assert.equal("type" in viaChat.body && viaChat.body.type === "error", false, viaChat.text);
+    const viaErr = viaChat.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(viaErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(viaErr.message.includes("hop371-via-unmarshal"), false);
+    assert.equal(viaErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(viaErr.param, "");
+    assert.equal(viaErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const viaArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.95", "x-oneapi-request-id": "hop371-via-array" },
+        body: JSON.stringify({ model: "hop371-via-chat", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(viaArray.res.status, 500, viaArray.text);
+    const viaArrayErr = viaArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(viaArrayErr.message, "json: cannot unmarshal array into Go value of type dto.OpenAIResponsesResponse");
+    assert.equal(viaArrayErr.message.includes("hop371-via-array"), false);
+    assert.equal(viaArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(viaArrayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const viaClaude = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "192.0.2.96",
+          "x-oneapi-request-id": "hop371-via-claude",
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "hop371-via-chat",
+          messages: [{ role: "user", content: "hi" }],
+          max_tokens: 32,
+        }),
+      }),
+      e,
+    );
+    assert.equal(viaClaude.res.status, 500, viaClaude.text);
+    assert.equal(viaClaude.body.type, "error");
+    const viaClaudeErr = viaClaude.body.error as { type: string; message: string; code?: string; param?: string };
+    assert.equal(viaClaudeErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(viaClaudeErr.message, messageWithRequestId("invalid character 'o' looking for beginning of value", "hop371-via-claude"));
+    assert.equal(viaClaudeErr.code, undefined);
+    assert.equal(viaClaudeErr.param, undefined);
+
+    const plainArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.97", "x-oneapi-request-id": "hop371-plain-array" },
+        body: JSON.stringify({ model: "hop371-plain", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(plainArray.res.status, 500, plainArray.text);
+    const plainArrayErr = plainArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(plainArrayErr.message, "json: cannot unmarshal array into Go value of type dto.OpenAITextResponse");
+    assert.equal(plainArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(plainArrayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover OaiResponsesToChatHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.98" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.99", "x-oneapi-request-id": "hop371-vendor-create" },
+      body: JSON.stringify({ name: "hop371-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop371-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop371 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop371.some((item) => item.action === "vendor.create"), listed.text);
 });
 

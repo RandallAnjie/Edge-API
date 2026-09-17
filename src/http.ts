@@ -900,6 +900,8 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * `cohereRerankHandler` uses `NewError` + `writeRelayNewAPIError` instead.
  * Extra-OK: OpenRouter enterprise unwrap (`Success=false` /
  * `OpenRouterEnterpriseResponse` unmarshal) also uses this envelope.
+ * Extra-OK: chat via-responses `OaiResponsesToChatHandler` unmarshal uses this
+ * envelope with type name `dto.OpenAIResponsesResponse`.
  */
 export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {
   return writeOpenaiHandlerOpenAIError(req, 500, {
