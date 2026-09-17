@@ -1328,8 +1328,8 @@ export function miniMaxImageResponseUnmarshalError(text: string): string | null 
 
 /**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
- * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
- * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
+ * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream stays
+ * hop 438 (`ollamaStreamHandler` leftover gin.H). Responses uses
  * `openai.Adaptor.DoResponse`. Claude format uses `claude.Adaptor.DoResponse`.
  * Images / audio Convert is `"not implemented"` before DoResponse.
  */
@@ -1424,8 +1424,8 @@ export function ollamaClaudeResponseUnmarshalError(text: string): string | null 
  * to `claude.Adaptor.DoResponse` (`ClaudeStreamHandler`
  * `HandleStreamResponseData` `UnmarshalJsonStr` `NewError`
  * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-format stream
- * stays Extra-OK `ollamaStreamHandler` (not leftover gin.H). Extra-OK: hop 415
- * non-stream `ClaudeHandler` stays. Extra-OK: hop 432 sub2api stream stays.
+ * stays hop 438 (`ollamaStreamHandler`). Extra-OK: hop 415 non-stream
+ * `ClaudeHandler` stays. Extra-OK: hop 432 sub2api stream stays.
  * Extra-OK: hop 422 Anthropic stream stays.
  */
 export function usesOllamaClaudeStreamUnmarshal(
@@ -1436,6 +1436,39 @@ export function usesOllamaClaudeStreamUnmarshal(
   if (!isStream) return false;
   if (mode === "responses") return false;
   return usesOllamaClaudeUnmarshal(channelType, mode);
+}
+
+/**
+ * Original `ollama.ollamaStreamHandler` NDJSON `common.Unmarshal` into
+ * `ollama.ollamaChatStreamChunk` (`NewOpenAIError` `ErrorCodeBadResponseBody`).
+ * First non-empty line that fails returns leftover gin.H (does not skip like
+ * non-stream `parsedAny`). Embeddings stay hop 381. Responses stay
+ * `openai.Adaptor`. Claude format stream stays hop 433. Extra-OK: hop 381
+ * non-stream `ollamaChatHandler` stays. Extra-OK: hop 437 advanced-custom
+ * Gemini stream stays. Extra-OK: replica buffers leftover gin.H before SSE
+ * headers (original `SetEventStreamHeaders` + start empty chunk run first).
+ */
+export function usesOllamaStreamUnmarshal(channelType: number, mode: string, isStream = true): boolean {
+  if (!isStream) return false;
+  if (mode === "embeddings" || mode === "engines_embeddings") return false;
+  if (mode === "responses") return false;
+  return usesOllamaUnmarshal(channelType, mode);
+}
+
+/**
+ * Original `ollamaStreamHandler` line-loop `common.Unmarshal` into
+ * `ollama.ollamaChatStreamChunk`. Syntax errors match `encoding/json`. JSON
+ * `null` succeeds as a zero-value struct. Extra-OK: nested field type
+ * mismatches are left to convert (original fails).
+ */
+export function ollamaStreamUnmarshalError(text: string): string | null {
+  for (const rawLine of String(text || "").split("\n")) {
+    const ln = rawLine.trim();
+    if (!ln) continue;
+    const lineErr = ollamaUnmarshalIntoType(ln, "chat");
+    if (lineErr) return lineErr;
+  }
+  return null;
 }
 
 /**
