@@ -128,6 +128,7 @@ import {
   modelNameRequiredMessage,
   noAvailableChannelMessage,
   noAvailableChannelRetryMessage,
+  leftoverWithOpenAIError,
   openaiError,
   relayErrorHandler,
   tokenModelForbiddenMessage,
@@ -2908,6 +2909,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (imageType === "jimeng_error") {
         const code = String((err as Error & { code?: string }).code || "");
         return openaiError(res.status, message, code, "jimeng_error");
+      }
+      if ((err as Error & { withOpenAIError?: boolean }).withOpenAIError) {
+        const type = String((err as Error & { type?: string }).type || "upstream_error");
+        const code = (err as Error & { code?: string | number }).code ?? "unknown_error";
+        const param = String((err as Error & { param?: string }).param || "");
+        return leftoverWithOpenAIError(res.status, message, code, type, param);
       }
       const aliHandler = err instanceof Error ? (err as Error & { aliHandler?: string }).aliHandler : undefined;
       if (aliHandler === "rerank") {

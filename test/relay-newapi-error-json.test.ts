@@ -15,6 +15,7 @@ import {
   ERROR_CODE_MODEL_PRICE_ERROR,
   ERROR_CODE_PROMPT_BLOCKED,
   ERROR_TYPE_NEW_API_ERROR,
+  leftoverWithOpenAIError,
   messageWithRequestId,
   noAvailableChannelRetryMessage,
   relayErrorHandler,
@@ -31,7 +32,10 @@ import {
   CHANNEL_TYPE_JIMENG,
   CHANNEL_TYPE_MINIMAX,
   CHANNEL_TYPE_OPENAI,
+  CHANNEL_TYPE_PALM,
+  CHANNEL_TYPE_TENCENT,
   CHANNEL_TYPE_XUNFEI,
+  CHANNEL_TYPE_ZHIPU,
   CHANNEL_TYPE_ZHIPU_V4,
 } from "../src/constants.js";
 import { MAX_TOKENS_LIMIT } from "../src/valid-request.js";
@@ -1620,5 +1624,181 @@ test("original leftover image WithOpenAIError gin.H does not change AUTH StatusT
   );
   const vendorItemsHop362 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop362.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover chat WithOpenAIError gin.H", async () => {
+  const empty = leftoverWithOpenAIError(200, "", 0);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(await empty.json(), {
+    error: { message: "openai_error", type: "upstream_error", param: "", code: 0 },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.236" });
+  await mergeModelRatio(new Store(e.DB), { "PaLM-2": 1, "hunyuan-lite": 1, chatglm_std: 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const palm = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.237" },
+      body: JSON.stringify({
+        name: "hop363-palm",
+        type: CHANNEL_TYPE_PALM,
+        key: "palm-key",
+        models: "PaLM-2",
+        group: "default",
+        base_url: "https://generativelanguage.googleapis.com",
+      }),
+    }),
+    e,
+  );
+  assert.equal(palm.body.success, true, palm.text);
+  const tencent = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.238" },
+      body: JSON.stringify({
+        name: "hop363-tencent",
+        type: CHANNEL_TYPE_TENCENT,
+        key: "1300000000|AKIDxxxxxxxx|secretxxxxxxxx",
+        models: "hunyuan-lite",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(tencent.body.success, true, tencent.text);
+  const zhipu = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.239" },
+      body: JSON.stringify({
+        name: "hop363-zhipu",
+        type: CHANNEL_TYPE_ZHIPU,
+        key: "id.secret",
+        models: "chatglm_std",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(zhipu.body.success, true, zhipu.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("chat-bison-001:generateMessage")) {
+      return new Response(
+        JSON.stringify({
+          error: { code: 3, message: "blocked", status: "PERMISSION_DENIED" },
+          candidates: [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url === "https://hunyuan.tencentcloudapi.com/") {
+      return new Response(
+        JSON.stringify({ Response: { Error: { Code: 4000, Message: "invalid hunyuan" } } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/api/paas/v3/model-api/")) {
+      return new Response(JSON.stringify({ success: false, msg: "quota", code: 1 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input);
+  }) as typeof fetch;
+  try {
+    const palmHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.240", "x-oneapi-request-id": "hop363-palm-chat" },
+        body: JSON.stringify({ model: "PaLM-2", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(palmHit.res.status, 200, palmHit.text);
+    assert.equal("type" in palmHit.body && palmHit.body.type === "error", false, palmHit.text);
+    const palmErr = palmHit.body.error as { message: string; type: string; param: string; code: number };
+    assert.equal(palmErr.message, "blocked");
+    assert.equal(palmErr.message.includes("hop363-palm-chat"), false);
+    assert.equal(palmErr.type, "PERMISSION_DENIED");
+    assert.equal(palmErr.param, "");
+    assert.equal(palmErr.code, 3);
+    assert.equal(typeof palmErr.code, "number");
+
+    const tencentHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.241", "x-oneapi-request-id": "hop363-tencent-chat" },
+        body: JSON.stringify({ model: "hunyuan-lite", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(tencentHit.res.status, 200, tencentHit.text);
+    const tencentErr = tencentHit.body.error as { message: string; type: string; param: string; code: number };
+    assert.equal(tencentErr.message, "invalid hunyuan");
+    assert.equal(tencentErr.message.includes("hop363-tencent-chat"), false);
+    assert.equal(tencentErr.type, "upstream_error");
+    assert.equal(tencentErr.param, "");
+    assert.equal(tencentErr.code, 4000);
+    assert.equal(typeof tencentErr.code, "number");
+
+    const zhipuHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.242", "x-oneapi-request-id": "hop363-zhipu-chat" },
+        body: JSON.stringify({ model: "chatglm_std", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(zhipuHit.res.status, 200, zhipuHit.text);
+    const zhipuErr = zhipuHit.body.error as { message: string; type: string; param: string; code: number };
+    assert.equal(zhipuErr.message, "quota");
+    assert.equal(zhipuErr.message.includes("hop363-zhipu-chat"), false);
+    assert.equal(zhipuErr.type, "upstream_error");
+    assert.equal(zhipuErr.param, "");
+    assert.equal(zhipuErr.code, 1);
+    assert.equal(typeof zhipuErr.code, "number");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover chat WithOpenAIError gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.243" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.244", "x-oneapi-request-id": "hop363-vendor-create" },
+      body: JSON.stringify({ name: "hop363-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop363-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop363 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop363.some((item) => item.action === "vendor.create"), listed.text);
 });
 

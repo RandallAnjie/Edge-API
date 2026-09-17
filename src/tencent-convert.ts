@@ -1,6 +1,7 @@
 /** Original `relay/channel/tencent` ConvertOpenAIRequest / GetRequestURL / SetupRequestHeader / DoResponse. */
 
 import { bytesToHex, hmacSha256Raw, sha256Bytes } from "./crypto.js";
+import { newWithOpenAIError } from "./http.js";
 import { asInt, asObj, sseLine } from "./openai-usage.js";
 
 export const TENCENT_DEFAULT_BASE = "https://hunyuan.tencentcloudapi.com";
@@ -149,7 +150,7 @@ export function openaiFromTencentResponse(
   const inner = tencentChatInner(upstream);
   const err = asObj(inner.Error);
   if (asInt(err.Code ?? err.code) !== 0) {
-    throw new Error(String(err.Message ?? err.message ?? ""));
+    throw newWithOpenAIError(String(err.Message ?? err.message ?? ""), asInt(err.Code ?? err.code));
   }
   const choicesSrc = Array.isArray(inner.Choices) ? (inner.Choices as Record<string, unknown>[]) : [];
   const choices = choicesSrc.length

@@ -765,7 +765,7 @@ export function taskArtifactError(status: number, code: string, message: string,
 export function openaiError(
   status: number,
   message: string,
-  code = "new_api_error",
+  code: string | number = "new_api_error",
   type = "new_api_error",
   extra?: HeadersInit,
 ): Response {
@@ -776,6 +776,49 @@ export function openaiError(
     },
     extra,
   );
+}
+
+/**
+ * Original leftover Relay defer `c.JSON` gin.H after `WithOpenAIError`
+ * (`ErrorTypeOpenAIError` `ToOpenAIError` uses RelayError.Message, so a client
+ * request id is not appended). Empty Type is `upstream_error`. Empty Message is
+ * `openai_error` (`string(e.errorType)`). `code` stays the original `any`.
+ */
+export function leftoverWithOpenAIError(
+  status: number,
+  message: string,
+  code: string | number,
+  type = "",
+  param = "",
+): Response {
+  return json(status, {
+    error: {
+      message: message || "openai_error",
+      type: type || "upstream_error",
+      param,
+      code,
+    },
+  });
+}
+
+/** Original `types.WithOpenAIError` fields on a thrown convert error. */
+export function newWithOpenAIError(
+  message: string,
+  code: string | number,
+  type = "",
+  param = "",
+): Error {
+  const err = new Error(message) as Error & {
+    withOpenAIError: true;
+    type: string;
+    code: string | number;
+    param?: string;
+  };
+  err.withOpenAIError = true;
+  err.type = type || "upstream_error";
+  err.code = code;
+  if (param) err.param = param;
+  return err;
 }
 
 /** Original `types.ErrorCodeInvalidRequest`. */

@@ -1,5 +1,6 @@
 /** Original `relay/channel/palm` ConvertOpenAIRequest / GetRequestURL / SetupRequestHeader / DoResponse. */
 
+import { newWithOpenAIError } from "./http.js";
 import { asInt, asObj, sseLine } from "./openai-usage.js";
 
 export type ConvertPalmOpts = {
@@ -42,7 +43,7 @@ export function openaiFromPalmResponse(
   const err = asObj(upstream.error);
   const candidates = Array.isArray(upstream.candidates) ? (upstream.candidates as Record<string, unknown>[]) : [];
   if (asInt(err.code) !== 0 || candidates.length === 0) {
-    throw new Error(String(err.message || ""));
+    throw newWithOpenAIError(String(err.message || ""), asInt(err.code), String(err.status || ""));
   }
   const content = candidateContent(candidates[0]);
   const prompt = opts.fallbackPromptTokens || 0;

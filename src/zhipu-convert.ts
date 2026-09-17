@@ -2,8 +2,9 @@
 
 import { CHANNEL_SPECIAL_BASES } from "./catalog.js";
 import { hmacSha256Raw } from "./crypto.js";
+import { newWithOpenAIError } from "./http.js";
 import { getImageFromUrl } from "./image-download.js";
-import { asObj, sseLine } from "./openai-usage.js";
+import { asInt, asObj, sseLine } from "./openai-usage.js";
 
 const ZHIPU_TOKEN_TTL_MS = 24 * 3600 * 1000;
 
@@ -192,7 +193,7 @@ function usageFromZhipu(raw: Record<string, unknown>): { prompt_tokens: number; 
 /** Original `zhipu.responseZhipu2OpenAI`. `success` missing is Go false → error. */
 export function openaiFromZhipuResponse(upstream: Record<string, unknown>, opts: { created?: number } = {}): Record<string, unknown> {
   if (upstream.success !== true) {
-    throw new Error(String(upstream.msg || "zhipu error"));
+    throw newWithOpenAIError(String(upstream.msg || ""), asInt(upstream.code));
   }
   const data = asObj(upstream.data);
   const src = Array.isArray(data.choices) ? (data.choices as { role?: string; content?: unknown }[]) : [];
