@@ -997,6 +997,47 @@ export function aliImageResponseUnmarshalError(text: string): string | null {
 }
 
 /**
+ * Original `volcengine.Adaptor.DoResponse` default path delegates to
+ * `openai.Adaptor.DoResponse`. Audio speech stays native `handleTTSResponse`.
+ * Claude format + `ChannelSpecialBases` stays `claude.Adaptor.DoResponse`
+ * (gate in relay). Non-stream chat / embeddings use `openai.OpenaiHandler`
+ * (`common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody`). Images
+ * Convert succeeds then `OpenaiImageHandler` (`dto.SimpleResponse`). Responses
+ * Convert succeeds then `OaiResponsesHandler` (`dto.OpenAIResponsesResponse`).
+ * Stream uses `openai.OaiStreamHandler` (log/continue, not leftover gin.H).
+ * Completions GetRequestURL is `unsupported relay mode` before DoResponse.
+ * Audio transcription / translation Convert `"unsupported audio relay mode"`
+ * before DoResponse (hop 350). Extra-OK: ConvertRerankRequest `nil, nil`
+ * rerank Unmarshal stays leftover. Extra-OK: ConvertGeminiRequest
+ * `"not implemented"` stays hop 350. Extra-OK: hop 397 Ali image stays.
+ */
+export function usesVolcUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_VOLC) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "completions":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` / `dto.SimpleResponse` /
+ * `dto.OpenAIResponsesResponse` for Volc non-TTS. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function volcResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
