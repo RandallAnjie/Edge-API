@@ -1619,6 +1619,7 @@ export function advancedCustomClaudeResponseUnmarshalError(text: string): string
  * inbound stays hop 404. Chat-to-Claude stays hop 419. Stream stays
  * `GeminiChatStreamHandler` (later hop). Responses-to-Gemini uses the same `GeminiResponsesHandler` leftover (hop 421).
  * Extra-OK: hop 360 Gemini channel stays. Extra-OK: hop 419 Claude stays.
+ * Extra-OK: hop 423 Gemini channel stream stays.
  */
 export function usesAdvancedCustomGeminiUnmarshal(
   channelType: number,

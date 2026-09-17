@@ -48,7 +48,7 @@ import {
   getOpenAISystemRoleName,
 } from "./convert.js";
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
-import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiUpstreamToOpenAIChat } from "./gemini-response.js";
+import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiUpstreamToOpenAIChat, usesGeminiChatStreamUnmarshal } from "./gemini-response.js";
 import { compactUuid, looksLikeSse } from "./openai-usage.js";
 import { convertAwsClaudeRequest, isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
 import { openAIHttpMediaDialect, prefetchOpenAIHttpMedia } from "./openai-media.js";
@@ -2516,6 +2516,15 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         if (unmarshalErr) {
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
           return writeRelayNewAPIError(opts.req, 500, unmarshalErr, ERROR_CODE_BAD_RESPONSE_BODY);
+        }
+        res = new Response(streamText, { status: res.status, headers: res.headers });
+      }
+      if (usesGeminiChatStreamUnmarshal(channel.type, mapped, mode, opts.stream)) {
+        const streamText = await res.text();
+        const unmarshalErr = geminiChatStreamSseUnmarshalError(streamText);
+        if (unmarshalErr) {
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
+          return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
         }
         res = new Response(streamText, { status: res.status, headers: res.headers });
       }

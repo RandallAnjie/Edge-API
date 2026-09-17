@@ -1,6 +1,8 @@
 /** Original `relaykit/relayconvert/internal/gemini_chat/to_oai_chat_resp.go` + Gemini OpenAI-format DoResponse. */
 
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
+import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_VERTEX } from "./constants.js";
+import { vertexRequestMode } from "./vertex-convert.js";
 import {
   asInt,
   asObj,
@@ -1287,6 +1289,9 @@ export function geminiChatEmptyCandidatesError(
  * JSON is `json: cannot unmarshal … into Go value of type dto.GeminiChatResponse`.
  * Extra-OK: the original UnmarshalJSON aux type name is an anonymous struct.
  * Extra-OK: nested field type mismatches are left to convert (original fails).
+ * Stream uses `geminiStreamHandler` wrap `unmarshal Gemini stream response: %w`
+ * then `NewOpenAIError` (hop 423). Extra-OK: `GeminiResponsesStreamHandler`
+ * may `FailResponsesStream` instead of leftover gin.H (later hop).
  */
 export function geminiChatResponseUnmarshalError(text: string): string | null {
   const parsed = goUnmarshalJSON(text);
@@ -1294,6 +1299,56 @@ export function geminiChatResponseUnmarshalError(text: string): string | null {
   if (parsed.value === null) return null;
   if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
     return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type dto.GeminiChatResponse`;
+  }
+  return null;
+}
+
+/**
+ * Original `gemini.Adaptor.DoResponse` stream uses `GeminiChatStreamHandler` /
+ * `GeminiTextGenerationStreamHandler` → `geminiStreamHandler`
+ * (`UnmarshalJsonStr` wrap `unmarshal Gemini stream response: %w` then
+ * `NewOpenAIError` `ErrorCodeBadResponseBody` into `dto.GeminiChatResponse`).
+ * `GeminiResponsesStreamHandler` also calls `geminiStreamHandler` but may
+ * `FailResponsesStream` instead of leftover gin.H (later hop). Images /
+ * embeddings / imagen / embedding models stay hop 350 Convert. Extra-OK: hop
+ * 360 non-stream `GeminiChatHandler` stays. Extra-OK: hop 422 Claude stream
+ * stays. Extra-OK: hop 421 responses-to-Gemini stays.
+ */
+export function usesGeminiChatStreamUnmarshal(
+  channelType: number,
+  mapped: string,
+  mode: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
+  if (mapped.startsWith("imagen")) return false;
+  if (
+    mapped.startsWith("text-embedding") ||
+    mapped.startsWith("embedding") ||
+    mapped.startsWith("gemini-embedding")
+  ) {
+    return false;
+  }
+  if (channelType === CHANNEL_TYPE_GEMINI) return true;
+  if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini") return true;
+  return false;
+}
+
+/**
+ * Original `geminiStreamHandler` `UnmarshalJsonStr` into `dto.GeminiChatResponse`
+ * for the first invalid SSE `data:` payload, wrapped as
+ * `fmt.Errorf("unmarshal Gemini stream response: %w", err)` then
+ * `NewOpenAIError`. Syntax errors match `encoding/json`. JSON `null` succeeds
+ * as a zero-value struct. Extra-OK: nested field type mismatches are left to
+ * convert (original fails). Extra-OK: replica buffers leftover gin.H before
+ * SSE headers (original `SetEventStreamHeaders` runs first).
+ */
+export function geminiChatStreamSseUnmarshalError(text: string): string | null {
+  for (const payload of parseSseDataPayloads(text)) {
+    const err = geminiChatResponseUnmarshalError(payload);
+    if (err) return `unmarshal Gemini stream response: ${err}`;
   }
   return null;
 }

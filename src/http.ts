@@ -989,6 +989,8 @@ export function writeGeminiChatEmptyCandidatesError(
  * `{error:ToOpenAIError()}` (`type`/`code` are `bad_response_body`, `param:""`).
  * Extra-OK: generated RequestId is not appended (hop 314); honor client header.
  * Extra-OK: no `ResetStatusCode` (original unmarshal fail does not call it).
+ * Extra-OK: Gemini stream `geminiStreamHandler` wrap
+ * `unmarshal Gemini stream response: %w` then `NewOpenAIError` (hop 423).
  */
 export function writeGeminiChatUnmarshalError(req: Request, message: string): Response {
   const rid = req.headers.get("x-oneapi-request-id") || "";
