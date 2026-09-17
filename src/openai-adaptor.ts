@@ -1799,8 +1799,9 @@ export function claudeStreamSseUnmarshalError(text: string): string | null {
  * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
  * `dto.ClaudeResponse`). AKSK Nova stays `handleNovaRequest` (hop 385).
  * Images / audio / embeddings / responses Convert `"not implemented"` before
- * DoResponse (hop 350). ConvertRerank is `nil,nil` leftover. Extra-OK: hop 406
- * Anthropic stays. Extra-OK: hop 418 AKSK Claude `awsHandler` stays.
+ * DoResponse (hop 350). ConvertRerank is `nil,nil` leftover. Stream stays hop
+ * 425 (`ClaudeStreamHandler`). Extra-OK: hop 406 Anthropic stays. Extra-OK:
+ * hop 418 AKSK Claude `awsHandler` stays.
  */
 export function usesAwsClaudeUnmarshal(channelType: number, mode: string, settings?: string | null): boolean {
   if (channelType !== CHANNEL_TYPE_AWS) return false;
@@ -1837,6 +1838,24 @@ export function usesAwsClaudeUnmarshal(channelType: number, mode: string, settin
  */
 export function awsClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original AWS API-key `aws.Adaptor.DoResponse` stream delegates to
+ * `claude.Adaptor.DoResponse` (`ClaudeStreamHandler` `HandleStreamResponseData`
+ * `UnmarshalJsonStr` `NewError` `ErrorCodeBadResponseBody` into
+ * `dto.ClaudeResponse`). AKSK stream stays hop 424 (`awsStreamHandler`). Nova
+ * stays hop 385. Extra-OK: hop 407 non-stream `ClaudeHandler` stays. Extra-OK:
+ * hop 422 Anthropic stream stays. Extra-OK: hop 423 Gemini stream stays.
+ */
+export function usesAwsClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  settings?: string | null,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  return usesAwsClaudeUnmarshal(channelType, mode, settings);
 }
 
 /**
@@ -1895,8 +1914,8 @@ export function awsAkskClaudeResponseUnmarshalError(text: string): string | null
  * `awsStreamHandler` → `HandleStreamResponseData` (`UnmarshalJsonStr`
  * `NewError` `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`) on each
  * Bedrock chunk's Claude JSON. Replica `decodeAwsEventStreamResponse` rewrites
- * eventstream to Claude SSE `data:` payloads first. API-key stream stays
- * `claude.Adaptor` `ClaudeStreamHandler` (later hop). Nova stays hop 385.
+ * eventstream to Claude SSE `data:` payloads first. API-key stream stays hop
+ * 425 (`claude.Adaptor` `ClaudeStreamHandler`). Nova stays hop 385.
  * Extra-OK: hop 418 non-stream `awsHandler` stays. Extra-OK: hop 422 Anthropic
  * stream stays. Extra-OK: hop 423 Gemini stream stays.
  */
