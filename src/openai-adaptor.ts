@@ -1,5 +1,6 @@
 /** Original `relay.GetAdaptor` → `openai.Adaptor` (APITypeOpenAI, OpenRouter, Xinference, unknown→OpenAI). */
 
+import { advancedCustomOpenaiShapedInbound } from "./advanced-custom-response.js";
 import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { vertexRequestMode } from "./vertex-convert.js";
@@ -1316,6 +1317,43 @@ export function usesSub2apiUnmarshal(channelType: number, mode: string): boolean
  * nested field type mismatches are left to convert (original fails).
  */
 export function sub2apiResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` `none` / Claude→chat /
+ * Gemini→chat converters delegate to `openai.Adaptor.DoResponse`. Chat-to-Claude
+ * / chat-to-Gemini stay `claude.Adaptor` / `gemini.Adaptor`. Non-stream chat /
+ * completions / embeddings use `openai.OpenaiHandler` (`common.Unmarshal`
+ * `NewOpenAIError` `ErrorCodeBadResponseBody`). Images use
+ * `OpenaiImageHandler` (`dto.SimpleResponse`). Responses use
+ * `openai.OaiResponsesHandler`. Stream uses `openai.OaiStreamHandler`
+ * (log/continue, not leftover gin.H). Extra-OK: hop 403 sub2api stays.
+ */
+export function usesAdvancedCustomUnmarshal(channelType: number, mode: string, converter = "none"): boolean {
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  if (!advancedCustomOpenaiShapedInbound(converter)) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` / `dto.SimpleResponse` /
+ * `dto.OpenAIResponsesResponse` for advanced-custom OpenAI-shaped inbound.
+ * Syntax errors match `encoding/json`. JSON `null` succeeds as a zero-value
+ * struct. Extra-OK: nested field type mismatches are left to convert
+ * (original fails).
+ */
+export function advancedCustomResponseUnmarshalError(text: string, mode = "chat"): string | null {
   return openaiHandlerResponseUnmarshalError(text, mode);
 }
 
