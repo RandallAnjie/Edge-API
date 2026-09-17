@@ -2082,7 +2082,8 @@ export function oaiResponsesToChatStreamSseUnmarshalError(text: string): string 
  * non-stream uses `OaiResponsesToChatHandler` (`common.Unmarshal` `NewOpenAIError`
  * `ErrorCodeBadResponseBody` into `dto.OpenAIResponsesResponse`). Stream stays hop
  * 444 (`OaiResponsesToChatStreamHandler` leftover gin.H). Extra-OK: hop 443
- * responses-to-chat stays. Extra-OK: hop 365 native via-responses stays.
+ * responses-to-chat stays. Extra-OK: hop 365/371 native via-responses JSON stays.
+ * Extra-OK: hop 446 native via-responses buffered stream leftover gin.H stays.
  */
 export function usesOaiResponsesToChatUnmarshal(
   channelType: number,
@@ -2103,6 +2104,31 @@ export function usesOaiResponsesToChatUnmarshal(
  */
 export function oaiResponsesToChatResponseUnmarshalError(text: string): string | null {
   return openaiHandlerResponseUnmarshalError(text, "responses");
+}
+
+/**
+ * Original `textRequestViaResponses` non-stream client + upstream SSE uses
+ * `OaiResponsesToChatBufferedStreamHandler` (`UnmarshalJsonStr` into
+ * `dto.ResponsesStreamResponse` then leftover `NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Client stream stays hop 444 advanced-custom or
+ * native `OaiResponsesToChatStreamHandler`. Extra-OK: hop 371/445 non-stream
+ * JSON leftover gin.H stays. Extra-OK: log prefix
+ * `failed to unmarshal buffered responses stream event` is not in leftover gin.H.
+ */
+export function usesOaiResponsesToChatBufferedStreamUnmarshal(
+  viaResponses: boolean,
+  isStream = false,
+): boolean {
+  if (isStream) return false;
+  return Boolean(viaResponses);
+}
+
+/**
+ * Original `OaiResponsesToChatBufferedStreamHandler` first invalid SSE `data:`
+ * payload. Same `dto.ResponsesStreamResponse` encoding/json as hop 444.
+ */
+export function oaiResponsesToChatBufferedStreamSseUnmarshalError(text: string): string | null {
+  return oaiResponsesToChatStreamSseUnmarshalError(text);
 }
 
 /** Original `OaiChatToResponsesStreamHandler` `UnmarshalJsonStr` target type. */
