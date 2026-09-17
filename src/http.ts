@@ -967,6 +967,9 @@ export function toClaudeRelayError(message: string): { type: string; message: st
  * `ErrorTypeOpenAIError` (`fmt.Sprintf("%v", OpenAIError.Code)`). Else
  * `{error:ToOpenAIError()}` (`type`/`code` are the ErrorCode, `param:""`).
  * Extra-OK: no MessageWithRequestId (GeminiChatHandler writes before Relay defer).
+ * Extra-OK: hop 464 `GeminiResponsesHandler` empty-candidates returns `NewOpenAIError`
+ * to Relay defer (`ToOpenAIError` uses `RelayError.Message`, no request-id append;
+ * `type`/`code` are `empty_response` / `prompt_blocked`).
  */
 export function writeGeminiChatEmptyCandidatesError(
   req: Request,

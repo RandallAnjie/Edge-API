@@ -1477,6 +1477,8 @@ function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mo
 /**
  * Original Gemini adaptor DoResponse uses GeminiChatHandler / GeminiResponsesHandler
  * leftover empty-candidates gin.H (not native GeminiTextGenerationHandler / imagen / embedding).
+ * Extra-OK: hop 464 `/v1/responses` leftover is `GeminiResponsesHandler` `NewOpenAIError`
+ * Relay defer (`ErrorTypeOpenAIError` `ToOpenAIError`, not `writeRelayNewAPIError`).
  */
 function usesGeminiEmptyCandidatesHandler(channelType: number, mapped: string, mode: string): boolean {
   if (mode === "gemini") return false;
@@ -3858,7 +3860,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         const status = resetNewAPIErrorStatusCode(empty.status, String(channel.status_code_mapping || ""));
         if (mode === "responses") {
           await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, empty.message.slice(0, 2000), extra);
-          return writeRelayNewAPIError(opts.req, status, empty.message, empty.code);
+          return writeGeminiChatEmptyCandidatesError(opts.req, status, empty.message, empty.code);
         }
         const usage = usageFromOpenAI(parsed);
         attachSettleUsage(extra, usage);
