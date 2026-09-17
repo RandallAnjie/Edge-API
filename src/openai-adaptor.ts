@@ -1694,7 +1694,8 @@ export function codexResponseUnmarshalError(text: string, mode = "responses"): s
  * `HandleClaudeResponseData` (`common.Unmarshal` `NewError`
  * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). Always ClaudeHandler
  * regardless of RelayFormat (OpenAI / Claude / Gemini / Responses). Stream uses
- * `ClaudeStreamHandler` / `ClaudeResponsesStreamHandler` (later hop). Images /
+ * `ClaudeStreamHandler` `HandleStreamResponseData` (hop 422). Extra-OK:
+ * `ClaudeResponsesStreamHandler` stays later hop (`NewOpenAIError`). Images /
  * audio / embeddings Convert `"not implemented"` before DoResponse (hop 350).
  * ConvertRerank is `nil,nil` leftover. Extra-OK: hop 405 Codex stays. Extra-OK:
  * Moonshot / MiniMax / Deepseek / Zhipu v4 Claude-format, AWS API-key, Vertex
@@ -1735,6 +1736,58 @@ export function claudeHandlerResponseUnmarshalError(text: string): string | null
   if (parsed.value === null) return null;
   if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
     return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${claudeHandlerUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
+ * Original `claude.Adaptor.DoResponse` stream uses `ClaudeStreamHandler` →
+ * `HandleStreamResponseData` (`common.UnmarshalJsonStr` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). Always ClaudeStreamHandler
+ * regardless of RelayFormat except OpenAIResponses stream
+ * (`ClaudeResponsesStreamHandler`, later hop, `NewOpenAIError`). Images /
+ * audio / embeddings Convert `"not implemented"` before DoResponse (hop 350).
+ * ConvertRerank is `nil,nil` leftover. Extra-OK: hop 406 non-stream
+ * `ClaudeHandler` stays. Extra-OK: OaiStreamHandler log/continue stays.
+ * Extra-OK: hop 421 responses-to-Gemini stays.
+ */
+export function usesClaudeStreamUnmarshal(channelType: number, mode: string, isStream = true): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  return usesClaudeHandlerUnmarshal(channelType, mode);
+}
+
+/**
+ * Original `StreamScannerHandler` `data:` payloads (strip `data:`, TrimSpace,
+ * skip empty / `[DONE]`). Lines shorter than 6 or without a `data:` /
+ * `[DONE]` prefix are ignored. `[DONE]` stops further payloads.
+ */
+export function claudeStreamSseDataPayloads(text: string): string[] {
+  const payloads: string[] = [];
+  for (const raw of String(text || "").split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (line.length < 6) continue;
+    if (!line.startsWith("data:") && line.slice(0, 6) !== "[DONE]") continue;
+    const data = line.slice(5).trim();
+    if (!data) continue;
+    if (data.startsWith("[DONE]")) break;
+    payloads.push(data);
+  }
+  return payloads;
+}
+
+/**
+ * Original `HandleStreamResponseData` `UnmarshalJsonStr` into
+ * `dto.ClaudeResponse` for the first invalid SSE `data:` payload. Syntax
+ * errors match `encoding/json`. JSON `null` succeeds as a zero-value struct.
+ * Extra-OK: nested field type mismatches are left to convert (original fails).
+ * Extra-OK: replica buffers and returns leftover gin.H before SSE headers
+ * (original `SetEventStreamHeaders` runs first).
+ */
+export function claudeStreamSseUnmarshalError(text: string): string | null {
+  for (const payload of claudeStreamSseDataPayloads(text)) {
+    const err = claudeHandlerResponseUnmarshalError(payload);
+    if (err) return err;
   }
   return null;
 }
