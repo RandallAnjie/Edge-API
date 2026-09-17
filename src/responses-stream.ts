@@ -30,7 +30,7 @@ import {
   usageFromChatUsage,
   usageFromResponsesUsage,
 } from "./responses-convert.js";
-import { claudeHandlerResponseUnmarshalError } from "./openai-adaptor.js";
+import { claudeHandlerResponseUnmarshalError, oaiChatStreamChunkUnmarshalError } from "./openai-adaptor.js";
 
 const EVENT_CREATED = "response.created";
 const EVENT_COMPLETED = "response.completed";
@@ -1867,10 +1867,9 @@ export function oaiChatSseToResponsesSse(
     };
   };
   for (const payload of parseSseDataLines(text)) {
-    const parsed = parseJsonObject(payload);
-    if (!parsed) {
-      return fail(new Error("failed to unmarshal chat stream response"));
-    }
+    const unmarshalErr = oaiChatStreamChunkUnmarshalError(payload);
+    if (unmarshalErr) return fail(new Error(unmarshalErr));
+    const parsed = parseJsonObject(payload) ?? {};
     const oai = openAIErrorFrom(parsed);
     if (oai) return fail(new Error(oai.message));
     try {

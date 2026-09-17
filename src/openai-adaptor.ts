@@ -2,7 +2,7 @@
 
 import { advancedCustomOpenaiShapedInbound } from "./advanced-custom-response.js";
 import { geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError } from "./gemini-response.js";
-import { CONVERTER_CHAT_TO_CLAUDE, CONVERTER_CHAT_TO_GEMINI, CONVERTER_NONE, CONVERTER_RESPONSES_TO_GEMINI } from "./advanced-custom-convert.js";
+import { CONVERTER_CHAT_TO_CLAUDE, CONVERTER_CHAT_TO_GEMINI, CONVERTER_NONE, CONVERTER_RESPONSES_TO_CHAT, CONVERTER_RESPONSES_TO_GEMINI } from "./advanced-custom-convert.js";
 import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { supportsAliAnthropicMessages } from "./ali-convert.js";
@@ -1947,6 +1947,7 @@ export function usesAdvancedCustomGeminiStreamUnmarshal(
  * stays. Extra-OK: hop 421 non-stream `GeminiResponsesHandler` stays. Extra-OK:
  * hop 440 Gemini channel stays. Extra-OK: replica convert always has
  * `ChatToResponsesStreamState` so `FailResponsesStream` is handled.
+ * Extra-OK: hop 442 `OaiChatToResponsesStreamHandler` stays.
  */
 export function usesAdvancedCustomGeminiResponsesStreamUnmarshal(
   channelType: number,
@@ -1967,6 +1968,66 @@ export function usesAdvancedCustomGeminiResponsesStreamUnmarshal(
  */
 export function advancedCustomGeminiResponsesStreamSseUnmarshalError(text: string): string | null {
   return geminiChatStreamSseUnmarshalError(text);
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` ConverterOpenAIResponsesToOpenAIChat
+ * stream uses `OaiChatToResponsesStreamHandler` (`UnmarshalJsonStr` into
+ * `dto.ChatCompletionsStreamResponse`). Typical path is
+ * `FailResponsesStream("server_error", err.Error(), "")` SSE (HTTP 200), not
+ * leftover gin.H. Leftover `NewOpenAIError` `ErrorCodeBadResponseBody` only when
+ * `FailResponsesStream` is unhandled. Extra-OK: hop 441 responses-to-Gemini
+ * stays. Extra-OK: hop 438 Ollama OpenAI stream leftover gin.H stays. Extra-OK:
+ * replica convert always has `ChatToResponsesStreamState` so
+ * `FailResponsesStream` is handled for `/v1/responses`. Extra-OK: non-stream
+ * `OaiChatToResponsesHandler` leftover gin.H stays later hop.
+ */
+export function usesOaiChatToResponsesStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode !== "responses") return false;
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  return String(converter || CONVERTER_NONE).trim() === CONVERTER_RESPONSES_TO_CHAT;
+}
+
+/** Original `OaiChatToResponsesStreamHandler` `UnmarshalJsonStr` target type. */
+export function oaiChatToResponsesStreamUnmarshalTypeName(): string {
+  return "dto.ChatCompletionsStreamResponse";
+}
+
+/**
+ * Original `OaiChatToResponsesStreamHandler` `UnmarshalJsonStr` into
+ * `dto.ChatCompletionsStreamResponse`. Syntax errors match `encoding/json`.
+ * JSON `null` succeeds as a zero-value struct. Extra-OK: nested field type
+ * mismatches are left to convert (original fails). Extra-OK: the prior
+ * `dto.OpenAITextResponse` error-envelope Unmarshal is skipped on failure
+ * (original then unmarshals the chat chunk).
+ */
+export function oaiChatStreamChunkUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${oaiChatToResponsesStreamUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
+ * Original `OaiChatToResponsesStreamHandler` first invalid SSE `data:` payload.
+ * `FailResponsesStream` uses encoding/json `err.Error()` (not the log prefix
+ * `failed to unmarshal chat stream response`).
+ */
+export function oaiChatToResponsesStreamSseUnmarshalError(text: string): string | null {
+  for (const payload of claudeStreamSseDataPayloads(text)) {
+    const err = oaiChatStreamChunkUnmarshalError(payload);
+    if (err) return err;
+  }
+  return null;
 }
 
 /**
