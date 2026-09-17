@@ -1281,6 +1281,45 @@ export function newApiResponseUnmarshalError(text: string, mode = "chat"): strin
 }
 
 /**
+ * Original `sub2api.Adaptor` embeds `newapi.Adaptor`, so DoResponse is the
+ * same leftover `openai.Adaptor.DoResponse` path. Claude format uses
+ * `claude.Adaptor.DoResponse` (`clientFormat === "openai"` gate in relay).
+ * Gemini format uses `gemini.Adaptor.DoResponse`. Non-stream chat /
+ * completions / embeddings use `openai.OpenaiHandler` (`common.Unmarshal`
+ * `NewOpenAIError` `ErrorCodeBadResponseBody`). Images use
+ * `OpenaiImageHandler` (`dto.SimpleResponse`). Responses use
+ * `openai.OaiResponsesHandler` (`dto.OpenAIResponsesResponse`). Stream uses
+ * `openai.OaiStreamHandler` (log/continue, not leftover gin.H). Audio / rerank
+ * Convert `"endpoint not supported"` before DoResponse (hop 350). Extra-OK:
+ * ConvertClaudeRequest uses `claude.Adaptor`. Extra-OK: ConvertGeminiRequest
+ * uses `gemini.Adaptor`. Extra-OK: hop 402 newapi stays.
+ */
+export function usesSub2apiUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_SUB2API) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` / `dto.SimpleResponse` /
+ * `dto.OpenAIResponsesResponse` for sub2api OpenAI-format. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function sub2apiResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `replicate.Adaptor.DoResponse` `common.Unmarshal` (`NewError`
  * `ErrorCodeBadResponseBody`, wrap `"replicate adaptor: failed to decode
  * response: %w"`). Chat / embeddings / audio / rerank / responses Convert is
