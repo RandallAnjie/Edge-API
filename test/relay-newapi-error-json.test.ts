@@ -855,3 +855,96 @@ test("original leftover Relay DoResponse NewError does not change AUTH StatusTex
   const items = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(items.some((item) => item.action === "vendor.create"), listed.text);
 });
+
+test("original Relay leftover handleRelay GetAndValidate image/audio NewError Claude vs OpenAI gin.H", async () => {
+  async function assertClaudeEnvelope(status: number, message: string, code: string) {
+    const req = new Request("http://local/v1/messages", { method: "POST" });
+    const res = writeRelayNewAPIError(req, status, message, code);
+    assert.equal(res.status, status);
+    const body = (await res.json()) as { type: string; error: Record<string, unknown> };
+    assert.equal(body.type, "error");
+    assert.deepEqual(Object.keys(body), ["type", "error"]);
+    assert.deepEqual(Object.keys(body.error).sort(), ["message", "type"]);
+    assert.equal("param" in body.error, false);
+    assert.equal("code" in body.error, false);
+    assert.deepEqual(body.error, { type: ERROR_TYPE_NEW_API_ERROR, message });
+  }
+
+  async function assertOpenAIEnvelope(status: number, message: string, code: string) {
+    const req = new Request("http://local/v1/chat/completions", { method: "POST" });
+    const res = writeRelayNewAPIError(req, status, message, code);
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    assert.equal("type" in body, false);
+    assert.deepEqual(body.error, {
+      message,
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code,
+    });
+  }
+
+  await assertClaudeEnvelope(400, "model is required", ERROR_CODE_INVALID_REQUEST);
+  await assertOpenAIEnvelope(400, "model is required", ERROR_CODE_INVALID_REQUEST);
+  await assertClaudeEnvelope(400, "invalid stream value: strconv.ParseBool: parsing \"notabool\": invalid syntax", ERROR_CODE_INVALID_REQUEST);
+  await assertOpenAIEnvelope(400, "invalid stream value: strconv.ParseBool: parsing \"notabool\": invalid syntax", ERROR_CODE_INVALID_REQUEST);
+
+  resetSchemaFlag();
+  const e = env();
+  const { sk } = await boot(e, { "cf-connecting-ip": "192.0.2.199" });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+
+  const audio = await send(
+    new Request("http://local/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        ...skAuth,
+        "cf-connecting-ip": "192.0.2.200",
+        "x-oneapi-request-id": "hop357-audio-missing-model",
+      },
+      body: JSON.stringify({ input: "hello", voice: "alloy" }),
+    }),
+    e,
+  );
+  assert.equal(audio.res.status, 400, audio.text);
+  assert.equal("type" in audio.body && audio.body.type === "error", false, audio.text);
+  const audioErr = audio.body.error as { message: string; type: string; param: string; code: string };
+  assert.equal(audioErr.message, messageWithRequestId("model is required", "hop357-audio-missing-model"));
+  assert.equal(audioErr.type, ERROR_TYPE_NEW_API_ERROR);
+  assert.equal(audioErr.param, "");
+  assert.equal(audioErr.code, ERROR_CODE_INVALID_REQUEST);
+});
+
+test("original leftover handleRelay GetAndValidate NewError does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.201" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.202", "x-oneapi-request-id": "hop357-vendor-create" },
+      body: JSON.stringify({ name: "hop357-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop357-vendor-create", { headers: auth }),
+    e,
+  );
+  const items = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(items.some((item) => item.action === "vendor.create"), listed.text);
+});
+

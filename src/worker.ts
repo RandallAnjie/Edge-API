@@ -6,7 +6,7 @@ import { nowSec, USER_ENABLED } from "./constants.js";
 import { authenticateApiToken, cryptoSecret, finishAccessTokenAudit, maybeBeginAccessTokenAudit, readSession, sessionSecret } from "./auth.js";
 import { finishAdminAudit } from "./admin-operation-audit.js";
 import { beginTokenOperationAudit, finishTokenOperationAudit, tokenOperationAuditApplies } from "./token-operation-audit.js";
-import { abortWithOpenAiMessage, apiFail, json, messageWithRequestId, newApiPanicError, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors } from "./http.js";
+import { abortWithOpenAiMessage, apiFail, ERROR_CODE_INVALID_REQUEST, json, messageWithRequestId, newApiPanicError, noAvailableChannelMessage, openaiError, pluginMethodNotAllowed, pluginRoutePanicError, relayNotFound, relayNotImplemented, taskArtifactError, taskPluginRouteError, videoProxyError, withCors, writeRelayNewAPIError } from "./http.js";
 import { rememberRequestTrustedProxies } from "./trusted-proxies.js";
 import {
   ARTIFACT_NOT_FOUND,
@@ -522,7 +522,7 @@ async function handleRelayAfterAuth(
           imageBody = getAndValidOpenAIImageEditMultipart(rawBody, rawContentType);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          return openaiError(400, message, "invalid_request");
+          return writeRelayNewAPIError(req, 400, message, ERROR_CODE_INVALID_REQUEST);
         }
         return relay({
           req,
@@ -547,7 +547,7 @@ async function handleRelayAfterAuth(
           audioBody = getAndValidAudioRequest(mode, rawBody, rawContentType);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          return openaiError(400, message, "invalid_request");
+          return writeRelayNewAPIError(req, 400, message, ERROR_CODE_INVALID_REQUEST);
         }
         return relay({
           req,
@@ -592,14 +592,14 @@ async function handleRelayAfterAuth(
       body = unmarshalBodyReusable(got.bytes, ct);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      return openaiError(400, message, "invalid_request");
+      return writeRelayNewAPIError(req, 400, message, ERROR_CODE_INVALID_REQUEST);
     }
     if (isAudioRelayMode(mode)) {
       try {
         body = getAndValidAudioRequest(mode, body);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return openaiError(400, message, "invalid_request");
+        return writeRelayNewAPIError(req, 400, message, ERROR_CODE_INVALID_REQUEST);
       }
     }
   }

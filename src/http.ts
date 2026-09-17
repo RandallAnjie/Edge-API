@@ -820,7 +820,8 @@ export function toClaudeRelayError(message: string): { type: string; message: st
 
 /**
  * Original leftover Relay defer `c.JSON` gin.H for `newAPIError`
- * (`GetAndValidateRequest`, `ModelPriceHelper`, convert/do_request/bad_response_body,
+ * (`GetAndValidateRequest` including handleRelay image-edit/audio/unmarshal leftovers,
+ * `ModelPriceHelper`, convert/do_request/bad_response_body,
  * last-loop get_channel_failed / do_request_failed, DoResponse NewError
  * channel:invalid_key / invalid_request / bad_response / image billing):
  * Claude `{type:"error",error:ToClaudeError()}`; else `{error:ToOpenAIError()}`.
