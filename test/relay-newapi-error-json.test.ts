@@ -720,7 +720,40 @@ test("original Relay leftover last-loop gin.H does not change AUTH StatusText or
   assert.ok(items.some((item) => item.action === "vendor.create"), listed.text);
 });
 
-test("original Relay leftover Xunfei invalid-auth NewError Claude vs OpenAI gin.H", async () => {
+test("original Relay leftover DoResponse NewError Claude vs OpenAI gin.H", async () => {
+  async function assertClaudeEnvelope(status: number, message: string, code: string) {
+    const req = new Request("http://local/v1/messages", { method: "POST" });
+    const res = writeRelayNewAPIError(req, status, message, code);
+    assert.equal(res.status, status);
+    const body = (await res.json()) as { type: string; error: Record<string, unknown> };
+    assert.equal(body.type, "error");
+    assert.deepEqual(Object.keys(body), ["type", "error"]);
+    assert.deepEqual(Object.keys(body.error).sort(), ["message", "type"]);
+    assert.equal("param" in body.error, false);
+    assert.equal("code" in body.error, false);
+    assert.deepEqual(body.error, { type: ERROR_TYPE_NEW_API_ERROR, message });
+  }
+
+  async function assertOpenAIEnvelope(status: number, message: string, code: string) {
+    const req = new Request("http://local/v1/chat/completions", { method: "POST" });
+    const res = writeRelayNewAPIError(req, status, message, code);
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    assert.equal("type" in body, false);
+    assert.deepEqual(body.error, {
+      message,
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code,
+    });
+  }
+
+  await assertClaudeEnvelope(500, "invalid auth", ERROR_CODE_CHANNEL_INVALID_KEY);
+  await assertOpenAIEnvelope(500, "invalid auth", ERROR_CODE_CHANNEL_INVALID_KEY);
+  await assertClaudeEnvelope(400, "unsupported advanced custom converter: not-a-converter", ERROR_CODE_INVALID_REQUEST);
+  await assertOpenAIEnvelope(400, "unsupported advanced custom converter: not-a-converter", ERROR_CODE_INVALID_REQUEST);
+  await assertClaudeEnvelope(400, "no audio data in minimax TTS response", "bad_response");
+  await assertOpenAIEnvelope(400, "no audio data in minimax TTS response", "bad_response");
+
   resetSchemaFlag();
   const e = env();
   const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.193" });
@@ -742,6 +775,7 @@ test("original Relay leftover Xunfei invalid-auth NewError Claude vs OpenAI gin.
   );
   assert.equal(ch.body.success, true, ch.text);
 
+  // Extra-OK: original Xunfei ConvertClaudeRequest panics "implement me" before DoResponse invalid auth.
   const claude = await send(
     new Request("http://local/v1/messages", {
       method: "POST",
@@ -763,7 +797,7 @@ test("original Relay leftover Xunfei invalid-auth NewError Claude vs OpenAI gin.
   assert.equal(claude.body.type, "error");
   const err = claude.body.error as { type: string; message: string; code?: string; param?: string };
   assert.equal(err.type, ERROR_TYPE_NEW_API_ERROR);
-  assert.equal(err.message, messageWithRequestId("invalid auth", "hop356-claude-invalid-auth"));
+  assert.equal(err.message, messageWithRequestId("implement me", "hop356-claude-invalid-auth"));
   assert.equal(err.code, undefined);
   assert.equal(err.param, undefined);
   assert.deepEqual(Object.keys(err).sort(), ["message", "type"]);
