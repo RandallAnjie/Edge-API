@@ -978,7 +978,9 @@ export function toClaudeRelayError(message: string): { type: string; message: st
  * (handler writes then returns nil; embedding prefixes stay GeminiChatHandler).
  * Extra-OK: hop 470 `GeminiImageHandler` empty `predictions` leftover
  * `NewOpenAIError` gin.H (`no images generated`, type/code `bad_response_body`,
- * no request-id append, ImageHelper ResetStatusCode). Extra-OK: hop 471
+ * no request-id append, ImageHelper ResetStatusCode). Extra-OK: hop 472
+ * `GeminiImageHandler` stream success writes OpenAI image JSON (not this leftover
+ * empty-candidates envelope). Extra-OK: hop 471
  * `GeminiEmbeddingHandler` stream success writes OpenAI embedding JSON (not this
  * leftover empty-candidates envelope; leftover Unmarshal stays hop 449).
  */

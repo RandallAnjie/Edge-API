@@ -2793,7 +2793,25 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, emptyPred.message.slice(0, 2000), extra);
           return writeGeminiChatEmptyCandidatesError(opts.req, status, emptyPred.message, emptyPred.code);
         }
-        res = new Response(streamText, { status: res.status, headers: res.headers });
+        // Original GeminiImageHandler ignores IsStream and writes OpenAI image
+        // JSON with Content-Type application/json (hop 472). Extra-OK: hop 470
+        // empty predictions leftover gin.H stays above. Extra-OK: hop 448 leftover
+        // Unmarshal stays above.
+        let convertedImage: Record<string, unknown>;
+        try {
+          convertedImage = openaiFromImagenResponse(parsedStream || {});
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
+        }
+        const imageUsage = imagenUsage(Array.isArray(convertedImage.data) ? convertedImage.data.length : 0);
+        attachSettleUsage(extra, imageUsage);
+        await settle(store, auth, channel, model, imageUsage.prompt || promptEst, imageUsage.completion, useTime, true, ip, rid, true, "stream", extra);
+        return new Response(JSON.stringify(convertedImage), {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8", "x-oneapi-request-id": rid },
+        });
       }
       if (usesAdvancedCustomGeminiImageUnmarshal(channel.type, mode, advancedConverter || "none", mapped)) {
         const streamText = await res.text();
@@ -2814,7 +2832,24 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, emptyPred.message.slice(0, 2000), extra);
           return writeGeminiChatEmptyCandidatesError(opts.req, status, emptyPred.message, emptyPred.code);
         }
-        res = new Response(streamText, { status: res.status, headers: res.headers });
+        // Original advanced-custom chat-to-Gemini DoResponse uses GeminiImageHandler
+        // (hop 472 stream JSON write). Extra-OK: hop 470 empty leftover gin.H stays
+        // above. Extra-OK: hop 453 leftover Unmarshal stays above.
+        let convertedImage: Record<string, unknown>;
+        try {
+          convertedImage = openaiFromImagenResponse(parsedStream || {});
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
+          return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
+        }
+        const imageUsage = imagenUsage(Array.isArray(convertedImage.data) ? convertedImage.data.length : 0);
+        attachSettleUsage(extra, imageUsage);
+        await settle(store, auth, channel, model, imageUsage.prompt || promptEst, imageUsage.completion, useTime, true, ip, rid, true, "stream", extra);
+        return new Response(JSON.stringify(convertedImage), {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8", "x-oneapi-request-id": rid },
+        });
       }
       if (usesGeminiEmbeddingUnmarshal(channel.type, mapped, mode)) {
         const streamText = await res.text();

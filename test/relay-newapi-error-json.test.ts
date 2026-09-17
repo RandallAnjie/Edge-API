@@ -22347,3 +22347,292 @@ test("original leftover GeminiEmbeddingHandler stream JSON write does not change
   assert.ok(vendorItemsHop471.some((item) => item.action === "vendor.create"), listed.text);
 });
 
+test("original leftover GeminiImageHandler write OpenAI image JSON even when the client streams", async () => {
+  const chatToGemini = "openai_chat_completions_to_gemini_generate_content";
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_GEMINI, "imagen-hop472", true, "images"), true);
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_GEMINI, "imagen-hop472", false, "images"), true);
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_GEMINI, "imagen-hop472", true, "responses"), false);
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_GEMINI, "imagen-hop472", true, "gemini"), false);
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_VERTEX, "imagen-hop472", true, "images"), false);
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_VERTEX, "imagen-hop472", false, "images"), true);
+  assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_VERTEX, "imagen-hop472", "images", true), true);
+  assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_GEMINI, "imagen-hop472", "images", true), false);
+  assert.equal(
+    usesAdvancedCustomGeminiImageUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "imagen-hop472-adv"),
+    true,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "openai", "imagen-hop472-adv"),
+    false,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "openai", "hop472-gemini-adv"),
+    true,
+  );
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "198.51.100.434" });
+  await mergeModelRatio(new Store(e.DB), {
+    "imagen-hop472": 1,
+    "hop472-gemini": 1,
+    "imagen-hop472-adv": 1,
+    "hop472-gemini-adv": 1,
+    "imagen-hop472-stay": 1,
+  });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const createdGemini = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.436" },
+      body: JSON.stringify({
+        name: "hop472-gemini",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey-hop472",
+        models: "imagen-hop472,hop472-gemini",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(createdGemini.body.success, true, createdGemini.text);
+
+  const createdAdv = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.437" },
+      body: JSON.stringify({
+        name: "hop472-adv-imagen",
+        type: CHANNEL_TYPE_ADVANCED_CUSTOM,
+        key: "sk-hop472",
+        models: "imagen-hop472-adv,hop472-gemini-adv",
+        group: "default",
+        base_url: "https://generativelanguage.googleapis.com",
+        settings: JSON.stringify({
+          advanced_custom: {
+            advanced_routes: [
+              {
+                incoming_path: "/v1/chat/completions",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:predict",
+                converter: "openai_chat_completions_to_gemini_generate_content",
+                models: ["imagen-hop472-adv", "hop472-gemini-adv"],
+              },
+            ],
+          },
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(createdAdv.body.success, true, createdAdv.text);
+
+  const createdStay = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.438" },
+      body: JSON.stringify({
+        name: "hop472-gemini-stay",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey-hop472-stay",
+        models: "imagen-hop472-stay",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(createdStay.body.success, true, createdStay.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("generativelanguage.googleapis.com")) return origFetch(input, init);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("not-json-hop448-stay-472")) {
+      return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("empty-pred-hop470-stay-472")) {
+      return new Response(JSON.stringify({ predictions: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (raw.includes("chat-hop466-stay-472")) {
+      return new Response(JSON.stringify({ candidates: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ predictions: [{ bytesBase64Encoded: "YQ==" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const streamHit = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.439",
+          "x-oneapi-request-id": "hop472-stream-json",
+        },
+        body: JSON.stringify({ model: "imagen-hop472", prompt: "hello-stream", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(streamHit.res.status, 200, streamHit.text);
+    assert.equal((streamHit.res.headers.get("content-type") || "").includes("application/json"), true, String(streamHit.res.headers.get("content-type")));
+    assert.equal((streamHit.res.headers.get("content-type") || "").includes("text/event-stream"), false, String(streamHit.res.headers.get("content-type")));
+    assert.equal(Array.isArray(streamHit.body.data), true, streamHit.text);
+    const streamData = streamHit.body.data as { b64_json: string }[];
+    assert.equal(streamData[0]?.b64_json, "YQ==");
+    assert.equal(streamHit.text.startsWith("data:"), false, streamHit.text);
+    assert.equal(streamHit.text.includes("no images generated"), false, streamHit.text);
+
+    const chatStream = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.441",
+          "x-oneapi-request-id": "hop472-chat-stream",
+        },
+        body: JSON.stringify({
+          model: "imagen-hop472",
+          messages: [{ role: "user", content: "hello-chat-stream" }],
+          stream: true,
+        }),
+      }),
+      e,
+    );
+    assert.equal(chatStream.res.status, 200, chatStream.text);
+    assert.equal((chatStream.res.headers.get("content-type") || "").includes("application/json"), true, String(chatStream.res.headers.get("content-type")));
+    assert.equal((chatStream.res.headers.get("content-type") || "").includes("text/event-stream"), false, String(chatStream.res.headers.get("content-type")));
+    const chatData = chatStream.body.data as { b64_json: string }[];
+    assert.equal(chatData[0]?.b64_json, "YQ==");
+    assert.equal("choices" in chatStream.body, false, chatStream.text);
+    assert.equal(chatStream.text.startsWith("data:"), false, chatStream.text);
+
+    const advStream = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.442",
+          "x-oneapi-request-id": "hop472-adv-stream",
+        },
+        body: JSON.stringify({
+          model: "imagen-hop472-adv",
+          messages: [{ role: "user", content: "hello-adv-stream" }],
+          stream: true,
+        }),
+      }),
+      e,
+    );
+    assert.equal(advStream.res.status, 200, advStream.text);
+    assert.equal((advStream.res.headers.get("content-type") || "").includes("application/json"), true, String(advStream.res.headers.get("content-type")));
+    assert.equal((advStream.res.headers.get("content-type") || "").includes("text/event-stream"), false, String(advStream.res.headers.get("content-type")));
+    const advData = advStream.body.data as { b64_json: string }[];
+    assert.equal(advData[0]?.b64_json, "YQ==");
+    assert.equal("choices" in advStream.body, false, advStream.text);
+    assert.equal(advStream.text.startsWith("data:"), false, advStream.text);
+
+    const emptyStay = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.443",
+          "x-oneapi-request-id": "hop472-hop470-stay",
+        },
+        body: JSON.stringify({ model: "imagen-hop472", prompt: "empty-pred-hop470-stay-472", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(emptyStay.res.status, 500, emptyStay.text);
+    const emptyErr = emptyStay.body.error as { message: string; type: string };
+    assert.equal(emptyErr.message, "no images generated");
+    assert.equal(emptyErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(emptyStay.text.includes("(request id: hop472-hop470-stay)"), false, emptyStay.text);
+
+    const unmarshalStay = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.444",
+          "x-oneapi-request-id": "hop472-hop448-stay",
+        },
+        body: JSON.stringify({ model: "imagen-hop472-stay", prompt: "not-json-hop448-stay-472", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(unmarshalStay.res.status, 500, unmarshalStay.text);
+    const unmarshalErr = unmarshalStay.body.error as { message: string; type: string };
+    assert.equal(
+      unmarshalErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop472-hop448-stay"),
+    );
+    assert.equal(unmarshalErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(unmarshalStay.text.includes("no images generated"), false, unmarshalStay.text);
+
+    const chatStay = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.446", "x-oneapi-request-id": "hop472-hop466-stay" },
+        body: JSON.stringify({
+          model: "hop472-gemini",
+          messages: [{ role: "user", content: "chat-hop466-stay-472" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chatStay.res.status, 500, chatStay.text);
+    const chatErr = chatStay.body.error as { message: string; type: string };
+    assert.equal(chatErr.message, "empty response from Gemini API");
+    assert.equal(chatErr.type, ERROR_CODE_EMPTY_RESPONSE);
+    assert.equal(chatStay.text.includes("(request id: hop472-hop466-stay)"), false, chatStay.text);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover GeminiImageHandler stream JSON write does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "198.51.100.447" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.448", "x-oneapi-request-id": "hop472-vendor-create" },
+      body: JSON.stringify({ name: "hop472-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop472-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop472 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop472.some((item) => item.action === "vendor.create"), listed.text);
+});
+

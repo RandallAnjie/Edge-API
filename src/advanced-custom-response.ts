@@ -79,9 +79,9 @@ function geminiAdaptorDoResponse(
   }
   if (client === "gemini") return upstreamJson;
   // Original chat-to-Gemini DoResponse uses GeminiImageHandler for imagen prefixes
-  // (hop 470 empty predictions leftover NewOpenAIError gin.H). Extra-OK: hop 465
-  // `/v1/responses` stays GeminiResponsesHandler above. Extra-OK: hop 460 native
-  // RelayModeGemini `:predict` copies via client === "gemini".
+  // (hop 470 empty predictions leftover NewOpenAIError gin.H; hop 472 stream JSON
+  // write). Extra-OK: hop 465 `/v1/responses` stays GeminiResponsesHandler above.
+  // Extra-OK: hop 460 native RelayModeGemini `:predict` copies via client === "gemini".
   if (model.startsWith("imagen")) {
     return openaiFromImagenResponse(upstreamJson, { created: opts.created });
   }

@@ -1437,7 +1437,9 @@ export function geminiChatStreamSseUnmarshalError(text: string): string | null {
  * OpenAI `openaiImageJSONAsStreamHandler` stays. Extra-OK: hop 470 empty
  * `predictions` leftover is `NewOpenAIError` gin.H after successful Unmarshal
  * (`no images generated`, type/code `bad_response_body`, no request-id append,
- * ImageHelper ResetStatusCode). Extra-OK: hop 449 embedding-model
+ * ImageHelper ResetStatusCode). Extra-OK: hop 472 `GeminiImageHandler` writes
+ * OpenAI image JSON with `Content-Type: application/json` even when the client
+ * streams. Extra-OK: hop 449 embedding-model
  * `GeminiEmbeddingHandler` stays.
  * Extra-OK: hop 453 advanced-custom imagen `GeminiImageHandler` stays.
  * Extra-OK: hop 454 native `RelayModeGemini` `:predict` imagen stays
