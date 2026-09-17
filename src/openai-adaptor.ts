@@ -927,7 +927,8 @@ export function moonshotResponseUnmarshalError(text: string, mode = "chat"): str
  * `dto.ClaudeResponse`). OpenAI format stays hop 394 (`clientFormat ===
  * "openai"` gate). Audio / responses Convert `"not supported"` / `"not
  * implemented"` before DoResponse (hop 350). ConvertRerank leftover hop 366.
- * Extra-OK: hop 408 Vertex Claude stays.
+ * Extra-OK: hop 408 Vertex Claude stays. Stream stays hop 427
+ * (`ClaudeStreamHandler`). Extra-OK: hop 426 Vertex stream stays.
  */
 export function usesMoonshotClaudeUnmarshal(channelType: number, mode: string): boolean {
   return usesMoonshotUnmarshal(channelType, mode);
@@ -941,6 +942,24 @@ export function usesMoonshotClaudeUnmarshal(channelType: number, mode: string): 
  */
 export function moonshotClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original Moonshot Claude-format `moonshot.Adaptor.DoResponse` stream
+ * delegates to `claude.Adaptor.DoResponse` (`ClaudeStreamHandler`
+ * `HandleStreamResponseData` `UnmarshalJsonStr` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-format stream
+ * stays Extra-OK `OaiStreamHandler` log/continue (`clientFormat === "openai"`
+ * gate). Extra-OK: hop 409 non-stream `ClaudeHandler` stays. Extra-OK: hop
+ * 426 Vertex stream stays. Extra-OK: hop 422 Anthropic stream stays.
+ */
+export function usesMoonshotClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  return usesMoonshotClaudeUnmarshal(channelType, mode);
 }
 
 /**
