@@ -971,7 +971,9 @@ export function toClaudeRelayError(message: string): { type: string; message: st
  * to Relay defer (`ToOpenAIError` uses `RelayError.Message`, no request-id append;
  * `type`/`code` are `empty_response` / `prompt_blocked`). Extra-OK: hop 465
  * advanced-custom `ConverterOpenAIResponsesToGemini` `GeminiResponsesHandler`
- * empty-candidates same leftover gin.H.
+ * empty-candidates same leftover gin.H. Extra-OK: hop 466 advanced-custom
+ * `ConverterOpenAIChatToGeminiContent` `GeminiChatHandler` empty-candidates
+ * leftover gin.H (handler writes then returns nil).
  */
 export function writeGeminiChatEmptyCandidatesError(
   req: Request,

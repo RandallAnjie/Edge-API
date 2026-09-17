@@ -1875,7 +1875,9 @@ export function usesAdvancedCustomClaudeStreamUnmarshal(
  * Extra-OK: hop 462 native `RelayModeGemini` `:generateContent` embedding prefixes
  * use `GeminiTextGenerationHandler` (RelayModeGemini first; embed paths stay hop 452).
  * Extra-OK: hop 465 `/v1/responses` empty-candidates leftover is
- * `GeminiResponsesHandler` `NewOpenAIError` gin.H (not convert).
+ * `GeminiResponsesHandler` `NewOpenAIError` gin.H (not convert). Extra-OK:
+ * hop 466 `/v1/chat/completions` empty-candidates leftover is
+ * `GeminiChatHandler` gin.H (handler writes then returns nil).
  */
 export function usesAdvancedCustomGeminiUnmarshal(
   channelType: number,

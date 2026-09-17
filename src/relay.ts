@@ -1482,20 +1482,26 @@ function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mo
  * Extra-OK: hop 465 advanced-custom `ConverterOpenAIResponsesToGemini` delegates to
  * `gemini.Adaptor.DoResponse` `GeminiResponsesHandler` empty-candidates same leftover
  * gin.H (`empty_response` / `prompt_blocked`, no request-id append, ResetStatusCode).
- * Native `RelayModeGemini` still copies HTTP 200 (GeminiTextGenerationHandler).
+ * Extra-OK: hop 466 advanced-custom `ConverterOpenAIChatToGeminiContent` delegates to
+ * `GeminiChatHandler` empty-candidates leftover gin.H (handler writes then
+ * `return &usage, nil`; no request-id append). Native `RelayModeGemini` still
+ * copies HTTP 200 (GeminiTextGenerationHandler). Imagen / embedding prefixes
+ * stay hop 453 / hop 451 handlers (not GeminiChatHandler).
  */
 function usesGeminiEmptyCandidatesHandler(
   channelType: number,
   mapped: string,
   mode: string,
   converter = "none",
+  clientFormat?: string,
 ): boolean {
   if (mode === "gemini") return false;
   if (usesGeminiChatResponseUnmarshal(channelType, mapped, mode)) return true;
-  if (mode !== "responses") return false;
   if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
   const id = String(converter || CONVERTER_NONE).trim() || CONVERTER_NONE;
-  return id === CONVERTER_RESPONSES_TO_GEMINI;
+  if (mode === "responses") return id === CONVERTER_RESPONSES_TO_GEMINI;
+  if (id !== CONVERTER_CHAT_TO_GEMINI) return false;
+  return usesAdvancedCustomGeminiUnmarshal(channelType, mode, converter, clientFormat || "openai", mapped);
 }
 
 /** Original adaptor request format after ConvertRequest; client format is InitRequestConversionChain. */
@@ -3867,7 +3873,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         });
       }
     }
-    if (usesGeminiEmptyCandidatesHandler(channel.type, mapped, mode, advancedConverter || "none")) {
+    if (usesGeminiEmptyCandidatesHandler(channel.type, mapped, mode, advancedConverter || "none", clientFormat)) {
       const empty = geminiChatEmptyCandidatesError(parsed);
       if (empty) {
         const status = resetNewAPIErrorStatusCode(empty.status, String(channel.status_code_mapping || ""));
