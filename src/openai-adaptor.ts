@@ -669,6 +669,28 @@ export function submodelChatResponseUnmarshalError(text: string, mode = "chat"):
 }
 
 /**
+ * Original `jina.Adaptor.DoResponse` embeddings path (`openai.OpenaiHandler`
+ * `common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody`). Rerank stays
+ * `usesRerankHandlerUnmarshal` (hop 366). Chat GetRequestURL is
+ * `"invalid relay mode"` before DoResponse. Images / audio / responses convert
+ * `"not implemented"` before DoResponse (hop 350). Extra-OK: ConvertClaudeRequest
+ * `"implement me"` / ConvertGeminiRequest `"not implemented"` stay hop 350.
+ */
+export function usesJinaEmbeddingsUnmarshal(channelType: number, mode: string): boolean {
+  return channelType === CHANNEL_TYPE_JINA && (mode === "embeddings" || mode === "engines_embeddings");
+}
+
+/**
+ * Original `openai.OpenaiHandler` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` for Jina embeddings. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function jinaEmbeddingsResponseUnmarshalError(text: string, mode = "embeddings"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses

@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, mistralChatResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesMistralChatUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_AWS,
@@ -5879,6 +5879,141 @@ test("original leftover Submodel chat OpenaiHandler Unmarshal gin.H does not cha
   );
   const vendorItemsHop388 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop388.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Jina embeddings OpenaiHandler Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(usesJinaEmbeddingsUnmarshal(CHANNEL_TYPE_JINA, "embeddings"), true);
+  assert.equal(usesJinaEmbeddingsUnmarshal(CHANNEL_TYPE_JINA, "engines_embeddings"), true);
+  assert.equal(usesJinaEmbeddingsUnmarshal(CHANNEL_TYPE_JINA, "rerank"), false);
+  assert.equal(usesJinaEmbeddingsUnmarshal(CHANNEL_TYPE_JINA, "chat"), false);
+  assert.equal(usesJinaEmbeddingsUnmarshal(CHANNEL_TYPE_JINA, "images"), false);
+  assert.equal(usesJinaEmbeddingsUnmarshal(CHANNEL_TYPE_JINA, "responses"), false);
+  assert.equal(usesJinaEmbeddingsUnmarshal(CHANNEL_TYPE_OPENAI, "embeddings"), false);
+  assert.equal(usesJinaEmbeddingsUnmarshal(CHANNEL_TYPE_SUBMODEL, "embeddings"), false);
+  assert.equal(usesSubmodelChatUnmarshal(CHANNEL_TYPE_JINA, "chat"), false);
+  assert.equal(usesRerankHandlerUnmarshal(CHANNEL_TYPE_JINA, "rerank"), true);
+  assert.equal(usesRerankHandlerUnmarshal(CHANNEL_TYPE_JINA, "embeddings"), false);
+  assert.equal(jinaEmbeddingsResponseUnmarshalError("not-json"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    jinaEmbeddingsResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type dto.OpenAITextResponse",
+  );
+  assert.equal(jinaEmbeddingsResponseUnmarshalError("null"), null);
+  assert.equal(jinaEmbeddingsResponseUnmarshalError("{}"), null);
+
+  const embedHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/embeddings", { headers: { "x-oneapi-request-id": "hop389-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(embedHelper.status, 500);
+  assert.deepEqual(await embedHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.218" });
+  await mergeModelRatio(new Store(e.DB), { "hop389-jina": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const jina = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.219" },
+      body: JSON.stringify({
+        name: "hop389-jina",
+        type: CHANNEL_TYPE_JINA,
+        key: "sk-hop389",
+        models: "hop389-jina",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(jina.body.success, true, jina.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const embedHit = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.220", "x-oneapi-request-id": "hop389-jina-unmarshal" },
+        body: JSON.stringify({ model: "hop389-jina", input: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(embedHit.res.status, 500, embedHit.text);
+    assert.equal("type" in embedHit.body && embedHit.body.type === "error", false, embedHit.text);
+    const embedErr = embedHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(embedErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(embedErr.message.includes("hop389-jina-unmarshal"), false);
+    assert.equal(embedErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(embedErr.param, "");
+    assert.equal(embedErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const embedArray = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.221", "x-oneapi-request-id": "hop389-jina-array" },
+        body: JSON.stringify({ model: "hop389-jina", input: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(embedArray.res.status, 500, embedArray.text);
+    const embedArrayErr = embedArray.body.error as { message: string };
+    assert.equal(
+      embedArrayErr.message,
+      "json: cannot unmarshal array into Go value of type dto.OpenAITextResponse",
+    );
+    assert.equal(embedArrayErr.message.includes("hop389-jina-array"), false);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Jina embeddings OpenaiHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.222" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.223", "x-oneapi-request-id": "hop389-vendor-create" },
+      body: JSON.stringify({ name: "hop389-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop389-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop389 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop389.some((item) => item.action === "vendor.create"), listed.text);
 });
 
 
