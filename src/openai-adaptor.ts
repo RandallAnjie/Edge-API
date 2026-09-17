@@ -2030,7 +2030,8 @@ export function oaiChatToResponsesResponseUnmarshalError(text: string): string |
  * `ErrorCodeBadResponseBody`). Not `FailResponsesStream` (target is Chat).
  * Extra-OK: hop 442/443 responses-to-chat stay. Extra-OK: hop 438 Ollama
  * OpenAI stream stays. Extra-OK: replica buffers leftover gin.H before SSE
- * headers (original `SetEventStreamHeaders` runs first).
+ * headers (original `SetEventStreamHeaders` runs first). Extra-OK: hop 445
+ * non-stream `OaiResponsesToChatHandler` leftover gin.H stays.
  */
 export function usesOaiResponsesToChatStreamUnmarshal(
   channelType: number,
@@ -2074,6 +2075,34 @@ export function oaiResponsesToChatStreamSseUnmarshalError(text: string): string 
     if (err) return err;
   }
   return null;
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` ConverterOpenAIChatToOpenAIResponses
+ * non-stream uses `OaiResponsesToChatHandler` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody` into `dto.OpenAIResponsesResponse`). Stream stays hop
+ * 444 (`OaiResponsesToChatStreamHandler` leftover gin.H). Extra-OK: hop 443
+ * responses-to-chat stays. Extra-OK: hop 365 native via-responses stays.
+ */
+export function usesOaiResponsesToChatUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  isStream = false,
+): boolean {
+  if (isStream) return false;
+  if (mode === "responses" || mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  return String(converter || CONVERTER_NONE).trim() === CONVERTER_CHAT_TO_RESPONSES;
+}
+
+/**
+ * Original `OaiResponsesToChatHandler` `common.Unmarshal` into
+ * `dto.OpenAIResponsesResponse`. Syntax errors match `encoding/json`. JSON `null`
+ * succeeds as a zero-value struct.
+ */
+export function oaiResponsesToChatResponseUnmarshalError(text: string): string | null {
+  return openaiHandlerResponseUnmarshalError(text, "responses");
 }
 
 /** Original `OaiChatToResponsesStreamHandler` `UnmarshalJsonStr` target type. */
