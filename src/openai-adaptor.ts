@@ -854,6 +854,28 @@ export function deepseekResponseUnmarshalError(text: string, mode = "chat"): str
 }
 
 /**
+ * Original Deepseek Claude-format `deepseek.Adaptor.DoResponse` delegates to
+ * `claude.Adaptor.DoResponse` (`ClaudeHandler` `HandleClaudeResponseData`
+ * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
+ * `dto.ClaudeResponse`). OpenAI format stays hop 393 (`clientFormat ===
+ * "openai"` gate). Images / audio / embeddings Convert `"not implemented"`
+ * before DoResponse (hop 350). Extra-OK: hop 410 MiniMax Claude stays.
+ */
+export function usesDeepseekClaudeUnmarshal(channelType: number, mode: string): boolean {
+  return usesDeepseekUnmarshal(channelType, mode);
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for Deepseek Claude-format. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function deepseekClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
  * Original `moonshot.Adaptor.DoResponse` default path always delegates to
  * `openai.Adaptor.DoResponse`. Claude format uses `claude.Adaptor.DoResponse`
  * (`clientFormat === "openai"` gate in relay). Non-stream chat / completions /
