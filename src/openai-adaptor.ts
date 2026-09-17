@@ -1761,8 +1761,9 @@ export function advancedCustomResponseUnmarshalError(text: string, mode = "chat"
  * (`ClaudeHandler` `HandleClaudeResponseData` `common.Unmarshal` `NewError`
  * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-shaped inbound
  * stays hop 404. Chat-to-Gemini stays `gemini.Adaptor` (later hop). Stream
- * stays `ClaudeStreamHandler` (later hop). Extra-OK: hop 404 OpenAI stays.
+ * stays hop 436 (`ClaudeStreamHandler`). Extra-OK: hop 404 OpenAI stays.
  * Extra-OK: hop 418 AWS AKSK stays. Extra-OK: hop 420 chat-to-Gemini `gemini.Adaptor` stays.
+ * Extra-OK: hop 435 Volc stream stays.
  */
 export function usesAdvancedCustomClaudeUnmarshal(
   channelType: number,
@@ -1798,6 +1799,28 @@ export function usesAdvancedCustomClaudeUnmarshal(
  */
 export function advancedCustomClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` stream chat-to-Claude converter
+ * and ConverterNone+`RelayFormatClaude` delegate to `claude.Adaptor.DoResponse`
+ * (`ClaudeStreamHandler` `HandleStreamResponseData` `UnmarshalJsonStr`
+ * `NewError` `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-shaped
+ * inbound stream stays Extra-OK `OaiStreamHandler` log/continue. Responses
+ * stream stays `ClaudeResponsesStreamHandler` (later hop, `NewOpenAIError`).
+ * Extra-OK: hop 419 non-stream `ClaudeHandler` stays. Extra-OK: hop 435 Volc
+ * stream stays. Extra-OK: hop 422 Anthropic stream stays.
+ */
+export function usesAdvancedCustomClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  clientFormat?: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  return usesAdvancedCustomClaudeUnmarshal(channelType, mode, converter, clientFormat);
 }
 
 /**
