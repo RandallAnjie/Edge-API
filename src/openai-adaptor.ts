@@ -3,6 +3,7 @@
 import { advancedCustomOpenaiShapedInbound } from "./advanced-custom-response.js";
 import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
+import { supportsAliAnthropicMessages } from "./ali-convert.js";
 import { vertexRequestMode } from "./vertex-convert.js";
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
@@ -1008,6 +1009,29 @@ export function usesAliUnmarshal(channelType: number, mode: string): boolean {
  */
 export function aliResponseUnmarshalError(text: string, mode = "chat"): string | null {
   return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
+ * Original Ali Claude-format `ali.Adaptor.DoResponse` delegates to
+ * `claude.Adaptor.DoResponse` when `supportsAliAnthropicMessages` (`ClaudeHandler`
+ * `HandleClaudeResponseData` `common.Unmarshal` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI format and
+ * Claude format without anthropic-messages models stay hop 396. Images stay
+ * hop 397. Rerank stays hop 367. Extra-OK: hop 415 Ollama Claude stays.
+ */
+export function usesAliClaudeUnmarshal(channelType: number, mode: string, model: string): boolean {
+  if (!usesAliUnmarshal(channelType, mode)) return false;
+  return supportsAliAnthropicMessages(model);
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for Ali anthropic-messages Claude-format. Syntax errors
+ * match `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function aliClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
 }
 
 /**
