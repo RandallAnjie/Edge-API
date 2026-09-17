@@ -1844,9 +1844,9 @@ export function awsClaudeResponseUnmarshalError(text: string): string | null {
  * (`HandleClaudeResponseData` `common.Unmarshal` `NewError`
  * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). API-key stays hop
  * 407 (`claude.Adaptor`). Nova stays hop 385 (`handleNovaRequest`). Stream
- * stays `awsStreamHandler` (later hop). Images / audio / embeddings /
- * responses Convert `"not implemented"` before DoResponse (hop 350).
- * ConvertRerank is `nil,nil` leftover. Extra-OK: hop 407 API-key stays.
+ * uses `awsStreamHandler` `HandleStreamResponseData` (hop 424). Images / audio /
+ * embeddings / responses Convert `"not implemented"` before DoResponse (hop
+ * 350). ConvertRerank is `nil,nil` leftover. Extra-OK: hop 407 API-key stays.
  * Extra-OK: hop 385 Nova stays. Extra-OK: hop 417 Volc Claude stays.
  */
 export function usesAwsAkskClaudeUnmarshal(
@@ -1888,6 +1888,27 @@ export function usesAwsAkskClaudeUnmarshal(
  */
 export function awsAkskClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original AWS AKSK non-Nova `aws.Adaptor.DoResponse` stream uses
+ * `awsStreamHandler` → `HandleStreamResponseData` (`UnmarshalJsonStr`
+ * `NewError` `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`) on each
+ * Bedrock chunk's Claude JSON. Replica `decodeAwsEventStreamResponse` rewrites
+ * eventstream to Claude SSE `data:` payloads first. API-key stream stays
+ * `claude.Adaptor` `ClaudeStreamHandler` (later hop). Nova stays hop 385.
+ * Extra-OK: hop 418 non-stream `awsHandler` stays. Extra-OK: hop 422 Anthropic
+ * stream stays. Extra-OK: hop 423 Gemini stream stays.
+ */
+export function usesAwsAkskClaudeStreamUnmarshal(
+  channelType: number,
+  model: string,
+  mode: string,
+  settings?: string | null,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  return usesAwsAkskClaudeUnmarshal(channelType, model, mode, settings);
 }
 
 /**
