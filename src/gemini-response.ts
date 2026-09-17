@@ -1350,7 +1350,9 @@ export function usesGeminiChatStreamUnmarshal(
  * responses stream stays. Extra-OK: replica convert always has
  * `ChatToResponsesStreamState` so `FailResponsesStream` is handled for
  * `/v1/responses`. Extra-OK: Vertex RequestModeGemini HTTP coverage stays later
- * hop (predicate MATCH). Extra-OK: hop 421 non-stream responses-to-Gemini stays.
+ * hop (predicate MATCH; Convert `"not implemented"` hop 350). Extra-OK: hop 421
+ * non-stream responses-to-Gemini stays. Extra-OK: hop 441 advanced-custom
+ * responses-to-Gemini stream stays.
  */
 export function usesGeminiResponsesStreamUnmarshal(
   channelType: number,

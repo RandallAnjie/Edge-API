@@ -1,7 +1,7 @@
 /** Original `relay.GetAdaptor` → `openai.Adaptor` (APITypeOpenAI, OpenRouter, Xinference, unknown→OpenAI). */
 
 import { advancedCustomOpenaiShapedInbound } from "./advanced-custom-response.js";
-import { geminiChatResponseUnmarshalError } from "./gemini-response.js";
+import { geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError } from "./gemini-response.js";
 import { CONVERTER_CHAT_TO_CLAUDE, CONVERTER_CHAT_TO_GEMINI, CONVERTER_NONE, CONVERTER_RESPONSES_TO_GEMINI } from "./advanced-custom-convert.js";
 import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
@@ -1917,10 +1917,11 @@ export function advancedCustomGeminiResponseUnmarshalError(text: string): string
  * `unmarshal Gemini stream response: %w` then `NewOpenAIError`
  * `ErrorCodeBadResponseBody` into `dto.GeminiChatResponse`). OpenAI-shaped
  * inbound stream stays Extra-OK `OaiStreamHandler` log/continue. Responses
- * stream stays `GeminiResponsesStreamHandler` (hop 440 typically
- * `FailResponsesStream`). Extra-OK: hop 420
+ * stream stays `GeminiResponsesStreamHandler` (hop 441 typically
+ * `FailResponsesStream`; hop 440 Gemini channel stays). Extra-OK: hop 420
  * non-stream `GeminiChatHandler` stays. Extra-OK: hop 423 Gemini channel stream
- * stays. Extra-OK: hop 436 Claude stream stays.
+ * stays. Extra-OK: hop 436 Claude stream stays. Extra-OK: hop 421 non-stream
+ * `GeminiResponsesHandler` stays.
  */
 export function usesAdvancedCustomGeminiStreamUnmarshal(
   channelType: number,
@@ -1933,6 +1934,39 @@ export function usesAdvancedCustomGeminiStreamUnmarshal(
   if (!isStream) return false;
   if (mode === "responses") return false;
   return usesAdvancedCustomGeminiUnmarshal(channelType, mode, converter, clientFormat, mapped);
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` ConverterOpenAIResponsesToGemini
+ * stream delegates to `gemini.Adaptor.DoResponse`
+ * (`GeminiResponsesStreamHandler` `geminiStreamHandler` wrap then typically
+ * `FailResponsesStream("server_error", streamAPIError.Error(), "")`). Typical
+ * path is HTTP 200 SSE, not leftover gin.H. Leftover `NewOpenAIError`
+ * `ErrorCodeBadResponseBody` only when `FailResponsesStream` is unhandled.
+ * Extra-OK: hop 437 chat-to-Gemini `GeminiChatStreamHandler` leftover gin.H
+ * stays. Extra-OK: hop 421 non-stream `GeminiResponsesHandler` stays. Extra-OK:
+ * hop 440 Gemini channel stays. Extra-OK: replica convert always has
+ * `ChatToResponsesStreamState` so `FailResponsesStream` is handled.
+ */
+export function usesAdvancedCustomGeminiResponsesStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  clientFormat?: string,
+  mapped = "",
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode !== "responses") return false;
+  return usesAdvancedCustomGeminiUnmarshal(channelType, mode, converter, clientFormat, mapped);
+}
+
+/**
+ * Original `GeminiResponsesStreamHandler` first invalid SSE `data:` payload for
+ * advanced-custom responses-to-Gemini. Same wrap as hop 440 / hop 423.
+ */
+export function advancedCustomGeminiResponsesStreamSseUnmarshalError(text: string): string | null {
+  return geminiChatStreamSseUnmarshalError(text);
 }
 
 /**
