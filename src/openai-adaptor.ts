@@ -1531,7 +1531,8 @@ export function newApiResponseUnmarshalError(text: string, mode = "chat"): strin
  * `dto.ClaudeResponse`). OpenAI format stays hop 402 (`clientFormat ===
  * "openai"` gate). Gemini format stays `gemini.Adaptor`. Audio / rerank
  * Convert `"endpoint not supported"` before DoResponse (hop 350). Extra-OK:
- * hop 412 Zhipu v4 Claude stays.
+ * hop 412 Zhipu v4 Claude stays. Stream stays hop 431 (`ClaudeStreamHandler`).
+ * Extra-OK: hop 430 Zhipu v4 stream stays.
  */
 export function usesNewApiClaudeUnmarshal(channelType: number, mode: string): boolean {
   return usesNewApiUnmarshal(channelType, mode);
@@ -1545,6 +1546,26 @@ export function usesNewApiClaudeUnmarshal(channelType: number, mode: string): bo
  */
 export function newApiClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original newapi Claude-format `newapi.Adaptor.DoResponse` stream delegates
+ * to `claude.Adaptor.DoResponse` (`ClaudeStreamHandler`
+ * `HandleStreamResponseData` `UnmarshalJsonStr` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-format stream
+ * stays Extra-OK `OaiStreamHandler` log/continue. Responses stream stays
+ * `ClaudeResponsesStreamHandler` (later hop, `NewOpenAIError`). Extra-OK: hop
+ * 413 non-stream `ClaudeHandler` stays. Extra-OK: hop 430 Zhipu v4 stream stays.
+ * Extra-OK: hop 422 Anthropic stream stays.
+ */
+export function usesNewApiClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  return usesNewApiClaudeUnmarshal(channelType, mode);
 }
 
 /**
