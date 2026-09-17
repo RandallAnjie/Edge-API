@@ -1241,6 +1241,29 @@ export function ollamaResponseUnmarshalError(text: string, mode: string): string
 }
 
 /**
+ * Original Ollama Claude-format `ollama.Adaptor.DoResponse` delegates to
+ * `claude.Adaptor.DoResponse` (`ClaudeHandler` `HandleClaudeResponseData`
+ * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
+ * `dto.ClaudeResponse`). OpenAI-format chat / completions / embeddings stay
+ * hop 381 (`clientFormat === "openai"` gate). Images / audio Convert
+ * `"not implemented"` before DoResponse (hop 350). Extra-OK: hop 414 sub2api
+ * Claude stays.
+ */
+export function usesOllamaClaudeUnmarshal(channelType: number, mode: string): boolean {
+  return usesOllamaUnmarshal(channelType, mode);
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for Ollama Claude-format. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function ollamaClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
  * Original `zhipu_4v.Adaptor.DoResponse` default path always delegates to
  * `openai.Adaptor.DoResponse`. Claude format uses `claude.Adaptor.DoResponse`
  * (`clientFormat === "openai"` gate in relay). Non-stream chat / completions /
