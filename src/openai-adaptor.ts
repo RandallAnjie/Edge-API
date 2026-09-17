@@ -1872,6 +1872,8 @@ export function usesAdvancedCustomClaudeStreamUnmarshal(
  * embedding / imagen prefixes use `GeminiResponsesHandler`
  * (RelayModeResponses first). Extra-OK: hop 460 native `RelayModeGemini`
  * `:predict` imagen uses `GeminiTextGenerationHandler` (RelayModeGemini first).
+ * Extra-OK: hop 462 native `RelayModeGemini` `:generateContent` embedding prefixes
+ * use `GeminiTextGenerationHandler` (RelayModeGemini first; embed paths stay hop 452).
  */
 export function usesAdvancedCustomGeminiUnmarshal(
   channelType: number,
@@ -1887,7 +1889,8 @@ export function usesAdvancedCustomGeminiUnmarshal(
     (mapped.startsWith("text-embedding") ||
       mapped.startsWith("embedding") ||
       mapped.startsWith("gemini-embedding")) &&
-    mode !== "responses"
+    mode !== "responses" &&
+    mode !== "gemini"
   ) {
     return false;
   }
@@ -1917,7 +1920,9 @@ export function usesAdvancedCustomGeminiUnmarshal(
  * embedding requests"` before DoResponse (hop 350). Native `RelayModeGemini`
  * `:embedContent` / `:batchEmbedContents` stays hop 450/452.
  * Extra-OK: hop 449 Gemini channel `GeminiEmbeddingHandler` stays.
- * Extra-OK: hop 420 non-embedding `GeminiChatHandler` stays.
+ * Extra-OK: hop 420 non-embedding `GeminiChatHandler` stays. Extra-OK: hop 462
+ * native `RelayModeGemini` `:generateContent` embedding prefixes stay
+ * `GeminiTextGenerationHandler` (not this handler).
  */
 export function usesAdvancedCustomGeminiEmbeddingUnmarshal(
   channelType: number,
@@ -1985,7 +1990,9 @@ export function advancedCustomGeminiResponseUnmarshalError(text: string): string
  * non-stream `GeminiChatHandler` stays. Extra-OK: hop 423 Gemini channel stream
  * stays. Extra-OK: hop 436 Claude stream stays. Extra-OK: hop 421 non-stream
  * `GeminiResponsesHandler` stays. Extra-OK: hop 460 native `:predict` imagen
- * stream uses `GeminiTextGenerationStreamHandler` (same wrap).
+ * stream uses `GeminiTextGenerationStreamHandler` (same wrap). Extra-OK: hop 462
+ * native `:generateContent` embedding prefixes use
+ * `GeminiTextGenerationStreamHandler` (same wrap).
  */
 export function usesAdvancedCustomGeminiStreamUnmarshal(
   channelType: number,
@@ -2014,7 +2021,9 @@ export function usesAdvancedCustomGeminiStreamUnmarshal(
  * Extra-OK: hop 442 `OaiChatToResponsesStreamHandler` stays. Extra-OK: hop 459
  * `/v1/responses` embedding / imagen prefixes use this handler
  * (RelayModeResponses first). Extra-OK: hop 460 native `:predict` imagen
- * stream stays hop 437 `GeminiTextGenerationStreamHandler`.
+ * stream stays hop 437 `GeminiTextGenerationStreamHandler`. Extra-OK: hop 462
+ * native `:generateContent` embedding prefixes stay hop 437
+ * `GeminiTextGenerationStreamHandler`.
  */
 export function usesAdvancedCustomGeminiResponsesStreamUnmarshal(
   channelType: number,

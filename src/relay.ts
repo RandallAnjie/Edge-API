@@ -1449,6 +1449,8 @@ function attachSettleUsage(
  * `GeminiResponsesHandler` (RelayModeResponses first). Extra-OK: hop 461 native
  * `RelayModeGemini` `:generateContent` embedding-model prefixes use
  * `GeminiTextGenerationHandler` (RelayModeGemini first; embed paths stay hop 450).
+ * Extra-OK: hop 462 advanced-custom native `:generateContent` embedding prefixes
+ * use `GeminiTextGenerationHandler` via usesAdvancedCustomGeminiUnmarshal.
  */
 function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mode: string): boolean {
   if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;

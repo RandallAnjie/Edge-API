@@ -19703,3 +19703,287 @@ test("original leftover native GeminiTextGenerationHandler :generateContent embe
   const vendorItemsHop461 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop461.some((item) => item.action === "vendor.create"), listed.text);
 });
+
+test("original leftover advanced-custom native GeminiTextGenerationHandler Unmarshal NewOpenAIError gin.H for RelayModeGemini :generateContent embedding prefixes", async () => {
+  const genPath = "/v1beta/models/text-embedding-hop462:generateContent";
+  const embedPath = "/v1beta/models/text-embedding-hop462:embedContent";
+  const chatPath = "/v1beta/models/hop462-gemini:generateContent";
+  const chatToGemini = "openai_chat_completions_to_gemini_generate_content";
+  const responsesToGemini = "openai_responses_to_gemini_generate_content";
+  assert.equal(
+    usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", "none", "gemini", "text-embedding-hop462"),
+    true,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "openai", "text-embedding-hop462"),
+    false,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "responses", responsesToGemini, "openai", "text-embedding-hop462"),
+    true,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "embeddings", "none", "gemini", "text-embedding-hop462"),
+    false,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", "none", "text-embedding-hop462"),
+    false,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "text-embedding-hop462"),
+    true,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiStreamUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", "none", "gemini", "text-embedding-hop462", true),
+    true,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiStreamUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "openai", "text-embedding-hop462", true),
+    false,
+  );
+  assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop462", "gemini", true), true);
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", genPath, "none", "gemini"), false);
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", embedPath, "none", "gemini"), true);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop462", "gemini"), false);
+  assert.equal(
+    geminiChatResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type dto.GeminiChatResponse",
+  );
+  assert.equal(
+    nativeGeminiEmbeddingResponseUnmarshalError("[]", embedPath),
+    "json: cannot unmarshal array into Go value of type dto.GeminiEmbeddingResponse",
+  );
+  assert.equal(
+    geminiChatStreamSseUnmarshalError("data: not-json\n\n"),
+    "unmarshal Gemini stream response: invalid character 'o' looking for beginning of value",
+  );
+
+  const helper = writeGeminiChatUnmarshalError(
+    new Request("http://local" + genPath, { headers: { "x-oneapi-request-id": "hop462-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(helper.status, 500);
+  assert.deepEqual(await helper.json(), {
+    error: {
+      message: messageWithRequestId("invalid character 'o' looking for beginning of value", "hop462-helper"),
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "198.51.100.296" });
+  await mergeModelRatio(new Store(e.DB), { "text-embedding-hop462": 1, "hop462-gemini": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const created = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.297" },
+      body: JSON.stringify({
+        name: "hop462-adv-gen",
+        type: CHANNEL_TYPE_ADVANCED_CUSTOM,
+        key: "sk-hop462",
+        models: "text-embedding-hop462,hop462-gemini",
+        group: "default",
+        base_url: "https://generativelanguage.googleapis.com",
+        settings: JSON.stringify({
+          advanced_custom: {
+            advanced_routes: [
+              {
+                incoming_path: "/v1beta/models/{model}:generateContent",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                converter: "none",
+                models: ["text-embedding-hop462", "hop462-gemini"],
+              },
+              {
+                incoming_path: "/v1beta/models/{model}:embedContent",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent",
+                converter: "none",
+                models: ["text-embedding-hop462"],
+              },
+            ],
+          },
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("generativelanguage.googleapis.com")) return origFetch(input, init);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("native-gen-stay-462")) {
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (raw.includes("stream-hop462")) {
+      return new Response("data: not-json\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    if (
+      raw.includes("as-array") ||
+      raw.includes("native-chat-hop360-stay-462") ||
+      raw.includes("as-array-hop452-stay-462")
+    ) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const genHit = await send(
+      new Request("http://local" + genPath, {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.298", "x-oneapi-request-id": "hop462-gen-unmarshal" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hello" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(genHit.res.status, 500, genHit.text);
+    const genErr = genHit.body.error as { message: string; type: string };
+    assert.equal(
+      genErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop462-gen-unmarshal"),
+    );
+    assert.equal(genErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(genHit.text.includes("dto.GeminiEmbeddingResponse"), false, genHit.text);
+    assert.equal(genHit.text.includes("dto.GeminiBatchEmbeddingResponse"), false, genHit.text);
+
+    const genArray = await send(
+      new Request("http://local" + genPath, {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.299", "x-oneapi-request-id": "hop462-gen-array" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "as-array" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(genArray.res.status, 500, genArray.text);
+    const genArrayErr = genArray.body.error as { message: string; type: string };
+    assert.equal(
+      genArrayErr.message,
+      messageWithRequestId("json: cannot unmarshal array into Go value of type dto.GeminiChatResponse", "hop462-gen-array"),
+    );
+    assert.equal(genArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(genArrayErr.message.includes("dto.GeminiEmbeddingResponse"), false, genArray.text);
+    assert.equal(genArrayErr.message.includes("dto.GeminiBatchEmbeddingResponse"), false, genArray.text);
+
+    const hop452Stay = await send(
+      new Request("http://local" + embedPath, {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.301", "x-oneapi-request-id": "hop462-hop452-stay" },
+        body: JSON.stringify({ content: { parts: [{ text: "as-array-hop452-stay-462" }] } }),
+      }),
+      e,
+    );
+    assert.equal(hop452Stay.res.status, 500, hop452Stay.text);
+    const hop452Err = hop452Stay.body.error as { message: string; type: string };
+    assert.equal(
+      hop452Err.message,
+      messageWithRequestId(
+        "json: cannot unmarshal array into Go value of type dto.GeminiEmbeddingResponse",
+        "hop462-hop452-stay",
+      ),
+    );
+    assert.equal(hop452Err.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(hop452Stay.text.includes("dto.GeminiChatResponse"), false, hop452Stay.text);
+
+    const nativeChatStay = await send(
+      new Request("http://local" + chatPath, {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.302", "x-oneapi-request-id": "hop462-hop360-stay" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "native-chat-hop360-stay-462" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(nativeChatStay.res.status, 500, nativeChatStay.text);
+    const nativeChatErr = nativeChatStay.body.error as { message: string; type: string };
+    assert.equal(
+      nativeChatErr.message,
+      messageWithRequestId(
+        "json: cannot unmarshal array into Go value of type dto.GeminiChatResponse",
+        "hop462-hop360-stay",
+      ),
+    );
+    assert.equal(nativeChatErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(nativeChatStay.text.includes("dto.GeminiEmbeddingResponse"), false, nativeChatStay.text);
+
+    const nativeStay = await send(
+      new Request("http://local" + genPath, {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.303", "x-oneapi-request-id": "hop462-native-stay" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "native-gen-stay-462" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(nativeStay.res.status, 200, nativeStay.text);
+    assert.ok(Array.isArray(nativeStay.body.candidates), nativeStay.text);
+    assert.equal(nativeStay.body.object === "list", false, nativeStay.text);
+
+    const streamHit = await send(
+      new Request("http://local" + genPath, {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.304",
+          "x-oneapi-request-id": "hop462-gen-stream",
+        },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "stream-hop462" }] }], stream: true }),
+      }),
+      e,
+    );
+    assert.equal(streamHit.res.status, 500, streamHit.text);
+    const streamErr = streamHit.body.error as { message: string; type: string };
+    assert.equal(
+      streamErr.message,
+      messageWithRequestId(
+        "unmarshal Gemini stream response: invalid character 'o' looking for beginning of value",
+        "hop462-gen-stream",
+      ),
+    );
+    assert.equal(streamErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(streamHit.text.includes("dto.GeminiEmbeddingResponse"), false, streamHit.text);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover advanced-custom native GeminiTextGenerationHandler :generateContent embedding Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "198.51.100.306" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.307", "x-oneapi-request-id": "hop462-vendor-create" },
+      body: JSON.stringify({ name: "hop462-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop462-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop462 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop462.some((item) => item.action === "vendor.create"), listed.text);
+});
