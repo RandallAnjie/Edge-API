@@ -1179,7 +1179,8 @@ export function volcResponseUnmarshalError(text: string, mode = "chat"): string 
  * (`ClaudeHandler` `HandleClaudeResponseData` `common.Unmarshal` `NewError`
  * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI format and
  * Claude format without a special base stay hop 398. TTS stays hop 356 /
- * Volc TTS Extra-OK. Extra-OK: hop 416 Ali Claude stays.
+ * Volc TTS Extra-OK. Extra-OK: hop 416 Ali Claude stays. Stream stays hop 435
+ * (`ClaudeStreamHandler`). Extra-OK: hop 434 Ali stream stays.
  */
 export function usesVolcClaudeUnmarshal(channelType: number, mode: string, baseUrl?: string | null): boolean {
   if (!usesVolcUnmarshal(channelType, mode)) return false;
@@ -1194,6 +1195,28 @@ export function usesVolcClaudeUnmarshal(channelType: number, mode: string, baseU
  */
 export function volcClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original Volc special-base Claude-format `volcengine.Adaptor.DoResponse` stream
+ * delegates to `claude.Adaptor.DoResponse` when `ChannelSpecialBases[base_url]`
+ * (`ClaudeStreamHandler` `HandleStreamResponseData` `UnmarshalJsonStr`
+ * `NewError` `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI
+ * format and Claude format without a special base stay Extra-OK
+ * `OaiStreamHandler` log/continue. Responses stream stays
+ * `ClaudeResponsesStreamHandler` (later hop, `NewOpenAIError`). Extra-OK: hop
+ * 417 non-stream `ClaudeHandler` stays. Extra-OK: hop 434 Ali stream stays.
+ * Extra-OK: hop 422 Anthropic stream stays.
+ */
+export function usesVolcClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  baseUrl?: string | null,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  return usesVolcClaudeUnmarshal(channelType, mode, baseUrl);
 }
 
 /**
