@@ -1359,8 +1359,8 @@ export function usesGeminiChatStreamUnmarshal(
       return channelType === CHANNEL_TYPE_GEMINI || vertexGemini;
     }
     // Vertex RequestModeGemini stream uses GeminiChatStreamHandler even for embedding
-    // prefixes. CHANNEL_TYPE_GEMINI OpenAI-format embedding stays hop 449
-    // GeminiEmbeddingHandler even when the client streams.
+    // prefixes. CHANNEL_TYPE_GEMINI OpenAI-format embedding stays hop 449/471
+    // GeminiEmbeddingHandler even when the client streams (JSON, not SSE).
     return vertexGemini;
   }
   if (channelType === CHANNEL_TYPE_GEMINI) return true;
@@ -1513,8 +1513,11 @@ export function geminiImageEmptyPredictionsError(
  * RequestModeGemini OpenAI-format embedding prefixes stay `GeminiChatHandler`.
  * Extra-OK: hop 468 OpenAI-format embedding prefixes convert as OpenAI
  * embedding JSON after successful Unmarshal even on `/v1/chat/completions`.
- * Extra-OK: hop 469 Vertex RequestModeGemini embedding prefixes stay
- * `GeminiChatHandler` empty-candidates leftover gin.H (not this handler).
+ * Extra-OK: hop 471 `GeminiEmbeddingHandler` writes OpenAI embedding JSON even
+ * when the client streams (`IOCopyBytesGracefully`, not SSE). Extra-OK: hop 449
+ * leftover Unmarshal not-json stream stays leftover gin.H. Extra-OK: hop 469
+ * Vertex RequestModeGemini embedding prefixes stay `GeminiChatHandler`
+ * empty-candidates leftover gin.H (not this handler).
  */
 export function usesGeminiEmbeddingUnmarshal(
   channelType: number,

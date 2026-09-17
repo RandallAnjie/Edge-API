@@ -22052,3 +22052,298 @@ test("original leftover GeminiImageHandler empty predictions gin.H does not chan
   assert.ok(vendorItemsHop470.some((item) => item.action === "vendor.create"), listed.text);
 });
 
+test("original leftover GeminiEmbeddingHandler write OpenAI embedding JSON even when the client streams", async () => {
+  const chatToGemini = "openai_chat_completions_to_gemini_generate_content";
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop471", "chat"), true);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop471", "embeddings"), true);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop471", "responses"), false);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop471", "gemini"), false);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_VERTEX, "text-embedding-hop471", "chat"), false);
+  assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop471", "chat", true), false);
+  assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_VERTEX, "text-embedding-hop471", "chat", true), true);
+  assert.equal(
+    usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "gemini", "/v1beta/models/text-embedding-hop471:embedContent"),
+    true,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "text-embedding-hop471-adv"),
+    true,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "openai", "text-embedding-hop471-adv"),
+    false,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "openai", "hop471-gemini-adv"),
+    true,
+  );
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "198.51.100.419" });
+  await mergeModelRatio(new Store(e.DB), {
+    "text-embedding-hop471": 1,
+    "hop471-gemini": 1,
+    "text-embedding-hop471-adv": 1,
+    "hop471-gemini-adv": 1,
+  });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const createdGemini = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.421" },
+      body: JSON.stringify({
+        name: "hop471-gemini",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey-hop471",
+        models: "text-embedding-hop471,hop471-gemini",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(createdGemini.body.success, true, createdGemini.text);
+
+  const createdAdv = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.422" },
+      body: JSON.stringify({
+        name: "hop471-adv-embed",
+        type: CHANNEL_TYPE_ADVANCED_CUSTOM,
+        key: "sk-hop471",
+        models: "text-embedding-hop471-adv,hop471-gemini-adv",
+        group: "default",
+        base_url: "https://generativelanguage.googleapis.com",
+        settings: JSON.stringify({
+          advanced_custom: {
+            advanced_routes: [
+              {
+                incoming_path: "/v1/chat/completions",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent",
+                converter: "openai_chat_completions_to_gemini_generate_content",
+                models: ["text-embedding-hop471-adv", "hop471-gemini-adv"],
+              },
+            ],
+          },
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(createdAdv.body.success, true, createdAdv.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("generativelanguage.googleapis.com")) return origFetch(input, init);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("empty-embed-471")) {
+      return new Response(JSON.stringify({ embeddings: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (raw.includes("not-json-hop449-stay-471")) {
+      return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("chat-hop466-stay-471")) {
+      return new Response(JSON.stringify({ candidates: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ embeddings: [{ values: [0.1, 0.2] }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const chatStream = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.423",
+          "x-oneapi-request-id": "hop471-chat-stream",
+        },
+        body: JSON.stringify({
+          model: "text-embedding-hop471",
+          messages: [{ role: "user", content: "hello-embed-stream" }],
+          stream: true,
+        }),
+      }),
+      e,
+    );
+    assert.equal(chatStream.res.status, 200, chatStream.text);
+    assert.equal((chatStream.res.headers.get("content-type") || "").includes("application/json"), true, chatStream.res.headers.get("content-type"));
+    assert.equal((chatStream.res.headers.get("content-type") || "").includes("text/event-stream"), false, chatStream.res.headers.get("content-type"));
+    assert.equal(chatStream.body.object, "list");
+    assert.equal(chatStream.body.model, "text-embedding-hop471");
+    assert.deepEqual(chatStream.body.data, [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }]);
+    assert.equal("choices" in chatStream.body, false, chatStream.text);
+    assert.equal(chatStream.text.startsWith("data:"), false, chatStream.text);
+    assert.equal(chatStream.text.includes("(request id: hop471-chat-stream)"), false, chatStream.text);
+
+    const emptyStream = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.424",
+          "x-oneapi-request-id": "hop471-empty-stream",
+        },
+        body: JSON.stringify({
+          model: "text-embedding-hop471",
+          messages: [{ role: "user", content: "empty-embed-471" }],
+          stream: true,
+        }),
+      }),
+      e,
+    );
+    assert.equal(emptyStream.res.status, 200, emptyStream.text);
+    assert.equal(emptyStream.body.object, "list");
+    assert.deepEqual(emptyStream.body.data, []);
+    assert.equal(emptyStream.text.startsWith("data:"), false, emptyStream.text);
+
+    const embeddingsStream = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.426",
+          "x-oneapi-request-id": "hop471-embed-stream",
+        },
+        body: JSON.stringify({ model: "text-embedding-hop471", input: "hello-embed-endpoint", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(embeddingsStream.res.status, 200, embeddingsStream.text);
+    assert.equal((embeddingsStream.res.headers.get("content-type") || "").includes("application/json"), true, embeddingsStream.res.headers.get("content-type"));
+    assert.equal(embeddingsStream.body.object, "list");
+    assert.deepEqual(embeddingsStream.body.data, [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }]);
+    assert.equal(embeddingsStream.text.startsWith("data:"), false, embeddingsStream.text);
+
+    const unmarshalStay = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.427",
+          "x-oneapi-request-id": "hop471-hop449-stay",
+        },
+        body: JSON.stringify({ model: "text-embedding-hop471", input: "not-json-hop449-stay-471", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(unmarshalStay.res.status, 500, unmarshalStay.text);
+    const unmarshalErr = unmarshalStay.body.error as { message: string; type: string };
+    assert.equal(
+      unmarshalErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop471-hop449-stay"),
+    );
+    assert.equal(unmarshalErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal("object" in unmarshalStay.body && unmarshalStay.body.object === "list", false, unmarshalStay.text);
+
+    const advStream = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.428",
+          "x-oneapi-request-id": "hop471-adv-stream",
+        },
+        body: JSON.stringify({
+          model: "text-embedding-hop471-adv",
+          messages: [{ role: "user", content: "hello-adv-embed-stream" }],
+          stream: true,
+        }),
+      }),
+      e,
+    );
+    assert.equal(advStream.res.status, 200, advStream.text);
+    assert.equal((advStream.res.headers.get("content-type") || "").includes("application/json"), true, advStream.res.headers.get("content-type"));
+    assert.equal((advStream.res.headers.get("content-type") || "").includes("text/event-stream"), false, advStream.res.headers.get("content-type"));
+    assert.equal(advStream.body.object, "list");
+    assert.equal(advStream.body.model, "text-embedding-hop471-adv");
+    assert.deepEqual(advStream.body.data, [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }]);
+    assert.equal("choices" in advStream.body, false, advStream.text);
+    assert.equal(advStream.text.startsWith("data:"), false, advStream.text);
+
+    const nonStreamStay = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.429", "x-oneapi-request-id": "hop471-hop468-stay" },
+        body: JSON.stringify({
+          model: "text-embedding-hop471",
+          messages: [{ role: "user", content: "hello-embed-nonstream" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(nonStreamStay.res.status, 200, nonStreamStay.text);
+    assert.equal(nonStreamStay.body.object, "list");
+    assert.deepEqual(nonStreamStay.body.data, [{ object: "embedding", embedding: [0.1, 0.2], index: 0 }]);
+    assert.equal("choices" in nonStreamStay.body, false, nonStreamStay.text);
+
+    const chatStay = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.431", "x-oneapi-request-id": "hop471-hop466-stay" },
+        body: JSON.stringify({
+          model: "hop471-gemini",
+          messages: [{ role: "user", content: "chat-hop466-stay-471" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chatStay.res.status, 500, chatStay.text);
+    const chatErr = chatStay.body.error as { message: string; type: string };
+    assert.equal(chatErr.message, "empty response from Gemini API");
+    assert.equal(chatErr.type, ERROR_CODE_EMPTY_RESPONSE);
+    assert.equal(chatStay.text.includes("(request id: hop471-hop466-stay)"), false, chatStay.text);
+    assert.equal("object" in chatStay.body && chatStay.body.object === "list", false, chatStay.text);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover GeminiEmbeddingHandler stream JSON write does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "198.51.100.432" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.433", "x-oneapi-request-id": "hop471-vendor-create" },
+      body: JSON.stringify({ name: "hop471-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop471-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop471 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop471.some((item) => item.action === "vendor.create"), listed.text);
+});
+

@@ -1077,6 +1077,7 @@ async function convertInbound(
     if (model.startsWith("imagen") && opts.relayMode !== "responses") return openaiFromImagenResponse(upstreamJson, { created: opts.created });
     // Original GeminiEmbeddingHandler for embedding-model prefixes even on
     // /v1/chat/completions (RelayModeResponses / RelayModeGemini stay first).
+    // Extra-OK: hop 471 writes the same OpenAI embedding JSON even when the client streams.
     if (isGeminiEmbeddingModel(model) && opts.relayMode !== "responses" && opts.relayMode !== "gemini") {
       return openaiFromGeminiEmbedding(upstreamJson, model, { fallbackPromptTokens: opts.fallbackPromptTokens });
     }
@@ -2822,7 +2823,24 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
           return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
         }
-        res = new Response(streamText, { status: res.status, headers: res.headers });
+        // Original GeminiEmbeddingHandler ignores IsStream and writes OpenAI
+        // embedding JSON via IOCopyBytesGracefully (hop 471). Extra-OK: hop 449
+        // leftover Unmarshal not-json stream stays above.
+        let parsedStream: Record<string, unknown> = {};
+        try {
+          const v = JSON.parse(streamText) as unknown;
+          if (v && typeof v === "object" && !Array.isArray(v)) parsedStream = v as Record<string, unknown>;
+        } catch {
+          parsedStream = {};
+        }
+        const converted = openaiFromGeminiEmbedding(parsedStream, mapped, { fallbackPromptTokens: promptEst });
+        const usage = usageFromOpenAI(converted);
+        attachSettleUsage(extra, usage);
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
+        return new Response(JSON.stringify(converted), {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8", "x-oneapi-request-id": rid },
+        });
       }
       if (usesAdvancedCustomGeminiEmbeddingUnmarshal(channel.type, mode, advancedConverter || "none", mapped)) {
         const streamText = await res.text();
@@ -2831,7 +2849,23 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
           return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
         }
-        res = new Response(streamText, { status: res.status, headers: res.headers });
+        // Original advanced-custom chat-to-Gemini DoResponse uses GeminiEmbeddingHandler
+        // (hop 471 stream JSON write). Extra-OK: hop 451 leftover Unmarshal stays above.
+        let parsedStream: Record<string, unknown> = {};
+        try {
+          const v = JSON.parse(streamText) as unknown;
+          if (v && typeof v === "object" && !Array.isArray(v)) parsedStream = v as Record<string, unknown>;
+        } catch {
+          parsedStream = {};
+        }
+        const converted = openaiFromGeminiEmbedding(parsedStream, mapped, { fallbackPromptTokens: promptEst });
+        const usage = usageFromOpenAI(converted);
+        attachSettleUsage(extra, usage);
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
+        return new Response(JSON.stringify(converted), {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8", "x-oneapi-request-id": rid },
+        });
       }
       if (!res.body) {
         await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, "bad_response_body", extra);

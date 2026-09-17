@@ -86,9 +86,10 @@ function geminiAdaptorDoResponse(
     return openaiFromImagenResponse(upstreamJson, { created: opts.created });
   }
   // Original chat-to-Gemini DoResponse uses GeminiEmbeddingHandler for
-  // embedding-model prefixes (hop 468 OpenAI embedding JSON). Extra-OK: hop 458
-  // `/v1/responses` stays GeminiResponsesHandler above. Extra-OK: hop 463 Vertex
-  // RequestModeGemini stays GeminiChatHandler (not this adaptor).
+  // embedding-model prefixes (hop 468 OpenAI embedding JSON; hop 471 even when
+  // the client streams). Extra-OK: hop 458 `/v1/responses` stays
+  // GeminiResponsesHandler above. Extra-OK: hop 463 Vertex RequestModeGemini
+  // stays GeminiChatHandler (not this adaptor).
   if (isGeminiEmbeddingModel(model)) {
     return openaiFromGeminiEmbedding(upstreamJson, model, {
       fallbackPromptTokens: opts.fallbackPromptTokens,

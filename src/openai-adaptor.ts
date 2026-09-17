@@ -1929,6 +1929,9 @@ export function usesAdvancedCustomGeminiUnmarshal(
  * `GeminiTextGenerationHandler` (not this handler). Extra-OK: hop 468
  * embedding-model prefixes convert as OpenAI embedding JSON after successful
  * Unmarshal (`GeminiEmbeddingHandler`, even on `/v1/chat/completions`).
+ * Extra-OK: hop 471 `GeminiEmbeddingHandler` writes OpenAI embedding JSON even
+ * when the client streams (`IOCopyBytesGracefully`, not SSE). Extra-OK: hop 449
+ * leftover Unmarshal not-json stream stays leftover gin.H.
  */
 export function usesAdvancedCustomGeminiEmbeddingUnmarshal(
   channelType: number,
