@@ -1383,6 +1383,56 @@ export function codexResponseUnmarshalError(text: string, mode = "responses"): s
 }
 
 /**
+ * Original `claude.Adaptor.DoResponse` non-stream uses `ClaudeHandler` →
+ * `HandleClaudeResponseData` (`common.Unmarshal` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). Always ClaudeHandler
+ * regardless of RelayFormat (OpenAI / Claude / Gemini / Responses). Stream uses
+ * `ClaudeStreamHandler` / `ClaudeResponsesStreamHandler` (later hop). Images /
+ * audio / embeddings Convert `"not implemented"` before DoResponse (hop 350).
+ * ConvertRerank is `nil,nil` leftover. Extra-OK: hop 405 Codex stays. Extra-OK:
+ * Moonshot / MiniMax / Deepseek / Zhipu v4 Claude-format, AWS API-key, Vertex
+ * Claude, NEW_API / SUB2API Claude, Ollama Claude, Ali anthropic-messages, Volc
+ * special-base stay later hops.
+ */
+export function usesClaudeHandlerUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_ANTHROPIC) return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "embeddings":
+    case "engines_embeddings":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/** Original `common.Unmarshal` target type name for ClaudeHandler DoResponse. */
+export function claudeHandlerUnmarshalTypeName(): string {
+  return "dto.ClaudeResponse";
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse`. Syntax errors match `encoding/json`. JSON `null`
+ * succeeds as a zero-value struct. Extra-OK: nested field type mismatches are
+ * left to convert (original fails).
+ */
+export function claudeHandlerResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${claudeHandlerUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
  * Original `replicate.Adaptor.DoResponse` `common.Unmarshal` (`NewError`
  * `ErrorCodeBadResponseBody`, wrap `"replicate adaptor: failed to decode
  * response: %w"`). Chat / embeddings / audio / rerank / responses Convert is
