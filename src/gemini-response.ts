@@ -1,7 +1,12 @@
 /** Original `relaykit/relayconvert/internal/gemini_chat/to_oai_chat_resp.go` + Gemini OpenAI-format DoResponse. */
 
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
-import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_VERTEX } from "./constants.js";
+import { CHANNEL_TYPE_ADVANCED_CUSTOM, CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_VERTEX } from "./constants.js";
+import {
+  CONVERTER_CHAT_TO_GEMINI,
+  CONVERTER_NONE,
+  CONVERTER_RESPONSES_TO_GEMINI,
+} from "./advanced-custom-convert.js";
 import { vertexRequestMode } from "./vertex-convert.js";
 import {
   asInt,
@@ -1500,17 +1505,25 @@ export function geminiEmbeddingResponseUnmarshalError(text: string): string | nu
  * native body (HTTP 200). Extra-OK: hop 449 OpenAI-format `GeminiEmbeddingHandler`
  * stays. Extra-OK: hop 360 native `generateContent` `GeminiTextGenerationHandler`
  * / OpenAI-format `GeminiChatHandler` stays. Extra-OK: Vertex RequestModeGemini
- * native uses `GeminiTextGenerationHandler` (not this handler).
+ * native uses `GeminiTextGenerationHandler` (not this handler). Extra-OK: hop 451
+ * advanced-custom OpenAI-format `GeminiEmbeddingHandler` stays. Extra-OK: hop 452
+ * advanced-custom native embed also uses this predicate.
  */
 export function usesNativeGeminiEmbeddingUnmarshal(
   channelType: number,
   mode: string,
   path: string,
+  converter = "none",
+  clientFormat?: string,
 ): boolean {
-  if (channelType !== CHANNEL_TYPE_GEMINI) return false;
   if (mode !== "gemini") return false;
   const p = String(path || "");
-  return p.includes(":embedContent") || p.includes(":batchEmbedContents");
+  if (!(p.includes(":embedContent") || p.includes(":batchEmbedContents"))) return false;
+  if (channelType === CHANNEL_TYPE_GEMINI) return true;
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  const id = String(converter || CONVERTER_NONE).trim() || CONVERTER_NONE;
+  if (id === CONVERTER_CHAT_TO_GEMINI || id === CONVERTER_RESPONSES_TO_GEMINI) return true;
+  return id === CONVERTER_NONE && clientFormat === "gemini";
 }
 
 /** Original `info.IsGeminiBatchEmbedding` from `HasSuffix(..., "batchEmbedContents")`. */

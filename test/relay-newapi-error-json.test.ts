@@ -17335,3 +17335,221 @@ test("original leftover advanced-custom GeminiEmbeddingHandler Unmarshal gin.H d
   const vendorItemsHop451 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop451.some((item) => item.action === "vendor.create"), listed.text);
 });
+
+test("original leftover advanced-custom NativeGeminiEmbeddingHandler Unmarshal NewOpenAIError gin.H", async () => {
+  const embedPath = "/v1beta/models/text-embedding-hop452:embedContent";
+  const batchPath = "/v1beta/models/text-embedding-hop452:batchEmbedContents";
+  const chatPath = "/v1beta/models/gemini-hop452-chat:generateContent";
+  const chatToGemini = "openai_chat_completions_to_gemini_generate_content";
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", embedPath, "none", "gemini"), true);
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", batchPath, "none", "gemini"), true);
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", embedPath, chatToGemini), true);
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", embedPath), false);
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", chatPath, "none", "gemini"), false);
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", embedPath, "none", "gemini"), false);
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "gemini", embedPath), true);
+  assert.equal(
+    nativeGeminiEmbeddingResponseUnmarshalError("[]", embedPath),
+    "json: cannot unmarshal array into Go value of type dto.GeminiEmbeddingResponse",
+  );
+
+  const helper = writeGeminiChatUnmarshalError(
+    new Request("http://local" + embedPath, { headers: { "x-oneapi-request-id": "hop452-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(helper.status, 500);
+  assert.deepEqual(await helper.json(), {
+    error: {
+      message: messageWithRequestId("invalid character 'o' looking for beginning of value", "hop452-helper"),
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "198.51.100.186" });
+  await mergeModelRatio(new Store(e.DB), { "text-embedding-hop452": 1, "gemini-hop452-chat": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const created = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.187" },
+      body: JSON.stringify({
+        name: "hop452-adv-gemini",
+        type: CHANNEL_TYPE_ADVANCED_CUSTOM,
+        key: "sk-hop452",
+        models: "text-embedding-hop452,gemini-hop452-chat",
+        group: "default",
+        base_url: "https://generativelanguage.googleapis.com",
+        settings: JSON.stringify({
+          advanced_custom: {
+            advanced_routes: [
+              {
+                incoming_path: "/v1beta/models/{model}:embedContent",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent",
+                converter: "none",
+                models: ["text-embedding-hop452"],
+              },
+              {
+                incoming_path: "/v1beta/models/{model}:batchEmbedContents",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents",
+                converter: "none",
+                models: ["text-embedding-hop452"],
+              },
+              {
+                incoming_path: "/v1beta/models/{model}:generateContent",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                converter: "none",
+                models: ["gemini-hop452-chat"],
+              },
+            ],
+          },
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("generativelanguage.googleapis.com")) return origFetch(input, init);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("native-embed-stay-452")) {
+      return new Response(JSON.stringify({ embedding: { values: [0.5, 0.6] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const embedHit = await send(
+      new Request("http://local" + embedPath, {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.189", "x-oneapi-request-id": "hop452-embed-unmarshal" },
+        body: JSON.stringify({ content: { parts: [{ text: "hello" }] } }),
+      }),
+      e,
+    );
+    assert.equal(embedHit.res.status, 500, embedHit.text);
+    const embedErr = embedHit.body.error as { message: string; type: string; code: string };
+    assert.equal(
+      embedErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop452-embed-unmarshal"),
+    );
+    assert.equal(embedErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(embedErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(
+      embedHit.text.includes("dto.GeminiChatResponse") || embedErr.message.includes("dto.GeminiChatResponse"),
+      false,
+      embedHit.text,
+    );
+
+    const embedArray = await send(
+      new Request("http://local" + embedPath, {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.191", "x-oneapi-request-id": "hop452-embed-array" },
+        body: JSON.stringify({ content: { parts: [{ text: "as-array" }] } }),
+      }),
+      e,
+    );
+    assert.equal(embedArray.res.status, 500, embedArray.text);
+    const embedArrayErr = embedArray.body.error as { message: string };
+    assert.equal(
+      embedArrayErr.message,
+      messageWithRequestId("json: cannot unmarshal array into Go value of type dto.GeminiEmbeddingResponse", "hop452-embed-array"),
+    );
+
+    const batchHit = await send(
+      new Request("http://local" + batchPath, {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.192", "x-oneapi-request-id": "hop452-batch-unmarshal" },
+        body: JSON.stringify({ requests: [{ content: { parts: [{ text: "hello-batch" }] } }] }),
+      }),
+      e,
+    );
+    assert.equal(batchHit.res.status, 500, batchHit.text);
+    const batchErr = batchHit.body.error as { message: string; type: string };
+    assert.equal(
+      batchErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop452-batch-unmarshal"),
+    );
+    assert.equal(batchErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const nativeChatStay = await send(
+      new Request("http://local" + chatPath, {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.193", "x-oneapi-request-id": "hop452-native-chat-stay" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "native-chat-hop360-stay-452" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(nativeChatStay.res.status, 500, nativeChatStay.text);
+    const nativeChatErr = nativeChatStay.body.error as { message: string; type: string };
+    assert.equal(
+      nativeChatErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop452-native-chat-stay"),
+    );
+    assert.equal(nativeChatErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(
+      nativeChatStay.text.includes("dto.GeminiEmbeddingResponse") || nativeChatErr.message.includes("dto.GeminiEmbeddingResponse"),
+      false,
+      nativeChatStay.text,
+    );
+
+    const nativeStay = await send(
+      new Request("http://local" + embedPath, {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.194", "x-oneapi-request-id": "hop452-native-stay" },
+        body: JSON.stringify({ content: { parts: [{ text: "native-embed-stay-452" }] } }),
+      }),
+      e,
+    );
+    assert.equal(nativeStay.res.status, 200, nativeStay.text);
+    assert.deepEqual(nativeStay.body.embedding, { values: [0.5, 0.6] });
+    assert.equal(nativeStay.body.object === "list", false, nativeStay.text);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover advanced-custom NativeGeminiEmbeddingHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "198.51.100.195" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.196", "x-oneapi-request-id": "hop452-vendor-create" },
+      body: JSON.stringify({ name: "hop452-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop452-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop452 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop452.some((item) => item.action === "vendor.create"), listed.text);
+});

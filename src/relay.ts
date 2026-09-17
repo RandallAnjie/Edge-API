@@ -2520,7 +2520,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         res = new Response(streamText, { status: res.status, headers: res.headers });
       }
-      if (usesNativeGeminiEmbeddingUnmarshal(channel.type, mode, path)) {
+      if (usesNativeGeminiEmbeddingUnmarshal(channel.type, mode, path, advancedConverter || "none", clientFormat)) {
         const streamText = await res.text();
         const unmarshalErr = nativeGeminiEmbeddingResponseUnmarshalError(streamText, path);
         if (unmarshalErr) {
@@ -3019,7 +3019,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       text = unwrapped.body;
     }
     const openaiUnmarshalMode = openaiDoResponseUnmarshalMode(mode, viaResponses, path);
-    if (usesNativeGeminiEmbeddingUnmarshal(channel.type, mode, path)) {
+    if (usesNativeGeminiEmbeddingUnmarshal(channel.type, mode, path, advancedConverter || "none", clientFormat)) {
       const unmarshalErr = nativeGeminiEmbeddingResponseUnmarshalError(text, path);
       if (unmarshalErr) {
         await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
@@ -3451,7 +3451,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (usesAdvancedCustomGeminiEmbeddingUnmarshal(channel.type, mode, advancedConverter || "none", mapped) && (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))) {
         parsed = {};
       }
-      if (usesNativeGeminiEmbeddingUnmarshal(channel.type, mode, path) && (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))) {
+      if (usesNativeGeminiEmbeddingUnmarshal(channel.type, mode, path, advancedConverter || "none", clientFormat) && (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))) {
         parsed = {};
       }
       if (
