@@ -1280,6 +1280,28 @@ export function zhipuV4ResponseUnmarshalError(text: string, mode = "chat"): stri
 }
 
 /**
+ * Original Zhipu v4 Claude-format `zhipu_4v.Adaptor.DoResponse` delegates to
+ * `claude.Adaptor.DoResponse` (`ClaudeHandler` `HandleClaudeResponseData`
+ * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
+ * `dto.ClaudeResponse`). OpenAI format stays hop 401 (`clientFormat ===
+ * "openai"` gate). Images stay hop 382. Audio Convert `"not implemented"`
+ * before DoResponse (hop 350). Extra-OK: hop 411 Deepseek Claude stays.
+ */
+export function usesZhipuV4ClaudeUnmarshal(channelType: number, mode: string): boolean {
+  return usesZhipuV4Unmarshal(channelType, mode);
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for Zhipu v4 Claude-format. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function zhipuV4ClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
  * Original `zhipu_4v.zhipu4vImageHandler` `common.Unmarshal` (`NewOpenAIError`
  * `ErrorCodeBadResponseBody`). Chat / embeddings / responses stay
  * `openai.Adaptor.DoResponse` (hop 401). Claude format uses
