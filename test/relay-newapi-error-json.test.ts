@@ -8,10 +8,12 @@ import {
   ERROR_CODE_BAD_RESPONSE_STATUS_CODE,
   ERROR_CODE_CONVERT_REQUEST_FAILED,
   ERROR_CODE_DO_REQUEST_FAILED,
+  ERROR_CODE_GET_CHANNEL_FAILED,
   ERROR_CODE_INVALID_REQUEST,
   ERROR_CODE_MODEL_PRICE_ERROR,
   ERROR_TYPE_NEW_API_ERROR,
   messageWithRequestId,
+  noAvailableChannelRetryMessage,
   relayErrorHandler,
   relayUsesClaudeError,
   toClaudeRelayError,
@@ -505,6 +507,210 @@ test("original Relay leftover RelayErrorHandler does not change AUTH StatusText 
   assert.equal(created.body.success, true, created.text);
   const listed = await send(
     new Request("http://local/api/audit?page_size=100&request_id=hop351-vendor-create", { headers: auth }),
+    e,
+  );
+  const items = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(items.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original Relay leftover last-loop do_request_failed Claude vs OpenAI gin.H", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.160" });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.161" },
+      body: JSON.stringify({
+        name: "hop353-fetch-throw",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop353",
+        models: "gpt-4o-mini",
+        group: "default",
+        base_url: "https://hop353-throw.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("upstream down");
+  }) as typeof fetch;
+  try {
+    const claude = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "192.0.2.162",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop353-claude-do-request",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 500, claude.text);
+    assert.equal(claude.body.type, "error");
+    const err = claude.body.error as { type: string; message: string; code?: string; param?: string };
+    assert.equal(err.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(err.message, messageWithRequestId("upstream down", "hop353-claude-do-request"));
+    assert.equal(err.code, undefined);
+    assert.equal(err.param, undefined);
+    assert.deepEqual(Object.keys(err).sort(), ["message", "type"]);
+
+    const chat = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.163" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chat.res.status, 500, chat.text);
+    assert.equal("type" in chat.body && chat.body.type === "error", false, chat.text);
+    const chatErr = chat.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, "upstream down");
+    assert.equal(chatErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_DO_REQUEST_FAILED);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original Relay leftover last-loop get_channel_failed Claude vs OpenAI gin.H", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.164" });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const retryOpt = await send(
+    new Request("http://local/api/option/", {
+      method: "PUT",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.165" },
+      body: JSON.stringify({ key: "RetryTimes", value: "1" }),
+    }),
+    e,
+  );
+  assert.equal(retryOpt.body.success, true, retryOpt.text);
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.166" },
+      body: JSON.stringify({
+        name: "hop353-retry-channel",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop353-retry",
+        models: "gpt-4o-mini",
+        group: "default",
+        base_url: "https://hop353-retry.example.test",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+  const channelId = Number((ch.body.data as { id?: number })?.id || 0);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).startsWith("https://hop353-retry.example.test")) {
+      await e.DB.prepare(`UPDATE abilities SET enabled = 0 WHERE channel_id = ?`).bind(channelId).run();
+      return new Response("upstream boom", { status: 502 });
+    }
+    return origFetch(input as RequestInfo, undefined);
+  }) as typeof fetch;
+  try {
+    const claude = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "192.0.2.167",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop353-claude-get-channel",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 500, claude.text);
+    assert.equal(claude.body.type, "error");
+    const err = claude.body.error as { type: string; message: string; code?: string; param?: string };
+    assert.equal(err.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(
+      err.message,
+      messageWithRequestId(noAvailableChannelRetryMessage("default", "gpt-4o-mini"), "hop353-claude-get-channel"),
+    );
+    assert.equal(err.code, undefined);
+    assert.equal(err.param, undefined);
+
+    await e.DB.prepare(`UPDATE abilities SET enabled = 1 WHERE channel_id = ?`).bind(channelId).run();
+
+    const chat = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.168" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chat.res.status, 500, chat.text);
+    assert.equal("type" in chat.body && chat.body.type === "error", false, chat.text);
+    const chatErr = chat.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, noAvailableChannelRetryMessage("default", "gpt-4o-mini"));
+    assert.equal(chatErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_GET_CHANNEL_FAILED);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original Relay leftover last-loop gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.169" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.170", "x-oneapi-request-id": "hop353-vendor-create" },
+      body: JSON.stringify({ name: "relay-last-loop-vendor", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop353-vendor-create", { headers: auth }),
     e,
   );
   const items = ((listed.body.data as { items: { action: string }[] }).items || []);

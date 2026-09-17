@@ -112,7 +112,25 @@ import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-c
 import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
-import { abortWithOpenAiMessage, clientIp, ERROR_CODE_INVALID_REQUEST, groupAccessDeniedMessage, json, modelNameRequiredMessage, noAvailableChannelMessage, openaiError, relayErrorHandler, tokenModelForbiddenMessage, writeRelayNewAPIError } from "./http.js";
+import {
+  abortWithOpenAiMessage,
+  clientIp,
+  ERROR_CODE_CONVERT_REQUEST_FAILED,
+  ERROR_CODE_DO_REQUEST_FAILED,
+  ERROR_CODE_GET_CHANNEL_FAILED,
+  ERROR_CODE_INVALID_REQUEST,
+  ERROR_TYPE_NEW_API_ERROR,
+  getChannelRetryFailedMessage,
+  groupAccessDeniedMessage,
+  json,
+  modelNameRequiredMessage,
+  noAvailableChannelMessage,
+  noAvailableChannelRetryMessage,
+  openaiError,
+  relayErrorHandler,
+  tokenModelForbiddenMessage,
+  writeRelayNewAPIError,
+} from "./http.js";
 import { applyGetAndValidateRequest } from "./valid-request.js";
 import { estimateRequestPromptTokens, getTokenCountMeta } from "./token-count.js";
 import { applyChannelParamOverride, asParamOverrideReturnError, channelParamOverrideMap, ParamOverrideReturnError, requestHeadersFrom, type ParamOverrideRelayInfo } from "./param-override.js";
@@ -1903,8 +1921,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
   }
   let pendingStreamSettle = false;
   try {
-  let lastErr = "所有渠道均失败";
-  let lastStatus = 502;
+  let lastErr = noAvailableChannelRetryMessage(auth.usingGroup === "auto" ? "auto" : auth.usingGroup, model);
+  let lastStatus = 500;
+  let lastCode = ERROR_CODE_GET_CHANNEL_FAILED;
+  let lastType = ERROR_TYPE_NEW_API_ERROR;
 
   const retryTimes = selectParam.retryTimes;
   const chatResponsesPolicy = parseJson<ChatCompletionsToResponsesPolicy>(
@@ -1924,6 +1944,16 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       const next = await cacheGetRandomSatisfiedChannel(store, selectParam, selectState);
       channel = next.channel;
       if (next.selectGroup && next.selectGroup !== "auto") auth.usingGroup = next.selectGroup;
+      if (!channel) {
+        const showGroup = next.selectGroup || (auth.usingGroup === "auto" ? "auto" : auth.usingGroup);
+        lastErr = next.error
+          ? getChannelRetryFailedMessage(showGroup, model, next.error)
+          : noAvailableChannelRetryMessage(showGroup, model);
+        lastStatus = 500;
+        lastCode = ERROR_CODE_GET_CHANNEL_FAILED;
+        lastType = ERROR_TYPE_NEW_API_ERROR;
+        break;
+      }
     }
     if (!channel) break;
     usedChannel.push(String(channel.id));
@@ -2107,6 +2137,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (ret.skipRetry || lastAttempt) return writeRelayNewAPIError(opts.req, ret.statusCode, ret.message, ret.code, ret.type);
       lastErr = ret.message;
       lastStatus = ret.statusCode;
+      lastCode = ret.code;
+      lastType = ret.type || ERROR_TYPE_NEW_API_ERROR;
       continue;
     }
     const outboundMode = viaResponses ? "responses" : mode;
@@ -2159,11 +2191,16 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         if (ret.skipRetry || lastAttempt) return writeRelayNewAPIError(opts.req, ret.statusCode, ret.message, ret.code, ret.type);
         lastErr = ret.message;
         lastStatus = ret.statusCode;
+        lastCode = ret.code;
+        lastType = ret.type || ERROR_TYPE_NEW_API_ERROR;
         continue;
       }
       lastErr = err instanceof Error ? err.message : String(err);
       lastStatus = 400;
+      lastCode = ERROR_CODE_CONVERT_REQUEST_FAILED;
+      lastType = ERROR_TYPE_NEW_API_ERROR;
       await noteAttempt(channelAttemptFromNewApi(lastErr, 400, "convert_request_failed"));
+      if (lastAttempt) return writeRelayNewAPIError(opts.req, 400, lastErr, ERROR_CODE_CONVERT_REQUEST_FAILED);
       continue;
     }
     if (openaiEditForm) {
@@ -2189,11 +2226,16 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             if (ret.skipRetry || lastAttempt) return writeRelayNewAPIError(opts.req, ret.statusCode, ret.message, ret.code, ret.type);
             lastErr = ret.message;
             lastStatus = ret.statusCode;
+            lastCode = ret.code;
+            lastType = ret.type || ERROR_TYPE_NEW_API_ERROR;
             continue;
           }
           lastErr = err instanceof Error ? err.message : String(err);
           lastStatus = 400;
+          lastCode = ERROR_CODE_CONVERT_REQUEST_FAILED;
+          lastType = ERROR_TYPE_NEW_API_ERROR;
           await noteAttempt(channelAttemptFromNewApi(lastErr, 400, "convert_request_failed"));
+          if (lastAttempt) return writeRelayNewAPIError(opts.req, 400, lastErr, ERROR_CODE_CONVERT_REQUEST_FAILED);
           continue;
         }
       }
@@ -2283,6 +2325,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           }
           lastErr = message;
           lastStatus = 500;
+          lastCode = ERROR_CODE_DO_REQUEST_FAILED;
+          lastType = ERROR_TYPE_NEW_API_ERROR;
           await noteAttempt(channelAttemptFromNewApi(message, 500, "do_request_failed"));
           if (!lastAttempt && retryable(500, retryRanges)) continue;
           return writeRelayNewAPIError(opts.req, 500, message, "do_request_failed");
@@ -2313,9 +2357,11 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
-      lastStatus = 502;
-      await noteAttempt(channelAttemptFromNewApi(lastErr, 502, "do_request_failed"));
-      if (skipFurtherRetry) break;
+      lastStatus = 500;
+      lastCode = ERROR_CODE_DO_REQUEST_FAILED;
+      lastType = ERROR_TYPE_NEW_API_ERROR;
+      await noteAttempt(channelAttemptFromNewApi(lastErr, 500, ERROR_CODE_DO_REQUEST_FAILED));
+      if (skipFurtherRetry || lastAttempt) return writeRelayNewAPIError(opts.req, 500, lastErr, ERROR_CODE_DO_REQUEST_FAILED);
       continue;
     }
     const useTime = Math.max(0, Math.round((Date.now() - started) / 1000));
@@ -2840,7 +2886,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     });
   }
 
-  return openaiError(lastStatus, lastErr.slice(0, 800), "channel_error");
+  return writeRelayNewAPIError(opts.req, lastStatus, lastErr.slice(0, 800), lastCode, lastType);
   } finally {
     if (!pendingStreamSettle) await refundBilling(store, auth, billing);
   }
