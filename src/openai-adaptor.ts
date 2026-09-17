@@ -1646,7 +1646,7 @@ export function claudeHandlerResponseUnmarshalError(text: string): string | null
  * `dto.ClaudeResponse`). AKSK Nova stays `handleNovaRequest` (hop 385).
  * Images / audio / embeddings / responses Convert `"not implemented"` before
  * DoResponse (hop 350). ConvertRerank is `nil,nil` leftover. Extra-OK: hop 406
- * Anthropic stays. Extra-OK: AKSK Claude `awsHandler` later hop.
+ * Anthropic stays. Extra-OK: hop 418 AKSK Claude `awsHandler` stays.
  */
 export function usesAwsClaudeUnmarshal(channelType: number, mode: string, settings?: string | null): boolean {
   if (channelType !== CHANNEL_TYPE_AWS) return false;
@@ -1682,6 +1682,57 @@ export function usesAwsClaudeUnmarshal(channelType: number, mode: string, settin
  * mismatches are left to convert (original fails).
  */
 export function awsClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original AWS AKSK non-Nova `aws.Adaptor.DoResponse` `awsHandler`
+ * (`HandleClaudeResponseData` `common.Unmarshal` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). API-key stays hop
+ * 407 (`claude.Adaptor`). Nova stays hop 385 (`handleNovaRequest`). Stream
+ * stays `awsStreamHandler` (later hop). Images / audio / embeddings /
+ * responses Convert `"not implemented"` before DoResponse (hop 350).
+ * ConvertRerank is `nil,nil` leftover. Extra-OK: hop 407 API-key stays.
+ * Extra-OK: hop 385 Nova stays. Extra-OK: hop 417 Volc Claude stays.
+ */
+export function usesAwsAkskClaudeUnmarshal(
+  channelType: number,
+  model: string,
+  mode: string,
+  settings?: string | null,
+): boolean {
+  if (channelType !== CHANNEL_TYPE_AWS) return false;
+  if (isNovaModel(model)) return false;
+  const raw = String(settings || "").trim();
+  if (raw) {
+    const parsed = goUnmarshalJSON(raw);
+    if (parsed.ok && parsed.value && typeof parsed.value === "object" && !Array.isArray(parsed.value)) {
+      if ((parsed.value as Record<string, unknown>).aws_key_type === "api_key") return false;
+    }
+  }
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "embeddings":
+    case "engines_embeddings":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for AWS AKSK non-Nova `awsHandler`. Syntax errors
+ * match `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function awsAkskClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
 }
 

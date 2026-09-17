@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesCodexUnmarshal, usesClaudeHandlerUnmarshal, usesAwsClaudeUnmarshal, usesVertexClaudeUnmarshal, usesMoonshotClaudeUnmarshal, usesMiniMaxClaudeUnmarshal, usesDeepseekClaudeUnmarshal, usesZhipuV4ClaudeUnmarshal, usesNewApiClaudeUnmarshal, usesSub2apiClaudeUnmarshal, usesOllamaClaudeUnmarshal, usesAliClaudeUnmarshal, usesVolcClaudeUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, awsClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesCodexUnmarshal, usesClaudeHandlerUnmarshal, usesAwsClaudeUnmarshal, usesAwsAkskClaudeUnmarshal, usesVertexClaudeUnmarshal, usesMoonshotClaudeUnmarshal, usesMiniMaxClaudeUnmarshal, usesDeepseekClaudeUnmarshal, usesZhipuV4ClaudeUnmarshal, usesNewApiClaudeUnmarshal, usesSub2apiClaudeUnmarshal, usesOllamaClaudeUnmarshal, usesAliClaudeUnmarshal, usesVolcClaudeUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, awsClaudeResponseUnmarshalError, awsAkskClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   CHANNEL_TYPE_ALI,
@@ -10428,4 +10428,179 @@ test("original leftover Volc special-base ClaudeHandler Unmarshal gin.H does not
   );
   const vendorItemsHop417 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop417.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover AWS AKSK awsHandler Unmarshal NewError gin.H", async () => {
+  const apiKey = JSON.stringify({ aws_key_type: "api_key" });
+  const aksk = JSON.stringify({ aws_key_type: "ak_sk" });
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop418-aws-claude", "chat", aksk), true);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop418-aws-claude", "chat"), true);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop418-aws-claude", "completions", aksk), true);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop418-aws-claude", "messages", aksk), true);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop418-aws-claude", "images", aksk), false);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop418-aws-claude", "embeddings", aksk), false);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop418-aws-claude", "responses", aksk), false);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop418-aws-claude", "rerank", aksk), false);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop418-aws-claude", "audio_speech", aksk), false);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop418-aws-claude", "chat", apiKey), false);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_AWS, "hop385-nova-lite", "chat", aksk), false);
+  assert.equal(usesAwsAkskClaudeUnmarshal(CHANNEL_TYPE_ANTHROPIC, "hop418-aws-claude", "chat", aksk), false);
+  assert.equal(usesAwsClaudeUnmarshal(CHANNEL_TYPE_AWS, "chat", apiKey), true);
+  assert.equal(usesAwsClaudeUnmarshal(CHANNEL_TYPE_AWS, "chat", aksk), false);
+  assert.equal(usesAwsNovaUnmarshal(CHANNEL_TYPE_AWS, "hop385-nova-lite", "chat", aksk), true);
+  assert.equal(usesVolcClaudeUnmarshal(CHANNEL_TYPE_VOLC, "messages", "doubao-coding-plan"), true);
+  assert.equal(awsAkskClaudeResponseUnmarshalError("not-json"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    awsAkskClaudeResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type dto.ClaudeResponse",
+  );
+  assert.equal(awsAkskClaudeResponseUnmarshalError("null"), null);
+  assert.equal(awsAkskClaudeResponseUnmarshalError("{}"), null);
+
+  const chatHelper = writeRelayNewAPIError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop418-helper" } }),
+    500,
+    "invalid character 'o' looking for beginning of value",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(chatHelper.status, 500);
+  assert.deepEqual(await chatHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value (request id: hop418-helper)",
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "203.0.113.151" });
+  await mergeModelRatio(new Store(e.DB), { "hop418-aws-claude": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const created = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "203.0.113.152" },
+      body: JSON.stringify({
+        name: "hop418-aws-claude",
+        type: CHANNEL_TYPE_AWS,
+        key: "AKID|secret|us-east-1",
+        models: "hop418-aws-claude",
+        group: "default",
+        settings: { aws_key_type: "ak_sk" },
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const chatHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "203.0.113.153", "x-oneapi-request-id": "hop418-aws-unmarshal" },
+        body: JSON.stringify({ model: "hop418-aws-claude", messages: [{ role: "user", content: "hello" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatHit.res.status, 500, chatHit.text);
+    assert.equal("type" in chatHit.body && chatHit.body.type === "error", false, chatHit.text);
+    const chatErr = chatHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(
+      chatErr.message,
+      "invalid character 'o' looking for beginning of value (request id: hop418-aws-unmarshal)",
+    );
+    assert.equal(chatErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const chatArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "203.0.113.154", "x-oneapi-request-id": "hop418-aws-array" },
+        body: JSON.stringify({ model: "hop418-aws-claude", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatArray.res.status, 500, chatArray.text);
+    const chatArrayErr = chatArray.body.error as { message: string; type: string };
+    assert.equal(
+      chatArrayErr.message,
+      "json: cannot unmarshal array into Go value of type dto.ClaudeResponse (request id: hop418-aws-array)",
+    );
+    assert.equal(chatArrayErr.type, ERROR_TYPE_NEW_API_ERROR);
+
+    const claudeHit = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "203.0.113.155",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop418-aws-messages",
+        },
+        body: JSON.stringify({
+          model: "hop418-aws-claude",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claudeHit.res.status, 500, claudeHit.text);
+    assert.equal(claudeHit.body.type, "error", claudeHit.text);
+    const claudeErr = claudeHit.body.error as { type: string; message: string; code?: string; param?: string };
+    assert.equal(claudeErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(
+      claudeErr.message,
+      "invalid character 'o' looking for beginning of value (request id: hop418-aws-messages)",
+    );
+    assert.equal(claudeErr.code, undefined);
+    assert.equal(claudeErr.param, undefined);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover AWS AKSK awsHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "203.0.113.156" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "203.0.113.157", "x-oneapi-request-id": "hop418-vendor-create" },
+      body: JSON.stringify({ name: "hop418-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop418-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop418 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop418.some((item) => item.action === "vendor.create"), listed.text);
 });
