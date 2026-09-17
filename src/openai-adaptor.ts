@@ -1,6 +1,7 @@
 /** Original `relay.GetAdaptor` → `openai.Adaptor` (APITypeOpenAI, OpenRouter, Xinference, unknown→OpenAI). */
 
 import { advancedCustomOpenaiShapedInbound } from "./advanced-custom-response.js";
+import { CONVERTER_CHAT_TO_CLAUDE, CONVERTER_NONE } from "./advanced-custom-convert.js";
 import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { supportsAliAnthropicMessages } from "./ali-convert.js";
@@ -1535,7 +1536,7 @@ export function sub2apiClaudeResponseUnmarshalError(text: string): string | null
  * `NewOpenAIError` `ErrorCodeBadResponseBody`). Images use
  * `OpenaiImageHandler` (`dto.SimpleResponse`). Responses use
  * `openai.OaiResponsesHandler`. Stream uses `openai.OaiStreamHandler`
- * (log/continue, not leftover gin.H). Extra-OK: hop 403 sub2api stays.
+ * (log/continue, not leftover gin.H). Extra-OK: hop 403 sub2api stays. Extra-OK: hop 419 chat-to-Claude / ConverterNone+RelayFormatClaude `claude.Adaptor` stays.
  */
 export function usesAdvancedCustomUnmarshal(channelType: number, mode: string, converter = "none"): boolean {
   if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
@@ -1562,6 +1563,51 @@ export function usesAdvancedCustomUnmarshal(channelType: number, mode: string, c
  */
 export function advancedCustomResponseUnmarshalError(text: string, mode = "chat"): string | null {
   return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` chat-to-Claude converter and
+ * ConverterNone+`RelayFormatClaude` delegate to `claude.Adaptor.DoResponse`
+ * (`ClaudeHandler` `HandleClaudeResponseData` `common.Unmarshal` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-shaped inbound
+ * stays hop 404. Chat-to-Gemini stays `gemini.Adaptor` (later hop). Stream
+ * stays `ClaudeStreamHandler` (later hop). Extra-OK: hop 404 OpenAI stays.
+ * Extra-OK: hop 418 AWS AKSK stays.
+ */
+export function usesAdvancedCustomClaudeUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  clientFormat?: string,
+): boolean {
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  const id = String(converter || CONVERTER_NONE).trim() || CONVERTER_NONE;
+  const chatToClaude = id === CONVERTER_CHAT_TO_CLAUDE;
+  const nativeClaude = id === CONVERTER_NONE && clientFormat === "anthropic";
+  if (!chatToClaude && !nativeClaude) return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "embeddings":
+    case "engines_embeddings":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for advanced-custom `claude.Adaptor`. Syntax errors
+ * match `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function advancedCustomClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
 }
 
 /**
