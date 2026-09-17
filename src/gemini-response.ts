@@ -1493,6 +1493,8 @@ export function geminiImageResponseUnmarshalError(text: string): string | null {
  * RequestModeGemini OpenAI-format embedding prefixes stay `GeminiChatHandler`.
  * Extra-OK: hop 468 OpenAI-format embedding prefixes convert as OpenAI
  * embedding JSON after successful Unmarshal even on `/v1/chat/completions`.
+ * Extra-OK: hop 469 Vertex RequestModeGemini embedding prefixes stay
+ * `GeminiChatHandler` empty-candidates leftover gin.H (not this handler).
  */
 export function usesGeminiEmbeddingUnmarshal(
   channelType: number,

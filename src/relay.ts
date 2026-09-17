@@ -1459,6 +1459,9 @@ function attachSettleUsage(
  * use `GeminiTextGenerationHandler` via usesAdvancedCustomGeminiUnmarshal.
  * Extra-OK: hop 463 Vertex RequestModeGemini OpenAI-format embedding prefixes use
  * `GeminiChatHandler` (Vertex DoResponse does not check embedding prefixes).
+ * Extra-OK: hop 469 Vertex RequestModeGemini empty-candidates leftover gin.H
+ * uses `GeminiChatHandler` (same as hop 359 GEMINI; embedding prefixes stay
+ * `GeminiChatHandler` empty-candidates, not OpenAI embedding JSON).
  */
 function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mode: string): boolean {
   if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
@@ -1490,7 +1493,10 @@ function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mo
  * gin.H (`empty_response` / `prompt_blocked`, no request-id append, ResetStatusCode).
  * Extra-OK: hop 466 advanced-custom `ConverterOpenAIChatToGeminiContent` delegates to
  * `GeminiChatHandler` empty-candidates leftover gin.H (handler writes then
- * `return &usage, nil`; no request-id append). Native `RelayModeGemini` still
+ * `return &usage, nil`; no request-id append). Extra-OK: hop 469 Vertex
+ * RequestModeGemini uses `GeminiChatHandler` empty-candidates leftover gin.H
+ * (handler writes then `return &usage, nil`; embedding prefixes stay
+ * `GeminiChatHandler`, not `GeminiEmbeddingHandler`). Native `RelayModeGemini` still
  * copies HTTP 200 (GeminiTextGenerationHandler). Imagen / embedding prefixes
  * stay hop 453 / hop 451 handlers (not GeminiChatHandler).
  */

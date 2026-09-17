@@ -973,7 +973,9 @@ export function toClaudeRelayError(message: string): { type: string; message: st
  * advanced-custom `ConverterOpenAIResponsesToGemini` `GeminiResponsesHandler`
  * empty-candidates same leftover gin.H. Extra-OK: hop 466 advanced-custom
  * `ConverterOpenAIChatToGeminiContent` `GeminiChatHandler` empty-candidates
- * leftover gin.H (handler writes then returns nil).
+ * leftover gin.H (handler writes then returns nil). Extra-OK: hop 469 Vertex
+ * RequestModeGemini `GeminiChatHandler` empty-candidates leftover gin.H
+ * (handler writes then returns nil; embedding prefixes stay GeminiChatHandler).
  */
 export function writeGeminiChatEmptyCandidatesError(
   req: Request,
