@@ -2131,6 +2131,35 @@ export function oaiResponsesToChatBufferedStreamSseUnmarshalError(text: string):
   return oaiResponsesToChatStreamSseUnmarshalError(text);
 }
 
+/**
+ * Original `OpenaiImageStreamHandler` non-SSE upstream uses
+ * `openaiImageJSONAsStreamHandler` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody` into `dto.SimpleResponse`) before wrapping JSON
+ * as image SSE. Real SSE image streams unmarshal per-chunk with log/continue
+ * (not leftover gin.H). Extra-OK: hop 365 non-stream `OpenaiImageHandler`
+ * leftover gin.H stays. Extra-OK: hop 446 via-responses buffered stream stays.
+ */
+export function usesOpenaiImageJSONAsStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  isStream = true,
+  contentType = "",
+): boolean {
+  if (!isStream) return false;
+  if (mode !== "images") return false;
+  if (!usesOpenAIAdaptor(channelType)) return false;
+  return !String(contentType || "").toLowerCase().includes("text/event-stream");
+}
+
+/**
+ * Original `openaiImageJSONAsStreamHandler` `common.Unmarshal` into
+ * `dto.SimpleResponse`. Syntax errors match `encoding/json`. JSON `null`
+ * succeeds as a zero-value struct.
+ */
+export function openaiImageJSONAsStreamResponseUnmarshalError(text: string): string | null {
+  return openaiHandlerResponseUnmarshalError(text, "images");
+}
+
 /** Original `OaiChatToResponsesStreamHandler` `UnmarshalJsonStr` target type. */
 export function oaiChatToResponsesStreamUnmarshalTypeName(): string {
   return "dto.ChatCompletionsStreamResponse";
