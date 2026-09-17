@@ -1318,7 +1318,8 @@ export function geminiChatResponseUnmarshalError(text: string): string | null {
  * `FailResponsesStream` (hop 440 leftover `NewOpenAIError` when unhandled).
  * Images / embeddings / OpenAI-format imagen / embedding models stay hop 350 Convert
  * or hop 448 `GeminiImageHandler`. Native `RelayModeGemini` `:predict` imagen uses
- * `GeminiTextGenerationStreamHandler` (hop 454).
+ * `GeminiTextGenerationStreamHandler` (hop 454). Vertex RequestModeGemini stream
+ * imagen uses `GeminiChatStreamHandler` (hop 455; imagen prefix is non-stream only).
  * Extra-OK: hop 360 non-stream `GeminiChatHandler` stays. Extra-OK: hop 422
  * Claude stream stays. Extra-OK: hop 421 responses-to-Gemini stays. Extra-OK:
  * hop 439 ClaudeResponsesStreamHandler stays.
@@ -1331,10 +1332,19 @@ export function usesGeminiChatStreamUnmarshal(
 ): boolean {
   if (!isStream) return false;
   if (mode === "responses") return false;
-  if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
-  // Native RelayModeGemini `:predict` imagen uses GeminiTextGenerationStreamHandler
-  // (RelayModeGemini first). OpenAI-format imagen stays hop 448 GeminiImageHandler.
-  if (mapped.startsWith("imagen") && mode !== "gemini") return false;
+  if (mode === "embeddings" || mode === "engines_embeddings") return false;
+  const vertexGemini = channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini";
+  if (mapped.startsWith("imagen")) {
+    // Native RelayModeGemini `:predict` uses GeminiTextGenerationStreamHandler (hop 454).
+    if (mode === "gemini") {
+      return channelType === CHANNEL_TYPE_GEMINI || vertexGemini;
+    }
+    // Vertex RequestModeGemini stream uses GeminiChatStreamHandler even for imagen
+    // (imagen prefix is non-stream only). CHANNEL_TYPE_GEMINI OpenAI-format imagen
+    // stays hop 448 GeminiImageHandler even when the client streams.
+    return vertexGemini;
+  }
+  if (mode === "images") return false;
   if (
     mapped.startsWith("text-embedding") ||
     mapped.startsWith("embedding") ||
@@ -1414,7 +1424,7 @@ export function geminiChatStreamSseUnmarshalError(text: string): string | null {
  * Original `gemini.Adaptor.DoResponse` imagen uses `GeminiImageHandler`
  * (`common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody` into
  * `dto.GeminiImageResponse`) even when the client streams. Vertex RequestModeGemini
- * imagen is non-stream only (stream stays hop 423 `GeminiChatStreamHandler`).
+ * imagen is non-stream only (stream stays hop 455 `GeminiChatStreamHandler`).
  * Extra-OK: hop 360 non-imagen `GeminiChatHandler` stays. Extra-OK: hop 447
  * OpenAI `openaiImageJSONAsStreamHandler` stays. Extra-OK: empty `predictions`
  * leftover `no images generated` stays convert after successful Unmarshal.
