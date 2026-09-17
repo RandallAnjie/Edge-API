@@ -901,7 +901,9 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * Extra-OK: OpenRouter enterprise unwrap (`Success=false` /
  * `OpenRouterEnterpriseResponse` unmarshal) also uses this envelope.
  * Extra-OK: chat via-responses `OaiResponsesToChatHandler` unmarshal uses this
- * envelope with type name `dto.OpenAIResponsesResponse`.
+ * envelope with type name `dto.OpenAIResponsesResponse`. Extra-OK: compact
+ * `OaiResponsesCompactionHandler` unmarshal uses this envelope with type name
+ * `dto.OpenAIResponsesCompactionResponse`.
  */
 export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {
   return writeOpenaiHandlerOpenAIError(req, 500, {

@@ -3305,3 +3305,148 @@ test("original leftover OaiResponsesToChatHandler Unmarshal gin.H does not chang
   assert.ok(vendorItemsHop371.some((item) => item.action === "vendor.create"), listed.text);
 });
 
+test("original leftover OaiResponsesCompactionHandler Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(openaiDoResponseUnmarshalMode("responses"), "responses");
+  assert.equal(openaiDoResponseUnmarshalMode("responses", false, "/v1/responses"), "responses");
+  assert.equal(openaiDoResponseUnmarshalMode("responses", false, "/v1/responses/compact"), "responses_compact");
+  assert.equal(openaiDoResponseUnmarshalMode("chat", true, "/v1/responses/compact"), "responses");
+  assert.equal(
+    openaiHandlerResponseUnmarshalError("[]", openaiDoResponseUnmarshalMode("responses", false, "/v1/responses/compact")),
+    "json: cannot unmarshal array into Go value of type dto.OpenAIResponsesCompactionResponse",
+  );
+  assert.equal(
+    openaiHandlerResponseUnmarshalError("[]", openaiDoResponseUnmarshalMode("responses", false, "/v1/responses")),
+    "json: cannot unmarshal array into Go value of type dto.OpenAIResponsesResponse",
+  );
+  assert.equal(openaiHandlerResponseUnmarshalError("null", openaiDoResponseUnmarshalMode("responses", false, "/v1/responses/compact")), null);
+
+  const compactHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/responses/compact", { headers: { "x-oneapi-request-id": "hop372-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(compactHelper.status, 500);
+  assert.deepEqual(await compactHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.100" });
+  await mergeModelRatio(new Store(e.DB), { "hop372-compact": 1, "hop372-plain": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.101" },
+      body: JSON.stringify({
+        name: "hop372-compact",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop372",
+        models: "hop372-compact,hop372-plain",
+        group: "default",
+        status_code_mapping: JSON.stringify({ "500": "503" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const compact = await send(
+      new Request("http://local/v1/responses/compact", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.102", "x-oneapi-request-id": "hop372-compact-unmarshal" },
+        body: JSON.stringify({ model: "hop372-compact" }),
+      }),
+      e,
+    );
+    assert.equal(compact.res.status, 500, compact.text);
+    assert.equal("type" in compact.body && compact.body.type === "error", false, compact.text);
+    const compactErr = compact.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(compactErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(compactErr.message.includes("hop372-compact-unmarshal"), false);
+    assert.equal(compactErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(compactErr.param, "");
+    assert.equal(compactErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const compactArray = await send(
+      new Request("http://local/v1/responses/compact", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.103", "x-oneapi-request-id": "hop372-compact-array" },
+        body: JSON.stringify({ model: "hop372-compact", input: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(compactArray.res.status, 500, compactArray.text);
+    const compactArrayErr = compactArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(
+      compactArrayErr.message,
+      "json: cannot unmarshal array into Go value of type dto.OpenAIResponsesCompactionResponse",
+    );
+    assert.equal(compactArrayErr.message.includes("hop372-compact-array"), false);
+    assert.equal(compactArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(compactArrayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const plainArray = await send(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.104", "x-oneapi-request-id": "hop372-plain-array" },
+        body: JSON.stringify({ model: "hop372-plain", input: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(plainArray.res.status, 500, plainArray.text);
+    const plainArrayErr = plainArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(plainArrayErr.message, "json: cannot unmarshal array into Go value of type dto.OpenAIResponsesResponse");
+    assert.equal(plainArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(plainArrayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover OaiResponsesCompactionHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.105" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.106", "x-oneapi-request-id": "hop372-vendor-create" },
+      body: JSON.stringify({ name: "hop372-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop372-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop372 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop372.some((item) => item.action === "vendor.create"), listed.text);
+});
+

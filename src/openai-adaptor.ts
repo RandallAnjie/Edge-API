@@ -93,9 +93,9 @@ export function usesOpenAIAdaptor(channelType: number): boolean {
 
 /**
  * Original `openai.Adaptor.DoResponse` paths that call `GetOpenAIError`
- * (`OpenaiHandler`, `OpenaiImageHandler`, `OaiResponsesHandler`). Audio /
- * realtime / rerank use other handlers (`RerankHandler` leftover unmarshal
- * is `usesRerankHandlerUnmarshal`).
+ * (`OpenaiHandler`, `OpenaiImageHandler`, `OaiResponsesHandler`,
+ * `OaiResponsesCompactionHandler`). Audio / realtime / rerank use other
+ * handlers (`RerankHandler` leftover unmarshal is `usesRerankHandlerUnmarshal`).
  */
 export function usesOpenaiHandlerGetOpenAIError(mode: string): boolean {
   switch (mode) {
@@ -320,27 +320,37 @@ export function unwrapOpenRouterEnterpriseResponse(
   return { ok: true, body: JSON.stringify(obj.data) };
 }
 
+/** Original `Path2RelayMode` `/v1/responses/compact` prefix → `RelayModeResponsesCompact`. */
+export function isResponsesCompactPath(path: string): boolean {
+  return path.startsWith("/v1/responses/compact");
+}
+
 /** Original `common.Unmarshal` target type name for `openai.Adaptor.DoResponse`. */
 export function openaiHandlerUnmarshalTypeName(mode: string): string {
   if (mode === "images") return "dto.SimpleResponse";
   if (mode === "responses") return "dto.OpenAIResponsesResponse";
+  if (mode === "responses_compact") return "dto.OpenAIResponsesCompactionResponse";
   return "dto.OpenAITextResponse";
 }
 
 /**
- * Original `OpenaiHandler` vs `OaiResponsesToChatHandler` unmarshal target.
- * Chat via-responses unmarshals `dto.OpenAIResponsesResponse` (not chat).
+ * Original `OpenaiHandler` vs `OaiResponsesToChatHandler` vs
+ * `OaiResponsesCompactionHandler` unmarshal target. Chat via-responses
+ * unmarshals `dto.OpenAIResponsesResponse` (not chat). Compact unmarshals
+ * `dto.OpenAIResponsesCompactionResponse` (not hop 365 responses).
  */
-export function openaiDoResponseUnmarshalMode(mode: string, viaResponses = false): string {
-  return viaResponses ? "responses" : mode;
+export function openaiDoResponseUnmarshalMode(mode: string, viaResponses = false, requestPath = ""): string {
+  if (viaResponses) return "responses";
+  if (isResponsesCompactPath(requestPath)) return "responses_compact";
+  return mode;
 }
 
 /**
  * Original `common.Unmarshal` into `OpenAITextResponse` / `SimpleResponse` /
- * `OpenAIResponsesResponse`. Syntax errors match `encoding/json`. JSON `null`
- * succeeds as a zero-value struct. Non-object JSON is
- * `json: cannot unmarshal … into Go value of type dto.*`. Extra-OK: nested
- * field type mismatches are left to convert (original fails).
+ * `OpenAIResponsesResponse` / `OpenAIResponsesCompactionResponse`. Syntax
+ * errors match `encoding/json`. JSON `null` succeeds as a zero-value struct.
+ * Non-object JSON is `json: cannot unmarshal … into Go value of type dto.*`.
+ * Extra-OK: nested field type mismatches are left to convert (original fails).
  */
 export function openaiHandlerResponseUnmarshalError(text: string, mode: string): string | null {
   const parsed = goUnmarshalJSON(text);

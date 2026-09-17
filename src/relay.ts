@@ -2797,7 +2797,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       text = unwrapped.body;
     }
-    const openaiUnmarshalMode = openaiDoResponseUnmarshalMode(mode, viaResponses);
+    const openaiUnmarshalMode = openaiDoResponseUnmarshalMode(mode, viaResponses, path);
     if (usesGeminiChatResponseUnmarshal(channel.type, mapped, mode)) {
       const unmarshalErr = geminiChatResponseUnmarshalError(text);
       if (unmarshalErr) {
