@@ -327,6 +327,48 @@ export function baiduResponseUnmarshalError(text: string, mode: string): string 
 }
 
 /**
+ * Original `coze.cozeChatHandler` `json.Unmarshal` (`NewError`
+ * `ErrorCodeBadResponseBody`, not `NewOpenAIError`). Stream uses
+ * `cozeChatStreamHandler` (log/continue, not leftover gin.H). Create/poll
+ * DoRequest unmarshal stays Extra-OK (not leftover gin.H).
+ */
+export function usesCozeUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_COZE) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "images":
+    case "embeddings":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/** Original `json.Unmarshal` target type name for Coze chat detail. */
+export function cozeUnmarshalTypeName(): string {
+  return "coze.CozeChatDetailResponse";
+}
+
+/**
+ * Original `json.Unmarshal` into `coze.CozeChatDetailResponse`. Syntax errors
+ * match `encoding/json`. JSON `null` succeeds as a zero-value struct.
+ * Extra-OK: nested field type mismatches are left to convert (original fails).
+ */
+export function cozeResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${cozeUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */

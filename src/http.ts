@@ -906,7 +906,8 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * `dto.OpenAIResponsesCompactionResponse`. Extra-OK: Palm / Tencent native /
  * Zhipu v3 `json.Unmarshal` also uses this envelope. Extra-OK: Baidu
  * `baiduHandler` / `baiduEmbeddingHandler` use `NewError` +
- * `writeRelayNewAPIError` instead.
+ * `writeRelayNewAPIError` instead. Extra-OK: Coze `cozeChatHandler` uses
+ * `NewError` + `writeRelayNewAPIError` instead.
  */
 export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {
   return writeOpenaiHandlerOpenAIError(req, 500, {
