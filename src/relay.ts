@@ -110,7 +110,7 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, submodelChatResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesSubmodelChatUnmarshal, usesOllamaUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions, usesMiniMaxTTSUnmarshal, usesReplicateUnmarshal, usesXaiUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesAdvancedCustomClaudeUnmarshal, usesAdvancedCustomClaudeStreamUnmarshal, usesAdvancedCustomGeminiUnmarshal, usesAdvancedCustomGeminiEmbeddingUnmarshal, usesAdvancedCustomGeminiImageUnmarshal, usesAdvancedCustomGeminiStreamUnmarshal, usesCodexUnmarshal, usesOaiChatToResponsesUnmarshal, oaiChatToResponsesResponseUnmarshalError, usesOaiResponsesToChatStreamUnmarshal, oaiResponsesToChatStreamSseUnmarshalError, usesOaiResponsesToChatUnmarshal, oaiResponsesToChatResponseUnmarshalError, usesOaiResponsesToChatBufferedStreamUnmarshal, oaiResponsesToChatBufferedStreamSseUnmarshalError, usesOpenaiImageJSONAsStreamUnmarshal, openaiImageJSONAsStreamResponseUnmarshalError, openaiImageJSONAsStreamSse, usesClaudeHandlerUnmarshal, usesClaudeStreamUnmarshal, usesAwsClaudeUnmarshal, usesAwsClaudeStreamUnmarshal, usesAwsAkskClaudeUnmarshal, usesAwsAkskClaudeStreamUnmarshal, usesVertexClaudeUnmarshal, usesVertexClaudeStreamUnmarshal, usesMoonshotClaudeUnmarshal, usesMoonshotClaudeStreamUnmarshal, usesMiniMaxClaudeUnmarshal, usesMiniMaxClaudeStreamUnmarshal, usesDeepseekClaudeUnmarshal, usesDeepseekClaudeStreamUnmarshal, usesZhipuV4ClaudeUnmarshal, usesZhipuV4ClaudeStreamUnmarshal, usesNewApiClaudeUnmarshal, usesNewApiClaudeStreamUnmarshal, usesSub2apiClaudeUnmarshal, usesSub2apiClaudeStreamUnmarshal, usesOllamaClaudeUnmarshal, usesOllamaClaudeStreamUnmarshal, usesOllamaStreamUnmarshal, ollamaStreamUnmarshalError, usesAliClaudeUnmarshal, usesAliClaudeStreamUnmarshal, usesVolcClaudeUnmarshal, usesVolcClaudeStreamUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, advancedCustomClaudeResponseUnmarshalError, advancedCustomGeminiResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, claudeStreamSseUnmarshalError, awsClaudeResponseUnmarshalError, awsAkskClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "./openai-adaptor.js";
+import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, submodelChatResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesSubmodelChatUnmarshal, usesOllamaUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions, usesMiniMaxTTSUnmarshal, usesReplicateUnmarshal, usesXaiUnmarshal, usesXaiImageUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesAdvancedCustomClaudeUnmarshal, usesAdvancedCustomClaudeStreamUnmarshal, usesAdvancedCustomGeminiUnmarshal, usesAdvancedCustomGeminiEmbeddingUnmarshal, usesAdvancedCustomGeminiImageUnmarshal, usesAdvancedCustomGeminiStreamUnmarshal, usesCodexUnmarshal, usesOaiChatToResponsesUnmarshal, oaiChatToResponsesResponseUnmarshalError, usesOaiResponsesToChatStreamUnmarshal, oaiResponsesToChatStreamSseUnmarshalError, usesOaiResponsesToChatUnmarshal, oaiResponsesToChatResponseUnmarshalError, usesOaiResponsesToChatBufferedStreamUnmarshal, oaiResponsesToChatBufferedStreamSseUnmarshalError, usesOpenaiImageJSONAsStreamUnmarshal, openaiImageJSONAsStreamResponseUnmarshalError, openaiImageJSONAsStreamSse, usesClaudeHandlerUnmarshal, usesClaudeStreamUnmarshal, usesAwsClaudeUnmarshal, usesAwsClaudeStreamUnmarshal, usesAwsAkskClaudeUnmarshal, usesAwsAkskClaudeStreamUnmarshal, usesVertexClaudeUnmarshal, usesVertexClaudeStreamUnmarshal, usesMoonshotClaudeUnmarshal, usesMoonshotClaudeStreamUnmarshal, usesMiniMaxClaudeUnmarshal, usesMiniMaxClaudeStreamUnmarshal, usesDeepseekClaudeUnmarshal, usesDeepseekClaudeStreamUnmarshal, usesZhipuV4ClaudeUnmarshal, usesZhipuV4ClaudeStreamUnmarshal, usesNewApiClaudeUnmarshal, usesNewApiClaudeStreamUnmarshal, usesSub2apiClaudeUnmarshal, usesSub2apiClaudeStreamUnmarshal, usesOllamaClaudeUnmarshal, usesOllamaClaudeStreamUnmarshal, usesOllamaStreamUnmarshal, ollamaStreamUnmarshalError, usesAliClaudeUnmarshal, usesAliClaudeStreamUnmarshal, usesVolcClaudeUnmarshal, usesVolcClaudeStreamUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, advancedCustomClaudeResponseUnmarshalError, advancedCustomGeminiResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, claudeStreamSseUnmarshalError, awsClaudeResponseUnmarshalError, awsAkskClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import {
@@ -2782,6 +2782,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         // Original openaiImageJSONAsStreamHandler wraps JSON as image SSE after
         // Unmarshal (hop 474). Extra-OK: hop 447 leftover Unmarshal stays above.
+        // Extra-OK: hop 475 xAI OpenaiImageHandler stream JSON write stays.
         let parsedStream: Record<string, unknown> = {};
         try {
           const v = JSON.parse(streamText) as unknown;
@@ -2820,6 +2821,51 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             "cache-control": "no-cache",
             "x-oneapi-request-id": rid,
           },
+        });
+      }
+      if (usesXaiImageUnmarshal(channel.type, mode)) {
+        const streamText = await res.text();
+        const unmarshalErr = openaiHandlerResponseUnmarshalError(streamText, "images");
+        if (unmarshalErr) {
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
+          return writeOpenaiHandlerUnmarshalError(opts.req, unmarshalErr);
+        }
+        // Original xai.Adaptor.DoResponse images always OpenaiImageHandler even
+        // when the client streams (hop 475). Extra-OK: hop 474 OpenAI adaptor
+        // wrap stays above. Extra-OK: hop 365 non-stream OpenaiImageHandler stays.
+        let parsedStream: Record<string, unknown> = {};
+        try {
+          const v = JSON.parse(streamText) as unknown;
+          if (v && typeof v === "object" && !Array.isArray(v)) parsedStream = v as Record<string, unknown>;
+        } catch {
+          parsedStream = {};
+        }
+        const oai = getOpenAIError(parsedStream.error);
+        if (oai && oai.type) {
+          await settle(
+            store,
+            auth,
+            channel,
+            model,
+            promptEst,
+            0,
+            useTime,
+            true,
+            ip,
+            rid,
+            false,
+            (oai.message || "openai_error").slice(0, 2000),
+            extra,
+          );
+          return writeOpenaiHandlerOpenAIError(opts.req, res.status, oai);
+        }
+        extra.actualImageCount = openaiImageDataCount(parsedStream);
+        const usage = usageFromOpenAI(parsedStream);
+        attachSettleUsage(extra, usage);
+        await settle(store, auth, channel, model, usage.prompt || promptEst, usage.completion, useTime, true, ip, rid, true, "stream", extra);
+        return new Response(streamText, {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8", "x-oneapi-request-id": rid },
         });
       }
       if (usesGeminiImageUnmarshal(channel.type, mapped, opts.stream, mode)) {
@@ -3368,6 +3414,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         return writeRelayNewAPIError(opts.req, 500, unmarshalErr, ERROR_CODE_BAD_RESPONSE_BODY);
       }
     }
+    if (usesXaiImageUnmarshal(channel.type, mode)) {
+      const unmarshalErr = openaiHandlerResponseUnmarshalError(text, "images");
+      if (unmarshalErr) {
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
+        return writeOpenaiHandlerUnmarshalError(opts.req, unmarshalErr);
+      }
+    }
     if (usesJimengUnmarshal(channel.type, mode)) {
       const unmarshalErr = jimengResponseUnmarshalError(text);
       if (unmarshalErr) {
@@ -3764,6 +3817,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         parsed = {};
       }
       if (
+        usesXaiImageUnmarshal(channel.type, mode) &&
+        (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
+      ) {
+        parsed = {};
+      }
+      if (
         usesJimengUnmarshal(channel.type, mode) &&
         (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
       ) {
@@ -4086,6 +4145,27 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
     }
     if (usesOpenAIAdaptor(channel.type) && usesOpenaiHandlerGetOpenAIError(openaiUnmarshalMode)) {
+      const oai = getOpenAIError(parsed.error);
+      if (oai && oai.type) {
+        await settle(
+          store,
+          auth,
+          channel,
+          model,
+          promptEst,
+          0,
+          useTime,
+          false,
+          ip,
+          rid,
+          false,
+          (oai.message || "openai_error").slice(0, 2000),
+          extra,
+        );
+        return writeOpenaiHandlerOpenAIError(opts.req, res.status, oai);
+      }
+    }
+    if (usesXaiImageUnmarshal(channel.type, mode)) {
       const oai = getOpenAIError(parsed.error);
       if (oai && oai.type) {
         await settle(

@@ -495,8 +495,9 @@ export function cloudflareResponseUnmarshalError(text: string, mode: string): st
  * Original `xai.xAIHandler` `common.Unmarshal` (`NewError`
  * `ErrorCodeBadResponseBody`, not `NewOpenAIError`). Stream uses
  * `xAIStreamHandler` (log/continue, not leftover gin.H). Images uses
- * `openai.OpenaiImageHandler`. Responses uses `openai.OaiResponsesHandler`.
- * Embeddings / audio Convert is `"not available"` before DoResponse.
+ * `openai.OpenaiImageHandler` (hop 475 leftover Unmarshal / stream JSON write).
+ * Responses uses `openai.OaiResponsesHandler`. Embeddings / audio Convert is
+ * `"not available"` before DoResponse.
  */
 export function usesXaiUnmarshal(channelType: number, mode: string): boolean {
   if (channelType !== CHANNEL_TYPE_XAI) return false;
@@ -533,6 +534,21 @@ export function xaiResponseUnmarshalError(text: string): string | null {
     return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${xaiUnmarshalTypeName()}`;
   }
   return null;
+}
+
+/**
+ * Original `xai.Adaptor.DoResponse` images always `openai.OpenaiImageHandler`
+ * regardless of `IsStream` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody` into `dto.SimpleResponse`, then
+ * `IOCopyBytesGracefully` JSON). Chat stays `xAIHandler` (hop 379). Responses
+ * stay `OaiResponsesHandler`. Embeddings / audio Convert `"not available"`
+ * before DoResponse (hop 350). Extra-OK: hop 365 OpenAI adaptor non-stream
+ * `OpenaiImageHandler` leftover gin.H stays. Extra-OK: hop 447 leftover
+ * Unmarshal / hop 474 `openaiImageJSONAsStreamHandler` wrap stay
+ * (`usesOpenAIAdaptor` only). Extra-OK: hop 379 xAI chat leftover stays.
+ */
+export function usesXaiImageUnmarshal(channelType: number, mode: string): boolean {
+  return channelType === CHANNEL_TYPE_XAI && mode === "images";
 }
 
 /**
@@ -2232,7 +2248,8 @@ export function oaiResponsesToChatBufferedStreamSseUnmarshalError(text: string):
  * (not leftover gin.H). Extra-OK: hop 365 non-stream `OpenaiImageHandler`
  * leftover gin.H stays. Extra-OK: hop 446 via-responses buffered stream stays.
  * Extra-OK: hop 474 wraps JSON `data[]` as `image_generation.completed` SSE after
- * successful Unmarshal (not leftover gin.H).
+ * successful Unmarshal (not leftover gin.H). Extra-OK: hop 475 xAI
+ * `OpenaiImageHandler` leftover Unmarshal / stream JSON write stays.
  */
 export function usesOpenaiImageJSONAsStreamUnmarshal(
   channelType: number,
@@ -2261,6 +2278,7 @@ export function openaiImageJSONAsStreamResponseUnmarshalError(text: string): str
  * not leftover gin.H and not chat SSE. Extra-OK: hop 447 leftover Unmarshal stays.
  * Extra-OK: hop 365 non-stream `OpenaiImageHandler` leftover gin.H stays.
  * Extra-OK: hop 472 GEMINI `GeminiImageHandler` stream JSON write stays.
+ * Extra-OK: hop 475 xAI `OpenaiImageHandler` stream JSON write stays.
  */
 export function openaiImageJSONAsStreamSse(
   parsed: Record<string, unknown>,
