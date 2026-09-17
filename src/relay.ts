@@ -109,7 +109,7 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions, usesXaiUnmarshal, xaiResponseUnmarshalError } from "./openai-adaptor.js";
+import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions, usesXaiUnmarshal, xaiResponseUnmarshalError } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import {
@@ -2896,6 +2896,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         return writeOpenaiHandlerUnmarshalError(opts.req, unmarshalErr);
       }
     }
+    if (usesOllamaUnmarshal(channel.type, mode) && clientFormat === "openai") {
+      const unmarshalErr = ollamaResponseUnmarshalError(text, mode);
+      if (unmarshalErr) {
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
+        return writeOpenaiHandlerUnmarshalError(opts.req, unmarshalErr);
+      }
+    }
     let parsed: Record<string, unknown> = {};
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
@@ -2977,6 +2984,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       if (
         usesJimengUnmarshal(channel.type, mode) &&
+        (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
+      ) {
+        parsed = {};
+      }
+      if (
+        usesOllamaUnmarshal(channel.type, mode) &&
+        clientFormat === "openai" &&
         (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
       ) {
         parsed = {};

@@ -913,7 +913,8 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * Extra-OK: Cloudflare `cfHandler` / `cfSTTHandler` use `NewError` +
  * `writeRelayNewAPIError` instead. Extra-OK: xAI `xAIHandler` uses `NewError` +
  * `writeRelayNewAPIError` instead. Extra-OK: Jimeng `jimengImageHandler`
- * unmarshal uses this envelope.
+ * unmarshal uses this envelope. Extra-OK: Ollama `ollamaEmbeddingHandler` /
+ * `ollamaChatHandler` unmarshal also uses this envelope.
  */
 export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {
   return writeOpenaiHandlerOpenAIError(req, 500, {

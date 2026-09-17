@@ -559,6 +559,75 @@ export function jimengResponseUnmarshalError(text: string): string | null {
 }
 
 /**
+ * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
+ * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
+ * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
+ * `openai.Adaptor.DoResponse`. Claude format uses `claude.Adaptor.DoResponse`.
+ * Images / audio Convert is `"not implemented"` before DoResponse.
+ */
+export function usesOllamaUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_OLLAMA) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "images":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/** Original `common.Unmarshal` target type name for Ollama embeddings / chat. */
+export function ollamaUnmarshalTypeName(mode: string): string {
+  if (mode === "embeddings" || mode === "engines_embeddings") {
+    return "ollama.OllamaEmbeddingResponse";
+  }
+  return "ollama.ollamaChatStreamChunk";
+}
+
+function ollamaUnmarshalIntoType(text: string, mode: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${ollamaUnmarshalTypeName(mode)}`;
+  }
+  return null;
+}
+
+/**
+ * Original `common.Unmarshal` into `ollama.OllamaEmbeddingResponse` (whole
+ * body) or `ollama.ollamaChatStreamChunk` (`ollamaChatHandler` line loop, then
+ * whole-body fallback when `!parsedAny`). Syntax errors match `encoding/json`.
+ * JSON `null` succeeds as a zero-value struct. Extra-OK: nested field type
+ * mismatches are left to convert (original fails). Extra-OK: chat NDJSON with
+ * at least one valid line stays convert (`rawText`), matching original
+ * `parsedAny`.
+ */
+export function ollamaResponseUnmarshalError(text: string, mode: string): string | null {
+  if (mode === "embeddings" || mode === "engines_embeddings") {
+    return ollamaUnmarshalIntoType(text, mode);
+  }
+  const lines = text.split("\n");
+  let parsedAny = false;
+  for (const rawLine of lines) {
+    const ln = rawLine.trim();
+    if (!ln) continue;
+    const lineErr = ollamaUnmarshalIntoType(ln, mode);
+    if (lineErr) {
+      if (lines.length === 1) return lineErr;
+      continue;
+    }
+    parsedAny = true;
+  }
+  if (!parsedAny) return ollamaUnmarshalIntoType(text, mode);
+  return null;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */

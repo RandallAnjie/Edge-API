@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesXaiUnmarshal, xaiResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesXaiUnmarshal, xaiResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_BAIDU,
@@ -43,6 +43,7 @@ import {
   CHANNEL_TYPE_JINA,
   CHANNEL_TYPE_MINIMAX,
   CHANNEL_TYPE_MOKA,
+  CHANNEL_TYPE_OLLAMA,
   CHANNEL_TYPE_OPENAI,
   CHANNEL_TYPE_OPENROUTER,
   CHANNEL_TYPE_PALM,
@@ -4736,6 +4737,191 @@ test("original leftover Jimeng Unmarshal gin.H does not change AUTH StatusText o
   );
   const vendorItemsHop380 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop380.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Ollama Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(usesOllamaUnmarshal(CHANNEL_TYPE_OLLAMA, "chat"), true);
+  assert.equal(usesOllamaUnmarshal(CHANNEL_TYPE_OLLAMA, "completions"), true);
+  assert.equal(usesOllamaUnmarshal(CHANNEL_TYPE_OLLAMA, "embeddings"), true);
+  assert.equal(usesOllamaUnmarshal(CHANNEL_TYPE_OLLAMA, "images"), false);
+  assert.equal(usesOllamaUnmarshal(CHANNEL_TYPE_OLLAMA, "responses"), false);
+  assert.equal(usesOllamaUnmarshal(CHANNEL_TYPE_OLLAMA, "audio_speech"), false);
+  assert.equal(usesOllamaUnmarshal(CHANNEL_TYPE_OPENAI, "chat"), false);
+  assert.equal(ollamaResponseUnmarshalError("not-json", "chat"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    ollamaResponseUnmarshalError("[]", "chat"),
+    "json: cannot unmarshal array into Go value of type ollama.ollamaChatStreamChunk",
+  );
+  assert.equal(
+    ollamaResponseUnmarshalError("[]", "embeddings"),
+    "json: cannot unmarshal array into Go value of type ollama.OllamaEmbeddingResponse",
+  );
+  assert.equal(ollamaResponseUnmarshalError("null", "chat"), null);
+  assert.equal(ollamaResponseUnmarshalError("null", "embeddings"), null);
+  assert.equal(ollamaResponseUnmarshalError("{}", "chat"), null);
+  assert.equal(
+    ollamaResponseUnmarshalError('{"message":{"content":"a"}}\n{"done":true}', "chat"),
+    null,
+  );
+
+  const chatHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop381-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(chatHelper.status, 500);
+  assert.deepEqual(await chatHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.167" });
+  await mergeModelRatio(new Store(e.DB), { "hop381-llama": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ollama = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.168" },
+      body: JSON.stringify({
+        name: "hop381-ollama",
+        type: CHANNEL_TYPE_OLLAMA,
+        key: "ollama-hop381",
+        models: "hop381-llama",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ollama.body.success, true, ollama.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const chatHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.169", "x-oneapi-request-id": "hop381-ollama-unmarshal" },
+        body: JSON.stringify({ model: "hop381-llama", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatHit.res.status, 500, chatHit.text);
+    assert.equal("type" in chatHit.body && chatHit.body.type === "error", false, chatHit.text);
+    const chatErr = chatHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(chatErr.message.includes("hop381-ollama-unmarshal"), false);
+    assert.equal(chatErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const chatArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.170", "x-oneapi-request-id": "hop381-ollama-array" },
+        body: JSON.stringify({ model: "hop381-llama", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatArray.res.status, 500, chatArray.text);
+    const chatArrayErr = chatArray.body.error as { message: string };
+    assert.equal(
+      chatArrayErr.message,
+      "json: cannot unmarshal array into Go value of type ollama.ollamaChatStreamChunk",
+    );
+    assert.equal(chatArrayErr.message.includes("hop381-ollama-array"), false);
+
+    const embedHit = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.171", "x-oneapi-request-id": "hop381-ollama-embed" },
+        body: JSON.stringify({ model: "hop381-llama", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(embedHit.res.status, 500, embedHit.text);
+    const embedErr = embedHit.body.error as { message: string; type: string; code: string };
+    assert.equal(embedErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(embedErr.message.includes("hop381-ollama-embed"), false);
+    assert.equal(embedErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(embedErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const embedArray = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.172", "x-oneapi-request-id": "hop381-ollama-embed-array" },
+        body: JSON.stringify({ model: "hop381-llama", input: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(embedArray.res.status, 500, embedArray.text);
+    const embedArrayErr = embedArray.body.error as { message: string };
+    assert.equal(
+      embedArrayErr.message,
+      "json: cannot unmarshal array into Go value of type ollama.OllamaEmbeddingResponse",
+    );
+    assert.equal(embedArrayErr.message.includes("hop381-ollama-embed-array"), false);
+
+    const completionsHit = await send(
+      new Request("http://local/v1/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.173", "x-oneapi-request-id": "hop381-ollama-completions" },
+        body: JSON.stringify({ model: "hop381-llama", prompt: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(completionsHit.res.status, 500, completionsHit.text);
+    const completionsErr = completionsHit.body.error as { message: string; type: string };
+    assert.equal(completionsErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(completionsErr.message.includes("hop381-ollama-completions"), false);
+    assert.equal(completionsErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Ollama Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.174" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.175", "x-oneapi-request-id": "hop381-vendor-create" },
+      body: JSON.stringify({ name: "hop381-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop381-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop381 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop381.some((item) => item.action === "vendor.create"), listed.text);
 });
 
 
