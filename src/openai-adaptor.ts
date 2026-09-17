@@ -2,7 +2,7 @@
 
 import { advancedCustomOpenaiShapedInbound } from "./advanced-custom-response.js";
 import { geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError } from "./gemini-response.js";
-import { CONVERTER_CHAT_TO_CLAUDE, CONVERTER_CHAT_TO_GEMINI, CONVERTER_NONE, CONVERTER_RESPONSES_TO_CHAT, CONVERTER_RESPONSES_TO_GEMINI } from "./advanced-custom-convert.js";
+import { CONVERTER_CHAT_TO_CLAUDE, CONVERTER_CHAT_TO_GEMINI, CONVERTER_CHAT_TO_RESPONSES, CONVERTER_NONE, CONVERTER_RESPONSES_TO_CHAT, CONVERTER_RESPONSES_TO_GEMINI } from "./advanced-custom-convert.js";
 import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { supportsAliAnthropicMessages } from "./ali-convert.js";
@@ -2021,6 +2021,59 @@ export function usesOaiChatToResponsesUnmarshal(
  */
 export function oaiChatToResponsesResponseUnmarshalError(text: string): string | null {
   return openaiHandlerResponseUnmarshalError(text, "chat");
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` ConverterOpenAIChatToOpenAIResponses
+ * stream uses `OaiResponsesToChatStreamHandler` (`UnmarshalJsonStr` into
+ * `dto.ResponsesStreamResponse` then `sr.Error` leftover `NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Not `FailResponsesStream` (target is Chat).
+ * Extra-OK: hop 442/443 responses-to-chat stay. Extra-OK: hop 438 Ollama
+ * OpenAI stream stays. Extra-OK: replica buffers leftover gin.H before SSE
+ * headers (original `SetEventStreamHeaders` runs first).
+ */
+export function usesOaiResponsesToChatStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses" || mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  return String(converter || CONVERTER_NONE).trim() === CONVERTER_CHAT_TO_RESPONSES;
+}
+
+/** Original `OaiResponsesToChatStreamHandler` `UnmarshalJsonStr` target type. */
+export function oaiResponsesToChatStreamUnmarshalTypeName(): string {
+  return "dto.ResponsesStreamResponse";
+}
+
+/**
+ * Original `OaiResponsesToChatStreamHandler` `UnmarshalJsonStr` into
+ * `dto.ResponsesStreamResponse` for the first invalid SSE `data:` payload.
+ * Syntax errors match `encoding/json`. JSON `null` succeeds as a zero-value
+ * struct.
+ */
+export function oaiResponsesStreamEventUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${oaiResponsesToChatStreamUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
+ * Original `OaiResponsesToChatStreamHandler` first invalid SSE `data:` payload.
+ */
+export function oaiResponsesToChatStreamSseUnmarshalError(text: string): string | null {
+  for (const payload of claudeStreamSseDataPayloads(text)) {
+    const err = oaiResponsesStreamEventUnmarshalError(payload);
+    if (err) return err;
+  }
+  return null;
 }
 
 /** Original `OaiChatToResponsesStreamHandler` `UnmarshalJsonStr` target type. */
