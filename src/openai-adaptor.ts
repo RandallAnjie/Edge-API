@@ -142,6 +142,37 @@ export function rerankHandlerResponseUnmarshalError(text: string, channelType: n
   return null;
 }
 
+/**
+ * Original `ali.RerankHandler` / `siliconflowRerankHandler` `json.Unmarshal`
+ * (`NewOpenAIError` `ErrorCodeBadResponseBody`). Cohere uses `NewError`.
+ */
+export function usesAliSiliconflowRerankUnmarshal(channelType: number, mode: string): boolean {
+  if (mode !== "rerank") return false;
+  return channelType === CHANNEL_TYPE_ALI || channelType === CHANNEL_TYPE_SILICONFLOW;
+}
+
+/** Original `json.Unmarshal` target type name for Ali / Siliconflow rerank. */
+export function aliSiliconflowRerankUnmarshalTypeName(channelType: number): string {
+  if (channelType === CHANNEL_TYPE_SILICONFLOW) return "siliconflow.SFRerankResponse";
+  return "ali.AliRerankResponse";
+}
+
+/**
+ * Original `json.Unmarshal` into `ali.AliRerankResponse` /
+ * `siliconflow.SFRerankResponse`. Syntax errors match `encoding/json`. JSON
+ * `null` succeeds as a zero-value struct. Extra-OK: nested field type
+ * mismatches are left to convert (original fails).
+ */
+export function aliSiliconflowRerankResponseUnmarshalError(text: string, channelType: number): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${aliSiliconflowRerankUnmarshalTypeName(channelType)}`;
+  }
+  return null;
+}
+
 /** Original `common.Unmarshal` target type name for `openai.Adaptor.DoResponse`. */
 export function openaiHandlerUnmarshalTypeName(mode: string): string {
   if (mode === "images") return "dto.SimpleResponse";

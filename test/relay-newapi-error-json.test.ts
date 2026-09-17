@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, usesAliSiliconflowRerankUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_COHERE,
@@ -2398,5 +2398,170 @@ test("original leftover RerankHandler Unmarshal gin.H does not change AUTH Statu
   );
   const vendorItemsHop366 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop366.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Ali/Siliconflow rerank Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(usesAliSiliconflowRerankUnmarshal(CHANNEL_TYPE_ALI, "rerank"), true);
+  assert.equal(usesAliSiliconflowRerankUnmarshal(CHANNEL_TYPE_SILICONFLOW, "rerank"), true);
+  assert.equal(usesAliSiliconflowRerankUnmarshal(CHANNEL_TYPE_OPENAI, "rerank"), false);
+  assert.equal(usesAliSiliconflowRerankUnmarshal(CHANNEL_TYPE_COHERE, "rerank"), false);
+  assert.equal(usesAliSiliconflowRerankUnmarshal(CHANNEL_TYPE_ALI, "chat"), false);
+  assert.equal(aliSiliconflowRerankResponseUnmarshalError("not-json", CHANNEL_TYPE_ALI), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    aliSiliconflowRerankResponseUnmarshalError("[]", CHANNEL_TYPE_ALI),
+    "json: cannot unmarshal array into Go value of type ali.AliRerankResponse",
+  );
+  assert.equal(
+    aliSiliconflowRerankResponseUnmarshalError("[]", CHANNEL_TYPE_SILICONFLOW),
+    "json: cannot unmarshal array into Go value of type siliconflow.SFRerankResponse",
+  );
+  assert.equal(aliSiliconflowRerankResponseUnmarshalError("null", CHANNEL_TYPE_ALI), null);
+  assert.equal(aliSiliconflowRerankResponseUnmarshalError("{}", CHANNEL_TYPE_ALI), null);
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.40" });
+  await mergeModelRatio(new Store(e.DB), {
+    "gte-rerank-v2": 1,
+    "BAAI/bge-reranker-v2-m3": 1,
+  });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const aliCh = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.41" },
+      body: JSON.stringify({
+        name: "hop367-ali-rerank",
+        type: CHANNEL_TYPE_ALI,
+        key: "sk-hop367-ali",
+        models: "gte-rerank-v2",
+        group: "default",
+        status_code_mapping: JSON.stringify({ "500": "503" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(aliCh.body.success, true, aliCh.text);
+  const sfCh = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.42" },
+      body: JSON.stringify({
+        name: "hop367-sf-rerank",
+        type: CHANNEL_TYPE_SILICONFLOW,
+        key: "sf-hop367",
+        models: "BAAI/bge-reranker-v2-m3",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(sfCh.body.success, true, sfCh.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const aliRerank = await send(
+      new Request("http://local/v1/rerank", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.43", "x-oneapi-request-id": "hop367-ali-unmarshal" },
+        body: JSON.stringify({ model: "gte-rerank-v2", query: "hi", documents: ["a"] }),
+      }),
+      e,
+    );
+    assert.equal(aliRerank.res.status, 500, aliRerank.text);
+    assert.equal("type" in aliRerank.body && aliRerank.body.type === "error", false, aliRerank.text);
+    const aliErr = aliRerank.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(aliErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(aliErr.message.includes("hop367-ali-unmarshal"), false);
+    assert.equal(aliErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(aliErr.param, "");
+    assert.equal(aliErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const aliArray = await send(
+      new Request("http://local/v1/rerank", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.44", "x-oneapi-request-id": "hop367-ali-array" },
+        body: JSON.stringify({ model: "gte-rerank-v2", query: "as-array", documents: ["a"] }),
+      }),
+      e,
+    );
+    assert.equal(aliArray.res.status, 500, aliArray.text);
+    const aliArrayErr = aliArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(aliArrayErr.message, "json: cannot unmarshal array into Go value of type ali.AliRerankResponse");
+    assert.equal(aliArrayErr.message.includes("hop367-ali-array"), false);
+    assert.equal(aliArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(aliArrayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const sfRerank = await send(
+      new Request("http://local/v1/rerank", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.45", "x-oneapi-request-id": "hop367-sf-unmarshal" },
+        body: JSON.stringify({ model: "BAAI/bge-reranker-v2-m3", query: "hi", documents: ["a"] }),
+      }),
+      e,
+    );
+    assert.equal(sfRerank.res.status, 500, sfRerank.text);
+    const sfErr = sfRerank.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(sfErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(sfErr.message.includes("hop367-sf-unmarshal"), false);
+    assert.equal(sfErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(sfErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const sfArray = await send(
+      new Request("http://local/v1/rerank", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.46", "x-oneapi-request-id": "hop367-sf-array" },
+        body: JSON.stringify({ model: "BAAI/bge-reranker-v2-m3", query: "as-array", documents: ["a"] }),
+      }),
+      e,
+    );
+    assert.equal(sfArray.res.status, 500, sfArray.text);
+    const sfArrayErr = sfArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(sfArrayErr.message, "json: cannot unmarshal array into Go value of type siliconflow.SFRerankResponse");
+    assert.equal(sfArrayErr.message.includes("hop367-sf-array"), false);
+    assert.equal(sfArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(sfArrayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Ali/Siliconflow rerank Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.47" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.48", "x-oneapi-request-id": "hop367-vendor-create" },
+      body: JSON.stringify({ name: "hop367-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop367-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop367 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop367.some((item) => item.action === "vendor.create"), listed.text);
 });
 
