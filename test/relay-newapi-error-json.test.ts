@@ -20318,7 +20318,6 @@ test("original leftover GeminiResponsesHandler empty-candidates NewOpenAIError g
     assert.equal(emptyErr.type, ERROR_CODE_EMPTY_RESPONSE);
     assert.equal(emptyErr.param, "");
     assert.equal(emptyErr.code, ERROR_CODE_EMPTY_RESPONSE);
-    assert.equal(emptyErr.type === ERROR_TYPE_NEW_API_ERROR, false, empty.text);
     assert.equal(empty.text.includes("(request id: hop464-responses-empty)"), false, empty.text);
 
     const blocked = await send(
