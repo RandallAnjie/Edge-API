@@ -1040,7 +1040,7 @@ async function convertInbound(
       }
       return openaiFromAnthropicResponse(upstreamJson, model);
     }
-    if (model.startsWith("imagen")) return openaiFromImagenResponse(upstreamJson, { created: opts.created });
+    if (model.startsWith("imagen") && opts.relayMode !== "responses") return openaiFromImagenResponse(upstreamJson, { created: opts.created });
     if (mode === "opensource") return upstreamJson;
     return openaiFromGeminiResponse(upstreamJson, model, {
       id: opts.requestId ? `chatcmpl-${opts.requestId}` : undefined,
@@ -1073,7 +1073,7 @@ async function convertInbound(
     return openaiFromAnthropicResponse(upstreamJson, model);
   }
   if (client === "openai" && kind === "gemini") {
-    if (model.startsWith("imagen")) return openaiFromImagenResponse(upstreamJson, { created: opts.created });
+    if (model.startsWith("imagen") && opts.relayMode !== "responses") return openaiFromImagenResponse(upstreamJson, { created: opts.created });
     if (opts.relayMode === "embeddings") {
       return openaiFromGeminiEmbedding(upstreamJson, model, { fallbackPromptTokens: opts.fallbackPromptTokens });
     }
@@ -1290,7 +1290,7 @@ async function openaiClientFromProvider(
     kind === "anthropic" ||
     (opts.channelType === CHANNEL_TYPE_AWS && !isNovaModel(mapped)) ||
     vertexMode === "claude";
-  const useGemini = (kind === "gemini" || opts.channelType === CHANNEL_TYPE_VERTEX) && vertexMode !== "claude" && !mapped.startsWith("imagen") && vertexMode !== "opensource";
+  const useGemini = (kind === "gemini" || opts.channelType === CHANNEL_TYPE_VERTEX) && vertexMode !== "claude" && (!mapped.startsWith("imagen") || opts.relayMode === "responses") && vertexMode !== "opensource";
   if (opts.channelType === CHANNEL_TYPE_AWS && isNovaModel(mapped)) {
     let parsed: Record<string, unknown> = {};
     try {
@@ -1301,7 +1301,7 @@ async function openaiClientFromProvider(
     const json = openaiFromNovaResponse(parsed, mapped, { id: `chatcmpl-${opts.requestId}` });
     return { body: stream ? sseFromOpenAIChatCompletion(json) : JSON.stringify(json), usageBody: json };
   }
-  if (mapped.startsWith("imagen") && (opts.channelType === CHANNEL_TYPE_VERTEX || opts.channelType === CHANNEL_TYPE_GEMINI || kind === "gemini")) {
+  if (mapped.startsWith("imagen") && opts.relayMode !== "responses" && (opts.channelType === CHANNEL_TYPE_VERTEX || opts.channelType === CHANNEL_TYPE_GEMINI || kind === "gemini")) {
     let parsed: Record<string, unknown> = {};
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
