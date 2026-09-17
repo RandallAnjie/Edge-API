@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, mokaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesMokaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesXaiUnmarshal, xaiResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesXaiUnmarshal, xaiResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_BAIDU,
@@ -4607,6 +4607,135 @@ test("original leftover xAI Unmarshal gin.H does not change AUTH StatusText or h
   );
   const vendorItemsHop379 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop379.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Jimeng Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(usesJimengUnmarshal(CHANNEL_TYPE_JIMENG, "images"), true);
+  assert.equal(usesJimengUnmarshal(CHANNEL_TYPE_JIMENG, "chat"), false);
+  assert.equal(usesJimengUnmarshal(CHANNEL_TYPE_JIMENG, "completions"), false);
+  assert.equal(usesJimengUnmarshal(CHANNEL_TYPE_JIMENG, "embeddings"), false);
+  assert.equal(usesJimengUnmarshal(CHANNEL_TYPE_OPENAI, "images"), false);
+  assert.equal(jimengResponseUnmarshalError("not-json"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    jimengResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type jimeng.ImageResponse",
+  );
+  assert.equal(jimengResponseUnmarshalError("null"), null);
+  assert.equal(jimengResponseUnmarshalError("{}"), null);
+
+  const imageHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/images/generations", { headers: { "x-oneapi-request-id": "hop380-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(imageHelper.status, 500);
+  assert.deepEqual(await imageHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.161" });
+  await mergeModelRatio(new Store(e.DB), { "hop380-jimeng": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const jimeng = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.162" },
+      body: JSON.stringify({
+        name: "hop380-jimeng",
+        type: CHANNEL_TYPE_JIMENG,
+        key: "ak|sk-hop380",
+        models: "hop380-jimeng",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(jimeng.body.success, true, jimeng.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const imageHit = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.163", "x-oneapi-request-id": "hop380-jimeng-unmarshal" },
+        body: JSON.stringify({ model: "hop380-jimeng", prompt: "a mountain" }),
+      }),
+      e,
+    );
+    assert.equal(imageHit.res.status, 500, imageHit.text);
+    assert.equal("type" in imageHit.body && imageHit.body.type === "error", false, imageHit.text);
+    const imageErr = imageHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(imageErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(imageErr.message.includes("hop380-jimeng-unmarshal"), false);
+    assert.equal(imageErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(imageErr.param, "");
+    assert.equal(imageErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const imageArray = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.164", "x-oneapi-request-id": "hop380-jimeng-array" },
+        body: JSON.stringify({ model: "hop380-jimeng", prompt: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(imageArray.res.status, 500, imageArray.text);
+    const imageArrayErr = imageArray.body.error as { message: string };
+    assert.equal(
+      imageArrayErr.message,
+      "json: cannot unmarshal array into Go value of type jimeng.ImageResponse",
+    );
+    assert.equal(imageArrayErr.message.includes("hop380-jimeng-array"), false);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Jimeng Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.165" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.166", "x-oneapi-request-id": "hop380-vendor-create" },
+      body: JSON.stringify({ name: "hop380-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop380-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop380 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop380.some((item) => item.action === "vendor.create"), listed.text);
 });
 
 
