@@ -1434,6 +1434,29 @@ export function sub2apiResponseUnmarshalError(text: string, mode = "chat"): stri
 }
 
 /**
+ * Original sub2api Claude-format `sub2api.Adaptor` embeds `newapi.Adaptor`,
+ * so `DoResponse` delegates to `claude.Adaptor.DoResponse` (`ClaudeHandler`
+ * `HandleClaudeResponseData` `common.Unmarshal` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI format stays
+ * hop 403 (`clientFormat === "openai"` gate). Gemini format stays
+ * `gemini.Adaptor`. Audio / rerank Convert `"endpoint not supported"` before
+ * DoResponse (hop 350). Extra-OK: hop 413 newapi Claude stays.
+ */
+export function usesSub2apiClaudeUnmarshal(channelType: number, mode: string): boolean {
+  return usesSub2apiUnmarshal(channelType, mode);
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for sub2api Claude-format. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function sub2apiClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
  * Original `advancedcustom.Adaptor.DoResponse` `none` / Claude→chat /
  * Gemini→chat converters delegate to `openai.Adaptor.DoResponse`. Chat-to-Claude
  * / chat-to-Gemini stay `claude.Adaptor` / `gemini.Adaptor`. Non-stream chat /
