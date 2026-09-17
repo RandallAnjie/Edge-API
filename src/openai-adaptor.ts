@@ -1417,7 +1417,8 @@ export function zhipuV4ResponseUnmarshalError(text: string, mode = "chat"): stri
  * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
  * `dto.ClaudeResponse`). OpenAI format stays hop 401 (`clientFormat ===
  * "openai"` gate). Images stay hop 382. Audio Convert `"not implemented"`
- * before DoResponse (hop 350). Extra-OK: hop 411 Deepseek Claude stays.
+ * before DoResponse (hop 350). Extra-OK: hop 411 Deepseek Claude stays. Stream
+ * stays hop 430 (`ClaudeStreamHandler`). Extra-OK: hop 429 Deepseek stream stays.
  */
 export function usesZhipuV4ClaudeUnmarshal(channelType: number, mode: string): boolean {
   return usesZhipuV4Unmarshal(channelType, mode);
@@ -1431,6 +1432,26 @@ export function usesZhipuV4ClaudeUnmarshal(channelType: number, mode: string): b
  */
 export function zhipuV4ClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original Zhipu v4 Claude-format `zhipu_4v.Adaptor.DoResponse` stream
+ * delegates to `claude.Adaptor.DoResponse` (`ClaudeStreamHandler`
+ * `HandleStreamResponseData` `UnmarshalJsonStr` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-format stream
+ * stays Extra-OK `OaiStreamHandler` log/continue. Responses stream stays
+ * `ClaudeResponsesStreamHandler` (later hop, `NewOpenAIError`). Extra-OK: hop
+ * 412 non-stream `ClaudeHandler` stays. Extra-OK: hop 429 Deepseek stream stays.
+ * Extra-OK: hop 422 Anthropic stream stays.
+ */
+export function usesZhipuV4ClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  return usesZhipuV4ClaudeUnmarshal(channelType, mode);
 }
 
 /**
