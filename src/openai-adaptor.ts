@@ -894,6 +894,37 @@ export function moonshotResponseUnmarshalError(text: string, mode = "chat"): str
 }
 
 /**
+ * Original `baidu_v2.Adaptor.DoResponse` always delegates to
+ * `openai.Adaptor.DoResponse`. Non-stream chat uses `openai.OpenaiHandler`
+ * (`common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody`). Completions
+ * GetRequestURL is `unsupported relay mode` before DoResponse. Stream uses
+ * `openai.OaiStreamHandler` (log/continue, not leftover gin.H). Images / audio /
+ * embeddings / rerank / responses convert `"not implemented"` before DoResponse
+ * (hop 350). Extra-OK: ConvertClaudeRequest delegates to `openai.Adaptor`.
+ * Extra-OK: ConvertGeminiRequest `"not implemented"` stays hop 350. Extra-OK:
+ * hop 394 Moonshot stays.
+ */
+export function usesBaiduV2Unmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_BAIDU_V2) return false;
+  switch (mode) {
+    case "chat":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` for Baidu V2 chat. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function baiduV2ResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
