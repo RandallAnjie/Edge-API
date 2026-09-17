@@ -1,7 +1,8 @@
 /** Original `relay.GetAdaptor` → `openai.Adaptor` (APITypeOpenAI, OpenRouter, Xinference, unknown→OpenAI). */
 
 import { advancedCustomOpenaiShapedInbound } from "./advanced-custom-response.js";
-import { CONVERTER_CHAT_TO_CLAUDE, CONVERTER_NONE } from "./advanced-custom-convert.js";
+import { geminiChatResponseUnmarshalError } from "./gemini-response.js";
+import { CONVERTER_CHAT_TO_CLAUDE, CONVERTER_CHAT_TO_GEMINI, CONVERTER_NONE } from "./advanced-custom-convert.js";
 import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { supportsAliAnthropicMessages } from "./ali-convert.js";
@@ -1572,7 +1573,7 @@ export function advancedCustomResponseUnmarshalError(text: string, mode = "chat"
  * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-shaped inbound
  * stays hop 404. Chat-to-Gemini stays `gemini.Adaptor` (later hop). Stream
  * stays `ClaudeStreamHandler` (later hop). Extra-OK: hop 404 OpenAI stays.
- * Extra-OK: hop 418 AWS AKSK stays.
+ * Extra-OK: hop 418 AWS AKSK stays. Extra-OK: hop 420 chat-to-Gemini `gemini.Adaptor` stays.
  */
 export function usesAdvancedCustomClaudeUnmarshal(
   channelType: number,
@@ -1608,6 +1609,58 @@ export function usesAdvancedCustomClaudeUnmarshal(
  */
 export function advancedCustomClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` chat-to-Gemini converter and
+ * ConverterNone+`RelayFormatGemini` delegate to `gemini.Adaptor.DoResponse`
+ * (`GeminiChatHandler` `common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody` into `dto.GeminiChatResponse`). OpenAI-shaped
+ * inbound stays hop 404. Chat-to-Claude stays hop 419. Stream stays
+ * `GeminiChatStreamHandler` (later hop). Responses-to-Gemini stays later hop.
+ * Extra-OK: hop 360 Gemini channel stays. Extra-OK: hop 419 Claude stays.
+ */
+export function usesAdvancedCustomGeminiUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  clientFormat?: string,
+  mapped = "",
+): boolean {
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
+  if (mapped.startsWith("imagen")) return false;
+  if (
+    mapped.startsWith("text-embedding") ||
+    mapped.startsWith("embedding") ||
+    mapped.startsWith("gemini-embedding")
+  ) {
+    return false;
+  }
+  const id = String(converter || CONVERTER_NONE).trim() || CONVERTER_NONE;
+  const chatToGemini = id === CONVERTER_CHAT_TO_GEMINI;
+  const nativeGemini = id === CONVERTER_NONE && clientFormat === "gemini";
+  if (!chatToGemini && !nativeGemini) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `GeminiChatHandler` `common.Unmarshal` into `dto.GeminiChatResponse`
+ * for advanced-custom `gemini.Adaptor`. Syntax errors match `encoding/json`.
+ * JSON `null` succeeds as a zero-value struct. Extra-OK: nested field type
+ * mismatches are left to convert (original fails).
+ */
+export function advancedCustomGeminiResponseUnmarshalError(text: string): string | null {
+  return geminiChatResponseUnmarshalError(text);
 }
 
 /**
