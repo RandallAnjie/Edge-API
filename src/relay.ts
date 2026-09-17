@@ -1451,6 +1451,8 @@ function attachSettleUsage(
  * `GeminiTextGenerationHandler` (RelayModeGemini first; embed paths stay hop 450).
  * Extra-OK: hop 462 advanced-custom native `:generateContent` embedding prefixes
  * use `GeminiTextGenerationHandler` via usesAdvancedCustomGeminiUnmarshal.
+ * Extra-OK: hop 463 Vertex RequestModeGemini OpenAI-format embedding prefixes use
+ * `GeminiChatHandler` (Vertex DoResponse does not check embedding prefixes).
  */
 function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mode: string): boolean {
   if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
@@ -1462,7 +1464,10 @@ function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mo
     mode !== "responses" &&
     mode !== "gemini"
   ) {
-    return false;
+    // Vertex RequestModeGemini uses GeminiChatHandler even for embedding prefixes (hop 463).
+    if (!(channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini")) {
+      return false;
+    }
   }
   if (channelType === CHANNEL_TYPE_GEMINI) return true;
   if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini") return true;

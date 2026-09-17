@@ -1322,6 +1322,8 @@ export function geminiChatResponseUnmarshalError(text: string): string | null {
  * imagen uses `GeminiChatStreamHandler` (hop 455; imagen prefix is non-stream only).
  * Native `RelayModeGemini` `:generateContent` embedding-model prefixes use
  * `GeminiTextGenerationStreamHandler` (hop 461; embed paths stay hop 450).
+ * Vertex RequestModeGemini stream embedding prefixes use `GeminiChatStreamHandler`
+ * (hop 463; CHANNEL_TYPE_GEMINI OpenAI-format stays hop 449).
  * Extra-OK: hop 360 non-stream `GeminiChatHandler` stays. Extra-OK: hop 422
  * Claude stream stays. Extra-OK: hop 421 responses-to-Gemini stays. Extra-OK:
  * hop 439 ClaudeResponsesStreamHandler stays.
@@ -1356,7 +1358,10 @@ export function usesGeminiChatStreamUnmarshal(
     if (mode === "gemini") {
       return channelType === CHANNEL_TYPE_GEMINI || vertexGemini;
     }
-    return false;
+    // Vertex RequestModeGemini stream uses GeminiChatStreamHandler even for embedding
+    // prefixes. CHANNEL_TYPE_GEMINI OpenAI-format embedding stays hop 449
+    // GeminiEmbeddingHandler even when the client streams.
+    return vertexGemini;
   }
   if (channelType === CHANNEL_TYPE_GEMINI) return true;
   if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini") return true;
@@ -1484,7 +1489,8 @@ export function geminiImageResponseUnmarshalError(text: string): string | null {
  * `GeminiResponsesHandler`. Extra-OK: hop 458 leftover Unmarshal for
  * `/v1/responses` embedding prefixes stays `GeminiResponsesHandler`. Extra-OK:
  * hop 461 native `RelayModeGemini` `:generateContent` embedding prefixes stay
- * `GeminiTextGenerationHandler` (not this handler).
+ * `GeminiTextGenerationHandler` (not this handler). Extra-OK: hop 463 Vertex
+ * RequestModeGemini OpenAI-format embedding prefixes stay `GeminiChatHandler`.
  */
 export function usesGeminiEmbeddingUnmarshal(
   channelType: number,
