@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, mokaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesMokaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, mokaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesMokaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesXaiUnmarshal, xaiResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_BAIDU,
@@ -48,6 +48,7 @@ import {
   CHANNEL_TYPE_PALM,
   CHANNEL_TYPE_SILICONFLOW,
   CHANNEL_TYPE_TENCENT,
+  CHANNEL_TYPE_XAI,
   CHANNEL_TYPE_XINFERENCE,
   CHANNEL_TYPE_XUNFEI,
   CHANNEL_TYPE_ZHIPU,
@@ -4476,4 +4477,136 @@ test("original leftover Cloudflare Unmarshal gin.H does not change AUTH StatusTe
   const vendorItemsHop378 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop378.some((item) => item.action === "vendor.create"), listed.text);
 });
+
+test("original leftover xAI Unmarshal NewError gin.H", async () => {
+  assert.equal(usesXaiUnmarshal(CHANNEL_TYPE_XAI, "chat"), true);
+  assert.equal(usesXaiUnmarshal(CHANNEL_TYPE_XAI, "completions"), true);
+  assert.equal(usesXaiUnmarshal(CHANNEL_TYPE_XAI, "embeddings"), false);
+  assert.equal(usesXaiUnmarshal(CHANNEL_TYPE_XAI, "images"), false);
+  assert.equal(usesXaiUnmarshal(CHANNEL_TYPE_XAI, "responses"), false);
+  assert.equal(usesXaiUnmarshal(CHANNEL_TYPE_XAI, "audio_speech"), false);
+  assert.equal(usesXaiUnmarshal(CHANNEL_TYPE_OPENAI, "chat"), false);
+  assert.equal(xaiResponseUnmarshalError("not-json"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    xaiResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type xai.ChatCompletionResponse",
+  );
+  assert.equal(xaiResponseUnmarshalError("null"), null);
+  assert.equal(xaiResponseUnmarshalError("{}"), null);
+
+  const chatHelper = writeRelayNewAPIError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop379-helper" } }),
+    500,
+    "invalid character 'o' looking for beginning of value",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(chatHelper.status, 500);
+  assert.deepEqual(await chatHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value (request id: hop379-helper)",
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.155" });
+  await mergeModelRatio(new Store(e.DB), { "hop379-grok": 1, "hop379-array": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const xai = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.156" },
+      body: JSON.stringify({
+        name: "hop379-xai",
+        type: CHANNEL_TYPE_XAI,
+        key: "xk-hop379",
+        models: "hop379-grok,hop379-array",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(xai.body.success, true, xai.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const chatHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.157", "x-oneapi-request-id": "hop379-xai-unmarshal" },
+        body: JSON.stringify({ model: "hop379-grok", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatHit.res.status, 500, chatHit.text);
+    assert.equal("type" in chatHit.body && chatHit.body.type === "error", false, chatHit.text);
+    const chatErr = chatHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, "invalid character 'o' looking for beginning of value (request id: hop379-xai-unmarshal)");
+    assert.equal(chatErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const chatArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.158", "x-oneapi-request-id": "hop379-xai-array" },
+        body: JSON.stringify({ model: "hop379-grok", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatArray.res.status, 500, chatArray.text);
+    const chatArrayErr = chatArray.body.error as { message: string };
+    assert.equal(
+      chatArrayErr.message,
+      "json: cannot unmarshal array into Go value of type xai.ChatCompletionResponse (request id: hop379-xai-array)",
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover xAI Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.159" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.160", "x-oneapi-request-id": "hop379-vendor-create" },
+      body: JSON.stringify({ name: "hop379-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop379-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop379 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop379.some((item) => item.action === "vendor.create"), listed.text);
+});
+
 

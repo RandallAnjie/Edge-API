@@ -911,6 +911,7 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * uses `NewError` + `writeRelayNewAPIError` instead. Extra-OK: Moka
  * `mokaEmbeddingHandler` uses `NewError` + `writeRelayNewAPIError` instead.
  * Extra-OK: Cloudflare `cfHandler` / `cfSTTHandler` use `NewError` +
+ * `writeRelayNewAPIError` instead. Extra-OK: xAI `xAIHandler` uses `NewError` +
  * `writeRelayNewAPIError` instead.
  */
 export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {

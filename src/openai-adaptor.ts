@@ -485,6 +485,50 @@ export function cloudflareResponseUnmarshalError(text: string, mode: string): st
 }
 
 /**
+ * Original `xai.xAIHandler` `common.Unmarshal` (`NewError`
+ * `ErrorCodeBadResponseBody`, not `NewOpenAIError`). Stream uses
+ * `xAIStreamHandler` (log/continue, not leftover gin.H). Images uses
+ * `openai.OpenaiImageHandler`. Responses uses `openai.OaiResponsesHandler`.
+ * Embeddings / audio Convert is `"not available"` before DoResponse.
+ */
+export function usesXaiUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_XAI) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "images":
+    case "embeddings":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/** Original `common.Unmarshal` target type name for xAI chat / completions. */
+export function xaiUnmarshalTypeName(): string {
+  return "xai.ChatCompletionResponse";
+}
+
+/**
+ * Original `common.Unmarshal` into `xai.ChatCompletionResponse`. Syntax errors
+ * match `encoding/json`. JSON `null` succeeds as a zero-value struct.
+ * Extra-OK: nested field type mismatches are left to convert (original fails).
+ */
+export function xaiResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${xaiUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */
