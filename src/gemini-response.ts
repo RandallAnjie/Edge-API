@@ -1373,6 +1373,8 @@ export function usesGeminiChatStreamUnmarshal(
  * non-stream responses-to-Gemini stays. Extra-OK: hop 441 advanced-custom
  * responses-to-Gemini stream stays. Extra-OK: hop 457 `/v1/responses` imagen
  * uses this handler (RelayModeResponses first, not hop 448 GeminiImageHandler).
+ * Extra-OK: hop 458 `/v1/responses` embedding-model prefixes use this handler
+ * (RelayModeResponses first, not hop 449 GeminiEmbeddingHandler).
  */
 export function usesGeminiResponsesStreamUnmarshal(
   channelType: number,
@@ -1382,13 +1384,6 @@ export function usesGeminiResponsesStreamUnmarshal(
 ): boolean {
   if (!isStream) return false;
   if (mode !== "responses") return false;
-  if (
-    mapped.startsWith("text-embedding") ||
-    mapped.startsWith("embedding") ||
-    mapped.startsWith("gemini-embedding")
-  ) {
-    return false;
-  }
   if (channelType === CHANNEL_TYPE_GEMINI) return true;
   if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini") return true;
   return false;
@@ -1478,7 +1473,8 @@ export function geminiImageResponseUnmarshalError(text: string): string | null {
  * imagen `GeminiImageHandler` stays. Extra-OK: hop 360 non-embedding
  * `GeminiChatHandler` stays. Extra-OK: missing `embeddings` after successful
  * Unmarshal stays convert (`[]`). Extra-OK: hop 440 `/v1/responses` stays
- * `GeminiResponsesHandler`.
+ * `GeminiResponsesHandler`. Extra-OK: hop 458 leftover Unmarshal for
+ * `/v1/responses` embedding prefixes stays `GeminiResponsesHandler`.
  */
 export function usesGeminiEmbeddingUnmarshal(
   channelType: number,

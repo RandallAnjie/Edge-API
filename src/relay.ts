@@ -1445,11 +1445,18 @@ function attachSettleUsage(
  * OpenAI-format imagen `GeminiImageHandler` stays. Extra-OK: hop 449
  * embedding-model `GeminiEmbeddingHandler` stays. Extra-OK: hop 457
  * `/v1/responses` imagen uses `GeminiResponsesHandler` (RelayModeResponses first).
+ * Extra-OK: hop 458 `/v1/responses` embedding-model prefixes use
+ * `GeminiResponsesHandler` (RelayModeResponses first).
  */
 function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mode: string): boolean {
   if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
   if (mapped.startsWith("imagen") && mode !== "gemini" && mode !== "responses") return false;
-  if (mapped.startsWith("text-embedding") || mapped.startsWith("embedding") || mapped.startsWith("gemini-embedding")) {
+  if (
+    (mapped.startsWith("text-embedding") ||
+      mapped.startsWith("embedding") ||
+      mapped.startsWith("gemini-embedding")) &&
+    mode !== "responses"
+  ) {
     return false;
   }
   if (channelType === CHANNEL_TYPE_GEMINI) return true;
