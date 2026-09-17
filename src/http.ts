@@ -793,6 +793,9 @@ export const ERROR_CODE_DO_REQUEST_FAILED = "do_request_failed";
 /** Original `types.ErrorCodeGetChannelFailed`. */
 export const ERROR_CODE_GET_CHANNEL_FAILED = "get_channel_failed";
 
+/** Original `types.ErrorCodeChannelInvalidKey`. */
+export const ERROR_CODE_CHANNEL_INVALID_KEY = "channel:invalid_key";
+
 /** Original `types.ErrorCodeBadResponseBody`. */
 export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
 
@@ -818,7 +821,8 @@ export function toClaudeRelayError(message: string): { type: string; message: st
 /**
  * Original leftover Relay defer `c.JSON` gin.H for `newAPIError`
  * (`GetAndValidateRequest`, `ModelPriceHelper`, convert/do_request/bad_response_body,
- * last-loop get_channel_failed / do_request_failed):
+ * last-loop get_channel_failed / do_request_failed, DoResponse NewError
+ * channel:invalid_key / invalid_request / bad_response / image billing):
  * Claude `{type:"error",error:ToClaudeError()}`; else `{error:ToOpenAIError()}`.
  * Extra-OK: generated RequestId is not appended (hop 314); honor client header.
  * Extra-OK: Claude `ToClaudeError` default type stays `new_api_error` (hop 349 envelope)

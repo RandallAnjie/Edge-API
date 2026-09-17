@@ -115,6 +115,7 @@ import type { EncodedMultipart } from "./multipart-form.js";
 import {
   abortWithOpenAiMessage,
   clientIp,
+  ERROR_CODE_CHANNEL_INVALID_KEY,
   ERROR_CODE_CONVERT_REQUEST_FAILED,
   ERROR_CODE_DO_REQUEST_FAILED,
   ERROR_CODE_GET_CHANNEL_FAILED,
@@ -2271,7 +2272,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         await noteAttempt(
           channelAttemptFromNewApi(prepared.error.message, prepared.error.status, prepared.error.code, prepared.error.skipRetry !== false),
         );
-        return openaiError(prepared.error.status, prepared.error.message, prepared.error.code);
+        return writeRelayNewAPIError(opts.req, prepared.error.status, prepared.error.message, prepared.error.code);
       }
       if (prepared.session) billing = prepared.session;
     }
@@ -2320,8 +2321,8 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (message === "invalid auth") {
-            await noteAttempt(channelAttemptFromNewApi("invalid auth", 500, "channel:invalid_key"));
-            return openaiError(500, message, "channel:invalid_key");
+            await noteAttempt(channelAttemptFromNewApi("invalid auth", 500, ERROR_CODE_CHANNEL_INVALID_KEY));
+            return writeRelayNewAPIError(opts.req, 500, message, ERROR_CODE_CHANNEL_INVALID_KEY);
           }
           lastErr = message;
           lastStatus = 500;
@@ -2350,7 +2351,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
             errorCode: code,
             errorType: code.startsWith("channel:") ? "new_api_error" : "openai_error",
           });
-          return openaiError(status, message, code);
+          return writeRelayNewAPIError(opts.req, status, message, code);
         }
       } else {
         res = await fetchUpstream(target);
@@ -2704,7 +2705,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           const message = err instanceof Error ? err.message : String(err);
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, message.slice(0, 2000), extra);
           if (message.startsWith("unsupported advanced custom converter:")) {
-            return openaiError(400, message, "invalid_request");
+            return writeRelayNewAPIError(opts.req, 400, message, ERROR_CODE_INVALID_REQUEST);
           }
           return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
         }
@@ -2750,7 +2751,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         const status = Number((err as { status?: number }).status || 500);
         const code = String((err as { code?: string }).code || "bad_response");
         await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, message.slice(0, 2000), extra);
-        return openaiError(status, message, code);
+        return writeRelayNewAPIError(opts.req, status, message, code);
       }
     }
 
@@ -2798,7 +2799,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         const message = err instanceof Error ? err.message : String(err);
         await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, message.slice(0, 2000), extra);
         const status = message.startsWith("minimax TTS error:") || message.startsWith("no audio data") ? 400 : 500;
-        return openaiError(status, message, "bad_response");
+        return writeRelayNewAPIError(opts.req, status, message, "bad_response");
       }
     }
     let converted: Record<string, unknown>;
@@ -2823,7 +2824,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       const message = err instanceof Error ? err.message : String(err);
       await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, message.slice(0, 2000), extra);
       if (message.startsWith("unsupported advanced custom converter:")) {
-        return openaiError(400, message, "invalid_request");
+        return writeRelayNewAPIError(opts.req, 400, message, ERROR_CODE_INVALID_REQUEST);
       }
       const imageType = err instanceof Error ? (err as Error & { type?: string; code?: string }).type : undefined;
       if (imageType === "minimax_image_error") {
@@ -2845,7 +2846,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         const code = String((err as Error & { code?: string }).code || "bad_response");
         const type = String((err as Error & { type?: string }).type || "new_api_error");
         const status = Number((err as Error & { status?: number }).status || 500);
-        return openaiError(status, message, code, type);
+        return writeRelayNewAPIError(opts.req, status, message, code, type);
       }
       return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
     }

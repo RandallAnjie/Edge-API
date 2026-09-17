@@ -6,6 +6,7 @@ import { resetSchemaFlag } from "../src/schema.js";
 import {
   ERROR_CODE_BAD_RESPONSE_BODY,
   ERROR_CODE_BAD_RESPONSE_STATUS_CODE,
+  ERROR_CODE_CHANNEL_INVALID_KEY,
   ERROR_CODE_CONVERT_REQUEST_FAILED,
   ERROR_CODE_DO_REQUEST_FAILED,
   ERROR_CODE_GET_CHANNEL_FAILED,
@@ -19,8 +20,10 @@ import {
   toClaudeRelayError,
   writeRelayNewAPIError,
 } from "../src/http.js";
-import { CHANNEL_TYPE_OPENAI } from "../src/constants.js";
+import { CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_XUNFEI } from "../src/constants.js";
 import { MAX_TOKENS_LIMIT } from "../src/valid-request.js";
+import { Store } from "../src/store.js";
+import { mergeModelRatio } from "./merge-model-ratio.js";
 import type { Env, ExecutionContextLike } from "../src/types.js";
 
 function ctx(): ExecutionContextLike {
@@ -711,6 +714,108 @@ test("original Relay leftover last-loop gin.H does not change AUTH StatusText or
   assert.equal(created.body.success, true, created.text);
   const listed = await send(
     new Request("http://local/api/audit?page_size=100&request_id=hop353-vendor-create", { headers: auth }),
+    e,
+  );
+  const items = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(items.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original Relay leftover Xunfei invalid-auth NewError Claude vs OpenAI gin.H", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.193" });
+  await mergeModelRatio(new Store(e.DB), { "SparkDesk-invalid": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.194" },
+      body: JSON.stringify({
+        name: "hop356-xunfei-bad",
+        type: CHANNEL_TYPE_XUNFEI,
+        key: "invalid",
+        models: "SparkDesk-invalid",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const claude = await send(
+    new Request("http://local/v1/messages", {
+      method: "POST",
+      headers: {
+        ...skAuth,
+        "cf-connecting-ip": "192.0.2.195",
+        "anthropic-version": "2023-06-01",
+        "x-oneapi-request-id": "hop356-claude-invalid-auth",
+      },
+      body: JSON.stringify({
+        model: "SparkDesk-invalid",
+        max_tokens: 32,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    }),
+    e,
+  );
+  assert.equal(claude.res.status, 500, claude.text);
+  assert.equal(claude.body.type, "error");
+  const err = claude.body.error as { type: string; message: string; code?: string; param?: string };
+  assert.equal(err.type, ERROR_TYPE_NEW_API_ERROR);
+  assert.equal(err.message, messageWithRequestId("invalid auth", "hop356-claude-invalid-auth"));
+  assert.equal(err.code, undefined);
+  assert.equal(err.param, undefined);
+  assert.deepEqual(Object.keys(err).sort(), ["message", "type"]);
+
+  const chat = await send(
+    new Request("http://local/v1/chat/completions", {
+      method: "POST",
+      headers: { ...skAuth, "cf-connecting-ip": "192.0.2.196" },
+      body: JSON.stringify({
+        model: "SparkDesk-invalid",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    }),
+    e,
+  );
+  assert.equal(chat.res.status, 500, chat.text);
+  assert.equal("type" in chat.body && chat.body.type === "error", false, chat.text);
+  const chatErr = chat.body.error as { message: string; type: string; param: string; code: string };
+  assert.equal(chatErr.message, "invalid auth");
+  assert.equal(chatErr.type, ERROR_TYPE_NEW_API_ERROR);
+  assert.equal(chatErr.param, "");
+  assert.equal(chatErr.code, ERROR_CODE_CHANNEL_INVALID_KEY);
+});
+
+test("original leftover Relay DoResponse NewError does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.197" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.198", "x-oneapi-request-id": "hop356-vendor-create" },
+      body: JSON.stringify({ name: "hop356-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop356-vendor-create", { headers: auth }),
     e,
   );
   const items = ((listed.body.data as { items: { action: string }[] }).items || []);
