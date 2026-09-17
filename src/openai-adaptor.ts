@@ -1356,7 +1356,8 @@ export function ollamaResponseUnmarshalError(text: string, mode: string): string
  * `dto.ClaudeResponse`). OpenAI-format chat / completions / embeddings stay
  * hop 381 (`clientFormat === "openai"` gate). Images / audio Convert
  * `"not implemented"` before DoResponse (hop 350). Extra-OK: hop 414 sub2api
- * Claude stays.
+ * Claude stays. Stream stays hop 433 (`ClaudeStreamHandler`). Extra-OK: hop 432
+ * sub2api stream stays.
  */
 export function usesOllamaClaudeUnmarshal(channelType: number, mode: string): boolean {
   return usesOllamaUnmarshal(channelType, mode);
@@ -1370,6 +1371,25 @@ export function usesOllamaClaudeUnmarshal(channelType: number, mode: string): bo
  */
 export function ollamaClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original Ollama Claude-format `ollama.Adaptor.DoResponse` stream delegates
+ * to `claude.Adaptor.DoResponse` (`ClaudeStreamHandler`
+ * `HandleStreamResponseData` `UnmarshalJsonStr` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-format stream
+ * stays Extra-OK `ollamaStreamHandler` (not leftover gin.H). Extra-OK: hop 415
+ * non-stream `ClaudeHandler` stays. Extra-OK: hop 432 sub2api stream stays.
+ * Extra-OK: hop 422 Anthropic stream stays.
+ */
+export function usesOllamaClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  return usesOllamaClaudeUnmarshal(channelType, mode);
 }
 
 /**
