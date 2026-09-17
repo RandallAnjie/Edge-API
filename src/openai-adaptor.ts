@@ -1965,7 +1965,8 @@ export function codexResponseUnmarshalError(text: string, mode = "responses"): s
  * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). Always ClaudeHandler
  * regardless of RelayFormat (OpenAI / Claude / Gemini / Responses). Stream uses
  * `ClaudeStreamHandler` `HandleStreamResponseData` (hop 422). Extra-OK:
- * `ClaudeResponsesStreamHandler` stays later hop (`NewOpenAIError`). Images /
+ * `ClaudeResponsesStreamHandler` stays hop 439 (`FailResponsesStream` /
+ * leftover `NewOpenAIError` when unhandled). Images /
  * audio / embeddings Convert `"not implemented"` before DoResponse (hop 350).
  * ConvertRerank is `nil,nil` leftover. Extra-OK: hop 405 Codex stays. Extra-OK:
  * Moonshot / MiniMax / Deepseek / Zhipu v4 Claude-format, AWS API-key, Vertex
@@ -2015,7 +2016,7 @@ export function claudeHandlerResponseUnmarshalError(text: string): string | null
  * `HandleStreamResponseData` (`common.UnmarshalJsonStr` `NewError`
  * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). Always ClaudeStreamHandler
  * regardless of RelayFormat except OpenAIResponses stream
- * (`ClaudeResponsesStreamHandler`, later hop, `NewOpenAIError`). Images /
+ * (`ClaudeResponsesStreamHandler`, hop 439, typically `FailResponsesStream`). Images /
  * audio / embeddings Convert `"not implemented"` before DoResponse (hop 350).
  * ConvertRerank is `nil,nil` leftover. Extra-OK: hop 406 non-stream
  * `ClaudeHandler` stays. Extra-OK: OaiStreamHandler log/continue stays.
@@ -2025,6 +2026,32 @@ export function usesClaudeStreamUnmarshal(channelType: number, mode: string, isS
   if (!isStream) return false;
   if (mode === "responses") return false;
   return usesClaudeHandlerUnmarshal(channelType, mode);
+}
+
+/**
+ * Original `claude.Adaptor.DoResponse` OpenAIResponses stream uses
+ * `ClaudeResponsesStreamHandler` (`UnmarshalJsonStr` into `dto.ClaudeResponse`).
+ * Typical path is `FailResponsesStream("server_error", err.Error(), "")` SSE
+ * (HTTP 200), not leftover gin.H. Leftover `NewOpenAIError`
+ * `ErrorCodeBadResponseBody` only when `FailResponsesStream` is unhandled.
+ * Extra-OK: hop 422 `ClaudeStreamHandler` leftover gin.H stays. Extra-OK: hop
+ * 406 non-stream `ClaudeHandler` stays. Extra-OK: hop 438 Ollama OpenAI stream
+ * stays. Extra-OK: replica convert always has `ChatToResponsesStreamState` so
+ * `FailResponsesStream` is handled for `/v1/responses`.
+ */
+export function usesClaudeResponsesStreamUnmarshal(channelType: number, mode: string, isStream = true): boolean {
+  if (!isStream) return false;
+  if (mode !== "responses") return false;
+  return usesClaudeHandlerUnmarshal(channelType, mode);
+}
+
+/**
+ * Original `ClaudeResponsesStreamHandler` `UnmarshalJsonStr` into
+ * `dto.ClaudeResponse` for the first invalid SSE `data:` payload. Same
+ * encoding/json semantics as `ClaudeStreamHandler`.
+ */
+export function claudeResponsesStreamSseUnmarshalError(text: string): string | null {
+  return claudeStreamSseUnmarshalError(text);
 }
 
 /**

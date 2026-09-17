@@ -30,7 +30,8 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, usesGeminiChatStreamUnmarshal } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesAdvancedCustomClaudeUnmarshal, usesAdvancedCustomClaudeStreamUnmarshal, usesAdvancedCustomGeminiUnmarshal, usesAdvancedCustomGeminiStreamUnmarshal, usesCodexUnmarshal, usesClaudeHandlerUnmarshal, usesClaudeStreamUnmarshal, usesAwsClaudeUnmarshal, usesAwsClaudeStreamUnmarshal, usesAwsAkskClaudeUnmarshal, usesAwsAkskClaudeStreamUnmarshal, usesVertexClaudeUnmarshal, usesVertexClaudeStreamUnmarshal, usesMoonshotClaudeUnmarshal, usesMoonshotClaudeStreamUnmarshal, usesMiniMaxClaudeUnmarshal, usesMiniMaxClaudeStreamUnmarshal, usesDeepseekClaudeUnmarshal, usesDeepseekClaudeStreamUnmarshal, usesZhipuV4ClaudeUnmarshal, usesZhipuV4ClaudeStreamUnmarshal, usesNewApiClaudeUnmarshal, usesNewApiClaudeStreamUnmarshal, usesSub2apiClaudeUnmarshal, usesSub2apiClaudeStreamUnmarshal, usesOllamaClaudeUnmarshal, usesOllamaClaudeStreamUnmarshal, usesOllamaStreamUnmarshal, ollamaStreamUnmarshalError, usesAliClaudeUnmarshal, usesAliClaudeStreamUnmarshal, usesVolcClaudeUnmarshal, usesVolcClaudeStreamUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, advancedCustomClaudeResponseUnmarshalError, advancedCustomGeminiResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, claudeStreamSseUnmarshalError, awsClaudeResponseUnmarshalError, awsAkskClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { claudeSseToResponsesSse } from "../src/responses-stream.js";
+import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesAdvancedCustomClaudeUnmarshal, usesAdvancedCustomClaudeStreamUnmarshal, usesAdvancedCustomGeminiUnmarshal, usesAdvancedCustomGeminiStreamUnmarshal, usesCodexUnmarshal, usesClaudeHandlerUnmarshal, usesClaudeStreamUnmarshal, usesClaudeResponsesStreamUnmarshal, claudeResponsesStreamSseUnmarshalError, usesAwsClaudeUnmarshal, usesAwsClaudeStreamUnmarshal, usesAwsAkskClaudeUnmarshal, usesAwsAkskClaudeStreamUnmarshal, usesVertexClaudeUnmarshal, usesVertexClaudeStreamUnmarshal, usesMoonshotClaudeUnmarshal, usesMoonshotClaudeStreamUnmarshal, usesMiniMaxClaudeUnmarshal, usesMiniMaxClaudeStreamUnmarshal, usesDeepseekClaudeUnmarshal, usesDeepseekClaudeStreamUnmarshal, usesZhipuV4ClaudeUnmarshal, usesZhipuV4ClaudeStreamUnmarshal, usesNewApiClaudeUnmarshal, usesNewApiClaudeStreamUnmarshal, usesSub2apiClaudeUnmarshal, usesSub2apiClaudeStreamUnmarshal, usesOllamaClaudeUnmarshal, usesOllamaClaudeStreamUnmarshal, usesOllamaStreamUnmarshal, ollamaStreamUnmarshalError, usesAliClaudeUnmarshal, usesAliClaudeStreamUnmarshal, usesVolcClaudeUnmarshal, usesVolcClaudeStreamUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, advancedCustomClaudeResponseUnmarshalError, advancedCustomGeminiResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, claudeStreamSseUnmarshalError, awsClaudeResponseUnmarshalError, awsAkskClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   CHANNEL_TYPE_ALI,
@@ -14618,4 +14619,199 @@ test("original leftover Ollama OpenAI-format ollamaStreamHandler Unmarshal gin.H
   );
   const vendorItemsHop438 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop438.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover ClaudeResponsesStreamHandler Unmarshal FailResponsesStream / NewOpenAIError gin.H", async () => {
+  assert.equal(usesClaudeResponsesStreamUnmarshal(CHANNEL_TYPE_ANTHROPIC, "responses"), true);
+  assert.equal(usesClaudeResponsesStreamUnmarshal(CHANNEL_TYPE_ANTHROPIC, "responses", true), true);
+  assert.equal(usesClaudeResponsesStreamUnmarshal(CHANNEL_TYPE_ANTHROPIC, "responses", false), false);
+  assert.equal(usesClaudeResponsesStreamUnmarshal(CHANNEL_TYPE_ANTHROPIC, "chat", true), false);
+  assert.equal(usesClaudeResponsesStreamUnmarshal(CHANNEL_TYPE_ANTHROPIC, "messages", true), false);
+  assert.equal(usesClaudeResponsesStreamUnmarshal(CHANNEL_TYPE_OPENAI, "responses", true), false);
+  assert.equal(usesClaudeStreamUnmarshal(CHANNEL_TYPE_ANTHROPIC, "chat", true), true);
+  assert.equal(usesClaudeHandlerUnmarshal(CHANNEL_TYPE_ANTHROPIC, "responses"), true);
+  assert.equal(usesOllamaStreamUnmarshal(CHANNEL_TYPE_OLLAMA, "chat", true), true);
+  assert.equal(
+    claudeResponsesStreamSseUnmarshalError("data: not-json\n\n"),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(
+    claudeResponsesStreamSseUnmarshalError("data: []\n\n"),
+    "json: cannot unmarshal array into Go value of type dto.ClaudeResponse",
+  );
+  assert.equal(claudeResponsesStreamSseUnmarshalError("data: null\n\n"), null);
+  assert.equal(claudeResponsesStreamSseUnmarshalError("data: {}\n\n"), null);
+
+  const converted = claudeSseToResponsesSse("data: not-json\n\n", { id: "resp_hop439", model: "hop439-claude" });
+  assert.equal(converted.sse.includes("failed to unmarshal Claude stream event"), false);
+  assert.ok(converted.sse.includes("invalid character 'o' looking for beginning of value"), converted.sse);
+  assert.ok(converted.sse.includes("event: error"), converted.sse);
+  assert.ok(converted.sse.includes("response.failed"), converted.sse);
+  assert.ok(converted.sse.includes('"code":"server_error"'), converted.sse);
+
+  const convertedArray = claudeSseToResponsesSse("data: []\n\n", { id: "resp_hop439_array", model: "hop439-claude" });
+  assert.ok(
+    convertedArray.sse.includes("json: cannot unmarshal array into Go value of type dto.ClaudeResponse"),
+    convertedArray.sse,
+  );
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "198.51.100.69" });
+  await mergeModelRatio(new Store(e.DB), { "hop439-claude": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const created = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.71" },
+      body: JSON.stringify({
+        name: "hop439-claude",
+        type: CHANNEL_TYPE_ANTHROPIC,
+        key: "sk-ant-hop439",
+        models: "hop439-claude",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("non-stream-hop406")) {
+      return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("as-array")) {
+      return new Response("data: []\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    return new Response("data: not-json\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+  try {
+    const responsesHit = await send(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.72", "x-oneapi-request-id": "hop439-responses-unmarshal" },
+        body: JSON.stringify({
+          model: "hop439-claude",
+          stream: true,
+          input: "hello",
+        }),
+      }),
+      e,
+    );
+    assert.equal(responsesHit.res.status, 200, responsesHit.text);
+    assert.equal(responsesHit.res.headers.get("content-type")?.includes("text/event-stream"), true, responsesHit.text);
+    assert.equal(responsesHit.text.includes("failed to unmarshal Claude stream event"), false, responsesHit.text);
+    assert.ok(responsesHit.text.includes("invalid character 'o' looking for beginning of value"), responsesHit.text);
+    assert.ok(responsesHit.text.includes("event: error"), responsesHit.text);
+    assert.ok(responsesHit.text.includes("response.failed"), responsesHit.text);
+    assert.equal(responsesHit.text.includes("hop439-responses-unmarshal"), false, responsesHit.text);
+
+    const responsesArray = await send(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.73", "x-oneapi-request-id": "hop439-responses-array" },
+        body: JSON.stringify({
+          model: "hop439-claude",
+          stream: true,
+          input: "as-array",
+        }),
+      }),
+      e,
+    );
+    assert.equal(responsesArray.res.status, 200, responsesArray.text);
+    assert.ok(
+      responsesArray.text.includes("json: cannot unmarshal array into Go value of type dto.ClaudeResponse"),
+      responsesArray.text,
+    );
+
+    const messagesStream = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "198.51.100.74",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop439-hop422-stay",
+        },
+        body: JSON.stringify({
+          model: "hop439-claude",
+          max_tokens: 32,
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(messagesStream.res.status, 500, messagesStream.text);
+    assert.equal(messagesStream.body.type, "error", messagesStream.text);
+    const messagesErr = messagesStream.body.error as { type: string; message: string };
+    assert.equal(
+      messagesErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop439-hop422-stay"),
+    );
+    assert.equal(messagesErr.type, ERROR_TYPE_NEW_API_ERROR);
+
+    const nonStream = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "198.51.100.75",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop439-hop406-stay",
+        },
+        body: JSON.stringify({
+          model: "hop439-claude",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "non-stream-hop406" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(nonStream.res.status, 500, nonStream.text);
+    const nonStreamErr = nonStream.body.error as { type: string; message: string };
+    assert.equal(
+      nonStreamErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop439-hop406-stay"),
+    );
+    assert.equal(nonStreamErr.type, ERROR_TYPE_NEW_API_ERROR);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover ClaudeResponsesStreamHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "198.51.100.76" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.77", "x-oneapi-request-id": "hop439-vendor-create" },
+      body: JSON.stringify({ name: "hop439-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop439-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop439 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop439.some((item) => item.action === "vendor.create"), listed.text);
 });

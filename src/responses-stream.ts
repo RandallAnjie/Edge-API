@@ -29,6 +29,7 @@ import {
   usageFromChatUsage,
   usageFromResponsesUsage,
 } from "./responses-convert.js";
+import { claudeHandlerResponseUnmarshalError } from "./openai-adaptor.js";
 
 const EVENT_CREATED = "response.created";
 const EVENT_COMPLETED = "response.completed";
@@ -1738,8 +1739,9 @@ export function claudeSseToResponsesSse(
     };
   };
   for (const payload of parseSseDataLines(text)) {
-    const parsed = parseJsonObject(payload);
-    if (!parsed) return fail(new Error("failed to unmarshal Claude stream event"));
+    const unmarshalErr = claudeHandlerResponseUnmarshalError(payload);
+    if (unmarshalErr) return fail(new Error(unmarshalErr));
+    const parsed = parseJsonObject(payload) ?? {};
     const claudeError = asObj(parsed.error);
     if (str(claudeError.type)) {
       return fail(new Error(str(claudeError.message) || str(claudeError.type)));
