@@ -925,6 +925,46 @@ export function baiduV2ResponseUnmarshalError(text: string, mode = "chat"): stri
 }
 
 /**
+ * Original `ali.Adaptor.DoResponse` default path delegates to
+ * `openai.Adaptor.DoResponse`. Images stay `aliImageHandler` and rerank stays
+ * `ali.RerankHandler` (hop 367). Claude format + `supportsAliAnthropicMessages`
+ * uses `claude.Adaptor.DoResponse` (gate in relay). Non-stream chat /
+ * completions / embeddings use `openai.OpenaiHandler` (`common.Unmarshal`
+ * `NewOpenAIError` `ErrorCodeBadResponseBody`). Responses Convert succeeds then
+ * `OaiResponsesHandler` (`dto.OpenAIResponsesResponse`). Stream uses
+ * `openai.OaiStreamHandler` (log/continue, not leftover gin.H). Audio Convert
+ * `"not implemented"` before DoResponse (hop 350). Extra-OK: ConvertClaudeRequest
+ * anthropic-messages models stay `claude.Adaptor`. Extra-OK:
+ * ConvertGeminiRequest `"not implemented"` stays hop 350. Extra-OK: hop 367 Ali
+ * rerank stays. Extra-OK: hop 395 Baidu V2 stays.
+ */
+export function usesAliUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_ALI) return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` / `dto.OpenAIResponsesResponse` for Ali
+ * non-image/rerank. Syntax errors match `encoding/json`. JSON `null` succeeds
+ * as a zero-value struct. Extra-OK: nested field type mismatches are left to
+ * convert (original fails).
+ */
+export function aliResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
