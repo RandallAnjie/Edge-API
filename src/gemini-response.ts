@@ -1434,9 +1434,11 @@ export function geminiChatStreamSseUnmarshalError(text: string): string | null {
  * `dto.GeminiImageResponse`) even when the client streams. Vertex RequestModeGemini
  * imagen is non-stream only (stream stays hop 455 `GeminiChatStreamHandler`).
  * Extra-OK: hop 360 non-imagen `GeminiChatHandler` stays. Extra-OK: hop 447
- * OpenAI `openaiImageJSONAsStreamHandler` stays. Extra-OK: empty `predictions`
- * leftover `no images generated` stays convert after successful Unmarshal.
- * Extra-OK: hop 449 embedding-model `GeminiEmbeddingHandler` stays.
+ * OpenAI `openaiImageJSONAsStreamHandler` stays. Extra-OK: hop 470 empty
+ * `predictions` leftover is `NewOpenAIError` gin.H after successful Unmarshal
+ * (`no images generated`, type/code `bad_response_body`, no request-id append,
+ * ImageHelper ResetStatusCode). Extra-OK: hop 449 embedding-model
+ * `GeminiEmbeddingHandler` stays.
  * Extra-OK: hop 453 advanced-custom imagen `GeminiImageHandler` stays.
  * Extra-OK: hop 454 native `RelayModeGemini` `:predict` imagen stays
  * `GeminiTextGenerationHandler` (RelayModeGemini first). Extra-OK: hop 457
@@ -1473,6 +1475,24 @@ export function geminiImageResponseUnmarshalError(text: string): string | null {
     return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${geminiImageUnmarshalTypeName()}`;
   }
   return null;
+}
+
+/**
+ * Original `GeminiImageHandler` leftover after successful Unmarshal when
+ * `len(Predictions)==0`: `NewOpenAIError("no images generated",
+ * ErrorCodeBadResponseBody)` returned to Relay defer (`ErrorTypeOpenAIError`
+ * `ToOpenAIError` uses `RelayError.Message`, no request-id append; ImageHelper
+ * / compatible_handler `ResetStatusCode`). Extra-OK: non-array `predictions`
+ * is left to convert (original Unmarshal fails nested type).
+ */
+export function geminiImageEmptyPredictionsError(
+  parsed: Record<string, unknown> | null | undefined,
+): { status: number; message: string; code: string } | null {
+  const obj = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  const predictions = obj.predictions;
+  if (predictions != null && !Array.isArray(predictions)) return null;
+  if (Array.isArray(predictions) && predictions.length > 0) return null;
+  return { status: 500, message: "no images generated", code: "bad_response_body" };
 }
 
 /**

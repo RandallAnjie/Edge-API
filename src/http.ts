@@ -976,6 +976,9 @@ export function toClaudeRelayError(message: string): { type: string; message: st
  * leftover gin.H (handler writes then returns nil). Extra-OK: hop 469 Vertex
  * RequestModeGemini `GeminiChatHandler` empty-candidates leftover gin.H
  * (handler writes then returns nil; embedding prefixes stay GeminiChatHandler).
+ * Extra-OK: hop 470 `GeminiImageHandler` empty `predictions` leftover
+ * `NewOpenAIError` gin.H (`no images generated`, type/code `bad_response_body`,
+ * no request-id append, ImageHelper ResetStatusCode).
  */
 export function writeGeminiChatEmptyCandidatesError(
   req: Request,

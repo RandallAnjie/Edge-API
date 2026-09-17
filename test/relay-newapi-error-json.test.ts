@@ -29,7 +29,7 @@ import {
   writeGeminiChatUnmarshalError,
   writeRelayNewAPIError,
 } from "../src/http.js";
-import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiEmbeddingResponseUnmarshalError, geminiImageResponseUnmarshalError, geminiResponsesStreamSseUnmarshalError, nativeGeminiEmbeddingResponseUnmarshalError, usesGeminiChatStreamUnmarshal, usesGeminiEmbeddingUnmarshal, usesGeminiImageUnmarshal, usesGeminiResponsesStreamUnmarshal, usesNativeGeminiEmbeddingUnmarshal } from "../src/gemini-response.js";
+import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiEmbeddingResponseUnmarshalError, geminiImageEmptyPredictionsError, geminiImageResponseUnmarshalError, geminiResponsesStreamSseUnmarshalError, nativeGeminiEmbeddingResponseUnmarshalError, usesGeminiChatStreamUnmarshal, usesGeminiEmbeddingUnmarshal, usesGeminiImageUnmarshal, usesGeminiResponsesStreamUnmarshal, usesNativeGeminiEmbeddingUnmarshal } from "../src/gemini-response.js";
 import { usesVolcTTSUnmarshal, volcTtsResponseUnmarshalError, VOLC_TTS_PARSE_ERROR } from "../src/volc-tts.js";
 import { claudeSseToResponsesSse, geminiSseToResponsesSse, oaiChatSseToResponsesSse } from "../src/responses-stream.js";
 import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesAdvancedCustomClaudeUnmarshal, usesAdvancedCustomClaudeStreamUnmarshal, usesAdvancedCustomGeminiUnmarshal, usesAdvancedCustomGeminiEmbeddingUnmarshal, usesAdvancedCustomGeminiImageUnmarshal, usesAdvancedCustomGeminiStreamUnmarshal, usesAdvancedCustomGeminiResponsesStreamUnmarshal, advancedCustomGeminiResponsesStreamSseUnmarshalError, usesOaiChatToResponsesStreamUnmarshal, oaiChatToResponsesStreamSseUnmarshalError, usesOaiChatToResponsesUnmarshal, oaiChatToResponsesResponseUnmarshalError, usesOaiResponsesToChatStreamUnmarshal, oaiResponsesToChatStreamSseUnmarshalError, usesOaiResponsesToChatUnmarshal, oaiResponsesToChatResponseUnmarshalError, usesOaiResponsesToChatBufferedStreamUnmarshal, oaiResponsesToChatBufferedStreamSseUnmarshalError, usesOpenaiImageJSONAsStreamUnmarshal, openaiImageJSONAsStreamResponseUnmarshalError, usesCodexUnmarshal, usesClaudeHandlerUnmarshal, usesClaudeStreamUnmarshal, usesClaudeResponsesStreamUnmarshal, claudeResponsesStreamSseUnmarshalError, usesAwsClaudeUnmarshal, usesAwsClaudeStreamUnmarshal, usesAwsAkskClaudeUnmarshal, usesAwsAkskClaudeStreamUnmarshal, usesVertexClaudeUnmarshal, usesVertexClaudeStreamUnmarshal, usesMoonshotClaudeUnmarshal, usesMoonshotClaudeStreamUnmarshal, usesMiniMaxClaudeUnmarshal, usesMiniMaxClaudeStreamUnmarshal, usesDeepseekClaudeUnmarshal, usesDeepseekClaudeStreamUnmarshal, usesZhipuV4ClaudeUnmarshal, usesZhipuV4ClaudeStreamUnmarshal, usesNewApiClaudeUnmarshal, usesNewApiClaudeStreamUnmarshal, usesSub2apiClaudeUnmarshal, usesSub2apiClaudeStreamUnmarshal, usesOllamaClaudeUnmarshal, usesOllamaClaudeStreamUnmarshal, usesOllamaStreamUnmarshal, ollamaStreamUnmarshalError, usesAliClaudeUnmarshal, usesAliClaudeStreamUnmarshal, usesVolcClaudeUnmarshal, usesVolcClaudeStreamUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, advancedCustomClaudeResponseUnmarshalError, advancedCustomGeminiResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, claudeStreamSseUnmarshalError, awsClaudeResponseUnmarshalError, awsAkskClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "../src/openai-adaptor.js";
@@ -16477,12 +16477,11 @@ test("original leftover GeminiImageHandler Unmarshal NewOpenAIError gin.H", asyn
       e,
     );
     assert.equal(emptyStay.res.status, 500, emptyStay.text);
-    const emptyErr = emptyStay.body.error as { message: string; code: string };
-    assert.equal(
-      emptyErr.message,
-      messageWithRequestId("no images generated", "hop448-empty-stay"),
-    );
-    assert.equal(emptyErr.code, "bad_response_body");
+    const emptyErr = emptyStay.body.error as { message: string; type: string; code: string };
+    assert.equal(emptyErr.message, "no images generated");
+    assert.equal(emptyErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(emptyErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(emptyStay.text.includes("(request id: hop448-empty-stay)"), false, emptyStay.text);
 
     const chatStay = await send(
       new Request("http://local/v1/chat/completions", {
@@ -20390,8 +20389,11 @@ test("original leftover GeminiResponsesHandler empty-candidates NewOpenAIError g
       e,
     );
     assert.equal(imageStay.res.status, 500, imageStay.text);
-    const imageStayErr = imageStay.body.error as { message: string };
-    assert.equal(imageStayErr.message, messageWithRequestId("no images generated", "hop464-hop448-stay"));
+    const imageStayErr = imageStay.body.error as { message: string; type: string; code: string };
+    assert.equal(imageStayErr.message, "no images generated");
+    assert.equal(imageStayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(imageStayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(imageStay.text.includes("(request id: hop464-hop448-stay)"), false, imageStay.text);
   } finally {
     globalThis.fetch = origFetch;
   }
@@ -21103,8 +21105,10 @@ test("original leftover advanced-custom GeminiImageHandler empty predictions New
     );
     assert.equal(empty.res.status, 500, empty.text);
     const emptyErr = empty.body.error as { message: string; type: string; code: string };
-    assert.equal(emptyErr.message, messageWithRequestId("no images generated", "hop467-imagen-empty"));
-    assert.equal(emptyErr.code, "bad_response_body");
+    assert.equal(emptyErr.message, "no images generated");
+    assert.equal(emptyErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(emptyErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(empty.text.includes("(request id: hop467-imagen-empty)"), false, empty.text);
     assert.equal(empty.text.includes("empty_response"), false, empty.text);
 
     const imageStay = await send(
@@ -21116,8 +21120,11 @@ test("original leftover advanced-custom GeminiImageHandler empty predictions New
       e,
     );
     assert.equal(imageStay.res.status, 500, imageStay.text);
-    const imageStayErr = imageStay.body.error as { message: string };
-    assert.equal(imageStayErr.message, messageWithRequestId("no images generated", "hop467-hop448-stay"));
+    const imageStayErr = imageStay.body.error as { message: string; type: string; code: string };
+    assert.equal(imageStayErr.message, "no images generated");
+    assert.equal(imageStayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(imageStayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(imageStay.text.includes("(request id: hop467-hop448-stay)"), false, imageStay.text);
 
     const unmarshalStay = await send(
       new Request("http://local/v1/chat/completions", {
@@ -21721,5 +21728,327 @@ test("original leftover Vertex RequestModeGemini GeminiChatHandler empty-candida
   );
   const vendorItemsHop469 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop469.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover GeminiImageHandler empty predictions NewOpenAIError gin.H", async () => {
+  const chatToGemini = "openai_chat_completions_to_gemini_generate_content";
+  const responsesToGemini = "openai_responses_to_gemini_generate_content";
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_GEMINI, "imagen-hop470", false, "images"), true);
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_GEMINI, "imagen-hop470", true, "images"), true);
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_GEMINI, "imagen-hop470", false, "responses"), false);
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_VERTEX, "imagen-hop470", false, "images"), true);
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_VERTEX, "imagen-hop470", true, "images"), false);
+  assert.equal(
+    usesAdvancedCustomGeminiImageUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "imagen-hop470-adv"),
+    true,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "chat", chatToGemini, "openai", "imagen-hop470-adv"),
+    false,
+  );
+  assert.equal(
+    usesAdvancedCustomGeminiUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "responses", responsesToGemini, "openai", "imagen-hop470-adv"),
+    true,
+  );
+  assert.equal(geminiImageEmptyPredictionsError({ predictions: [] })?.code, ERROR_CODE_BAD_RESPONSE_BODY);
+  assert.equal(geminiImageEmptyPredictionsError({})?.code, ERROR_CODE_BAD_RESPONSE_BODY);
+  assert.equal(geminiImageEmptyPredictionsError(null)?.code, ERROR_CODE_BAD_RESPONSE_BODY);
+  assert.equal(geminiImageEmptyPredictionsError({ predictions: [{ bytesBase64Encoded: "YQ==" }] }), null);
+
+  const helper = writeGeminiChatEmptyCandidatesError(
+    new Request("http://local/v1/images/generations", { headers: { "x-oneapi-request-id": "hop470-helper" } }),
+    500,
+    "no images generated",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(helper.status, 500);
+  assert.deepEqual(await helper.json(), {
+    error: {
+      message: "no images generated",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "198.51.100.402" });
+  await mergeModelRatio(new Store(e.DB), {
+    "imagen-hop470": 1,
+    "hop470-gemini": 1,
+    "imagen-hop470-adv": 1,
+    "hop470-gemini-adv": 1,
+    "imagen-hop470-stay": 1,
+  });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const createdGemini = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.403" },
+      body: JSON.stringify({
+        name: "hop470-gemini",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey-hop470",
+        models: "imagen-hop470,hop470-gemini",
+        group: "default",
+        status_code_mapping: JSON.stringify({ "500": "503" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(createdGemini.body.success, true, createdGemini.text);
+
+  const createdAdv = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.404" },
+      body: JSON.stringify({
+        name: "hop470-adv-imagen",
+        type: CHANNEL_TYPE_ADVANCED_CUSTOM,
+        key: "sk-hop470",
+        models: "imagen-hop470-adv,hop470-gemini-adv",
+        group: "default",
+        base_url: "https://generativelanguage.googleapis.com",
+        settings: JSON.stringify({
+          advanced_custom: {
+            advanced_routes: [
+              {
+                incoming_path: "/v1/chat/completions",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:predict",
+                converter: "openai_chat_completions_to_gemini_generate_content",
+                models: ["imagen-hop470-adv", "hop470-gemini-adv"],
+              },
+              {
+                incoming_path: "/v1/responses",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                converter: "openai_responses_to_gemini_generate_content",
+                models: ["imagen-hop470-adv"],
+              },
+            ],
+          },
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(createdAdv.body.success, true, createdAdv.text);
+
+  const createdStay = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.406" },
+      body: JSON.stringify({
+        name: "hop470-gemini-stay",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey-hop470-stay",
+        models: "imagen-hop470-stay",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(createdStay.body.success, true, createdStay.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("generativelanguage.googleapis.com")) return origFetch(input, init);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("not-json-hop448-stay-470") || raw.includes("not-json-hop453-stay-470")) {
+      return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("chat-hop466-stay-470")) {
+      return new Response(JSON.stringify({ candidates: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (raw.includes("hello-hop465-stay-470")) {
+      return new Response(JSON.stringify({ candidates: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ predictions: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const empty = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.407", "x-oneapi-request-id": "hop470-imagen-empty" },
+        body: JSON.stringify({ model: "imagen-hop470", prompt: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(empty.res.status, 503, empty.text);
+    assert.equal("type" in empty.body && empty.body.type === "error", false, empty.text);
+    const emptyErr = empty.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(emptyErr.message, "no images generated");
+    assert.equal(emptyErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(emptyErr.param, "");
+    assert.equal(emptyErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(empty.text.includes("(request id: hop470-imagen-empty)"), false, empty.text);
+    assert.equal(empty.text.includes("new_api_error"), false, empty.text);
+
+    const chatEmpty = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.408", "x-oneapi-request-id": "hop470-chat-empty" },
+        body: JSON.stringify({
+          model: "imagen-hop470",
+          messages: [{ role: "user", content: "hello-chat" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chatEmpty.res.status, 503, chatEmpty.text);
+    const chatEmptyErr = chatEmpty.body.error as { message: string; type: string };
+    assert.equal(chatEmptyErr.message, "no images generated");
+    assert.equal(chatEmptyErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(chatEmpty.text.includes("(request id: hop470-chat-empty)"), false, chatEmpty.text);
+
+    const streamEmpty = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.409",
+          "x-oneapi-request-id": "hop470-stream-empty",
+        },
+        body: JSON.stringify({ model: "imagen-hop470", prompt: "hello-stream", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(streamEmpty.res.status, 503, streamEmpty.text);
+    const streamEmptyErr = streamEmpty.body.error as { message: string; type: string };
+    assert.equal(streamEmptyErr.message, "no images generated");
+    assert.equal(streamEmptyErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(streamEmpty.text.includes("(request id: hop470-stream-empty)"), false, streamEmpty.text);
+
+    const advEmpty = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.411", "x-oneapi-request-id": "hop470-adv-empty" },
+        body: JSON.stringify({
+          model: "imagen-hop470-adv",
+          messages: [{ role: "user", content: "hello-adv" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(advEmpty.res.status, 500, advEmpty.text);
+    const advEmptyErr = advEmpty.body.error as { message: string; type: string };
+    assert.equal(advEmptyErr.message, "no images generated");
+    assert.equal(advEmptyErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(advEmpty.text.includes("(request id: hop470-adv-empty)"), false, advEmpty.text);
+
+    const unmarshalStay = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.412", "x-oneapi-request-id": "hop470-hop448-stay" },
+        body: JSON.stringify({ model: "imagen-hop470-stay", prompt: "not-json-hop448-stay-470" }),
+      }),
+      e,
+    );
+    assert.equal(unmarshalStay.res.status, 500, unmarshalStay.text);
+    const unmarshalErr = unmarshalStay.body.error as { message: string; type: string };
+    assert.equal(
+      unmarshalErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop470-hop448-stay"),
+    );
+    assert.equal(unmarshalErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(unmarshalStay.text.includes("no images generated"), false, unmarshalStay.text);
+
+    const advUnmarshalStay = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.413", "x-oneapi-request-id": "hop470-hop453-stay" },
+        body: JSON.stringify({
+          model: "imagen-hop470-adv",
+          messages: [{ role: "user", content: "not-json-hop453-stay-470" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(advUnmarshalStay.res.status, 500, advUnmarshalStay.text);
+    const advUnmarshalErr = advUnmarshalStay.body.error as { message: string; type: string };
+    assert.equal(
+      advUnmarshalErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop470-hop453-stay"),
+    );
+    assert.equal(advUnmarshalErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const chatStay = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.414", "x-oneapi-request-id": "hop470-hop466-stay" },
+        body: JSON.stringify({
+          model: "hop470-gemini-adv",
+          messages: [{ role: "user", content: "chat-hop466-stay-470" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chatStay.res.status, 500, chatStay.text);
+    const chatStayErr = chatStay.body.error as { message: string; type: string };
+    assert.equal(chatStayErr.message, "empty response from Gemini API");
+    assert.equal(chatStayErr.type, ERROR_CODE_EMPTY_RESPONSE);
+    assert.equal(chatStay.text.includes("no images generated"), false, chatStay.text);
+
+    const responsesStay = await send(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.416", "x-oneapi-request-id": "hop470-hop465-stay" },
+        body: JSON.stringify({ model: "imagen-hop470-adv", input: "hello-hop465-stay-470" }),
+      }),
+      e,
+    );
+    assert.equal(responsesStay.res.status, 500, responsesStay.text);
+    const responsesErr = responsesStay.body.error as { message: string; type: string };
+    assert.equal(responsesErr.message, "empty response from Gemini API");
+    assert.equal(responsesErr.type, ERROR_CODE_EMPTY_RESPONSE);
+    assert.equal(responsesStay.text.includes("no images generated"), false, responsesStay.text);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover GeminiImageHandler empty predictions gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "198.51.100.417" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.418", "x-oneapi-request-id": "hop470-vendor-create" },
+      body: JSON.stringify({ name: "hop470-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop470-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop470 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop470.some((item) => item.action === "vendor.create"), listed.text);
 });
 

@@ -79,7 +79,7 @@ function geminiAdaptorDoResponse(
   }
   if (client === "gemini") return upstreamJson;
   // Original chat-to-Gemini DoResponse uses GeminiImageHandler for imagen prefixes
-  // (hop 467 empty predictions leftover `no images generated`). Extra-OK: hop 465
+  // (hop 470 empty predictions leftover NewOpenAIError gin.H). Extra-OK: hop 465
   // `/v1/responses` stays GeminiResponsesHandler above. Extra-OK: hop 460 native
   // RelayModeGemini `:predict` copies via client === "gemini".
   if (model.startsWith("imagen")) {

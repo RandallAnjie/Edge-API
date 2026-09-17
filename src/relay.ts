@@ -49,7 +49,7 @@ import {
   getOpenAISystemRoleName,
 } from "./convert.js";
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
-import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiEmbeddingResponseUnmarshalError, geminiImageResponseUnmarshalError, geminiUpstreamToOpenAIChat, nativeGeminiEmbeddingResponseUnmarshalError, usesGeminiChatStreamUnmarshal, usesGeminiEmbeddingUnmarshal, usesGeminiImageUnmarshal, usesNativeGeminiEmbeddingUnmarshal } from "./gemini-response.js";
+import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiEmbeddingResponseUnmarshalError, geminiImageEmptyPredictionsError, geminiImageResponseUnmarshalError, geminiUpstreamToOpenAIChat, nativeGeminiEmbeddingResponseUnmarshalError, usesGeminiChatStreamUnmarshal, usesGeminiEmbeddingUnmarshal, usesGeminiImageUnmarshal, usesNativeGeminiEmbeddingUnmarshal } from "./gemini-response.js";
 import { compactUuid, looksLikeSse } from "./openai-usage.js";
 import { convertAwsClaudeRequest, isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
 import { openAIHttpMediaDialect, prefetchOpenAIHttpMedia } from "./openai-media.js";
@@ -1516,6 +1516,26 @@ function usesGeminiEmptyCandidatesHandler(
   return usesAdvancedCustomGeminiUnmarshal(channelType, mode, converter, clientFormat || "openai", mapped);
 }
 
+/**
+ * Original `GeminiImageHandler` leftover empty `predictions` `NewOpenAIError`
+ * gin.H (`no images generated`, type/code `bad_response_body`). GEMINI and
+ * Vertex RequestModeGemini non-stream imagen, plus advanced-custom chat-to-Gemini
+ * imagen (hop 467). Extra-OK: hop 454 native `:predict` stays
+ * `GeminiTextGenerationHandler`. Extra-OK: hop 457 `/v1/responses` stays
+ * `GeminiResponsesHandler`. Extra-OK: hop 455 Vertex stream imagen stays
+ * `GeminiChatStreamHandler`. Extra-OK: hop 448 leftover Unmarshal stays.
+ */
+function usesGeminiImageEmptyPredictionsHandler(
+  channelType: number,
+  mapped: string,
+  mode: string,
+  converter = "none",
+  isStream = false,
+): boolean {
+  if (usesGeminiImageUnmarshal(channelType, mapped, isStream, mode)) return true;
+  return usesAdvancedCustomGeminiImageUnmarshal(channelType, mode, converter, mapped);
+}
+
 /** Original adaptor request format after ConvertRequest; client format is InitRequestConversionChain. */
 function destinationRelayFormat(channelType: number, mode: string, viaResponses: boolean): string {
   if (viaResponses) return "openai_responses";
@@ -2760,6 +2780,18 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
           return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
         }
+        let parsedStream: Record<string, unknown> | null = null;
+        try {
+          parsedStream = JSON.parse(streamText) as Record<string, unknown>;
+        } catch {
+          parsedStream = {};
+        }
+        const emptyPred = geminiImageEmptyPredictionsError(parsedStream);
+        if (emptyPred) {
+          const status = resetNewAPIErrorStatusCode(emptyPred.status, String(channel.status_code_mapping || ""));
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, emptyPred.message.slice(0, 2000), extra);
+          return writeGeminiChatEmptyCandidatesError(opts.req, status, emptyPred.message, emptyPred.code);
+        }
         res = new Response(streamText, { status: res.status, headers: res.headers });
       }
       if (usesAdvancedCustomGeminiImageUnmarshal(channel.type, mode, advancedConverter || "none", mapped)) {
@@ -2768,6 +2800,18 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         if (unmarshalErr) {
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
           return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
+        }
+        let parsedStream: Record<string, unknown> | null = null;
+        try {
+          parsedStream = JSON.parse(streamText) as Record<string, unknown>;
+        } catch {
+          parsedStream = {};
+        }
+        const emptyPred = geminiImageEmptyPredictionsError(parsedStream);
+        if (emptyPred) {
+          const status = resetNewAPIErrorStatusCode(emptyPred.status, String(channel.status_code_mapping || ""));
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, emptyPred.message.slice(0, 2000), extra);
+          return writeGeminiChatEmptyCandidatesError(opts.req, status, emptyPred.message, emptyPred.code);
         }
         res = new Response(streamText, { status: res.status, headers: res.headers });
       }
@@ -3523,6 +3567,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       if (usesAdvancedCustomGeminiImageUnmarshal(channel.type, mode, advancedConverter || "none", mapped) && (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))) {
         parsed = {};
       }
+      if (usesGeminiImageUnmarshal(channel.type, mapped, opts.stream, mode) && (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))) {
+        parsed = {};
+      }
       if (usesNativeGeminiEmbeddingUnmarshal(channel.type, mode, path, advancedConverter || "none", clientFormat) && (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))) {
         parsed = {};
       }
@@ -3911,6 +3958,14 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           extra,
         );
         return writeGeminiChatEmptyCandidatesError(opts.req, status, empty.message, empty.code);
+      }
+    }
+    if (usesGeminiImageEmptyPredictionsHandler(channel.type, mapped, mode, advancedConverter || "none", opts.stream)) {
+      const emptyPred = geminiImageEmptyPredictionsError(parsed);
+      if (emptyPred) {
+        const status = resetNewAPIErrorStatusCode(emptyPred.status, String(channel.status_code_mapping || ""));
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, emptyPred.message.slice(0, 2000), extra);
+        return writeGeminiChatEmptyCandidatesError(opts.req, status, emptyPred.message, emptyPred.code);
       }
     }
     if (usesOpenAIAdaptor(channel.type) && usesOpenaiHandlerGetOpenAIError(openaiUnmarshalMode)) {
