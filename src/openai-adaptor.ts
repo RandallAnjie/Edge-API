@@ -1038,6 +1038,40 @@ export function volcResponseUnmarshalError(text: string, mode = "chat"): string 
 }
 
 /**
+ * Original `minimax.Adaptor.DoResponse` default path delegates to
+ * `openai.Adaptor.DoResponse`. Claude format uses `claude.Adaptor.DoResponse`
+ * (`clientFormat === "openai"` gate in relay). Non-stream chat uses
+ * `openai.OpenaiHandler` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Completions / embeddings / rerank GetRequestURL
+ * is `unsupported relay mode` before DoResponse. Images stay
+ * `miniMaxImageHandler`. Audio speech stays `handleTTSResponse` (hop 384).
+ * Stream uses `openai.OaiStreamHandler` (log/continue, not leftover gin.H).
+ * Responses Convert `"not implemented"` before DoResponse (hop 350). Extra-OK:
+ * ConvertClaudeRequest uses `claude.Adaptor`. Extra-OK: ConvertGeminiRequest
+ * `"not implemented"` stays hop 350. Extra-OK: ConvertRerankRequest `nil, nil`
+ * leftover. Extra-OK: hop 398 Volc stays.
+ */
+export function usesMiniMaxUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_MINIMAX) return false;
+  switch (mode) {
+    case "chat":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` for MiniMax OpenAI-format chat. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function miniMaxResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
