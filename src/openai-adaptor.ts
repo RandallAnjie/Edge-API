@@ -4,6 +4,7 @@ import { advancedCustomOpenaiShapedInbound } from "./advanced-custom-response.js
 import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import { supportsAliAnthropicMessages } from "./ali-convert.js";
+import { isChannelSpecialBase } from "./catalog.js";
 import { vertexRequestMode } from "./vertex-convert.js";
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
@@ -1105,6 +1106,29 @@ export function usesVolcUnmarshal(channelType: number, mode: string): boolean {
  */
 export function volcResponseUnmarshalError(text: string, mode = "chat"): string | null {
   return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
+ * Original Volc Claude-format `volcengine.Adaptor.DoResponse` delegates to
+ * `claude.Adaptor.DoResponse` when `ChannelSpecialBases[base_url]`
+ * (`ClaudeHandler` `HandleClaudeResponseData` `common.Unmarshal` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI format and
+ * Claude format without a special base stay hop 398. TTS stays hop 356 /
+ * Volc TTS Extra-OK. Extra-OK: hop 416 Ali Claude stays.
+ */
+export function usesVolcClaudeUnmarshal(channelType: number, mode: string, baseUrl?: string | null): boolean {
+  if (!usesVolcUnmarshal(channelType, mode)) return false;
+  return isChannelSpecialBase(baseUrl || "");
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for Volc special-base Claude-format. Syntax errors
+ * match `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function volcClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
 }
 
 /**
