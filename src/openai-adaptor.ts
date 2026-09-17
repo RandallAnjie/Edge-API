@@ -773,6 +773,45 @@ export function perplexityResponseUnmarshalError(text: string, mode = "chat"): s
 }
 
 /**
+ * Original `siliconflow.Adaptor.DoResponse` non-rerank path always delegates
+ * to `openai.Adaptor.DoResponse`. Non-stream chat / completions / embeddings
+ * use `openai.OpenaiHandler` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Images Convert succeeds then
+ * `OpenaiImageHandler` (`dto.SimpleResponse`). Rerank stays
+ * `siliconflowRerankHandler` (hop 367). Stream uses `openai.OaiStreamHandler`
+ * (log/continue, not leftover gin.H). Responses Convert `"not implemented"`
+ * before DoResponse (hop 350). Extra-OK: ConvertClaudeRequest delegates to
+ * `openai.Adaptor`. Extra-OK: ConvertGeminiRequest `"not implemented"` stays
+ * hop 350. Extra-OK: audio Convert delegates then `OpenaiTTSHandler` /
+ * `OpenaiSTTHandler` stay Extra-OK. Extra-OK: hop 391 Perplexity stays.
+ */
+export function usesSiliconflowUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_SILICONFLOW) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` / `dto.SimpleResponse` for Siliconflow non-rerank.
+ * Syntax errors match `encoding/json`. JSON `null` succeeds as a zero-value
+ * struct. Extra-OK: nested field type mismatches are left to convert
+ * (original fails).
+ */
+export function siliconflowResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
