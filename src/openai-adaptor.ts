@@ -1614,7 +1614,8 @@ export function sub2apiResponseUnmarshalError(text: string, mode = "chat"): stri
  * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI format stays
  * hop 403 (`clientFormat === "openai"` gate). Gemini format stays
  * `gemini.Adaptor`. Audio / rerank Convert `"endpoint not supported"` before
- * DoResponse (hop 350). Extra-OK: hop 413 newapi Claude stays.
+ * DoResponse (hop 350). Extra-OK: hop 413 newapi Claude stays. Stream stays hop
+ * 432 (`ClaudeStreamHandler`). Extra-OK: hop 431 newapi stream stays.
  */
 export function usesSub2apiClaudeUnmarshal(channelType: number, mode: string): boolean {
   return usesSub2apiUnmarshal(channelType, mode);
@@ -1628,6 +1629,27 @@ export function usesSub2apiClaudeUnmarshal(channelType: number, mode: string): b
  */
 export function sub2apiClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original sub2api Claude-format stream `sub2api.Adaptor` embeds
+ * `newapi.Adaptor`, so `DoResponse` delegates to `claude.Adaptor.DoResponse`
+ * (`ClaudeStreamHandler` `HandleStreamResponseData` `UnmarshalJsonStr`
+ * `NewError` `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`).
+ * OpenAI-format stream stays Extra-OK `OaiStreamHandler` log/continue.
+ * Responses stream stays `ClaudeResponsesStreamHandler` (later hop,
+ * `NewOpenAIError`). Extra-OK: hop 414 non-stream `ClaudeHandler` stays.
+ * Extra-OK: hop 431 newapi stream stays. Extra-OK: hop 422 Anthropic stream
+ * stays.
+ */
+export function usesSub2apiClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  return usesSub2apiClaudeUnmarshal(channelType, mode);
 }
 
 /**
