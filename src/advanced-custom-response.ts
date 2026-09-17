@@ -12,6 +12,7 @@ import {
 } from "./advanced-custom-convert.js";
 import { openaiFromAnthropicResponse } from "./claude-response.js";
 import { openaiFromGeminiResponse } from "./gemini-response.js";
+import { isGeminiEmbeddingModel, openaiFromGeminiEmbedding } from "./gemini-convert.js";
 import { openaiFromImagenResponse } from "./vertex-convert.js";
 import {
   chatCompletionToResponsesResponse,
@@ -83,6 +84,15 @@ function geminiAdaptorDoResponse(
   // RelayModeGemini `:predict` copies via client === "gemini".
   if (model.startsWith("imagen")) {
     return openaiFromImagenResponse(upstreamJson, { created: opts.created });
+  }
+  // Original chat-to-Gemini DoResponse uses GeminiEmbeddingHandler for
+  // embedding-model prefixes (hop 468 OpenAI embedding JSON). Extra-OK: hop 458
+  // `/v1/responses` stays GeminiResponsesHandler above. Extra-OK: hop 463 Vertex
+  // RequestModeGemini stays GeminiChatHandler (not this adaptor).
+  if (isGeminiEmbeddingModel(model)) {
+    return openaiFromGeminiEmbedding(upstreamJson, model, {
+      fallbackPromptTokens: opts.fallbackPromptTokens,
+    });
   }
   return openaiFromGeminiResponse(upstreamJson, model, {
     id: chatCompletionId(opts, ""),

@@ -27,6 +27,7 @@ import {
   shouldChatCompletionsUseResponsesPolicy,
   type ChatCompletionsToResponsesPolicy,
   openaiFromGeminiEmbedding,
+  isGeminiEmbeddingModel,
   openaiFromGeminiResponse,
   openaiChatToClaudeResponse,
   openaiChatToGeminiResponse,
@@ -1074,6 +1075,11 @@ async function convertInbound(
   }
   if (client === "openai" && kind === "gemini") {
     if (model.startsWith("imagen") && opts.relayMode !== "responses") return openaiFromImagenResponse(upstreamJson, { created: opts.created });
+    // Original GeminiEmbeddingHandler for embedding-model prefixes even on
+    // /v1/chat/completions (RelayModeResponses / RelayModeGemini stay first).
+    if (isGeminiEmbeddingModel(model) && opts.relayMode !== "responses" && opts.relayMode !== "gemini") {
+      return openaiFromGeminiEmbedding(upstreamJson, model, { fallbackPromptTokens: opts.fallbackPromptTokens });
+    }
     if (opts.relayMode === "embeddings") {
       return openaiFromGeminiEmbedding(upstreamJson, model, { fallbackPromptTokens: opts.fallbackPromptTokens });
     }

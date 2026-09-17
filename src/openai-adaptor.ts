@@ -1926,7 +1926,9 @@ export function usesAdvancedCustomGeminiUnmarshal(
  * Extra-OK: hop 449 Gemini channel `GeminiEmbeddingHandler` stays.
  * Extra-OK: hop 420 non-embedding `GeminiChatHandler` stays. Extra-OK: hop 462
  * native `RelayModeGemini` `:generateContent` embedding prefixes stay
- * `GeminiTextGenerationHandler` (not this handler).
+ * `GeminiTextGenerationHandler` (not this handler). Extra-OK: hop 468
+ * embedding-model prefixes convert as OpenAI embedding JSON after successful
+ * Unmarshal (`GeminiEmbeddingHandler`, even on `/v1/chat/completions`).
  */
 export function usesAdvancedCustomGeminiEmbeddingUnmarshal(
   channelType: number,
@@ -1959,7 +1961,9 @@ export function usesAdvancedCustomGeminiEmbeddingUnmarshal(
  * hop 451 embedding-model `GeminiEmbeddingHandler` stays. Extra-OK: hop 460
  * native `RelayModeGemini` `:predict` imagen `GeminiTextGenerationHandler` stays.
  * Extra-OK: hop 467 empty `predictions` leftover `no images generated` stays
- * convert after successful Unmarshal (same as hop 448 GEMINI).
+ * convert after successful Unmarshal (same as hop 448 GEMINI). Extra-OK: hop 468
+ * embedding-model prefixes convert as OpenAI embedding JSON after successful
+ * Unmarshal (`GeminiEmbeddingHandler`).
  */
 export function usesAdvancedCustomGeminiImageUnmarshal(
   channelType: number,

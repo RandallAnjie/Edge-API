@@ -1491,6 +1491,8 @@ export function geminiImageResponseUnmarshalError(text: string): string | null {
  * hop 461 native `RelayModeGemini` `:generateContent` embedding prefixes stay
  * `GeminiTextGenerationHandler` (not this handler). Extra-OK: hop 463 Vertex
  * RequestModeGemini OpenAI-format embedding prefixes stay `GeminiChatHandler`.
+ * Extra-OK: hop 468 OpenAI-format embedding prefixes convert as OpenAI
+ * embedding JSON after successful Unmarshal even on `/v1/chat/completions`.
  */
 export function usesGeminiEmbeddingUnmarshal(
   channelType: number,

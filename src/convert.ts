@@ -491,6 +491,7 @@ export {
   convertOpenAIChatToGemini,
   convertGeminiEmbeddingRequest,
   openaiFromGeminiEmbedding,
+  isGeminiEmbeddingModel,
   applyGeminiChannelSystemPrompt,
 } from "./gemini-convert.js";
 export {
