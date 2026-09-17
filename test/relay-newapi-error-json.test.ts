@@ -19441,7 +19441,7 @@ test("original leftover native GeminiTextGenerationHandler Unmarshal NewOpenAIEr
   assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop461", "embeddings", true), false);
   assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop461", "responses", true), false);
   assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_VERTEX, "text-embedding-hop461", "gemini", true), true);
-  assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_VERTEX, "text-embedding-hop461", "chat", true), false);
+  assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_VERTEX, "text-embedding-hop461", "chat", true), true);
   assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_GEMINI, "hop461-gemini", "gemini", true), true);
   assert.equal(usesGeminiResponsesStreamUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop461", "responses", true), true);
   assert.equal(usesGeminiResponsesStreamUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop461", "gemini", true), false);
@@ -20149,9 +20149,11 @@ test("original leftover Vertex RequestModeGemini embedding GeminiChatHandler Unm
       }),
       e,
     );
-    assert.equal(embedConvert.res.status, 400, embedConvert.text);
-    const embedErr = embedConvert.body.error as { message: string; type: string };
-    assert.ok(String(embedErr.message || embedConvert.text).includes("not implemented"), embedConvert.text);
+    assert.equal(embedConvert.res.status, 500, embedConvert.text);
+    const embedErr = embedConvert.body.error as { message: string; type: string; code: string };
+    assert.equal(embedErr.message, messageWithRequestId("not implemented", "hop463-hop350-stay"));
+    assert.equal(embedErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(embedErr.code, ERROR_CODE_CONVERT_REQUEST_FAILED);
 
     const streamHit = await send(
       new Request("http://local/v1/chat/completions", {
