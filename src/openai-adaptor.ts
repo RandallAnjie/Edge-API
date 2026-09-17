@@ -1479,6 +1479,44 @@ export function awsClaudeResponseUnmarshalError(text: string): string | null {
 }
 
 /**
+ * Original Vertex `RequestModeClaude` `vertex.Adaptor.DoResponse` delegates to
+ * `claude.Adaptor.DoResponse` (`ClaudeHandler` `HandleClaudeResponseData`
+ * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
+ * `dto.ClaudeResponse`). Gemini RequestMode stays hop 360. OpenSource stays
+ * hop 390. Audio / embeddings / responses Convert `"not implemented"` before
+ * DoResponse (hop 350). ConvertRerank is `nil,nil` leftover. Extra-OK: hop 407
+ * AWS API-key stays. Extra-OK: stream `ClaudeStreamHandler` later hop.
+ */
+export function usesVertexClaudeUnmarshal(channelType: number, mode: string, model: string): boolean {
+  if (channelType !== CHANNEL_TYPE_VERTEX) return false;
+  if (vertexRequestMode(model) !== "claude") return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "embeddings":
+    case "engines_embeddings":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for Vertex RequestModeClaude. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function vertexClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
  * Original `replicate.Adaptor.DoResponse` `common.Unmarshal` (`NewError`
  * `ErrorCodeBadResponseBody`, wrap `"replicate adaptor: failed to decode
  * response: %w"`). Chat / embeddings / audio / rerank / responses Convert is
