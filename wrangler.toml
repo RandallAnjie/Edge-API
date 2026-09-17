@@ -1,0 +1,22 @@
+name = "edge-api"
+main = "dist/worker.js"
+compatibility_date = "2026-07-05"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "edge-api"
+
+[[kv_namespaces]]
+binding = "KV"
+title = "edge-api-kv"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "edge-api-artifacts"
+
+[vars]
+SYSTEM_NAME = "Edge API"

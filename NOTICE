@@ -1,0 +1,715 @@
+new-api Notices
+
+new-api
+Copyright (c) QuantumNous and contributors.
+
+This project is licensed under the GNU Affero General Public License v3.0.
+See LICENSE for the full project license terms.
+
+==== Additional Terms under AGPLv3 Section 7 ====
+
+Pursuant to Section 7(b) of the GNU Affero General Public License version 3,
+the following reasonable legal notice and author attribution must be preserved
+by modified versions in the Appropriate Legal Notices and in any prominent
+about, legal, footer, or attribution location presented by the user interface:
+
+"Frontend design and development by New API contributors."
+
+Modified versions that present a user interface must also preserve a visible
+link to the original project in a prominent about, legal, footer, or
+attribution location:
+
+https://github.com/QuantumNous/new-api
+
+Modified versions must not misrepresent the origin of the software and must
+mark their changes in accordance with AGPLv3 Section 7(c).
+
+==== Modifications (Edge API / RandallFlare) ====
+
+This tree is a modified version of QuantumNous/new-api, rewritten to run as a
+Cloudflare Workers-compatible Worker on RandallFlare (workerd + D1 + KV +
+static assets via @bigrandall/rrangler).
+
+Material changes from upstream:
+
+- Runtime: Go/Gin + embedded React replaced by a TypeScript Worker on workerd.
+- Storage: MySQL/PostgreSQL/SQLite-via-GORM replaced by D1 (SQLite) + KV.
+- Password hashing: Argon2id/bcrypt replaced by Web Crypto PBKDF2-SHA256
+  (existing upstream password hashes are not portable). This is documented
+  PBKDF2-SHA256, not a fake Argon2 implementation.
+- Dashboard access tokens are original-shaped JWTs (HS256, iss=new-api,
+  aud=new-api-dashboard, 15-minute TTL). The HttpOnly refresh cookie
+  `new_api_refresh` is the original `sid.secret` value (Path=/api/user/auth,
+  SameSite=Strict) with rotation and AUTH_REFRESH_RACE. Security proofs are
+  original-shaped JWTs (`token_use=security_proof`, 1-minute TTL) sent as
+  `X-Security-Proof` and consumed once via hashed auth_flows rows.
+- The original QuantumNous/new-api TanStack + Rsbuild frontend is vendored
+  under web/ and served as ASSETS (public/ is the production build). It is
+  not a compact replacement SPA.
+- Channel types that require vendor SDKs or local plugins (in-process JS task
+  plugins) are exposed in the catalog and will relay when the channel is
+  OpenAI/Anthropic/Gemini compatible or uses HTTP pass-through; otherwise they
+  return a structured error. Vertex ADC uses the original HTTP path (RS256 JWT
+  + `https://www.googleapis.com/oauth2/v4/token`, no Google SDK). AWS AKSK uses
+  the original HTTP path (Bedrock `InvokeModel` / `InvokeModelWithResponseStream`
+  + SigV4 service `bedrock`, no AWS SDK). AWS ConvertClaudeRequest rewrites
+  `source.type=url` to base64 via original GetBase64Data JSON (`type`, `media_type`,
+  `data`, omit empty `url`). Extra-OK: skip gin file-source context cache, Worker
+  download proxy, ValidateSSRFProtectedFetchURL, and HEIF `decodeImageConfig`.
+  OpenAI chat/Responses ConvertRequest HTTP image, file, input_audio, and
+  video_url sources are rewritten to Claude `source.type=base64` /
+  Gemini `inlineData` via original `MediaContent.ToFileSource` + GetBase64Data
+  (`get file data failed: …` / `get file data from '…' failed: …`). Extra-OK:
+  ConvertOpenAIRequest stays sync; URL fetch runs in convertOutbound before
+  ConvertRequest. Zhipu v4, Volcengine, Perplexity, Ali, NewAPI, Sub2API, and
+  Cloudflare ConvertOpenAIResponsesRequest return the request JSON as-is (no openai.Adaptor
+  reasoning-suffix rewrite). Baidu v2 ConvertImageRequest / ConvertAudioRequest /
+  ConvertEmbeddingRequest / ConvertRerankRequest / ConvertOpenAIResponsesRequest
+  are original `not implemented`. xAI ConvertOpenAIResponsesRequest fills empty `model` from
+  UpstreamModelName and does not run openai.Adaptor reasoning-suffix stripping.
+  Volcengine TTS uses the original HTTP path
+  (`wss://openspeech.bytedance.com/api/v1/tts/ws_binary` binary frames, or
+  `{base}/v1/audio/speech` JSON `code` 3000, no Volc SDK). Xunfei SparkDesk uses the original HTTP path
+  (gorilla `Dial` handshake timeout 5s, HTTP 101 `Upgrade: websocket` to
+  `wss://spark-api.xf-yun.com/{version}/chat`, no gorilla SDK). OpenAI Realtime uses the original HTTP path
+  (gorilla `DefaultDialer` 45s, HTTP 101 `Upgrade: websocket`, `https`→`wss`, Azure
+  `/openai/realtime?deployment=` + `api-key`, preview-only `openai-beta`, Advanced Custom
+  route `https`→`wss` + route auth, OpenaiRealtimeHandler `RealtimeUsage` JSON +
+  CountTokenRealtime / PreWssConsumeQuota / PostWssConsumeQuota, no gorilla SDK).
+  Cloudflare Workers AI STT uses the original HTTP path (`ConvertAudioRequest` raw
+  `file` bytes, GetRequestURL `/client/v4/accounts/{ApiVersion}/ai/run/{model}`,
+  cfSTTHandler `{text}` from `{result.text}`, ResponseText2Usage completion tokens).
+  Extra-OK: STT prompt tokens skip original `GetAudioDuration`.
+  OpenAI-model realtime text tokens use original `EstimateToken` (tiktoken-go is not
+  bundled). Dial-first 101 then async usage is extra-OK vs original upgrade-first
+  then blocking handler. Stripe/Epay/Creem/Waffo checkout use HTTP APIs
+  (no vendor SDK). GetTopUpInfo data keys match original `controller.GetTopUpInfo`
+  gin.H (no extra `stripe`/`epay`/`creem`/`waffo`/`quota_per_unit`/`price` fields).
+  Distributor empty-channel OpenAI errors use original `ErrorCodeModelNotFound`
+  (`model_not_found`, HTTP 503, `type: new_api_error`). Extra-OK: task-plugin and
+  Midjourney fallbacks may still surface `no_available_channel`.
+  Original `middleware.GlobalAPIRateLimit` is on by default
+  (`GLOBAL_API_RATE_LIMIT_ENABLE`, 360 req / 180s, mark `GA`, IP-keyed) on the
+  `/api` group and dashboard billing (`/dashboard/billing/*`,
+  `/v1/dashboard/billing/*`). Deny is empty HTTP 429 + `Retry-After` (memory uses
+  the full window; KV/Redis uses TTL). Redis/KV failure is empty HTTP 500 (not
+  memory fallback). Relay `/v1` (except dashboard billing) is not on this limiter.
+  Extra-OK: unmatched `/api` 404s also consume the budget. Extra-OK: KV get/put
+  is not Redis lua-atomic.
+  Original `middleware.CriticalRateLimit` is on by default (`CRITICAL_RATE_LIMIT_ENABLE`,
+  20 req / 1200s, mark `CT`, IP-keyed). Deny is empty HTTP 429 + `Retry-After`
+  (memory uses the full window; KV/Redis uses TTL). KV is the Redis path;
+  Redis/KV failure is empty HTTP 500 (not memory fallback, unlike
+  `EmailVerificationRateLimit`). Extra-OK: KV get/put is not Redis lua-atomic.
+  Original `middleware.AnonymousRequestBodyLimit` is 512 KiB by default
+  (`ANONYMOUS_REQUEST_BODY_LIMIT_KB`; negative falls back to 512; `<= 0` disables)
+  on POST setup/login/register/reset/oauth-state, payment webhooks, and epay
+  notify/return. Too-large is empty HTTP 413; body read errors are empty HTTP 400.
+  Original `middleware.UserCriticalRateLimit` shares CriticalRateLimit enable/num/
+  duration (20 req / 1200s) and is user-id keyed (`UC:{scope}`) after UserAuth
+  on email-bind, verify, user token, passkey register/verify, aff_transfer, and
+  2FA setup/enable. Deny is empty HTTP 429 + `Retry-After`. Missing user ID is
+  empty HTTP 401. Redis/KV failure is empty HTTP 500. Extra-OK: unauthenticated
+  UC routes skip the leftover empty 401 so UserAuth/requireUser JSON still runs.
+  Original `middleware.SearchRateLimit` is on by default (`SEARCH_RATE_LIMIT_ENABLE`,
+  10 req / 60s, mark `SR`, user-id keyed) on GET `/api/token/search` and
+  GET `/api/log/self/search`. Deny is empty HTTP 429 + `Retry-After`. Missing
+  user ID is empty HTTP 401. Redis/KV failure is empty HTTP 500. Extra-OK:
+  unauthenticated search routes skip the leftover empty 401 so requireUser JSON
+  still runs. GET `/api/log/search` stays AdminAuth-only and is not on this limiter.
+  Original `middleware.GlobalWebRateLimit` is on by default
+  (`GLOBAL_WEB_RATE_LIMIT_ENABLE`, 120 req / 180s, mark `GW`, IP-keyed) on
+  `SetWebRouter` NoRoute (SPA/static, unmatched `/api` `/v1` `/assets`). Deny is
+  empty HTTP 429 + `Retry-After` (memory uses the full window; KV/Redis uses TTL).
+  Redis/KV failure is empty HTTP 500 (not memory fallback). Registered `/api`,
+  relay `/v1` (except unmatched), dashboard billing, and `/pg` stay off this limiter.
+  Extra-OK: OPTIONS 204 still runs before this limiter. Extra-OK: KV get/put is
+  not Redis lua-atomic. Extra-OK: plugin-owned paths still skip this limiter
+  because original `pluginDispatcher` runs first on NoRoute.
+  Original `middleware.Cache` on `SetWebRouter` NoRoute sets `Cache-Version` to
+  the original hardcoded SHA-256 and `Cache-Control` `no-cache` for RequestURI
+  `/` otherwise `max-age=604800`. SPA index fallback overwrites Cache-Control to
+  `no-cache` (Cache-Version remains). RelayNotFound overwrites Cache-Control to
+  `no-store, no-cache, must-revalidate, private, max-age=0` (Cache-Version remains).
+  Extra-OK: plugin-owned paths skip this middleware like original `pluginDispatcher`
+  first on NoRoute. Extra-OK: GlobalWebRateLimit 429 still Abort before Cache.
+  Original `middleware.DisableCache` on security/auth routes sets
+  `Cache-Control: no-store, no-cache, must-revalidate, private, max-age=0`,
+  `Pragma: no-cache`, and `Expires: 0` (oauth state/bind/wechat/telegram/:provider,
+  verify, login/refresh/logout/passkey/2FA, user self group including token/sessions,
+  token key/batch keys, channel key, audit). Extra-OK: GA/CT/UC abort still skip
+  this middleware like original route order. POST `/api/user/register` and
+  POST `/api/oauth/wechat/bind` stay off this middleware.
+  Original `middleware.RequestId` + `middleware.Version` are global `server.Use`
+  leftover headers on every response: `X-Oneapi-Request-Id` from
+  `common.NewRequestId` (`GetTimeString` UTC + SHA-256 prefix of
+  `github.com/QuantumNous/new-api` + 8 alphanumeric) and `X-New-Api-Version`
+  from `common.Version` (default `v0.0.0`, env `VERSION` overrides). Extra-OK:
+  a client-provided `X-Oneapi-Request-Id` is honored so abort-message tests keep
+  a stable id (original always generates).   Extra-OK: JS Date has millisecond
+  precision so `UnixNano()%1e9` pads 6 trailing zeros. Extra-OK: GetStatus
+  `version` stays the worker branding string, not `v0.0.0`.
+  Original `middleware.SessionCookieOriginGuard` leftover HTTP 403
+  `{success:false,code:"AUTH_ORIGIN_FORBIDDEN",message:"request origin is not allowed"}`
+  (omit `data`) on POST `/api/user/auth/refresh` and `/logout` when
+  `SESSION_COOKIE_SECURE=true` (requires `SESSION_COOKIE_TRUSTED_URL` https
+  origins). Same-origin, trusted origin, and Referer fallback are allowed.
+  `X-Forwarded-Proto` is not trusted. Extra-OK: invalid env leaves the guard
+  off instead of original FatalLog. Extra-OK: GA still runs first. Extra-OK:
+  worker `withCors` still adds CORS headers (original api group has no CORS).
+  Extra-OK: CT/DisableCache still skip on this Abort.
+  Original `middleware.DecompressRequestMiddleware` leftover empty HTTP 400
+  on `SetRelayRouter` `router.Use` (gzip/br/zstd). GET skips; `gzip.NewReader`
+  / `zstd.NewReader` fail is `AbortWithStatus(400)` empty (no body). `br`
+  has no open-fail path. `MaxRequestBodyMB` default 128 (`MAX_REQUEST_BODY_MB`);
+  middleware fallback is 32 when `<= 0`. Successful decompress deletes
+  `Content-Encoding`. Registered `/api` stays off this middleware (SetApiRouter
+  registers before `Engine.Use`). Extra-OK: worker buffers the decompressed
+  body and sets Content-Length. Extra-OK: Node/workerd `DecompressionStream`
+  may not support `br`/`zstd`; those encodings pass through instead of a fake
+  open-fail 400.   Extra-OK: gzip inflate errors after a valid header are empty
+  400 (original would surface in `GetRequestBody`). Extra-OK: OPTIONS 204 still
+  runs before this middleware. Extra-OK: unmatched `/api` may still consume
+  GlobalAPIRateLimit before this 400.
+  Original `gin.CustomRecovery` leftover HTTP 500 gin.H
+  `{error:{message:"Panic detected, error: %v. Please submit a issue here: https://github.com/Calcium-Ion/new-api", type:"new_api_panic"}}`
+  on uncaught worker throws (Go panics). Same JSON as unused
+  `middleware.RelayPanicRecover`. Plugin inner-engine panics stay
+  `plugin_route_error`. Handler-returned 500/503 omit-data gin.H is unchanged.
+  Extra-OK: JS `Error.message` is used like Go `%v` on `error`. Extra-OK:
+  D1-missing stays worker `apiFail` 500 (not a panic). Extra-OK: RequestId and
+  Version still wrap panic responses.
+  Original `middleware.SystemPerformanceCheck` leftover HTTP 503
+  `ToClaudeError` on `/v1/messages` prefix (`{error:{type,message}}`) else
+  `ToOpenAIError` (`{error:{message,type:new_api_error,param:"",code}}`) with
+  codes `system_cpu_overloaded` / `system_memory_overloaded` /
+  `system_disk_overloaded`. Enabled default true; CPU/Memory 90 Disk 95;
+  `int(usage) > threshold`. Applied on `/pg`, relay `/v1` (before TokenAuth),
+  MJ, Gemini POST `/v1beta/models`, POST `/v1/responses`; TokenAuth then check
+  on POST `/v1/video/generations` / `/v1/videos` and plugin routes. GET
+  `/v1/models` stays off. Extra-OK: workerd has no gopsutil so live usage
+  stays 0 unless tests inject status (default zeros never trip, matching
+  original pre-monitor). Extra-OK: MaskSensitiveInfo is a no-op on these
+  messages. Extra-OK: `/pg` still runs GA after this check.
+  Original `github.com/gin-contrib/gzip` v0.0.6 `gzip.Gzip(gzip.DefaultCompression)`
+  leftover `Content-Encoding: gzip` + `Vary: Accept-Encoding` + compressed
+  `Content-Length` on the `/api` group, dashboard billing, and `SetWebRouter`
+  NoRoute when `Accept-Encoding` contains `gzip`. `Connection: Upgrade`,
+  `Accept: text/event-stream`, and `.png`/`.gif`/`.jpeg`/`.jpg` skip.
+  Registered relay `/v1` `/pg` `/mj` stay off. PluginDispatcher runs first on
+  NoRoute so plugin routes stay uncompressed. Extra-OK: worker OPTIONS 204
+  still runs before this middleware. Extra-OK: 101/204 are not wrapped.
+  Extra-OK: CompressionStream gzip bytes may differ from Go `compress/gzip`
+  headers; payloads gunzip to the same JSON.
+  Original `middleware.TokenOrTaskArtifactAccessAuth` leftover JSON on
+  GET/HEAD `/v1/tasks/:key/artifacts/:artifact_key/content`: capability
+  `?access=` is verified before any database read (HMAC-SHA256 raw-URL,
+  `CryptoSecret` = `CRYPTO_SECRET` else SessionSecret). Invalid/tampered/
+  empty/duplicate/oversized access is HTTP 404
+  `{error:{message:"Task or artifact not found",type:"artifact_not_found",code:"artifact_not_found"}}`
+  with `Cache-Control: private, no-store`. Limiter deny (invalid-rate
+  default 60/min, or global/IP/object concurrency) is HTTP 429
+  `{error:{message:"Artifact access limit exceeded",type:"rate_limit_error",code:"artifact_access_limited"}}`
+  with `Retry-After: 60`. Missing access falls through to TokenAuth.
+  `SetUpLogger` redacts `access` from the query (also on legacy
+  `/v1/videos/:id/content`). Capability handler errors collapse to the
+  same 404. Extra-OK: limiter state is WeakMap-keyed by D1 so parallel
+  npm tests isolate. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original slave `FRONTEND_BASE_URL` leftover HTTP 301 on `SetRouter` NoRoute
+  after pluginDispatcher (`c.Redirect(MovedPermanently, base+RequestURI)`).
+  Master (`NODE_TYPE != "slave"`) ignores the env and keeps SetWebRouter.
+  GET includes `Content-Type: text/html; charset=utf-8` and
+  `<a href="{html.EscapeString}">Moved Permanently</a>.\n\n`; HEAD has the
+  Content-Type without a body. No gzip, GlobalWebRateLimit, or Cache on this
+  NoRoute. Extra-OK: hop 307 unmatched `/api` may still consume
+  GlobalAPIRateLimit before this redirect. Extra-OK: worker OPTIONS 204 still
+  runs first. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `middleware.TokenOperationAudit` leftover security audit-log JSON
+  on `/api/token` write routes after UserAuth (`token.create` /
+  `token.update` / `token.status_update` / `token.delete` /
+  `token.delete_batch` / `token.key_view` / `token.key_view_batch`).
+  Category `security`, Content English (`API token creation`, …),
+  `other.op.params` allowlisted only (no bodies, keys, or raw errors),
+  `auth_method` session or access_token, empty `token_ref`. Failed writes
+  still record Success from the JSON `success` field (HTTP 200
+  `success:false`). GET reads and unauthenticated writes add no operation
+  audit. Extra-OK: CT 429 on key-view is audited when a session exists
+  (TokenOperationAudit wraps before CriticalRateLimit). Extra-OK: audit
+  write failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `middleware.beginAdminAudit` / `finishAdminAudit` leftover
+  operation audit-log JSON after AdminAuth/RootAuth on write methods
+  (POST/PUT/PATCH/DELETE). `auditRouteActions` maps METHOD+FullPath to
+  language-neutral actions (`vendor.create`, `option.reset_ratio`,
+  `performance.gc`, …); unmapped writes use `generic` with
+  `other.op.params.method/route`. Category `operation`, Content
+  `METHOD FullPath`, `other.admin_info` + `other.audit_info` (Path is the
+  gin FullPath template; route params are strings). `markAuditLogged`
+  skips the fallback when a handler already recorded a log. GET reads,
+  unauthenticated writes, and 无权访问 before AdminAuth add no operation
+  audit. Extra-OK: audit write failure must not fail the request.
+  Extra-OK: requireProof-before-requireRoot routes (channel key) begin
+  the fallback only after RootAuth succeeds. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` / `recordManageAuditFor` leftover
+  operation audit-log JSON on handler success (UpdateOption `option.update`,
+  CreateUser `user.create`, AddRedemption `redemption.create`). English
+  Content from `auditContentTemplates` (`os.Expand` `${name}`), category
+  `operation`, `other.op` + `other.admin_info` (no `audit_info`), Status 200
+  Success true, then `markAuditLogged` so the AdminAuth fallback is skipped.
+  Failed writes (empty option key, empty username) still use generic
+  `finishAdminAudit`. Extra-OK: hop 323 vendor.create/delete fallback tests
+  stay on `auditRouteActions` (original vendor handlers use
+  `vendor.metadata.save`). Extra-OK: audit write failure must not fail the
+  request. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAuditFor` leftover operation audit-log
+  JSON on UpdateUser `user.update`, DeleteUser `user.delete`, ManageUser
+  `user.manage` (disable/enable/delete/promote/demote), and
+  AdminClearUserBinding `user.binding_clear`. English Content from
+  `auditContentTemplates`, `other.op` + `other.admin_info` (no `audit_info`),
+  gin FullPath on `route` (`/api/user/:id`, `/api/user/:id/bindings/:binding_type`),
+  then `markAuditLogged`. Failed writes still use generic `finishAdminAudit`.
+  Extra-OK: hop 323 vendor.create/delete fallback tests stay unchanged.
+  Extra-OK: audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.manageUserQuota` leftover operation audit-log JSON
+  on ManageUser `add_quota` (success and failure). Actions
+  `user.quota_add` / `user.quota_subtract` / `user.quota_override` / `generic`;
+  failed Content is `Failed user quota adjustment`; `other.audit_info.Path`
+  is empty. Success is `{success:true,message:""}` with no `data` and also
+  writes `RecordLogWithAdminInfo` LogTypeTopup. Extra-OK: hop 323
+  vendor.create/delete fallback tests stay unchanged. Extra-OK: audit
+  write failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on AddChannel `channel.create` (“Created channel ${name} (type ${type},
+  count ${count})”). Params are `name`/`type`/`count` plus
+  `base_url_source=plugin_default` when a task-plugin channel has an empty
+  BaseURL. Category `operation`, `other.op` + `other.admin_info` (no
+  `audit_info`), Status 200 Success true, then `markAuditLogged`. Failed
+  writes (unsupported mode) still use generic `finishAdminAudit`. Extra-OK:
+  unwrapped `{name,type,key,mode}` bodies and success `data.id` stay as
+  existing tests require. Extra-OK: hop 323 vendor.create/delete fallback
+  tests stay unchanged. Extra-OK: audit write failure must not fail the
+  request. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on UpdateChannel `channel.update`, DeleteChannel `channel.delete`,
+  CopyChannel `channel.copy`, and GetChannelKey `channel.key_view`. English
+  Content from `auditContentTemplates`; `changed_fields` compares the
+  post-reload stored models/group/type/base_url (and key only when
+  non-empty and different) and never includes `name`; `base_url_source=
+  plugin_default` uses the REQUEST type/BaseURL (omitted type is 0, not
+  plugin). Delete uses `strconv.Atoi` ignore-err (invalid → 0) and still
+  audits missing channels with empty `name`. Copy params are
+  `sourceId`/`id`/`name` (clone name). Key view params are `{id,name}`
+  after RootAuth+CT+proof; the key is never stored in audit JSON. Failed
+  PUT `status` still uses generic `finishAdminAudit`. Extra-OK: Delete
+  success `data:null` (original omits `data`). Extra-OK: GetChannelKey
+  invalid-id stays 400 `SECURITY_CONTEXT_INVALID`. Extra-OK: hop 323
+  vendor.create/delete fallback tests stay unchanged. Extra-OK: audit
+  write failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on UpdateChannelStatus `channel.status_update`, BatchUpdateChannelStatus
+  `channel.status_update_batch`, DeleteDisabledChannel `channel.delete_disabled`,
+  and DeleteChannelBatch `channel.delete_batch`. Status actions have no
+  `auditContentTemplates` entry so Content is the action string; params are
+  `{id,status,changed}` / `{count,total,status}`. Delete-disabled/batch
+  English templates use `${count}`. Failed invalid-id/empty-ids still use
+  generic `finishAdminAudit`. Extra-OK: hop 323 vendor.create/delete
+  fallback tests stay unchanged. Extra-OK: audit write failure must not
+  fail the request. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on DisableTagChannels `channel.tag_disable`, EnableTagChannels
+  `channel.tag_enable`, EditTagChannels `channel.tag_edit` (`{tag}` only),
+  BatchSetChannelTag `channel.tag_batch_set` (`{count:len(ids)}`),
+  ManageMultiKeys `channel.multi_key_manage` (`{action,id}` before the
+  switch; `get_key_status` is `markAuditLogged` only),
+  ApplyChannelUpstreamModelUpdates `channel.upstream_apply` (`{id}`),
+  ApplyAllChannelUpstreamModelUpdates `channel.upstream_apply_all`
+  (`{count:len(results)}`), and DetectAllChannelUpstreamModelUpdates
+  `channel.upstream_detect_all` (`{task_id}`). Detect-all has no
+  `auditContentTemplates` entry so Content is the action string. Failed
+  bind/missing-channel/409 still use generic `finishAdminAudit`. Extra-OK:
+  hop 323 vendor.create/delete fallback tests stay unchanged. Extra-OK:
+  audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on DeleteModelMeta `model.delete` and BatchDeleteModelMeta
+  `model.delete_batch`. Neither action is in `auditContentTemplates` so
+  Content is the action string. Params are `model_ids` /
+  `remove_from_channels` / `remove_pricing` / `updated_channels`. Category
+  `operation`, `other.op` + `other.admin_info` (no `audit_info`), Status
+  200 Success true, then `markAuditLogged`. Failed ParseBool on DELETE
+  `/api/models/:id` still uses `auditRouteActions` `model.delete` fallback
+  (`DELETE /api/models/:id`). Failed empty POST `/api/models/delete` still
+  uses generic `finishAdminAudit`. Extra-OK: hop 323 vendor.create/delete
+  fallback tests stay unchanged. Extra-OK: audit write failure must not
+  fail the request. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on DeleteRedemptionBatch `redemption.delete_batch` (`count` / `total` /
+  `requested_redemption_ids`; Content “Batch deleted ${count} redemption
+  codes”), AdminDisable2FA `user.2fa_disable` (nil params plus
+  `target_user_id` when target≠operator; Content “Force-disabled two-factor
+  authentication for the user”), AdminResetPasskey `user.reset_passkey`
+  (`{username,id}` plus `target_user_id`; Content “Reset the user passkey”),
+  AdminResetPlanSubscriptions `subscription.plan_reset`, and
+  AdminResetUserSubscriptionsByPlan `subscription.user_plan_reset`
+  (`plan_id` / `plan_title` / `reset_count` / `user_count` /
+  `advance_reset_time`; `PlanTitle` is `json:"-"` so API JSON omits it;
+  user path also stores `target_user_id`). Category `operation`,
+  `other.op` + `other.admin_info` (no `audit_info`), Status 200 Success
+  true, then `markAuditLogged`. Failed redemption bind still uses
+  `auditRouteActions` `redemption.delete_batch` fallback
+  (`POST /api/redemption/batch`). Failed invalid-id reset_passkey still
+  uses `user.reset_passkey` fallback (`DELETE /api/user/:id/reset_passkey`).
+  Failed 2FA disable / subscription reset still use generic
+  `finishAdminAudit`. Extra-OK: hop 323 vendor.create/delete fallback
+  tests stay unchanged. Extra-OK: audit write failure must not fail the
+  request. requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on UpdateModelPricingConfig `model.pricing.update` (`{models}` from
+  request change names; no `auditContentTemplates` entry so Content is the
+  action string) and SyncUpstreamModels `model.metadata.sync`
+  (`created_models` / `updated_models` / `created_vendors`). Category
+  `operation`, `other.op` + `other.admin_info` (no `audit_info`), Status
+  200 Success true, then `markAuditLogged`. Failed empty PATCH
+  `/api/option/model_pricing` still uses generic `finishAdminAudit`. Failed
+  empty POST `/api/models/sync_upstream` still uses `auditRouteActions`
+  `model.sync_upstream` fallback (`POST /api/models/sync_upstream`).
+  Extra-OK: hop 323 vendor.create/delete fallback tests stay unchanged.
+  Extra-OK: audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordPasskeyDomainAudit` leftover operation audit-log
+  JSON on UpdatePasskeyDomains and UpdateOption passkey-domain keys
+  (`option.passkey_domains` / `_confirmed` / `_blocked` / `_failed`).
+  English Content from `auditContentTemplates`, category `operation`,
+  `other.op` + `other.admin_info` + `other.audit_info` (Method/Route/Path
+  = gin FullPath `/api/option/passkey/domains` or `/api/option/`,
+  Status=`Writer.Status` after `writePasskeyDomainSettingsError`,
+  Success=`err==nil`), then `markAuditLogged`. Preview does not call
+  `recordPasskeyDomainAudit`. Params are `success`/`confirmed` plus
+  `domains` (joined RemovedRPIDs) / `removed_rp_ids` / `known` / `unknown`
+  / `previous_rp_id` / `effective_rp_id` when change is non-nil.
+  Original `controller.recordUserSecurityAudit` leftover security audit-log
+  JSON on GenerateAccessToken `access_token.generate` (GET and POST
+  `/api/user/token`) and RevokeAccessToken `access_token.revoke` (only when
+  fingerprint ref != ""). Category `security`, no `admin_info`, no
+  `audit_info` (params lack a bool `success`), Status 200 Success true,
+  `AuditLog.TokenRef` empty, fingerprint only in `other.op.params.token_ref`,
+  `auth_method` session/access_token from gin. Failed empty PUT
+  `/api/option/passkey/domains` still uses generic `finishAdminAudit`.
+  Extra-OK: hop 323 vendor.create/delete fallback tests stay unchanged.
+  Extra-OK: audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordUserSecurityAudit` leftover security audit-log
+  JSON on Setup2FA `user.2fa_setup`, Enable2FA `user.2fa_enable`, Disable2FA
+  `user.2fa_disable_self`, RegenerateBackupCodes `user.2fa_backup_codes`,
+  PasskeyRegisterFinish `user.passkey_register`, and PasskeyDelete
+  `user.passkey_delete`. Nil params so `other.op` is `{action}` without
+  `params`, no `admin_info`, no `audit_info`, category `security`, Status
+  200 Success true, English Content from templates, gin FullPath
+  `/api/user/2fa/setup` / `enable` / `disable` / `backup_codes`,
+  `/api/user/passkey/register/finish`, `/api/user/passkey`. Failed
+  already-enabled setup / empty enable / not-enabled disable / missing
+  passkey delete add no security audit (UserAuth has no AdminAuth
+  fallback). Extra-OK: hop 323 vendor.create/delete fallback tests stay
+  unchanged. Extra-OK: audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordUserSecurityAudit` leftover security audit-log
+  JSON on UniversalVerify `user.security_verify` (params `method`/`scope`),
+  PasskeyVerifyFinish (`method`/`scope`), and HandleOAuth verification
+  (`method`/`scope`/`provider`). No `admin_info`, no `audit_info` (params
+  lack a bool `success`), category `security`, Status 200 Success true,
+  English Content “Completed security verification”, gin FullPath
+  `/api/verify`, `/api/user/passkey/verify/finish`, `/api/oauth/:provider`.
+  Failed empty verify / invalid passkey finish / OAuth account mismatch add
+  no security audit (UserAuth has no AdminAuth fallback). Extra-OK: hop 323
+  vendor.create/delete fallback tests stay unchanged. Extra-OK: audit write
+  failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordUserSecurityAudit` leftover security audit-log
+  JSON on UpdateSelf `user.password_change` and DeleteSelf `user.account_delete`.
+  Original defer always records when a password was requested / on every
+  DeleteSelf, including failed writes. Params include bool `success` so
+  `other.audit_info` is present (Method/Route/Path = gin FullPath
+  `/api/user/self`, Status=`Writer.Status`, Success=params.success).
+  Password params also have `notification_failed`; `security_error_code`
+  is copied into `params.code` (missing proof `SECURITY_PROOF_REQUIRED`
+  HTTP 403; password policy `PASSWORD_POLICY_REJECTED` HTTP 200). Empty
+  PUT and sidebar_modules updates add no password_change audit. Extra-OK:
+  hop 323 vendor.create/delete fallback tests stay unchanged. Extra-OK:
+  audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordUserSecurityAudit` leftover security audit-log
+  JSON on EmailBindStart `user.binding_start`, EmailBindResend
+  `user.email_binding_resend`, EmailBind/WeChatBind/HandleOAuth bind
+  `user.binding_bind`, GenerateOAuthCode bind `user.binding_start`, and
+  UnbindCustomOAuth `user.binding_unbind`. Original defer always records
+  after session identity (invalid provider_id on unbind is before defer),
+  including failed writes. Params include bool `success` so
+  `other.audit_info` is present (Method/Route/Path = gin FullPath,
+  Status=`Writer.Status`, Success=params.success). Email/wechat/OAuth bind
+  and unbind also have `notification_failed`; OAuth start is
+  `{provider, success}` only. `security_error_code` is copied into
+  `params.code` when `writeSecurityOperationError` / `securityProofError`
+  set it. Unauthenticated start/bind and login-intent OAuth state add no
+  binding audit. Extra-OK: hop 323 vendor.create/delete fallback tests stay
+  unchanged. Extra-OK: audit write failure must not fail the request.
+  requireUser/requireAdmin/requireRoot and UserAuth
+  `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordLoginAudit` / `model.RecordLoginLog` leftover
+  login audit-log JSON on writeLoginResponse (password Login, setupLogin
+  WeChat/OAuth, completeVerifiedLoginResponse, PasskeyLoginFinish). Category
+  `login`, action `login`, Content `Logged in successfully via ${method}`,
+  Success true, Status 200, `auth_method` session, empty `token_ref`,
+  `other.op` `{action:"login", params:{method, optional verification_method}}`
+  plus `other.login_method` + `other.user_agent` (no `admin_info` /
+  `audit_info`). `login_method` prefers the issued session method. Failed
+  logins and login challenges add no login audit. Extra-OK: hop 323
+  vendor.create/delete fallback tests stay unchanged. Extra-OK: audit write
+  failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `controller.recordManageAudit` leftover operation audit-log JSON
+  on UpdateVendorMeta `vendor.metadata.save` (`vendor_id`/`name`) and
+  ApplyVendorOperation `vendor.{action}` (`assign`/`merge`/`delete` with
+  `source_vendor_ids`/`target_vendor_id`/`updated_model_ids`/`deleted_vendor_ids`).
+  Neither action is in `auditContentTemplates` so Content is the action
+  string. Category `operation`, `other.op` + `other.admin_info` (no
+  `audit_info`), Status 200 Success true, gin FullPath `/api/vendors/` and
+  `/api/vendors/operations`, then `markAuditLogged`. Failed missing-id PUT
+  still uses `auditRouteActions` `vendor.update` fallback. Failed missing
+  `expected_version` still uses generic `finishAdminAudit`. Extra-OK: hop
+  323 vendor.create/delete fallback tests stay unchanged. Extra-OK: audit
+  write failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `middleware.AccessTokenAudit` leftover access-token audit-log JSON
+  on valid PATs (public reads, 404 NoRoute, rate-limit rejects, and
+  authenticated writes). Category `access_token`, empty Action/Content,
+  `token_ref` fingerprint, `auth_method` access_token, gin FullPath Route
+  (empty on unmatched NoRoute so path params never enter audit JSON),
+  Success from `auditResponseSuccess` (JSON `success` then status < 400).
+  Internal dashboard JWTs (including expired / security-proof) are skipped
+  via unverified iss/aud/token_use. `ValidateAccessToken` does not require
+  USER_ENABLED. Extra-OK: hop 323 vendor.create/delete fallback tests stay
+  unchanged.   Extra-OK: registered relay `/v1` may still begin PAT audit
+  (original AccessTokenAudit is `/api` + web NoRoute). Extra-OK: audit
+  write failure must not fail the request. requireUser/requireAdmin/requireRoot
+  and UserAuth `AUTH_UNAUTHORIZED` StatusText stay unchanged.
+  Original `middleware.I18n` / `i18n.GetLangFromContext` leftover language
+  for `i18n.T` / `TranslateMessage`: auth-time user `settings.language`
+  (TokenAuth `WriteContext` / UserAuth `WriteContext` / TokenAuth lazy
+  `GetUserLanguage`) then Accept-Language then English. Unsupported tags
+  such as `"fr"` normalize to English and beat the header. Empty language
+  falls through so existing header-only zh-CN tests stay valid. UpdateSelf
+  language takes effect on the next request. TokenAuthReadOnly banned /
+  missing-user errors stay header-only (original sets `id` after those
+  checks). Extra-OK: hop 323 vendor.create/delete fallback tests stay
+  unchanged.   Extra-OK: AUTH `writeAuthSessionError` stays `http.StatusText`
+  (`Unauthorized`). requireUser/requireAdmin/requireRoot stay unchanged.
+  Original `middleware.CORS` leftover `github.com/gin-contrib/cors` v1.7.2
+  headers (`AllowAllOrigins` + `AllowCredentials`, methods
+  `GET,POST,PUT,DELETE,OPTIONS`, headers `*`, Max-Age `43200`). Empty Origin
+  and same-origin `http(s)://`+Host skip like `applyCors`. Preflight OPTIONS
+  gets methods/headers/max-age; normal responses only origin `*` +
+  credentials. Extra-OK: hop 323 vendor.create/delete fallback tests stay
+  unchanged. Extra-OK: OPTIONS 204 still runs first. Extra-OK: worker may
+  still attach CORS on registered `/api` when Origin is cross-site
+  (`SetApiRouter` registers before `Engine.Use(CORS)`).
+  requireUser/requireAdmin/requireRoot and UserAuth `AUTH_UNAUTHORIZED`
+  StatusText stay unchanged.
+  Original `middleware.ModelRequestRateLimit` is off by default (`ModelRequestRateLimitEnabled`).
+  When enabled, KV is the Redis path: success-list + token-bucket, `abortWithOpenAiMessage`
+  429 Chinese messages with empty `code` (no invented 120/min `rate_limit` + `param`).
+  Without KV the gin in-memory path returns empty HTTP 429. Extra-OK: KV get/put is not
+  Redis lua-atomic. Default `ModelRequestRateLimitSuccessCount` is original `1000`.
+  GET `/api/usage/token` runs original `middleware.TokenAuthReadOnly` then
+  `controller.GetTokenUsage`. Missing/invalid/disabled keys use gin JSON
+  (`success: false`) with original 3-way i18n (`Token not provided` /
+  `Invalid token` / `This token status is unavailable` /
+  `Database error, please contact the administrator`). GetTokenUsage
+  `{code:true,message:"ok",data:{object:"token_usage",...}}` has no `success`.
+  Extra-OK: TokenAuthReadOnly still looks up by hyphen-split key; GetTokenUsage
+  then re-reads the Bearer remainder without the channel-pin split.
+  io.net model deployments use the original HTTP API (no
+  vendor SDK). Original QuantumNous factory task plugins (`plugins/tasks/*/plugin.js`)
+  are embedded and listed/routed with original JSON (`source: "factory"`).
+  Task-plugin `plugin.js` hooks run through the original jsplugin contract
+  (forbidden syntax, host `utils`, Call/CallMember, HookError, dry-run JSON)
+  on workerd. This is not Goja/sobek; tight-loop Interrupt is the isolate CPU
+  limit.   Native plugin routes run original `PrepareTaskPluginRoute`
+  (`native.decode` / `native.render` / `native.error` JSON) before submit
+  channel distribution. Native submit uses original RelayTask
+  `buildSubmitRequest` / `parseSubmitResponse` / `native.render` JSON
+  (public `task_id`, no `clientResponse`, `X-New-Api-Other-Ratios`).
+  Native query uses original `buildQueryRequest` / `parseTaskResult` /
+  `updateVideoSingleTask` JSON (`queryContext` without `requestBody`, public
+  `task_id` in `native.render`, persisted `result_url` / `plugin_state`).
+  `/v1/videos/:task_id` retrieve uses original `ConvertToOpenAIVideo`
+  (`protocols.openai_video.render` + host-owned id/status/progress/model).
+  Original `controller.processChannelError` uses `service.ShouldDisableChannel`
+  (`channel:` codes, default disable range `401`, AutomaticDisableKeywords;
+  not status≥500). Failed attempts set `other_info.status_reason` /
+  `status_time` and `abilities.enabled=0`. `ERROR_LOG_ENABLED` RecordErrorLog
+  other JSON is public `request_path` / `error_type` / `error_code` /
+  `status_code` plus admin `use_channel` (no top-level `channel_id` /
+  `channel_name` / `channel_type`). Extra-OK: keyword match is lowercase
+  substring, not Aho-Corasick; error-log IP is empty unless RecordIpLog.
+  Original `controller.testChannelForHealthCheck` uses ShouldDisableChannel
+  plus response-time `channel:response_time_exceeded` (408) when
+  AutomaticDisableChannelEnabled and wall time exceeds ChannelDisableThreshold
+  (`0` means an impossible 10000000ms). ShouldEnableChannel requires
+  AutomaticEnableChannelEnabled (default false) and status auto-disabled.
+  Midjourney code 3 uses original UpdateChannelStatus status 2 and
+  `No available account instance`. Extra-OK: worker testChannel is a local
+  HTTP tester, not the full gin Relay helper; disable uses mapped attempt
+  errors; empty OpenAI `error.code` stays `bad_response_status_code`.
+  Original `controller.RetrieveModel` looks up only `openAIModelsMap`
+  (HTTP 200 `model_not_found` with `param:"model"` when missing, even if
+  the model is enabled on a channel) and returns the static catalog row
+  with `supported_endpoint_types: null`. Gemini `ListModels` uses original
+  `dto.GeminiModel` zero-value JSON (`baseModelId` / `supportedGenerationMethods`
+  / etc. null, `nextPageToken: null`). Extra-OK: OpenAI `ListModels` still
+  fills `supported_endpoint_types` from the pricing cache (`[]` until
+  GetPricing, not null).   Original `controller.ChannelListModels` returns the
+  static UniqBy-first catalog with `supported_endpoint_types: null` (not
+  pricing-cache or channel-type endpoint arrays). Original
+  `controller.GetSubscription` / `GetUsage` use token remain/used/expired and
+  unlimited `100000000` only when `DisplayTokenStatEnabled`; otherwise user
+  quota/`used_quota` and `access_until: 0`. Extra-OK: gin billing JSON has no
+  Cache-Control; worker `json()` still sends `no-store`. Original `model.Channel`
+  JSON omits commented-out `MaxInputTokens` (`max_input_tokens` is not a
+  Channel field). Original `billing_setting.builtinBillingExpr` includes
+  `gpt-image-2` / `gpt-image-2.5-sunburst` / `gpt-image-2.5-flare` /
+  `gpt-6-astra`; GetRatioConfig and GetOptions expose those via
+  GetBillingModeCopy / GetBillingExprCopy. Original
+  `service.BuildTieredTokenParams` + `billingexpr.ComputeTieredQuota` settle
+  those exprs (image quota `4113` with ImageTokens/CachedTokensDetails;
+  gpt-6-astra standard `7500` / boundary `510000` / long-context `1007510`)
+  and `InjectTieredBillingInfo` public log JSON (`billing_mode`, `expr_b64`,
+  `billing_tokens`, `image_cache_tokens`, `matched_tier`, `billing_unit`).
+  Original `service.GenerateTextOtherInfo` text-relay consume-log JSON always
+  includes `model_ratio`, `group_ratio`, `completion_ratio`, `cache_tokens`
+  (including `0`), `cache_ratio`, `model_price` (`-1` when ratio-billed),
+  `user_group_ratio` (`-1` without GroupGroupRatio overlay), and `frt`
+  (`-1000` until first response, matching `GenRelayInfo`). Optional public
+  fields match original (`reasoning_effort`, `is_model_mapped`,
+  `upstream_model_name`, `request_path`, `request_conversion`, `claude`,
+  `cache_creation_*`, `usage_semantic`).
+  Original `InjectTieredBillingInfo` public log JSON also includes
+  `image_count` / `fixed_price` / `request_rules` from
+  `billingexpr.ComputeTieredQuotaWithRequest` (and estimated_* fallback when
+  settlement result is nil). `tier("image", fixed(0.04)) * image_count` with
+  3 images is quota `60000` (`QuotaPerUnit` 500000). OpenAI image `n` is
+  original `ImageRequest.ImageCount` (Ali uses `parameters.n`); settlement
+  may replace it with `data.#` via `UpdateImageCount` without mutating the
+  frozen request. Extra-OK: `param()`/`header()` request-rule `_trace` uses a
+  Function-sandbox rewrite rather than expr-lang AST Patch; `hour`/`minute`
+  /`weekday`/`month`/`day` stay 0 instead of `time.Now()`.
+  Original `service.GenerateAudioOtherInfo` audio-relay consume-log JSON wraps
+  `GenerateTextOtherInfo` with `cache_tokens`/`cache_ratio` 0, then always-sets
+  `audio: true`, `audio_input`, `audio_output`, `text_input`, `text_output`,
+  `audio_ratio`, `audio_completion_ratio`. `PostAudioConsumeQuota` is used when
+  AudioHelper sees audio tokens, compatible/chat has audio tokens plus
+  `ContainsAudioRatio`/`ContainsAudioCompletionRatio`, or Responses
+  `gpt-4o-audio*` (even with zero audio tokens). Log ratios use
+  `GetAudioRatio`/`GetAudioCompletionRatio`/`GetCompletionRatio` even when
+  PriceData zeros them on usePrice/tiered_expr (`gpt-4o-mini-tts` `audio_ratio`
+  25, `completion_ratio` 20, `model_price` 0.3). WSS stays `ws: true` without
+  `audio: true`. Extra-OK: binary speech with no usage audio tokens still uses
+  `PostTextConsumeQuota` like original AudioHelper.
+  Original `helper.modelPriceHelperTiered` freezes `RelayInfo.TieredBillingSnapshot`
+  before upstream (`estimated_completion_tokens` defaults to `8192` when
+  `max_tokens` is omitted in a paid group). `TryTieredSettle` uses that
+  snapshot's `expr_string` / estimated_* even if `billing_setting.billing_expr`
+  changes mid-request. Missing tiered expressions are HTTP 400
+  `model_price_error`. Extra-OK: channel-test still builds a snapshot at settle
+  when it has no pre-consume RelayInfo.
+  Original `service.calculateTextQuotaSummary` / `PostTextConsumeQuota` bills
+  the ratio path with shopspring `QuotaFromDecimal` (half-away-from-zero,
+  documented as JS `Math.round` for non-negative quotas), OpenRouter Claude
+  prompt mutation (`prompt_tokens` logged after cache subtraction), split
+  Claude 5m/1h cache-creation ratios, OpenAI `cache_write_tokens`,
+  `tool_surcharges` (`name`/`count`/`price`, not legacy `web_search` keys),
+  and Gemini `audio_input_seperate_price`. Original
+  `RelayInfo.CountBillableToolCall` runs during Responses / OpenAI chat /
+  Claude / Gemini DoResponse (output calls, not request declarations;
+  `web_search_call` prefers declared `web_search`; custom `function_call` /
+  `tool_use` only when priced; reserved names skipped;
+  `ImageGenerationCallCounter` completed-output cap `MaxImageN`;
+  Claude `claude_web_search_requests`; Gemini grounding
+  `gemini_google_search_call`).   Extra-OK: search-preview still also bills
+  from the model-name suffix when `RelayMode` is not Responses (original
+  `calculateTextToolCallSurcharge`). Original
+  `GetAndValidOpenAIImageRequest` multipart `/v1/images/edits` parses `n` /
+  `stream` / `quality` / `parameters` into the ImageRequest body (gpt-image-1
+  quality default `standard`, default `n` 1, `strconv.ParseBool` stream).
+  Original `GetAndValidAudioRequest` requires `model` for speech and
+  transcription/translation (no whisper-1 default), defaults empty
+  `response_format` to `json` on non-speech, and `IsStream` is
+  `stream_format == "sse"`.   Original `GetAndValidateEmbeddingRequest`
+  rejects nil `input` (`input is empty`; `""` / `[]` pass) and drops
+  unknown JSON keys. Original `GetAndValidateRerankRequest` rejects
+  empty `query` / `documents`. Original `GetAndValidateGeminiRequest`
+  requires `contents` or `requests` and bounds `maxOutputTokens`.
+  Original `GetAndValidateTextRequest` requires chat `messages` unless
+  FIM `prefix`/`suffix`, defaults `web_search_options.search_context_size`
+  to `medium`, and rejects `max_tokens` above `MaxInt32/2`. Original
+  Responses `input` is required except `/v1/responses/compact`. Original
+  `GetTokenCountMeta` / `CountRequestToken` estimate pre-consume tokens
+  from Audio `Input` (rune count unless model contains `gpt`), embedding
+  `ParseInput` joined with newlines, rerank documents+query, Gemini
+  contents text, and OpenAI chat extras (`tools*8 + messages*3 + names*3 + 3`).
+  Extra-OK: OpenAI-text models use `len/4` instead of tiktoken; media
+  tokens are not fetched; transcription/translation duration is 0.
+  Extra-OK:
+  GetAndValid runs after distributor model check and before channel
+  select, so invalid bodies 400 even when no channel exists; `/v1/engines/:model/embeddings`
+  keeps Path2RelayMode embedding validation rather than original
+  RelayFormatGemini contents-required. Extra-OK: Ali `ImageCount(true)` still runs
+  after channel select.
+  HTTP PostAudio uses original
+  `calculateAudioQuota` (`QuotaFromDecimal`, details text/audio tokens,
+  map `GetCompletionRatio` / `GetAudioRatio` / `GetAudioCompletionRatio`,
+  zero `TotalTokens` unless fixed-price).
+  Original `service.attachQuotaSaturation` nests
+  `admin_info.quota_saturation` (`op`, `kind`, `original`, `clamped`) on
+  text/audio/WSS consume logs so `formatUserLogs` strips it. `TryTieredSettle`
+  `QuotaRound` overflow is `QuotaRound`/`overflow`; WSS `calculateAudioQuota`
+  uses `QuotaFromDecimal`.
+  Original consume-log `po` is `RelayInfo.ParamOverrideAudit` (`[]string`
+  lines such as `set reasoning.effort = max`), not the raw param_override
+  object. Audit follows original sensitive-path prefixes unless debug.
+  Original consume-log `stream_status` is emitted only when `IsStream`
+  (`status` ok/error, `end_reason` done|timeout|client_gone|scanner_error|
+  handler_stop|eof|panic|ping_fail, optional `end_error` / `error_count` /
+  `errors` capped at 20). Extra-OK: workerd has no StreamScanner
+  timeout/ping/client_gone goroutines; converted SSE uses the buffered
+  body to set done/eof.
+- Passkey RP IDs use original `idna.Lookup.ToASCII` then
+  `publicsuffix.EffectiveTLDPlusOne` / `PublicSuffix` (golang.org/x/net
+  v0.55.0 algorithm + PSL git d6c92f1). Passwords remain documented
+  PBKDF2-SHA256, not a fake Argon2 implementation.
+
+==== Public Suffix List ====
+
+Passkey domain validation includes a snapshot of the Public Suffix List
+(https://publicsuffix.org/) as compiled by golang.org/x/net v0.55.0
+(list git revision d6c92f1bbb7433e5db7b8405c25d4035fb8ff376). The list is
+Mozilla Public License 2.0. golang.org/x/net is BSD-3-Clause (Copyright
+2009 The Go Authors).
+
+==== End of Notices ====
