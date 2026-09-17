@@ -1316,7 +1316,9 @@ export function geminiChatResponseUnmarshalError(text: string): string | null {
  * `NewOpenAIError` `ErrorCodeBadResponseBody` into `dto.GeminiChatResponse`).
  * `GeminiResponsesStreamHandler` also calls `geminiStreamHandler` then typically
  * `FailResponsesStream` (hop 440 leftover `NewOpenAIError` when unhandled).
- * Images / embeddings / imagen / embedding models stay hop 350 Convert.
+ * Images / embeddings / OpenAI-format imagen / embedding models stay hop 350 Convert
+ * or hop 448 `GeminiImageHandler`. Native `RelayModeGemini` `:predict` imagen uses
+ * `GeminiTextGenerationStreamHandler` (hop 454).
  * Extra-OK: hop 360 non-stream `GeminiChatHandler` stays. Extra-OK: hop 422
  * Claude stream stays. Extra-OK: hop 421 responses-to-Gemini stays. Extra-OK:
  * hop 439 ClaudeResponsesStreamHandler stays.
@@ -1330,7 +1332,9 @@ export function usesGeminiChatStreamUnmarshal(
   if (!isStream) return false;
   if (mode === "responses") return false;
   if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
-  if (mapped.startsWith("imagen")) return false;
+  // Native RelayModeGemini `:predict` imagen uses GeminiTextGenerationStreamHandler
+  // (RelayModeGemini first). OpenAI-format imagen stays hop 448 GeminiImageHandler.
+  if (mapped.startsWith("imagen") && mode !== "gemini") return false;
   if (
     mapped.startsWith("text-embedding") ||
     mapped.startsWith("embedding") ||
@@ -1416,12 +1420,16 @@ export function geminiChatStreamSseUnmarshalError(text: string): string | null {
  * leftover `no images generated` stays convert after successful Unmarshal.
  * Extra-OK: hop 449 embedding-model `GeminiEmbeddingHandler` stays.
  * Extra-OK: hop 453 advanced-custom imagen `GeminiImageHandler` stays.
+ * Extra-OK: hop 454 native `RelayModeGemini` `:predict` imagen stays
+ * `GeminiTextGenerationHandler` (RelayModeGemini first).
  */
 export function usesGeminiImageUnmarshal(
   channelType: number,
   mapped: string,
   isStream = false,
+  mode = "",
 ): boolean {
+  if (mode === "gemini") return false;
   if (!String(mapped || "").startsWith("imagen")) return false;
   if (channelType === CHANNEL_TYPE_GEMINI) return true;
   if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini" && !isStream) return true;

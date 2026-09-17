@@ -1867,6 +1867,7 @@ export function usesAdvancedCustomClaudeStreamUnmarshal(
  * Extra-OK: hop 423 Gemini channel stream stays. Extra-OK: hop 436 Claude stream stays.
  * Extra-OK: hop 451 embedding-model `GeminiEmbeddingHandler` stays.
  * Extra-OK: hop 453 imagen `GeminiImageHandler` stays.
+ * Extra-OK: hop 454 native `:predict` imagen `GeminiTextGenerationHandler` stays.
  */
 export function usesAdvancedCustomGeminiUnmarshal(
   channelType: number,

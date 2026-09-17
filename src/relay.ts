@@ -1440,12 +1440,14 @@ function attachSettleUsage(
 /**
  * Original Gemini adaptor DoResponse unmarshals `dto.GeminiChatResponse` in
  * GeminiChatHandler / GeminiResponsesHandler / native GeminiTextGenerationHandler
- * (not imagen / embedding). Extra-OK: hop 448 imagen `GeminiImageHandler` stays.
- * Extra-OK: hop 449 embedding-model `GeminiEmbeddingHandler` stays.
+ * (not OpenAI-format imagen / embedding). Native `RelayModeGemini` `:predict`
+ * imagen uses `GeminiTextGenerationHandler` (hop 454). Extra-OK: hop 448
+ * OpenAI-format imagen `GeminiImageHandler` stays. Extra-OK: hop 449
+ * embedding-model `GeminiEmbeddingHandler` stays.
  */
 function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mode: string): boolean {
   if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
-  if (mapped.startsWith("imagen")) return false;
+  if (mapped.startsWith("imagen") && mode !== "gemini") return false;
   if (mapped.startsWith("text-embedding") || mapped.startsWith("embedding") || mapped.startsWith("gemini-embedding")) {
     return false;
   }
@@ -2700,7 +2702,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         res = new Response(streamText, { status: res.status, headers: res.headers });
       }
-      if (usesGeminiImageUnmarshal(channel.type, mapped, opts.stream)) {
+      if (usesGeminiImageUnmarshal(channel.type, mapped, opts.stream, mode)) {
         const streamText = await res.text();
         const unmarshalErr = geminiImageResponseUnmarshalError(streamText);
         if (unmarshalErr) {
@@ -3042,7 +3044,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
       }
     }
-    if (usesGeminiImageUnmarshal(channel.type, mapped, opts.stream)) {
+    if (usesGeminiImageUnmarshal(channel.type, mapped, opts.stream, mode)) {
       const unmarshalErr = geminiImageResponseUnmarshalError(text);
       if (unmarshalErr) {
         await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
