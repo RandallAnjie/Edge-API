@@ -915,6 +915,8 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * `writeRelayNewAPIError` instead. Extra-OK: Jimeng `jimengImageHandler`
  * unmarshal uses this envelope. Extra-OK: Jimeng chat / completions
  * `openai.OpenaiHandler` (native adaptor) unmarshal also uses this envelope.
+ * Extra-OK: Mistral chat / completions `openai.OpenaiHandler` (native adaptor)
+ * unmarshal also uses this envelope.
  * Extra-OK: Ollama `ollamaEmbeddingHandler` /
  * `ollamaChatHandler` unmarshal also uses this envelope. Extra-OK: Zhipu v4
  * `zhipu4vImageHandler` unmarshal also uses this envelope. Extra-OK: Replicate

@@ -597,6 +597,41 @@ export function jimengChatResponseUnmarshalError(text: string, mode = "chat"): s
 }
 
 /**
+ * Original `mistral.Adaptor.DoResponse` non-stream path (`openai.OpenaiHandler`
+ * `common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
+ * `openai.OaiStreamHandler` (log/continue, not leftover gin.H). Images / audio
+ * / embeddings / responses convert `"not implemented"` before DoResponse
+ * (hop 350). Extra-OK: ConvertClaudeRequest `"implement me"` / ConvertGeminiRequest
+ * `"not implemented"` stay hop 350.
+ */
+export function usesMistralChatUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_MISTRAL) return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "embeddings":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.OpenaiHandler` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` for Mistral chat / completions. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function mistralChatResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
