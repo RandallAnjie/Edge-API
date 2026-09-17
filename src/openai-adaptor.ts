@@ -1060,7 +1060,8 @@ export function aliResponseUnmarshalError(text: string, mode = "chat"): string |
  * `HandleClaudeResponseData` `common.Unmarshal` `NewError`
  * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI format and
  * Claude format without anthropic-messages models stay hop 396. Images stay
- * hop 397. Rerank stays hop 367. Extra-OK: hop 415 Ollama Claude stays.
+ * hop 397. Rerank stays hop 367. Extra-OK: hop 415 Ollama Claude stays. Stream
+ * stays hop 434 (`ClaudeStreamHandler`). Extra-OK: hop 433 Ollama stream stays.
  */
 export function usesAliClaudeUnmarshal(channelType: number, mode: string, model: string): boolean {
   if (!usesAliUnmarshal(channelType, mode)) return false;
@@ -1075,6 +1076,28 @@ export function usesAliClaudeUnmarshal(channelType: number, mode: string, model:
  */
 export function aliClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original Ali Claude-format `ali.Adaptor.DoResponse` stream delegates to
+ * `claude.Adaptor.DoResponse` when `supportsAliAnthropicMessages`
+ * (`ClaudeStreamHandler` `HandleStreamResponseData` `UnmarshalJsonStr`
+ * `NewError` `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI
+ * format and Claude format without anthropic-messages models stay Extra-OK
+ * `OaiStreamHandler` log/continue. Responses stream stays
+ * `ClaudeResponsesStreamHandler` (later hop, `NewOpenAIError`). Extra-OK: hop
+ * 416 non-stream `ClaudeHandler` stays. Extra-OK: hop 433 Ollama stream stays.
+ * Extra-OK: hop 422 Anthropic stream stays.
+ */
+export function usesAliClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  model: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  return usesAliClaudeUnmarshal(channelType, mode, model);
 }
 
 /**
