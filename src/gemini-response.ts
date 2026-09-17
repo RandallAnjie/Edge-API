@@ -1401,6 +1401,46 @@ export function geminiChatStreamSseUnmarshalError(text: string): string | null {
   return null;
 }
 
+/**
+ * Original `gemini.Adaptor.DoResponse` imagen uses `GeminiImageHandler`
+ * (`common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody` into
+ * `dto.GeminiImageResponse`) even when the client streams. Vertex RequestModeGemini
+ * imagen is non-stream only (stream stays hop 423 `GeminiChatStreamHandler`).
+ * Extra-OK: hop 360 non-imagen `GeminiChatHandler` stays. Extra-OK: hop 447
+ * OpenAI `openaiImageJSONAsStreamHandler` stays. Extra-OK: empty `predictions`
+ * leftover `no images generated` stays convert after successful Unmarshal.
+ */
+export function usesGeminiImageUnmarshal(
+  channelType: number,
+  mapped: string,
+  isStream = false,
+): boolean {
+  if (!String(mapped || "").startsWith("imagen")) return false;
+  if (channelType === CHANNEL_TYPE_GEMINI) return true;
+  if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini" && !isStream) return true;
+  return false;
+}
+
+/** Original `GeminiImageHandler` `common.Unmarshal` target type. */
+export function geminiImageUnmarshalTypeName(): string {
+  return "dto.GeminiImageResponse";
+}
+
+/**
+ * Original `GeminiImageHandler` `common.Unmarshal` into `dto.GeminiImageResponse`.
+ * Syntax errors match `encoding/json`. JSON `null` succeeds as a zero-value
+ * struct.
+ */
+export function geminiImageResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${geminiImageUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
 export function geminiUpstreamToOpenAIChat(
   text: string,
   model: string,
