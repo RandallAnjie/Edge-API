@@ -26,7 +26,14 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_XUNFEI } from "../src/constants.js";
+import {
+  CHANNEL_TYPE_GEMINI,
+  CHANNEL_TYPE_JIMENG,
+  CHANNEL_TYPE_MINIMAX,
+  CHANNEL_TYPE_OPENAI,
+  CHANNEL_TYPE_XUNFEI,
+  CHANNEL_TYPE_ZHIPU_V4,
+} from "../src/constants.js";
 import { MAX_TOKENS_LIMIT } from "../src/valid-request.js";
 import { Store } from "../src/store.js";
 import { mergeModelRatio } from "./merge-model-ratio.js";
@@ -1444,5 +1451,174 @@ test("original leftover ImageHelper quantity gin.H does not change AUTH StatusTe
   );
   const vendorItems = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItems.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover image WithOpenAIError gin.H", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.227" });
+  await mergeModelRatio(new Store(e.DB), {
+    "image-01": 1,
+    "jimeng_high_aes_general_v21_L": 1,
+    "cogview-3": 1,
+  });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const minimax = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.228" },
+      body: JSON.stringify({
+        name: "hop362-minimax",
+        type: CHANNEL_TYPE_MINIMAX,
+        key: "mk-hop362",
+        models: "image-01",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(minimax.body.success, true, minimax.text);
+  const jimeng = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.229" },
+      body: JSON.stringify({
+        name: "hop362-jimeng",
+        type: CHANNEL_TYPE_JIMENG,
+        key: "ak|sk",
+        models: "jimeng_high_aes_general_v21_L",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(jimeng.body.success, true, jimeng.text);
+  const zhipu = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.230" },
+      body: JSON.stringify({
+        name: "hop362-zhipu",
+        type: CHANNEL_TYPE_ZHIPU_V4,
+        key: "sk-z-hop362",
+        models: "cogview-3",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(zhipu.body.success, true, zhipu.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/v1/image_generation")) {
+      return new Response(
+        JSON.stringify({ base_resp: { status_code: 1002, status_msg: "sensitive content" } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("visual.volcengineapi.com")) {
+      return new Response(JSON.stringify({ code: 50429, message: "quota exceeded" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("/api/paas/v4/images/generations")) {
+      return new Response(JSON.stringify({ error: { code: "1234", message: "sensitive content" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return origFetch(input);
+  }) as typeof fetch;
+  try {
+    const mm = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.231", "x-oneapi-request-id": "hop362-minimax-image" },
+        body: JSON.stringify({ model: "image-01", prompt: "a cat", n: 1 }),
+      }),
+      e,
+    );
+    assert.equal(mm.res.status, 200, mm.text);
+    assert.equal("type" in mm.body && mm.body.type === "error", false, mm.text);
+    const mmErr = mm.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(mmErr.message, "sensitive content");
+    assert.equal(mmErr.message.includes("hop362-minimax-image"), false);
+    assert.equal(mmErr.type, "minimax_image_error");
+    assert.equal(mmErr.param, "");
+    assert.equal(mmErr.code, "1002");
+
+    const jm = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.232", "x-oneapi-request-id": "hop362-jimeng-image" },
+        body: JSON.stringify({ model: "jimeng_high_aes_general_v21_L", prompt: "a mountain" }),
+      }),
+      e,
+    );
+    assert.equal(jm.res.status, 200, jm.text);
+    assert.equal("type" in jm.body && jm.body.type === "error", false, jm.text);
+    const jmErr = jm.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(jmErr.message, "quota exceeded");
+    assert.equal(jmErr.message.includes("hop362-jimeng-image"), false);
+    assert.equal(jmErr.type, "jimeng_error");
+    assert.equal(jmErr.param, "");
+    assert.equal(jmErr.code, "50429");
+
+    const zp = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.233", "x-oneapi-request-id": "hop362-zhipu-image" },
+        body: JSON.stringify({ model: "cogview-3", prompt: "blocked" }),
+      }),
+      e,
+    );
+    assert.equal(zp.res.status, 200, zp.text);
+    assert.equal("type" in zp.body && zp.body.type === "error", false, zp.text);
+    const zpErr = zp.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(zpErr.message, "sensitive content");
+    assert.equal(zpErr.message.includes("hop362-zhipu-image"), false);
+    assert.equal(zpErr.type, "zhipu_image_error");
+    assert.equal(zpErr.param, "");
+    assert.equal(zpErr.code, "1234");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover image WithOpenAIError gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.234" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.235", "x-oneapi-request-id": "hop362-vendor-create" },
+      body: JSON.stringify({ name: "hop362-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop362-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop362 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop362.some((item) => item.action === "vendor.create"), listed.text);
 });
 

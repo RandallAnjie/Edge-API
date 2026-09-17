@@ -2893,13 +2893,21 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         return writeRelayNewAPIError(opts.req, 400, message, ERROR_CODE_INVALID_REQUEST);
       }
       const imageType = err instanceof Error ? (err as Error & { type?: string; code?: string }).type : undefined;
+      // Original leftover Relay defer `c.JSON` gin.H after image `WithOpenAIError`
+      // (`ToOpenAIError` ErrorTypeOpenAIError uses RelayError.Message, so a client
+      // request id is not appended). Extra-OK: generated RequestId is not appended
+      // (hop 314). HTTP status is upstream `resp.StatusCode`.
       if (imageType === "minimax_image_error") {
         const code = String((err as Error & { code?: string }).code || "");
-        return openaiError(400, message, code, "minimax_image_error");
+        return openaiError(res.status, message, code, "minimax_image_error");
       }
       if (imageType === "zhipu_image_error") {
         const code = String((err as Error & { code?: string }).code || "");
         return openaiError(res.status, message, code, "zhipu_image_error");
+      }
+      if (imageType === "jimeng_error") {
+        const code = String((err as Error & { code?: string }).code || "");
+        return openaiError(res.status, message, code, "jimeng_error");
       }
       const aliHandler = err instanceof Error ? (err as Error & { aliHandler?: string }).aliHandler : undefined;
       if (aliHandler === "rerank") {
@@ -2912,6 +2920,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         const code = String((err as Error & { code?: string }).code || "bad_response");
         const type = String((err as Error & { type?: string }).type || "new_api_error");
         const status = Number((err as Error & { status?: number }).status || 500);
+        if (type === "ali_error") {
+          return openaiError(status, message, code, "ali_error");
+        }
         return writeRelayNewAPIError(opts.req, status, message, code, type);
       }
       return writeRelayNewAPIError(opts.req, 500, message, "bad_response_body");
