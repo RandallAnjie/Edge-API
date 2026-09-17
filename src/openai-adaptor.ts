@@ -1358,6 +1358,31 @@ export function advancedCustomResponseUnmarshalError(text: string, mode = "chat"
 }
 
 /**
+ * Original `codex.Adaptor.DoResponse` responses uses `openai.OaiResponsesHandler`
+ * (`common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody`). Compact uses
+ * `openai.OaiResponsesCompactionHandler` (`dto.OpenAIResponsesCompactionResponse`).
+ * Stream uses `openai.OaiResponsesStreamHandler` (log/continue, not leftover
+ * gin.H). Chat / embeddings / images / audio / rerank Convert
+ * `"endpoint not supported"` before DoResponse (hop 350). Alpha search stays
+ * `AlphaSearchHelper` (`ErrorCodeInvalidRequest`). Extra-OK: ConvertClaudeRequest
+ * / ConvertGeminiRequest `"not supported"` stay hop 350. Extra-OK: hop 404
+ * advanced-custom stays.
+ */
+export function usesCodexUnmarshal(channelType: number, mode: string): boolean {
+  return channelType === CHANNEL_TYPE_CODEX && mode === "responses";
+}
+
+/**
+ * Original `openai.OaiResponsesHandler` / `OaiResponsesCompactionHandler`
+ * `common.Unmarshal` for Codex. Syntax errors match `encoding/json`. JSON
+ * `null` succeeds as a zero-value struct. Extra-OK: nested field type
+ * mismatches are left to convert (original fails).
+ */
+export function codexResponseUnmarshalError(text: string, mode = "responses"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `replicate.Adaptor.DoResponse` `common.Unmarshal` (`NewError`
  * `ErrorCodeBadResponseBody`, wrap `"replicate adaptor: failed to decode
  * response: %w"`). Chat / embeddings / audio / rerank / responses Convert is
