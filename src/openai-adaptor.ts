@@ -658,6 +658,42 @@ export function zhipuV4ImageResponseUnmarshalError(text: string): string | null 
 }
 
 /**
+ * Original `replicate.Adaptor.DoResponse` `common.Unmarshal` (`NewError`
+ * `ErrorCodeBadResponseBody`, wrap `"replicate adaptor: failed to decode
+ * response: %w"`). Chat / embeddings / audio / rerank / responses Convert is
+ * `"not implemented"` before DoResponse. Claude / Gemini Convert is
+ * `"not implemented"` (hop 350). Image edits share RelayMode images.
+ */
+export function usesReplicateUnmarshal(channelType: number, mode: string): boolean {
+  return channelType === CHANNEL_TYPE_REPLICATE && mode === "images";
+}
+
+/** Original `common.Unmarshal` target type name for Replicate DoResponse. */
+export function replicateUnmarshalTypeName(): string {
+  return "replicate.PredictionResponse";
+}
+
+/**
+ * Original `common.Unmarshal` into `replicate.PredictionResponse`, wrapped as
+ * `fmt.Errorf("replicate adaptor: failed to decode response: %w", err)`.
+ * Syntax errors match `encoding/json`. JSON `null` succeeds as a zero-value
+ * struct. Extra-OK: nested field type mismatches are left to convert
+ * (original fails).
+ */
+export function replicateResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  const inner = !parsed.ok
+    ? parsed.message
+    : parsed.value === null
+      ? null
+      : typeof parsed.value !== "object" || Array.isArray(parsed.value)
+        ? `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${replicateUnmarshalTypeName()}`
+        : null;
+  if (inner == null) return null;
+  return `replicate adaptor: failed to decode response: ${inner}`;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */

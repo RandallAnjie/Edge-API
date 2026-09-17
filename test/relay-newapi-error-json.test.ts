@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_BAIDU,
@@ -47,6 +47,7 @@ import {
   CHANNEL_TYPE_OPENAI,
   CHANNEL_TYPE_OPENROUTER,
   CHANNEL_TYPE_PALM,
+  CHANNEL_TYPE_REPLICATE,
   CHANNEL_TYPE_SILICONFLOW,
   CHANNEL_TYPE_TENCENT,
   CHANNEL_TYPE_XAI,
@@ -5052,6 +5053,145 @@ test("original leftover Zhipu v4 image Unmarshal gin.H does not change AUTH Stat
   );
   const vendorItemsHop382 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop382.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Replicate Unmarshal NewError gin.H", async () => {
+  assert.equal(usesReplicateUnmarshal(CHANNEL_TYPE_REPLICATE, "images"), true);
+  assert.equal(usesReplicateUnmarshal(CHANNEL_TYPE_REPLICATE, "chat"), false);
+  assert.equal(usesReplicateUnmarshal(CHANNEL_TYPE_REPLICATE, "embeddings"), false);
+  assert.equal(usesReplicateUnmarshal(CHANNEL_TYPE_REPLICATE, "responses"), false);
+  assert.equal(usesReplicateUnmarshal(CHANNEL_TYPE_REPLICATE, "audio_speech"), false);
+  assert.equal(usesReplicateUnmarshal(CHANNEL_TYPE_OPENAI, "images"), false);
+  assert.equal(usesReplicateUnmarshal(CHANNEL_TYPE_JIMENG, "images"), false);
+  assert.equal(
+    replicateResponseUnmarshalError("not-json"),
+    "replicate adaptor: failed to decode response: invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(
+    replicateResponseUnmarshalError("[]"),
+    "replicate adaptor: failed to decode response: json: cannot unmarshal array into Go value of type replicate.PredictionResponse",
+  );
+  assert.equal(replicateResponseUnmarshalError("null"), null);
+  assert.equal(replicateResponseUnmarshalError("{}"), null);
+
+  const imageHelper = writeRelayNewAPIError(
+    new Request("http://local/v1/images/generations", { headers: { "x-oneapi-request-id": "hop383-helper" } }),
+    500,
+    "replicate adaptor: failed to decode response: invalid character 'o' looking for beginning of value",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(imageHelper.status, 500);
+  assert.deepEqual(await imageHelper.json(), {
+    error: {
+      message:
+        "replicate adaptor: failed to decode response: invalid character 'o' looking for beginning of value (request id: hop383-helper)",
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.182" });
+  await mergeModelRatio(new Store(e.DB), { "hop383-flux": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const replicate = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.183" },
+      body: JSON.stringify({
+        name: "hop383-replicate",
+        type: CHANNEL_TYPE_REPLICATE,
+        key: "r8-hop383",
+        models: "hop383-flux",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(replicate.body.success, true, replicate.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const imageHit = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.184", "x-oneapi-request-id": "hop383-replicate-unmarshal" },
+        body: JSON.stringify({ model: "hop383-flux", prompt: "a mountain" }),
+      }),
+      e,
+    );
+    assert.equal(imageHit.res.status, 500, imageHit.text);
+    assert.equal("type" in imageHit.body && imageHit.body.type === "error", false, imageHit.text);
+    const imageErr = imageHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(
+      imageErr.message,
+      "replicate adaptor: failed to decode response: invalid character 'o' looking for beginning of value (request id: hop383-replicate-unmarshal)",
+    );
+    assert.equal(imageErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(imageErr.param, "");
+    assert.equal(imageErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const imageArray = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.185", "x-oneapi-request-id": "hop383-replicate-array" },
+        body: JSON.stringify({ model: "hop383-flux", prompt: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(imageArray.res.status, 500, imageArray.text);
+    const imageArrayErr = imageArray.body.error as { message: string; type: string };
+    assert.equal(
+      imageArrayErr.message,
+      "replicate adaptor: failed to decode response: json: cannot unmarshal array into Go value of type replicate.PredictionResponse (request id: hop383-replicate-array)",
+    );
+    assert.equal(imageArrayErr.type, ERROR_TYPE_NEW_API_ERROR);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Replicate Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.186" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.187", "x-oneapi-request-id": "hop383-vendor-create" },
+      body: JSON.stringify({ name: "hop383-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop383-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop383 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop383.some((item) => item.action === "vendor.create"), listed.text);
 });
 
 
