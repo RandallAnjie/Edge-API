@@ -1372,6 +1372,29 @@ export function newApiResponseUnmarshalError(text: string, mode = "chat"): strin
 }
 
 /**
+ * Original newapi Claude-format `newapi.Adaptor.DoResponse` delegates to
+ * `claude.Adaptor.DoResponse` (`ClaudeHandler` `HandleClaudeResponseData`
+ * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
+ * `dto.ClaudeResponse`). OpenAI format stays hop 402 (`clientFormat ===
+ * "openai"` gate). Gemini format stays `gemini.Adaptor`. Audio / rerank
+ * Convert `"endpoint not supported"` before DoResponse (hop 350). Extra-OK:
+ * hop 412 Zhipu v4 Claude stays.
+ */
+export function usesNewApiClaudeUnmarshal(channelType: number, mode: string): boolean {
+  return usesNewApiUnmarshal(channelType, mode);
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for newapi Claude-format. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function newApiClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
  * Original `sub2api.Adaptor` embeds `newapi.Adaptor`, so DoResponse is the
  * same leftover `openai.Adaptor.DoResponse` path. Claude format uses
  * `claude.Adaptor.DoResponse` (`clientFormat === "openai"` gate in relay).
