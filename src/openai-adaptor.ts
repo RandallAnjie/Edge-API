@@ -1433,6 +1433,52 @@ export function claudeHandlerResponseUnmarshalError(text: string): string | null
 }
 
 /**
+ * Original AWS API-key `aws.Adaptor.DoResponse` delegates to
+ * `claude.Adaptor.DoResponse` (`ClaudeHandler` `HandleClaudeResponseData`
+ * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
+ * `dto.ClaudeResponse`). AKSK Nova stays `handleNovaRequest` (hop 385).
+ * Images / audio / embeddings / responses Convert `"not implemented"` before
+ * DoResponse (hop 350). ConvertRerank is `nil,nil` leftover. Extra-OK: hop 406
+ * Anthropic stays. Extra-OK: AKSK Claude `awsHandler` later hop.
+ */
+export function usesAwsClaudeUnmarshal(channelType: number, mode: string, settings?: string | null): boolean {
+  if (channelType !== CHANNEL_TYPE_AWS) return false;
+  const raw = String(settings || "").trim();
+  let apiKey = false;
+  if (raw) {
+    const parsed = goUnmarshalJSON(raw);
+    if (parsed.ok && parsed.value && typeof parsed.value === "object" && !Array.isArray(parsed.value)) {
+      apiKey = (parsed.value as Record<string, unknown>).aws_key_type === "api_key";
+    }
+  }
+  if (!apiKey) return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "embeddings":
+    case "engines_embeddings":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for AWS API-key. Syntax errors match `encoding/json`.
+ * JSON `null` succeeds as a zero-value struct. Extra-OK: nested field type
+ * mismatches are left to convert (original fails).
+ */
+export function awsClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
  * Original `replicate.Adaptor.DoResponse` `common.Unmarshal` (`NewError`
  * `ErrorCodeBadResponseBody`, wrap `"replicate adaptor: failed to decode
  * response: %w"`). Chat / embeddings / audio / rerank / responses Convert is
