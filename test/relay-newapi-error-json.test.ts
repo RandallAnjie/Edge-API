@@ -22,9 +22,10 @@ import {
   resetNewAPIErrorStatusCode,
   toClaudeRelayError,
   writeGeminiChatEmptyCandidatesError,
+  writeGeminiChatUnmarshalError,
   writeRelayNewAPIError,
 } from "../src/http.js";
-import { geminiChatEmptyCandidatesError } from "../src/gemini-response.js";
+import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
 import { CHANNEL_TYPE_GEMINI, CHANNEL_TYPE_OPENAI, CHANNEL_TYPE_XUNFEI } from "../src/constants.js";
 import { MAX_TOKENS_LIMIT } from "../src/valid-request.js";
 import { Store } from "../src/store.js";
@@ -1146,6 +1147,215 @@ test("original leftover GeminiChatHandler gin.H does not change AUTH StatusText 
   assert.equal(created.body.success, true, created.text);
   const listed = await send(
     new Request("http://local/api/audit?page_size=100&request_id=hop359-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItems = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItems.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover GeminiChatHandler Unmarshal BadResponseBody gin.H", async () => {
+  const syntax = geminiChatResponseUnmarshalError("not-json");
+  assert.equal(syntax, "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    geminiChatResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type dto.GeminiChatResponse",
+  );
+  assert.equal(geminiChatResponseUnmarshalError("null"), null);
+  assert.equal(geminiChatResponseUnmarshalError("{}"), null);
+  assert.equal(geminiChatResponseUnmarshalError('{"candidates":[]}'), null);
+
+  const chatReq = new Request("http://local/v1/chat/completions", {
+    method: "POST",
+    headers: { "x-oneapi-request-id": "hop360-helper" },
+  });
+  const chatRes = writeGeminiChatUnmarshalError(chatReq, "invalid character 'o' looking for beginning of value");
+  assert.equal(chatRes.status, 500);
+  const chatBody = (await chatRes.json()) as { error: Record<string, unknown> };
+  assert.equal("type" in chatBody, false);
+  assert.deepEqual(chatBody.error, {
+    message: messageWithRequestId("invalid character 'o' looking for beginning of value", "hop360-helper"),
+    type: ERROR_CODE_BAD_RESPONSE_BODY,
+    param: "",
+    code: ERROR_CODE_BAD_RESPONSE_BODY,
+  });
+
+  const claudeReq = new Request("http://local/v1/messages", {
+    method: "POST",
+    headers: { "x-oneapi-request-id": "hop360-helper-claude" },
+  });
+  const claudeRes = writeGeminiChatUnmarshalError(claudeReq, "invalid character 'o' looking for beginning of value");
+  assert.equal(claudeRes.status, 500);
+  const claudeBody = (await claudeRes.json()) as { type: string; error: Record<string, unknown> };
+  assert.equal(claudeBody.type, "error");
+  assert.deepEqual(Object.keys(claudeBody), ["type", "error"]);
+  assert.deepEqual(Object.keys(claudeBody.error).sort(), ["message", "type"]);
+  assert.equal("param" in claudeBody.error, false);
+  assert.equal("code" in claudeBody.error, false);
+  assert.deepEqual(claudeBody.error, {
+    type: ERROR_CODE_BAD_RESPONSE_BODY,
+    message: messageWithRequestId("invalid character 'o' looking for beginning of value", "hop360-helper-claude"),
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.213" });
+  await mergeModelRatio(new Store(e.DB), { "gemini-1.0-pro": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.214" },
+      body: JSON.stringify({
+        name: "hop360-gemini",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey",
+        models: "gemini-1.0-pro",
+        group: "default",
+        status_code_mapping: JSON.stringify({ "500": "503" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("generativelanguage.googleapis.com")) return origFetch(input, init);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) return new Response("[]", { headers: { "content-type": "application/json" } });
+    return new Response("not-json", { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const chat = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.215", "x-oneapi-request-id": "hop360-chat-unmarshal" },
+        body: JSON.stringify({ model: "gemini-1.0-pro", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(chat.res.status, 500, chat.text);
+    assert.equal("type" in chat.body && chat.body.type === "error", false, chat.text);
+    const chatErr = chat.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, messageWithRequestId("invalid character 'o' looking for beginning of value", "hop360-chat-unmarshal"));
+    assert.equal(chatErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const arr = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.216", "x-oneapi-request-id": "hop360-chat-array" },
+        body: JSON.stringify({ model: "gemini-1.0-pro", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(arr.res.status, 500, arr.text);
+    const arrErr = arr.body.error as { message: string; type: string; code: string };
+    assert.equal(
+      arrErr.message,
+      messageWithRequestId("json: cannot unmarshal array into Go value of type dto.GeminiChatResponse", "hop360-chat-array"),
+    );
+    assert.equal(arrErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(arrErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const claude = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "192.0.2.217",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop360-claude-unmarshal",
+        },
+        body: JSON.stringify({
+          model: "gemini-1.0-pro",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 500, claude.text);
+    assert.equal(claude.body.type, "error");
+    const claudeErr = claude.body.error as { type: string; message: string; code?: string; param?: string };
+    assert.equal(claudeErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(
+      claudeErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop360-claude-unmarshal"),
+    );
+    assert.equal(claudeErr.code, undefined);
+    assert.equal(claudeErr.param, undefined);
+    assert.deepEqual(Object.keys(claudeErr).sort(), ["message", "type"]);
+
+    const responses = await send(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.218", "x-oneapi-request-id": "hop360-responses-unmarshal" },
+        body: JSON.stringify({ model: "gemini-1.0-pro", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(responses.res.status, 500, responses.text);
+    const responsesErr = responses.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(responsesErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(responsesErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(responsesErr.param, "");
+    assert.equal(
+      responsesErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop360-responses-unmarshal"),
+    );
+
+    const native = await send(
+      new Request("http://local/v1beta/models/gemini-1.0-pro:generateContent", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.219", "x-oneapi-request-id": "hop360-native-unmarshal" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hi" }] }] }),
+      }),
+      e,
+    );
+    assert.equal(native.res.status, 500, native.text);
+    const nativeErr = native.body.error as { message: string; type: string; code: string };
+    assert.equal(nativeErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(nativeErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(
+      nativeErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop360-native-unmarshal"),
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover GeminiChatHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.220" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.221", "x-oneapi-request-id": "hop360-vendor-create" },
+      body: JSON.stringify({ name: "hop360-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop360-vendor-create", { headers: auth }),
     e,
   );
   const vendorItems = ((listed.body.data as { items: { action: string }[] }).items || []);

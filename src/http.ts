@@ -844,6 +844,26 @@ export function writeGeminiChatEmptyCandidatesError(
   return openaiError(status, message, code, code);
 }
 
+/**
+ * Original leftover Relay defer `c.JSON` gin.H after `GeminiChatHandler` /
+ * `GeminiResponsesHandler` / native `GeminiTextGenerationHandler`
+ * `common.Unmarshal` fail (`NewOpenAIError` `ErrorCodeBadResponseBody` HTTP 500).
+ * Claude is `{type:"error",error:ToClaudeError()}` with `ErrorTypeOpenAIError`
+ * (`fmt.Sprintf("%v", OpenAIError.Code)` = `bad_response_body`). Else
+ * `{error:ToOpenAIError()}` (`type`/`code` are `bad_response_body`, `param:""`).
+ * Extra-OK: generated RequestId is not appended (hop 314); honor client header.
+ * Extra-OK: no `ResetStatusCode` (original unmarshal fail does not call it).
+ */
+export function writeGeminiChatUnmarshalError(req: Request, message: string): Response {
+  const rid = req.headers.get("x-oneapi-request-id") || "";
+  const msg = rid ? messageWithRequestId(message, rid) : message;
+  const path = new URL(req.url).pathname;
+  if (relayUsesClaudeError(path)) {
+    return json(500, { type: "error", error: { type: ERROR_CODE_BAD_RESPONSE_BODY, message: msg } });
+  }
+  return openaiError(500, msg, ERROR_CODE_BAD_RESPONSE_BODY, ERROR_CODE_BAD_RESPONSE_BODY);
+}
+
 /** Original `service.ResetStatusCode` for leftover GeminiChatHandler / GeminiResponsesHandler. */
 export function resetNewAPIErrorStatusCode(status: number, statusCodeMapping = ""): number {
   if (status === 200) return status;

@@ -48,7 +48,7 @@ import {
   getOpenAISystemRoleName,
 } from "./convert.js";
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
-import { geminiChatEmptyCandidatesError, geminiUpstreamToOpenAIChat } from "./gemini-response.js";
+import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiUpstreamToOpenAIChat } from "./gemini-response.js";
 import { compactUuid, looksLikeSse } from "./openai-usage.js";
 import { convertAwsClaudeRequest, isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
 import { openAIHttpMediaDialect, prefetchOpenAIHttpMedia } from "./openai-media.js";
@@ -132,6 +132,7 @@ import {
   relayErrorHandler,
   tokenModelForbiddenMessage,
   writeGeminiChatEmptyCandidatesError,
+  writeGeminiChatUnmarshalError,
   writeRelayNewAPIError,
 } from "./http.js";
 import { applyGetAndValidateRequest } from "./valid-request.js";
@@ -1432,11 +1433,12 @@ function attachSettleUsage(
 }
 
 /**
- * Original Gemini adaptor DoResponse uses GeminiChatHandler / GeminiResponsesHandler
- * (not native GeminiTextGenerationHandler / imagen / embedding).
+ * Original Gemini adaptor DoResponse unmarshals `dto.GeminiChatResponse` in
+ * GeminiChatHandler / GeminiResponsesHandler / native GeminiTextGenerationHandler
+ * (not imagen / embedding).
  */
-function usesGeminiEmptyCandidatesHandler(channelType: number, mapped: string, mode: string): boolean {
-  if (mode === "gemini" || mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
+function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mode: string): boolean {
+  if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
   if (mapped.startsWith("imagen")) return false;
   if (mapped.startsWith("text-embedding") || mapped.startsWith("embedding") || mapped.startsWith("gemini-embedding")) {
     return false;
@@ -1444,6 +1446,15 @@ function usesGeminiEmptyCandidatesHandler(channelType: number, mapped: string, m
   if (channelType === CHANNEL_TYPE_GEMINI) return true;
   if (channelType === CHANNEL_TYPE_VERTEX && vertexRequestMode(mapped) === "gemini") return true;
   return false;
+}
+
+/**
+ * Original Gemini adaptor DoResponse uses GeminiChatHandler / GeminiResponsesHandler
+ * leftover empty-candidates gin.H (not native GeminiTextGenerationHandler / imagen / embedding).
+ */
+function usesGeminiEmptyCandidatesHandler(channelType: number, mapped: string, mode: string): boolean {
+  if (mode === "gemini") return false;
+  return usesGeminiChatResponseUnmarshal(channelType, mapped, mode);
 }
 
 /** Original adaptor request format after ConvertRequest; client format is InitRequestConversionChain. */
@@ -2773,9 +2784,19 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     }
 
     const text = await res.text();
+    if (usesGeminiChatResponseUnmarshal(channel.type, mapped, mode)) {
+      const unmarshalErr = geminiChatResponseUnmarshalError(text);
+      if (unmarshalErr) {
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
+        return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
+      }
+    }
     let parsed: Record<string, unknown> = {};
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
+      if (usesGeminiChatResponseUnmarshal(channel.type, mapped, mode) && (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))) {
+        parsed = {};
+      }
       ingestUpstreamToolUsage(extra.toolUsage, { json: parsed });
     } catch {
       if (channel.type === CHANNEL_TYPE_OLLAMA && clientFormat === "openai" && mode !== "responses" && mode !== "embeddings") {

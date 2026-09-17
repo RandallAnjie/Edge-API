@@ -1,5 +1,6 @@
 /** Original `relaykit/relayconvert/internal/gemini_chat/to_oai_chat_resp.go` + Gemini OpenAI-format DoResponse. */
 
+import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import {
   asInt,
   asObj,
@@ -1250,7 +1251,7 @@ export type GeminiChatEmptyCandidatesError = {
  * Original `GeminiChatHandler` / `GeminiResponsesHandler` leftover when
  * `len(Candidates)==0` after HTTP 200 unmarshal (`promptFeedback.blockReason`
  * → `prompt_blocked` HTTP 400; else `empty_response` HTTP 500).
- * Extra-OK: non-array `candidates` is left to convert/unmarshal (original fails).
+ * Extra-OK: non-array `candidates` is left to convert (original Unmarshal fails).
  */
 export function geminiChatEmptyCandidatesError(
   parsed: Record<string, unknown>,
@@ -1277,6 +1278,24 @@ export function geminiChatEmptyCandidatesError(
     code: "empty_response",
     rejectReason: "gemini_empty_candidates",
   };
+}
+
+/**
+ * Original `common.Unmarshal` into `dto.GeminiChatResponse` (`GeminiChatHandler`
+ * / `GeminiResponsesHandler` / `GeminiTextGenerationHandler`). Syntax errors
+ * match `encoding/json`. JSON `null` succeeds as a zero-value struct. Non-object
+ * JSON is `json: cannot unmarshal … into Go value of type dto.GeminiChatResponse`.
+ * Extra-OK: the original UnmarshalJSON aux type name is an anonymous struct.
+ * Extra-OK: nested field type mismatches are left to convert (original fails).
+ */
+export function geminiChatResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type dto.GeminiChatResponse`;
+  }
+  return null;
 }
 
 export function geminiUpstreamToOpenAIChat(
