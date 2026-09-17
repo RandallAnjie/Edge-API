@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, mokaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesMokaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_BAIDU,
@@ -41,6 +41,7 @@ import {
   CHANNEL_TYPE_JIMENG,
   CHANNEL_TYPE_JINA,
   CHANNEL_TYPE_MINIMAX,
+  CHANNEL_TYPE_MOKA,
   CHANNEL_TYPE_OPENAI,
   CHANNEL_TYPE_OPENROUTER,
   CHANNEL_TYPE_PALM,
@@ -4111,5 +4112,132 @@ test("original leftover Dify Unmarshal gin.H does not change AUTH StatusText or 
   );
   const vendorItemsHop376 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop376.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Moka Unmarshal NewError gin.H", async () => {
+  assert.equal(usesMokaUnmarshal(CHANNEL_TYPE_MOKA, "embeddings"), true);
+  assert.equal(usesMokaUnmarshal(CHANNEL_TYPE_MOKA, "chat"), false);
+  assert.equal(usesMokaUnmarshal(CHANNEL_TYPE_OPENAI, "embeddings"), false);
+  assert.equal(mokaResponseUnmarshalError("not-json"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    mokaResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type dto.EmbeddingResponse",
+  );
+  assert.equal(mokaResponseUnmarshalError("null"), null);
+  assert.equal(mokaResponseUnmarshalError("{}"), null);
+
+  const embedHelper = writeRelayNewAPIError(
+    new Request("http://local/v1/embeddings", { headers: { "x-oneapi-request-id": "hop377-helper" } }),
+    500,
+    "invalid character 'o' looking for beginning of value",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(embedHelper.status, 500);
+  assert.deepEqual(await embedHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value (request id: hop377-helper)",
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.139" });
+  await mergeModelRatio(new Store(e.DB), { "hop377-m3e": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const moka = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.140" },
+      body: JSON.stringify({
+        name: "hop377-moka",
+        type: CHANNEL_TYPE_MOKA,
+        key: "mk-hop377",
+        models: "hop377-m3e",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(moka.body.success, true, moka.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const embedHit = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.141", "x-oneapi-request-id": "hop377-moka-unmarshal" },
+        body: JSON.stringify({ model: "hop377-m3e", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(embedHit.res.status, 500, embedHit.text);
+    assert.equal("type" in embedHit.body && embedHit.body.type === "error", false, embedHit.text);
+    const embedErr = embedHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(embedErr.message, "invalid character 'o' looking for beginning of value (request id: hop377-moka-unmarshal)");
+    assert.equal(embedErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(embedErr.param, "");
+    assert.equal(embedErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const embedArray = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.142", "x-oneapi-request-id": "hop377-moka-array" },
+        body: JSON.stringify({ model: "hop377-m3e", input: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(embedArray.res.status, 500, embedArray.text);
+    const embedArrayErr = embedArray.body.error as { message: string };
+    assert.equal(
+      embedArrayErr.message,
+      "json: cannot unmarshal array into Go value of type dto.EmbeddingResponse (request id: hop377-moka-array)",
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Moka Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.143" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.144", "x-oneapi-request-id": "hop377-vendor-create" },
+      body: JSON.stringify({ name: "hop377-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop377-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop377 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop377.some((item) => item.action === "vendor.create"), listed.text);
 });
 

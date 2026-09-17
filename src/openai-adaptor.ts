@@ -411,6 +411,35 @@ export function difyResponseUnmarshalError(text: string): string | null {
 }
 
 /**
+ * Original `mokaai.mokaEmbeddingHandler` `json.Unmarshal` (`NewError`
+ * `ErrorCodeBadResponseBody`, not `NewOpenAIError`). Chat ConvertOpenAIRequest
+ * is `"not implemented"` before DoResponse.
+ */
+export function usesMokaUnmarshal(channelType: number, mode: string): boolean {
+  return channelType === CHANNEL_TYPE_MOKA && mode === "embeddings";
+}
+
+/** Original `json.Unmarshal` target type name for Moka embeddings. */
+export function mokaUnmarshalTypeName(): string {
+  return "dto.EmbeddingResponse";
+}
+
+/**
+ * Original `json.Unmarshal` into `dto.EmbeddingResponse`. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function mokaResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${mokaUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */
