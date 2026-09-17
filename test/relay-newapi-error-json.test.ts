@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, cohereRerankResponseUnmarshalError, openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, usesAliSiliconflowRerankUnmarshal, usesCohereRerankUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, usesAliSiliconflowRerankUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_COHERE,
@@ -2706,5 +2706,148 @@ test("original leftover Cohere rerank Unmarshal gin.H does not change AUTH Statu
   );
   const vendorItemsHop368 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop368.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Cohere chat Unmarshal NewError gin.H", async () => {
+  assert.equal(usesCohereChatUnmarshal(CHANNEL_TYPE_COHERE, "chat"), true);
+  assert.equal(usesCohereChatUnmarshal(CHANNEL_TYPE_COHERE, "rerank"), false);
+  assert.equal(usesCohereChatUnmarshal(CHANNEL_TYPE_OPENAI, "chat"), false);
+  assert.equal(usesCohereChatUnmarshal(CHANNEL_TYPE_ALI, "chat"), false);
+  assert.equal(cohereChatResponseUnmarshalError("not-json"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    cohereChatResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type cohere.CohereResponseResult",
+  );
+  assert.equal(cohereChatResponseUnmarshalError("null"), null);
+  assert.equal(cohereChatResponseUnmarshalError("{}"), null);
+
+  const chatHelper = writeRelayNewAPIError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop369-helper" } }),
+    500,
+    "invalid character 'o' looking for beginning of value",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(chatHelper.status, 500);
+  assert.deepEqual(await chatHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value (request id: hop369-helper)",
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+  const chatHelperNoRid = writeRelayNewAPIError(
+    new Request("http://local/v1/chat/completions"),
+    500,
+    "invalid character 'o' looking for beginning of value",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.deepEqual(await chatHelperNoRid.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.70" });
+  await mergeModelRatio(new Store(e.DB), { "hop369-cohere-chat": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const cohereCh = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.71" },
+      body: JSON.stringify({
+        name: "hop369-cohere-chat",
+        type: CHANNEL_TYPE_COHERE,
+        key: "ck-hop369",
+        models: "hop369-cohere-chat",
+        group: "default",
+        status_code_mapping: JSON.stringify({ "500": "503" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(cohereCh.body.success, true, cohereCh.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const cohereChat = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.72", "x-oneapi-request-id": "hop369-cohere-unmarshal" },
+        body: JSON.stringify({ model: "hop369-cohere-chat", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(cohereChat.res.status, 500, cohereChat.text);
+    assert.equal("type" in cohereChat.body && cohereChat.body.type === "error", false, cohereChat.text);
+    const cohereErr = cohereChat.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(cohereErr.message, "invalid character 'o' looking for beginning of value (request id: hop369-cohere-unmarshal)");
+    assert.equal(cohereErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(cohereErr.param, "");
+    assert.equal(cohereErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const cohereArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.73", "x-oneapi-request-id": "hop369-cohere-array" },
+        body: JSON.stringify({ model: "hop369-cohere-chat", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(cohereArray.res.status, 500, cohereArray.text);
+    const cohereArrayErr = cohereArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(
+      cohereArrayErr.message,
+      "json: cannot unmarshal array into Go value of type cohere.CohereResponseResult (request id: hop369-cohere-array)",
+    );
+    assert.equal(cohereArrayErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(cohereArrayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Cohere chat Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.74" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.75", "x-oneapi-request-id": "hop369-vendor-create" },
+      body: JSON.stringify({ name: "hop369-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop369-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop369 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop369.some((item) => item.action === "vendor.create"), listed.text);
 });
 

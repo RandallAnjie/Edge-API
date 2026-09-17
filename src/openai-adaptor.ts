@@ -202,6 +202,36 @@ export function cohereRerankResponseUnmarshalError(text: string): string | null 
   return null;
 }
 
+/**
+ * Original `cohere.cohereHandler` `json.Unmarshal` (`NewError`
+ * `ErrorCodeBadResponseBody`, not `NewOpenAIError`). Stream uses
+ * `cohereStreamHandler` (line-by-line continue, not leftover gin.H).
+ */
+export function usesCohereChatUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_COHERE) return false;
+  return mode !== "rerank";
+}
+
+/** Original `json.Unmarshal` target type name for Cohere chat. */
+export function cohereChatUnmarshalTypeName(): string {
+  return "cohere.CohereResponseResult";
+}
+
+/**
+ * Original `json.Unmarshal` into `cohere.CohereResponseResult`. Syntax errors
+ * match `encoding/json`. JSON `null` succeeds as a zero-value struct.
+ * Extra-OK: nested field type mismatches are left to convert (original fails).
+ */
+export function cohereChatResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${cohereChatUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
 /** Original `common.Unmarshal` target type name for `openai.Adaptor.DoResponse`. */
 export function openaiHandlerUnmarshalTypeName(mode: string): string {
   if (mode === "images") return "dto.SimpleResponse";
