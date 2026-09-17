@@ -2276,12 +2276,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await noteAttempt(channelAttemptFromNewApi(message, 400, "invalid_request", true));
-        return openaiError(400, message, "invalid_request");
+        return writeRelayNewAPIError(opts.req, 400, message, ERROR_CODE_INVALID_REQUEST);
       }
       const outbound = refreshOutboundImageQuantity(target, previousCount, channel.type);
       if (outbound.error) {
         await noteAttempt(channelAttemptFromNewApi(outbound.error, 400, "invalid_request", true));
-        return openaiError(400, outbound.error, "invalid_request");
+        return writeRelayNewAPIError(opts.req, 400, outbound.error, ERROR_CODE_INVALID_REQUEST);
       }
       const prepared = await prepareImageBillingForRequest(store, auth, {
         count: outbound.count,

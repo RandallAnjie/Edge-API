@@ -1348,7 +1348,7 @@ test("original leftover GeminiChatHandler Unmarshal gin.H does not change AUTH S
   const created = await send(
     new Request("http://local/api/vendors/", {
       method: "POST",
-      headers: { ...auth, "cf-connecting-ip": "192.0.2.221", "x-oneapi-request-id": "hop360-vendor-create" },
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.226", "x-oneapi-request-id": "hop360-vendor-create" },
       body: JSON.stringify({ name: "hop360-vendor-create", description: "d", icon: "" }),
     }),
     e,
@@ -1356,6 +1356,90 @@ test("original leftover GeminiChatHandler Unmarshal gin.H does not change AUTH S
   assert.equal(created.body.success, true, created.text);
   const listed = await send(
     new Request("http://local/api/audit?page_size=100&request_id=hop360-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItems = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItems.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover ImageHelper quantity NewError gin.H", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.222" });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.223" },
+      body: JSON.stringify({
+        name: "hop361-image",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop361",
+        models: "dall-e-3",
+        group: "default",
+        param_override: JSON.stringify({ n: 129 }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const origFetch = globalThis.fetch;
+  let fetched = false;
+  globalThis.fetch = (async () => {
+    fetched = true;
+    return new Response("should-not-fetch");
+  }) as typeof fetch;
+  try {
+    const hit = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.224", "x-oneapi-request-id": "hop361-image-n" },
+        body: JSON.stringify({ model: "dall-e-3", prompt: "a cat", n: 1 }),
+      }),
+      e,
+    );
+    assert.equal(hit.res.status, 400, hit.text);
+    assert.equal(fetched, false);
+    assert.equal("type" in hit.body && hit.body.type === "error", false, hit.text);
+    const err = hit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(err.message, messageWithRequestId("n must be an integer between 1 and 128", "hop361-image-n"));
+    assert.equal(err.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(err.param, "");
+    assert.equal(err.code, ERROR_CODE_INVALID_REQUEST);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover ImageHelper quantity gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.225" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.226", "x-oneapi-request-id": "hop361-vendor-create" },
+      body: JSON.stringify({ name: "hop361-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop361-vendor-create", { headers: auth }),
     e,
   );
   const vendorItems = ((listed.body.data as { items: { action: string }[] }).items || []);
