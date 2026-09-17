@@ -2231,6 +2231,8 @@ export function oaiResponsesToChatBufferedStreamSseUnmarshalError(text: string):
  * as image SSE. Real SSE image streams unmarshal per-chunk with log/continue
  * (not leftover gin.H). Extra-OK: hop 365 non-stream `OpenaiImageHandler`
  * leftover gin.H stays. Extra-OK: hop 446 via-responses buffered stream stays.
+ * Extra-OK: hop 474 wraps JSON `data[]` as `image_generation.completed` SSE after
+ * successful Unmarshal (not leftover gin.H).
  */
 export function usesOpenaiImageJSONAsStreamUnmarshal(
   channelType: number,
@@ -2251,6 +2253,42 @@ export function usesOpenaiImageJSONAsStreamUnmarshal(
  */
 export function openaiImageJSONAsStreamResponseUnmarshalError(text: string): string | null {
   return openaiHandlerResponseUnmarshalError(text, "images");
+}
+
+/**
+ * Original `openaiImageJSONAsStreamHandler` after successful Unmarshal wraps
+ * JSON `data[]` as image SSE (`event: image_generation.completed` + `data: [DONE]`),
+ * not leftover gin.H and not chat SSE. Extra-OK: hop 447 leftover Unmarshal stays.
+ * Extra-OK: hop 365 non-stream `OpenaiImageHandler` leftover gin.H stays.
+ * Extra-OK: hop 472 GEMINI `GeminiImageHandler` stream JSON write stays.
+ */
+export function openaiImageJSONAsStreamSse(
+  parsed: Record<string, unknown>,
+  nowSec = Math.floor(Date.now() / 1000),
+): { sse: string; usage: Record<string, unknown>; imageCount: number } {
+  const created = Number(parsed.created) || nowSec;
+  const data = Array.isArray(parsed.data) ? parsed.data : [];
+  const usage =
+    parsed.usage && typeof parsed.usage === "object" && !Array.isArray(parsed.usage)
+      ? (parsed.usage as Record<string, unknown>)
+      : {};
+  const prompt = Number(usage.prompt_tokens || usage.input_tokens || 0);
+  const completion = Number(usage.completion_tokens || usage.output_tokens || 0);
+  const validUsage = prompt !== 0 || completion !== 0;
+  let sse = "";
+  for (const item of data) {
+    const image = item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>) : {};
+    const payload: Record<string, unknown> = { type: "image_generation.completed", created_at: created };
+    if (validUsage) payload.usage = usage;
+    for (const field of ["url", "revised_prompt", "b64_json"] as const) {
+      const value = image[field];
+      if (typeof value !== "string" || value === "") continue;
+      payload[field] = value;
+    }
+    sse += `event: image_generation.completed\ndata: ${JSON.stringify(payload)}\n\n`;
+  }
+  sse += "data: [DONE]\n\n";
+  return { sse, usage, imageCount: data.length };
 }
 
 /** Original `OaiChatToResponsesStreamHandler` `UnmarshalJsonStr` target type. */

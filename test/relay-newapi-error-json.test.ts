@@ -32,7 +32,7 @@ import {
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiEmbeddingResponseUnmarshalError, geminiImageEmptyPredictionsError, geminiImageResponseUnmarshalError, geminiResponsesStreamSseUnmarshalError, nativeGeminiEmbeddingResponseUnmarshalError, usesGeminiChatStreamUnmarshal, usesGeminiEmbeddingUnmarshal, usesGeminiImageUnmarshal, usesGeminiResponsesStreamUnmarshal, usesNativeGeminiEmbeddingUnmarshal } from "../src/gemini-response.js";
 import { usesVolcTTSUnmarshal, volcTtsResponseUnmarshalError, VOLC_TTS_PARSE_ERROR } from "../src/volc-tts.js";
 import { claudeSseToResponsesSse, geminiSseToResponsesSse, oaiChatSseToResponsesSse } from "../src/responses-stream.js";
-import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesAdvancedCustomClaudeUnmarshal, usesAdvancedCustomClaudeStreamUnmarshal, usesAdvancedCustomGeminiUnmarshal, usesAdvancedCustomGeminiEmbeddingUnmarshal, usesAdvancedCustomGeminiImageUnmarshal, usesAdvancedCustomGeminiStreamUnmarshal, usesAdvancedCustomGeminiResponsesStreamUnmarshal, advancedCustomGeminiResponsesStreamSseUnmarshalError, usesOaiChatToResponsesStreamUnmarshal, oaiChatToResponsesStreamSseUnmarshalError, usesOaiChatToResponsesUnmarshal, oaiChatToResponsesResponseUnmarshalError, usesOaiResponsesToChatStreamUnmarshal, oaiResponsesToChatStreamSseUnmarshalError, usesOaiResponsesToChatUnmarshal, oaiResponsesToChatResponseUnmarshalError, usesOaiResponsesToChatBufferedStreamUnmarshal, oaiResponsesToChatBufferedStreamSseUnmarshalError, usesOpenaiImageJSONAsStreamUnmarshal, openaiImageJSONAsStreamResponseUnmarshalError, usesCodexUnmarshal, usesClaudeHandlerUnmarshal, usesClaudeStreamUnmarshal, usesClaudeResponsesStreamUnmarshal, claudeResponsesStreamSseUnmarshalError, usesAwsClaudeUnmarshal, usesAwsClaudeStreamUnmarshal, usesAwsAkskClaudeUnmarshal, usesAwsAkskClaudeStreamUnmarshal, usesVertexClaudeUnmarshal, usesVertexClaudeStreamUnmarshal, usesMoonshotClaudeUnmarshal, usesMoonshotClaudeStreamUnmarshal, usesMiniMaxClaudeUnmarshal, usesMiniMaxClaudeStreamUnmarshal, usesDeepseekClaudeUnmarshal, usesDeepseekClaudeStreamUnmarshal, usesZhipuV4ClaudeUnmarshal, usesZhipuV4ClaudeStreamUnmarshal, usesNewApiClaudeUnmarshal, usesNewApiClaudeStreamUnmarshal, usesSub2apiClaudeUnmarshal, usesSub2apiClaudeStreamUnmarshal, usesOllamaClaudeUnmarshal, usesOllamaClaudeStreamUnmarshal, usesOllamaStreamUnmarshal, ollamaStreamUnmarshalError, usesAliClaudeUnmarshal, usesAliClaudeStreamUnmarshal, usesVolcClaudeUnmarshal, usesVolcClaudeStreamUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, advancedCustomClaudeResponseUnmarshalError, advancedCustomGeminiResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, claudeStreamSseUnmarshalError, awsClaudeResponseUnmarshalError, awsAkskClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesAdvancedCustomClaudeUnmarshal, usesAdvancedCustomClaudeStreamUnmarshal, usesAdvancedCustomGeminiUnmarshal, usesAdvancedCustomGeminiEmbeddingUnmarshal, usesAdvancedCustomGeminiImageUnmarshal, usesAdvancedCustomGeminiStreamUnmarshal, usesAdvancedCustomGeminiResponsesStreamUnmarshal, advancedCustomGeminiResponsesStreamSseUnmarshalError, usesOaiChatToResponsesStreamUnmarshal, oaiChatToResponsesStreamSseUnmarshalError, usesOaiChatToResponsesUnmarshal, oaiChatToResponsesResponseUnmarshalError, usesOaiResponsesToChatStreamUnmarshal, oaiResponsesToChatStreamSseUnmarshalError, usesOaiResponsesToChatUnmarshal, oaiResponsesToChatResponseUnmarshalError, usesOaiResponsesToChatBufferedStreamUnmarshal, oaiResponsesToChatBufferedStreamSseUnmarshalError, usesOpenaiImageJSONAsStreamUnmarshal, openaiImageJSONAsStreamResponseUnmarshalError, openaiImageJSONAsStreamSse, usesCodexUnmarshal, usesClaudeHandlerUnmarshal, usesClaudeStreamUnmarshal, usesClaudeResponsesStreamUnmarshal, claudeResponsesStreamSseUnmarshalError, usesAwsClaudeUnmarshal, usesAwsClaudeStreamUnmarshal, usesAwsAkskClaudeUnmarshal, usesAwsAkskClaudeStreamUnmarshal, usesVertexClaudeUnmarshal, usesVertexClaudeStreamUnmarshal, usesMoonshotClaudeUnmarshal, usesMoonshotClaudeStreamUnmarshal, usesMiniMaxClaudeUnmarshal, usesMiniMaxClaudeStreamUnmarshal, usesDeepseekClaudeUnmarshal, usesDeepseekClaudeStreamUnmarshal, usesZhipuV4ClaudeUnmarshal, usesZhipuV4ClaudeStreamUnmarshal, usesNewApiClaudeUnmarshal, usesNewApiClaudeStreamUnmarshal, usesSub2apiClaudeUnmarshal, usesSub2apiClaudeStreamUnmarshal, usesOllamaClaudeUnmarshal, usesOllamaClaudeStreamUnmarshal, usesOllamaStreamUnmarshal, ollamaStreamUnmarshalError, usesAliClaudeUnmarshal, usesAliClaudeStreamUnmarshal, usesVolcClaudeUnmarshal, usesVolcClaudeStreamUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, advancedCustomClaudeResponseUnmarshalError, advancedCustomGeminiResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, claudeStreamSseUnmarshalError, awsClaudeResponseUnmarshalError, awsAkskClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   CHANNEL_TYPE_ALI,
@@ -22843,5 +22843,205 @@ test("original leftover NativeGeminiEmbeddingHandler stream JSON copy does not c
   );
   const vendorItemsHop473 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop473.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover openaiImageJSONAsStreamHandler wrap JSON as image SSE", async () => {
+  assert.equal(usesOpenaiImageJSONAsStreamUnmarshal(CHANNEL_TYPE_OPENAI, "images", true, "application/json"), true);
+  assert.equal(usesOpenaiImageJSONAsStreamUnmarshal(CHANNEL_TYPE_OPENAI, "images", true, "text/event-stream"), false);
+  assert.equal(usesOpenaiImageJSONAsStreamUnmarshal(CHANNEL_TYPE_OPENAI, "images", false, "application/json"), false);
+  assert.equal(usesOpenaiImageJSONAsStreamUnmarshal(CHANNEL_TYPE_GEMINI, "images", true, "application/json"), false);
+  const wrapped = openaiImageJSONAsStreamSse(
+    { created: 11, data: [{ b64_json: "YQ==", url: "https://example.com/a.png" }] },
+    99,
+  );
+  assert.equal(wrapped.imageCount, 1);
+  assert.equal(wrapped.sse.includes("event: image_generation.completed"), true, wrapped.sse);
+  assert.equal(wrapped.sse.includes('"b64_json":"YQ=="'), true, wrapped.sse);
+  assert.equal(wrapped.sse.includes('"created_at":11'), true, wrapped.sse);
+  assert.equal(wrapped.sse.includes("data: [DONE]"), true, wrapped.sse);
+  assert.equal(wrapped.sse.includes("chat.completion.chunk"), false, wrapped.sse);
+  const emptyWrap = openaiImageJSONAsStreamSse({ data: [] }, 99);
+  assert.equal(emptyWrap.imageCount, 0);
+  assert.equal(emptyWrap.sse, "data: [DONE]\n\n");
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "198.51.100.461" });
+  await mergeModelRatio(new Store(e.DB), { "hop474-image": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const created = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.462" },
+      body: JSON.stringify({
+        name: "hop474-image",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop474",
+        models: "hop474-image",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("not-json-hop447-stay-474")) {
+      return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("non-stream-hop365-stay-474")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("oai-error-hop474")) {
+      return new Response(JSON.stringify({ error: { message: "bad image", type: "invalid_request_error" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (raw.includes("empty-data-hop474")) {
+      return new Response(JSON.stringify({ created: 22, data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(
+      JSON.stringify({ created: 33, data: [{ b64_json: "YQ==", revised_prompt: "hello" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const streamHit = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.463",
+          "x-oneapi-request-id": "hop474-stream-wrap",
+        },
+        body: JSON.stringify({ model: "hop474-image", prompt: "hello-stream", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(streamHit.res.status, 200, streamHit.text);
+    assert.equal((streamHit.res.headers.get("content-type") || "").includes("text/event-stream"), true, String(streamHit.res.headers.get("content-type")));
+    assert.equal((streamHit.res.headers.get("content-type") || "").includes("application/json"), false, String(streamHit.res.headers.get("content-type")));
+    assert.equal(streamHit.text.includes("event: image_generation.completed"), true, streamHit.text);
+    assert.equal(streamHit.text.includes('"b64_json":"YQ=="'), true, streamHit.text);
+    assert.equal(streamHit.text.includes('"created_at":33'), true, streamHit.text);
+    assert.equal(streamHit.text.includes("data: [DONE]"), true, streamHit.text);
+    assert.equal(streamHit.text.includes("chat.completion.chunk"), false, streamHit.text);
+    assert.equal("error" in streamHit.body && streamHit.body.error != null && typeof streamHit.body.error === "object" && "type" in (streamHit.body.error as object), false, streamHit.text);
+
+    const emptyHit = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.464",
+          "x-oneapi-request-id": "hop474-empty-data",
+        },
+        body: JSON.stringify({ model: "hop474-image", prompt: "empty-data-hop474", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(emptyHit.res.status, 200, emptyHit.text);
+    assert.equal(emptyHit.text.includes("data: [DONE]"), true, emptyHit.text);
+    assert.equal(emptyHit.text.includes("event: image_generation.completed"), false, emptyHit.text);
+
+    const unmarshalStay = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.466",
+          "x-oneapi-request-id": "hop474-hop447-stay",
+        },
+        body: JSON.stringify({ model: "hop474-image", prompt: "not-json-hop447-stay-474", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(unmarshalStay.res.status, 500, unmarshalStay.text);
+    const unmarshalErr = unmarshalStay.body.error as { message: string; type: string };
+    assert.equal(unmarshalErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(unmarshalErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(unmarshalStay.text.includes("hop474-hop447-stay"), false, unmarshalStay.text);
+
+    const hop365Stay = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.467", "x-oneapi-request-id": "hop474-hop365-stay" },
+        body: JSON.stringify({ model: "hop474-image", prompt: "non-stream-hop365-stay-474" }),
+      }),
+      e,
+    );
+    assert.equal(hop365Stay.res.status, 500, hop365Stay.text);
+    const hop365Err = hop365Stay.body.error as { message: string; type: string };
+    assert.equal(
+      hop365Err.message,
+      "json: cannot unmarshal array into Go value of type dto.SimpleResponse",
+    );
+    assert.equal(hop365Err.type, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const oaiErr = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.468",
+          "x-oneapi-request-id": "hop474-oai-error",
+        },
+        body: JSON.stringify({ model: "hop474-image", prompt: "oai-error-hop474", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(oaiErr.res.status, 200, oaiErr.text);
+    const oai = oaiErr.body.error as { message: string; type: string };
+    assert.equal(oai.message, "bad image");
+    assert.equal(oai.type, "invalid_request_error");
+    assert.equal(oaiErr.text.includes("(request id: hop474-oai-error)"), false, oaiErr.text);
+    assert.equal(oaiErr.text.includes("image_generation.completed"), false, oaiErr.text);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover openaiImageJSONAsStreamHandler wrap SSE does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "198.51.100.469" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.471", "x-oneapi-request-id": "hop474-vendor-create" },
+      body: JSON.stringify({ name: "hop474-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop474-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop474 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop474.some((item) => item.action === "vendor.create"), listed.text);
 });
 
