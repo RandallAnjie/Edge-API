@@ -853,6 +853,47 @@ export function deepseekResponseUnmarshalError(text: string, mode = "chat"): str
 }
 
 /**
+ * Original `moonshot.Adaptor.DoResponse` default path always delegates to
+ * `openai.Adaptor.DoResponse`. Claude format uses `claude.Adaptor.DoResponse`
+ * (`clientFormat === "openai"` gate in relay). Non-stream chat / completions /
+ * embeddings use `openai.OpenaiHandler` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Images Convert succeeds then
+ * `OpenaiImageHandler` (`dto.SimpleResponse`). Stream uses
+ * `openai.OaiStreamHandler` (log/continue, not leftover gin.H). Audio Convert
+ * `"not supported"` and responses Convert `"not implemented"` before DoResponse
+ * (hop 350). Extra-OK: ConvertClaudeRequest uses `claude.Adaptor`. Extra-OK:
+ * ConvertGeminiRequest `"not implemented"` stays hop 350. Extra-OK:
+ * ConvertRerankRequest succeeds but hop 366 `RerankHandler` is openai.Adaptor +
+ * Jina only, so Moonshot rerank Unmarshal stays leftover. Extra-OK: hop 393
+ * Deepseek stays.
+ */
+export function usesMoonshotUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_MOONSHOT) return false;
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` / `dto.SimpleResponse` for Moonshot OpenAI-format.
+ * Syntax errors match `encoding/json`. JSON `null` succeeds as a zero-value
+ * struct. Extra-OK: nested field type mismatches are left to convert
+ * (original fails).
+ */
+export function moonshotResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
