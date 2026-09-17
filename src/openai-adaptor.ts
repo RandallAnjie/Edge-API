@@ -234,6 +234,57 @@ export function cohereChatResponseUnmarshalError(text: string): string | null {
 }
 
 /**
+ * Original `palm.palmHandler` / native `tencent.tencentHandler` /
+ * `zhipu.zhipuHandler` `json.Unmarshal` (`NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Stream handlers log/continue (not leftover
+ * gin.H). Tencent OpenAI-compat keys stay `openai.Adaptor`.
+ */
+export function usesPalmTencentZhipuUnmarshal(
+  channelType: number,
+  mode: string,
+  nativeTencent = false,
+): boolean {
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "images":
+      return false;
+    default:
+      break;
+  }
+  if (channelType === CHANNEL_TYPE_PALM) return true;
+  if (channelType === CHANNEL_TYPE_ZHIPU) return true;
+  if (channelType === CHANNEL_TYPE_TENCENT) return nativeTencent;
+  return false;
+}
+
+/** Original `json.Unmarshal` target type name for Palm / Tencent native / Zhipu v3. */
+export function palmTencentZhipuUnmarshalTypeName(channelType: number): string {
+  if (channelType === CHANNEL_TYPE_TENCENT) return "tencent.TencentChatResponseSB";
+  if (channelType === CHANNEL_TYPE_ZHIPU) return "zhipu.ZhipuResponse";
+  return "palm.PaLMChatResponse";
+}
+
+/**
+ * Original `json.Unmarshal` into `palm.PaLMChatResponse` /
+ * `tencent.TencentChatResponseSB` / `zhipu.ZhipuResponse`. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function palmTencentZhipuResponseUnmarshalError(text: string, channelType: number): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${palmTencentZhipuUnmarshalTypeName(channelType)}`;
+  }
+  return null;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */

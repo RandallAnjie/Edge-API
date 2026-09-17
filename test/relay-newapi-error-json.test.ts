@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenRouterEnterpriseUnwrap, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_COHERE,
@@ -3448,5 +3448,224 @@ test("original leftover OaiResponsesCompactionHandler Unmarshal gin.H does not c
   );
   const vendorItemsHop372 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop372.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Palm/Tencent/Zhipu Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(usesPalmTencentZhipuUnmarshal(CHANNEL_TYPE_PALM, "chat"), true);
+  assert.equal(usesPalmTencentZhipuUnmarshal(CHANNEL_TYPE_ZHIPU, "chat"), true);
+  assert.equal(usesPalmTencentZhipuUnmarshal(CHANNEL_TYPE_TENCENT, "chat", true), true);
+  assert.equal(usesPalmTencentZhipuUnmarshal(CHANNEL_TYPE_TENCENT, "chat", false), false);
+  assert.equal(usesPalmTencentZhipuUnmarshal(CHANNEL_TYPE_OPENAI, "chat"), false);
+  assert.equal(usesPalmTencentZhipuUnmarshal(CHANNEL_TYPE_PALM, "images"), false);
+  assert.equal(
+    palmTencentZhipuResponseUnmarshalError("[]", CHANNEL_TYPE_PALM),
+    "json: cannot unmarshal array into Go value of type palm.PaLMChatResponse",
+  );
+  assert.equal(
+    palmTencentZhipuResponseUnmarshalError("[]", CHANNEL_TYPE_TENCENT),
+    "json: cannot unmarshal array into Go value of type tencent.TencentChatResponseSB",
+  );
+  assert.equal(
+    palmTencentZhipuResponseUnmarshalError("[]", CHANNEL_TYPE_ZHIPU),
+    "json: cannot unmarshal array into Go value of type zhipu.ZhipuResponse",
+  );
+  assert.equal(palmTencentZhipuResponseUnmarshalError("not-json", CHANNEL_TYPE_PALM), "invalid character 'o' looking for beginning of value");
+  assert.equal(palmTencentZhipuResponseUnmarshalError("null", CHANNEL_TYPE_PALM), null);
+
+  const palmHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop373-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(palmHelper.status, 500);
+  assert.deepEqual(await palmHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.107" });
+  await mergeModelRatio(new Store(e.DB), { "hop373-palm": 1, "hop373-hunyuan": 1, "hop373-glm": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const palm = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.108" },
+      body: JSON.stringify({
+        name: "hop373-palm",
+        type: CHANNEL_TYPE_PALM,
+        key: "palm-key",
+        models: "hop373-palm",
+        group: "default",
+        base_url: "https://generativelanguage.googleapis.com",
+      }),
+    }),
+    e,
+  );
+  assert.equal(palm.body.success, true, palm.text);
+  const tencent = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.109" },
+      body: JSON.stringify({
+        name: "hop373-tencent",
+        type: CHANNEL_TYPE_TENCENT,
+        key: "1300000000|AKIDxxxxxxxx|secretxxxxxxxx",
+        models: "hop373-hunyuan",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(tencent.body.success, true, tencent.text);
+  const zhipu = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.110" },
+      body: JSON.stringify({
+        name: "hop373-zhipu",
+        type: CHANNEL_TYPE_ZHIPU,
+        key: "id.secret",
+        models: "hop373-glm",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(zhipu.body.success, true, zhipu.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const palmHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.111", "x-oneapi-request-id": "hop373-palm-unmarshal" },
+        body: JSON.stringify({ model: "hop373-palm", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(palmHit.res.status, 500, palmHit.text);
+    assert.equal("type" in palmHit.body && palmHit.body.type === "error", false, palmHit.text);
+    const palmErr = palmHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(palmErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(palmErr.message.includes("hop373-palm-unmarshal"), false);
+    assert.equal(palmErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(palmErr.param, "");
+    assert.equal(palmErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const palmArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.112", "x-oneapi-request-id": "hop373-palm-array" },
+        body: JSON.stringify({ model: "hop373-palm", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(palmArray.res.status, 500, palmArray.text);
+    const palmArrayErr = palmArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(palmArrayErr.message, "json: cannot unmarshal array into Go value of type palm.PaLMChatResponse");
+    assert.equal(palmArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const tencentHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.113", "x-oneapi-request-id": "hop373-tencent-unmarshal" },
+        body: JSON.stringify({ model: "hop373-hunyuan", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(tencentHit.res.status, 500, tencentHit.text);
+    const tencentErr = tencentHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(tencentErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(tencentErr.message.includes("hop373-tencent-unmarshal"), false);
+    assert.equal(tencentErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(tencentErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const tencentArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.114", "x-oneapi-request-id": "hop373-tencent-array" },
+        body: JSON.stringify({ model: "hop373-hunyuan", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(tencentArray.res.status, 500, tencentArray.text);
+    const tencentArrayErr = tencentArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(tencentArrayErr.message, "json: cannot unmarshal array into Go value of type tencent.TencentChatResponseSB");
+    assert.equal(tencentArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const zhipuHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.115", "x-oneapi-request-id": "hop373-zhipu-unmarshal" },
+        body: JSON.stringify({ model: "hop373-glm", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(zhipuHit.res.status, 500, zhipuHit.text);
+    const zhipuErr = zhipuHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(zhipuErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(zhipuErr.message.includes("hop373-zhipu-unmarshal"), false);
+    assert.equal(zhipuErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(zhipuErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const zhipuArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.116", "x-oneapi-request-id": "hop373-zhipu-array" },
+        body: JSON.stringify({ model: "hop373-glm", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(zhipuArray.res.status, 500, zhipuArray.text);
+    const zhipuArrayErr = zhipuArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(zhipuArrayErr.message, "json: cannot unmarshal array into Go value of type zhipu.ZhipuResponse");
+    assert.equal(zhipuArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Palm/Tencent/Zhipu Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.117" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.118", "x-oneapi-request-id": "hop373-vendor-create" },
+      body: JSON.stringify({ name: "hop373-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop373-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop373 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop373.some((item) => item.action === "vendor.create"), listed.text);
 });
 
