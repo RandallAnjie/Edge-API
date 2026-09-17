@@ -863,7 +863,8 @@ export function deepseekResponseUnmarshalError(text: string, mode = "chat"): str
  * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
  * `dto.ClaudeResponse`). OpenAI format stays hop 393 (`clientFormat ===
  * "openai"` gate). Images / audio / embeddings Convert `"not implemented"`
- * before DoResponse (hop 350). Extra-OK: hop 410 MiniMax Claude stays.
+ * before DoResponse (hop 350). Extra-OK: hop 410 MiniMax Claude stays. Stream
+ * stays hop 429 (`ClaudeStreamHandler`). Extra-OK: hop 428 MiniMax stream stays.
  */
 export function usesDeepseekClaudeUnmarshal(channelType: number, mode: string): boolean {
   return usesDeepseekUnmarshal(channelType, mode);
@@ -877,6 +878,26 @@ export function usesDeepseekClaudeUnmarshal(channelType: number, mode: string): 
  */
 export function deepseekClaudeResponseUnmarshalError(text: string): string | null {
   return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
+ * Original Deepseek Claude-format `deepseek.Adaptor.DoResponse` stream
+ * delegates to `claude.Adaptor.DoResponse` (`ClaudeStreamHandler`
+ * `HandleStreamResponseData` `UnmarshalJsonStr` `NewError`
+ * `ErrorCodeBadResponseBody` into `dto.ClaudeResponse`). OpenAI-format stream
+ * stays Extra-OK `OaiStreamHandler` log/continue. Responses stream stays
+ * `ClaudeResponsesStreamHandler` (later hop, `NewOpenAIError`). Extra-OK: hop
+ * 411 non-stream `ClaudeHandler` stays. Extra-OK: hop 428 MiniMax stream stays.
+ * Extra-OK: hop 422 Anthropic stream stays.
+ */
+export function usesDeepseekClaudeStreamUnmarshal(
+  channelType: number,
+  mode: string,
+  isStream = true,
+): boolean {
+  if (!isStream) return false;
+  if (mode === "responses") return false;
+  return usesDeepseekClaudeUnmarshal(channelType, mode);
 }
 
 /**
