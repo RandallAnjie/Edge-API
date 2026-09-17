@@ -109,7 +109,7 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesTextHelperStreamOptions } from "./openai-adaptor.js";
+import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import {
@@ -129,8 +129,10 @@ import {
   noAvailableChannelMessage,
   noAvailableChannelRetryMessage,
   leftoverWithOpenAIError,
+  getOpenAIError,
   openaiError,
   relayErrorHandler,
+  writeOpenaiHandlerOpenAIError,
   tokenModelForbiddenMessage,
   writeGeminiChatEmptyCandidatesError,
   writeGeminiChatUnmarshalError,
@@ -2844,6 +2846,27 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           extra,
         );
         return writeGeminiChatEmptyCandidatesError(opts.req, status, empty.message, empty.code);
+      }
+    }
+    if (usesOpenAIAdaptor(channel.type) && usesOpenaiHandlerGetOpenAIError(mode)) {
+      const oai = getOpenAIError(parsed.error);
+      if (oai && oai.type) {
+        await settle(
+          store,
+          auth,
+          channel,
+          model,
+          promptEst,
+          0,
+          useTime,
+          false,
+          ip,
+          rid,
+          false,
+          (oai.message || "openai_error").slice(0, 2000),
+          extra,
+        );
+        return writeOpenaiHandlerOpenAIError(opts.req, res.status, oai);
       }
     }
     if (channel.type === CHANNEL_TYPE_MINIMAX && mode === "audio_speech") {

@@ -89,6 +89,24 @@ export function usesOpenAIAdaptor(channelType: number): boolean {
 }
 
 /**
+ * Original `openai.Adaptor.DoResponse` paths that call `GetOpenAIError`
+ * (`OpenaiHandler`, `OpenaiImageHandler`, `OaiResponsesHandler`). Audio /
+ * realtime / rerank use other handlers.
+ */
+export function usesOpenaiHandlerGetOpenAIError(mode: string): boolean {
+  switch (mode) {
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
  * Native adaptors whose ConvertClaudeRequest / DoResponse delegate to `openai.Adaptor`.
  * ConvertGeminiRequest on these types is original `not implemented`.
  */

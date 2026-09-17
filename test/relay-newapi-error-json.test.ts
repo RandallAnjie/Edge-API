@@ -17,6 +17,8 @@ import {
   ERROR_TYPE_NEW_API_ERROR,
   leftoverWithOpenAIError,
   messageWithRequestId,
+  getOpenAIError,
+  writeOpenaiHandlerOpenAIError,
   noAvailableChannelRetryMessage,
   relayErrorHandler,
   relayUsesClaudeError,
@@ -1800,5 +1802,195 @@ test("original leftover chat WithOpenAIError gin.H does not change AUTH StatusTe
   );
   const vendorItemsHop363 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop363.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover OpenaiHandler GetOpenAIError gin.H", async () => {
+  assert.equal(getOpenAIError(null), null);
+  assert.deepEqual(getOpenAIError("oops"), { type: "error", message: "oops", param: "", code: undefined });
+  const mapped = getOpenAIError({
+    message: "content filter",
+    type: "invalid_request_error",
+    code: "content_filter",
+    param: "prompt",
+  });
+  assert.deepEqual(mapped, {
+    message: "content filter",
+    type: "invalid_request_error",
+    param: "prompt",
+    code: "content_filter",
+  });
+  const emptyType = getOpenAIError({ message: "fail", type: "" });
+  assert.equal(emptyType?.type, "");
+
+  const chatHelper = writeOpenaiHandlerOpenAIError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop364-helper" } }),
+    200,
+    { message: "content filter", type: "invalid_request_error", param: "prompt", code: "content_filter" },
+  );
+  assert.equal(chatHelper.status, 200);
+  assert.deepEqual(await chatHelper.json(), {
+    error: {
+      message: "content filter",
+      type: "invalid_request_error",
+      param: "prompt",
+      code: "content_filter",
+    },
+  });
+  const claudeHelper = writeOpenaiHandlerOpenAIError(
+    new Request("http://local/v1/messages", { headers: { "x-oneapi-request-id": "hop364-helper-claude" } }),
+    200,
+    { message: "content filter", type: "invalid_request_error", param: "prompt", code: "content_filter" },
+  );
+  assert.equal(claudeHelper.status, 200);
+  assert.deepEqual(await claudeHelper.json(), {
+    type: "error",
+    error: { type: "content_filter", message: messageWithRequestId("content filter", "hop364-helper-claude") },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.245" });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.246" },
+      body: JSON.stringify({
+        name: "hop364-openai",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop364",
+        models: "gpt-4o,dall-e-3",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        error: {
+          message: "content filter",
+          type: "invalid_request_error",
+          code: "content_filter",
+          param: "prompt",
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  try {
+    const chat = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.247", "x-oneapi-request-id": "hop364-chat-oai" },
+        body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(chat.res.status, 200, chat.text);
+    assert.equal("type" in chat.body && chat.body.type === "error", false, chat.text);
+    const chatErr = chat.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, "content filter");
+    assert.equal(chatErr.message.includes("hop364-chat-oai"), false);
+    assert.equal(chatErr.type, "invalid_request_error");
+    assert.equal(chatErr.param, "prompt");
+    assert.equal(chatErr.code, "content_filter");
+
+    const claude = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "192.0.2.248",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop364-claude-oai",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 200, claude.text);
+    assert.equal(claude.body.type, "error");
+    const claudeErr = claude.body.error as { type: string; message: string; code?: string; param?: string };
+    assert.equal(claudeErr.type, "content_filter");
+    assert.equal(claudeErr.message, messageWithRequestId("content filter", "hop364-claude-oai"));
+    assert.equal(claudeErr.code, undefined);
+    assert.equal(claudeErr.param, undefined);
+    assert.deepEqual(Object.keys(claudeErr).sort(), ["message", "type"]);
+
+    const images = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.249", "x-oneapi-request-id": "hop364-image-oai" },
+        body: JSON.stringify({ model: "dall-e-3", prompt: "a cat" }),
+      }),
+      e,
+    );
+    assert.equal(images.res.status, 200, images.text);
+    const imagesErr = images.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(imagesErr.message, "content filter");
+    assert.equal(imagesErr.message.includes("hop364-image-oai"), false);
+    assert.equal(imagesErr.type, "invalid_request_error");
+    assert.equal(imagesErr.param, "prompt");
+    assert.equal(imagesErr.code, "content_filter");
+
+    const responses = await send(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.250", "x-oneapi-request-id": "hop364-responses-oai" },
+        body: JSON.stringify({ model: "gpt-4o", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(responses.res.status, 200, responses.text);
+    const responsesErr = responses.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(responsesErr.message, "content filter");
+    assert.equal(responsesErr.message.includes("hop364-responses-oai"), false);
+    assert.equal(responsesErr.type, "invalid_request_error");
+    assert.equal(responsesErr.param, "prompt");
+    assert.equal(responsesErr.code, "content_filter");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover OpenaiHandler GetOpenAIError gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.251" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.252", "x-oneapi-request-id": "hop364-vendor-create" },
+      body: JSON.stringify({ name: "hop364-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop364-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop364 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop364.some((item) => item.action === "vendor.create"), listed.text);
 });
 

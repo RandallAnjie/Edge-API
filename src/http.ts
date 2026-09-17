@@ -787,7 +787,7 @@ export function openaiError(
 export function leftoverWithOpenAIError(
   status: number,
   message: string,
-  code: string | number,
+  code: unknown,
   type = "",
   param = "",
 ): Response {
@@ -799,6 +799,53 @@ export function leftoverWithOpenAIError(
       code,
     },
   });
+}
+
+/** Original `dto.GetOpenAIError` from `OpenAITextResponse` / `SimpleResponse` / `OpenAIResponsesResponse`. */
+export type OpenAIErrorFields = {
+  message: string;
+  type: string;
+  param: string;
+  code: unknown;
+};
+
+export function getOpenAIError(errorField: unknown): OpenAIErrorFields | null {
+  if (errorField == null) return null;
+  if (typeof errorField === "string") {
+    return { type: "error", message: errorField, param: "", code: undefined };
+  }
+  if (typeof errorField === "object" && !Array.isArray(errorField)) {
+    const err = errorField as Record<string, unknown>;
+    return {
+      type: typeof err.type === "string" ? err.type : "",
+      message: typeof err.message === "string" ? err.message : "",
+      param: typeof err.param === "string" ? err.param : "",
+      code: Object.prototype.hasOwnProperty.call(err, "code") ? err.code : undefined,
+    };
+  }
+  return { type: "unknown_error", message: String(errorField), param: "", code: undefined };
+}
+
+/**
+ * Original leftover Relay defer `c.JSON` gin.H after `OpenaiHandler` /
+ * `OpenaiImageHandler` / `OaiResponsesHandler` `GetOpenAIError` `WithOpenAIError`
+ * (`ErrorTypeOpenAIError`). Chat `ToOpenAIError` uses RelayError.Message (no
+ * request id). Claude `ToClaudeError` uses `e.Error()` after `SetMessage`
+ * (`MessageWithRequestId`) and `type` is `fmt.Sprintf("%v", OpenAIError.Code)`
+ * (`<nil>` when Code is unset). Extra-OK: generated RequestId is not appended
+ * (hop 314).
+ */
+export function writeOpenaiHandlerOpenAIError(req: Request, status: number, oai: OpenAIErrorFields): Response {
+  const path = new URL(req.url).pathname;
+  if (relayUsesClaudeError(path)) {
+    const rid = req.headers.get("x-oneapi-request-id") || "";
+    const msg = rid ? messageWithRequestId(oai.message, rid) : oai.message;
+    const type = oai.code === undefined || oai.code === null ? "<nil>" : String(oai.code);
+    const error: { type?: string; message: string } = { message: msg };
+    if (type) error.type = type;
+    return json(status, { type: "error", error });
+  }
+  return leftoverWithOpenAIError(status, oai.message, oai.code ?? null, oai.type, oai.param);
 }
 
 /** Original `types.WithOpenAIError` fields on a thrown convert error. */
