@@ -11427,13 +11427,13 @@ test("original leftover GeminiChatStreamHandler Unmarshal NewOpenAIError gin.H",
     const url = String(input);
     if (!url.includes("generativelanguage.googleapis.com")) return origFetch(input, init);
     const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("non-stream-hop360")) {
+      return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (raw.includes("as-array")) {
       return new Response("data: []\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
     }
-    if (url.includes("streamGenerateContent") || raw.includes('"stream":true')) {
-      return new Response("data: not-json\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
-    }
-    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("data: not-json\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
   }) as typeof fetch;
   try {
     const chatHit = await send(
@@ -11522,7 +11522,7 @@ test("original leftover GeminiChatStreamHandler Unmarshal NewOpenAIError gin.H",
       new Request("http://local/v1/chat/completions", {
         method: "POST",
         headers: { ...skAuth, "cf-connecting-ip": "203.0.113.190", "x-oneapi-request-id": "hop423-hop360-stay" },
-        body: JSON.stringify({ model: "hop423-gemini", messages: [{ role: "user", content: "hello" }] }),
+        body: JSON.stringify({ model: "hop423-gemini", messages: [{ role: "user", content: "non-stream-hop360" }] }),
       }),
       e,
     );
