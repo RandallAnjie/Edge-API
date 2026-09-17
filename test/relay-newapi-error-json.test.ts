@@ -30,9 +30,10 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
+  CHANNEL_TYPE_AWS,
   CHANNEL_TYPE_BAIDU,
   CHANNEL_TYPE_CLOUDFLARE,
   CHANNEL_TYPE_COHERE,
@@ -5331,6 +5332,153 @@ test("original leftover MiniMax TTS Unmarshal gin.H does not change AUTH StatusT
   );
   const vendorItemsHop384 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop384.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover AWS Nova Unmarshal NewError gin.H", async () => {
+  const aksk = JSON.stringify({ aws_key_type: "ak_sk" });
+  assert.equal(usesAwsNovaUnmarshal(CHANNEL_TYPE_AWS, "hop385-nova-lite", "chat", aksk), true);
+  assert.equal(usesAwsNovaUnmarshal(CHANNEL_TYPE_AWS, "hop385-nova-lite", "chat"), true);
+  assert.equal(usesAwsNovaUnmarshal(CHANNEL_TYPE_AWS, "claude-3-haiku-20240307", "chat", aksk), false);
+  assert.equal(usesAwsNovaUnmarshal(CHANNEL_TYPE_AWS, "hop385-nova-lite", "images", aksk), false);
+  assert.equal(usesAwsNovaUnmarshal(CHANNEL_TYPE_AWS, "hop385-nova-lite", "embeddings", aksk), false);
+  assert.equal(usesAwsNovaUnmarshal(CHANNEL_TYPE_AWS, "hop385-nova-lite", "responses", aksk), false);
+  assert.equal(usesAwsNovaUnmarshal(CHANNEL_TYPE_AWS, "hop385-nova-lite", "audio_speech", aksk), false);
+  assert.equal(
+    usesAwsNovaUnmarshal(CHANNEL_TYPE_AWS, "hop385-nova-lite", "chat", JSON.stringify({ aws_key_type: "api_key" })),
+    false,
+  );
+  assert.equal(usesAwsNovaUnmarshal(CHANNEL_TYPE_OPENAI, "hop385-nova-lite", "chat", aksk), false);
+  assert.equal(usesAwsNovaUnmarshal(CHANNEL_TYPE_MINIMAX, "hop385-nova-lite", "chat", aksk), false);
+  assert.equal(
+    awsNovaResponseUnmarshalError("not-json"),
+    "unmarshal nova response: invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(
+    awsNovaResponseUnmarshalError("[]"),
+    `unmarshal nova response: json: cannot unmarshal array into Go value of type ${awsNovaUnmarshalTypeName()}`,
+  );
+  assert.equal(awsNovaResponseUnmarshalError("null"), null);
+  assert.equal(awsNovaResponseUnmarshalError("{}"), null);
+
+  const novaHelper = writeRelayNewAPIError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop385-helper" } }),
+    500,
+    "unmarshal nova response: invalid character 'o' looking for beginning of value",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(novaHelper.status, 500);
+  assert.deepEqual(await novaHelper.json(), {
+    error: {
+      message:
+        "unmarshal nova response: invalid character 'o' looking for beginning of value (request id: hop385-helper)",
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.194" });
+  await mergeModelRatio(new Store(e.DB), { "hop385-nova-lite": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const aws = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.195" },
+      body: JSON.stringify({
+        name: "hop385-aws-nova",
+        type: CHANNEL_TYPE_AWS,
+        key: "AKID|secret|us-east-1",
+        models: "hop385-nova-lite",
+        group: "default",
+        settings: { aws_key_type: "ak_sk" },
+      }),
+    }),
+    e,
+  );
+  assert.equal(aws.body.success, true, aws.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const chatHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.196", "x-oneapi-request-id": "hop385-aws-nova-unmarshal" },
+        body: JSON.stringify({ model: "hop385-nova-lite", messages: [{ role: "user", content: "hello" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatHit.res.status, 500, chatHit.text);
+    assert.equal("type" in chatHit.body && chatHit.body.type === "error", false, chatHit.text);
+    const chatErr = chatHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(
+      chatErr.message,
+      "unmarshal nova response: invalid character 'o' looking for beginning of value (request id: hop385-aws-nova-unmarshal)",
+    );
+    assert.equal(chatErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const chatArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.197", "x-oneapi-request-id": "hop385-aws-nova-array" },
+        body: JSON.stringify({ model: "hop385-nova-lite", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatArray.res.status, 500, chatArray.text);
+    const chatArrayErr = chatArray.body.error as { message: string; type: string };
+    assert.equal(
+      chatArrayErr.message,
+      `${awsNovaResponseUnmarshalError("[]")} (request id: hop385-aws-nova-array)`,
+    );
+    assert.equal(chatArrayErr.type, ERROR_TYPE_NEW_API_ERROR);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover AWS Nova Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.198" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.199", "x-oneapi-request-id": "hop385-vendor-create" },
+      body: JSON.stringify({ name: "hop385-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop385-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop385 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop385.some((item) => item.action === "vendor.create"), listed.text);
 });
 
 

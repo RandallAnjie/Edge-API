@@ -1,5 +1,6 @@
 /** Original `relay.GetAdaptor` → `openai.Adaptor` (APITypeOpenAI, OpenRouter, Xinference, unknown→OpenAI). */
 
+import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
@@ -726,6 +727,71 @@ export function miniMaxTTSResponseUnmarshalError(text: string): string | null {
         : null;
   if (inner == null) return null;
   return `failed to unmarshal minimax TTS response: ${inner}`;
+}
+
+/**
+ * Original `aws.handleNovaRequest` `json.Unmarshal` (`NewError`
+ * `ErrorCodeBadResponseBody`, wrap `errors.Wrap(err, "unmarshal nova
+ * response")`). AKSK only (`DoResponse` API-key uses `claude.Adaptor`).
+ * Images / audio / embeddings / responses Convert is `"not implemented"`
+ * before DoResponse (hop 350). Gemini Convert is `"not implemented"`
+ * (hop 350). Extra-OK: Claude format stays `awsHandler`. Extra-OK: stream
+ * stays worker SSE convert (original still uses non-stream InvokeModel).
+ */
+export function usesAwsNovaUnmarshal(
+  channelType: number,
+  model: string,
+  mode: string,
+  settings?: string | null,
+): boolean {
+  if (channelType !== CHANNEL_TYPE_AWS) return false;
+  if (!isNovaModel(model)) return false;
+  const raw = String(settings || "").trim();
+  if (raw) {
+    const parsed = goUnmarshalJSON(raw);
+    if (parsed.ok && parsed.value && typeof parsed.value === "object" && !Array.isArray(parsed.value)) {
+      if ((parsed.value as Record<string, unknown>).aws_key_type === "api_key") return false;
+    }
+  }
+  switch (mode) {
+    case "images":
+    case "embeddings":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original anonymous `json.Unmarshal` target type name in
+ * `aws.handleNovaRequest`.
+ */
+export function awsNovaUnmarshalTypeName(): string {
+  return 'struct { Output struct { Message struct { Content []struct { Text string "json:\\"text\\"" } "json:\\"content\\"" } "json:\\"message\\"" } "json:\\"output\\""; Usage struct { InputTokens int "json:\\"inputTokens\\""; OutputTokens int "json:\\"outputTokens\\""; TotalTokens int "json:\\"totalTokens\\"" } "json:\\"usage\\"" }';
+}
+
+/**
+ * Original `json.Unmarshal` into the Nova anonymous struct, wrapped as
+ * `errors.Wrap(err, "unmarshal nova response")`. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function awsNovaResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  const inner = !parsed.ok
+    ? parsed.message
+    : parsed.value === null
+      ? null
+      : typeof parsed.value !== "object" || Array.isArray(parsed.value)
+        ? `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${awsNovaUnmarshalTypeName()}`
+        : null;
+  if (inner == null) return null;
+  return `unmarshal nova response: ${inner}`;
 }
 
 /**
