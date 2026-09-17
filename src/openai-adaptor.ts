@@ -1865,6 +1865,7 @@ export function usesAdvancedCustomClaudeStreamUnmarshal(
  * (`GeminiChatStreamHandler`). Responses-to-Gemini uses the same `GeminiResponsesHandler` leftover (hop 421).
  * Extra-OK: hop 360 Gemini channel stays. Extra-OK: hop 419 Claude stays.
  * Extra-OK: hop 423 Gemini channel stream stays. Extra-OK: hop 436 Claude stream stays.
+ * Extra-OK: hop 451 embedding-model `GeminiEmbeddingHandler` stays.
  */
 export function usesAdvancedCustomGeminiUnmarshal(
   channelType: number,
@@ -1898,6 +1899,37 @@ export function usesAdvancedCustomGeminiUnmarshal(
     default:
       return true;
   }
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` chat-to-Gemini converter
+ * delegates to `gemini.Adaptor.DoResponse`, which uses `GeminiEmbeddingHandler`
+ * (`common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody` into
+ * `dto.GeminiBatchEmbeddingResponse`) for embedding-model prefixes even when
+ * the client streams. Embeddings-mode converters Convert `"does not support
+ * embedding requests"` before DoResponse (hop 350). Native `RelayModeGemini`
+ * `:embedContent` / `:batchEmbedContents` stays hop 450/452.
+ * Extra-OK: hop 449 Gemini channel `GeminiEmbeddingHandler` stays.
+ * Extra-OK: hop 420 non-embedding `GeminiChatHandler` stays.
+ */
+export function usesAdvancedCustomGeminiEmbeddingUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  mapped = "",
+): boolean {
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  if (mode === "gemini" || mode === "responses") return false;
+  if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
+  const name = String(mapped || "");
+  if (
+    !name.startsWith("text-embedding") &&
+    !name.startsWith("embedding") &&
+    !name.startsWith("gemini-embedding")
+  ) {
+    return false;
+  }
+  return String(converter || CONVERTER_NONE).trim() === CONVERTER_CHAT_TO_GEMINI;
 }
 
 /**

@@ -993,7 +993,7 @@ export function writeGeminiChatEmptyCandidatesError(
  * `unmarshal Gemini stream response: %w` then `NewOpenAIError` (hop 423).
  * Extra-OK: advanced-custom chat-to-Gemini / ConverterNone+RelayFormatGemini stream
  * `geminiStreamHandler` wrap then `NewOpenAIError` (hop 437). Extra-OK:
- * `GeminiImageHandler` unmarshal also uses this envelope (hop 448). Extra-OK: `GeminiEmbeddingHandler` unmarshal also uses this envelope (hop 449). Extra-OK: `NativeGeminiEmbeddingHandler` unmarshal also uses this envelope (hop 450).
+ * `GeminiImageHandler` unmarshal also uses this envelope (hop 448). Extra-OK: `GeminiEmbeddingHandler` unmarshal also uses this envelope (hop 449). Extra-OK: `NativeGeminiEmbeddingHandler` unmarshal also uses this envelope (hop 450). Extra-OK: advanced-custom chat-to-Gemini `GeminiEmbeddingHandler` unmarshal also uses this envelope (hop 451).
  */
 export function writeGeminiChatUnmarshalError(req: Request, message: string): Response {
   const rid = req.headers.get("x-oneapi-request-id") || "";
