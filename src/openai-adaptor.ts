@@ -1096,6 +1096,29 @@ export function miniMaxResponseUnmarshalError(text: string, mode = "chat"): stri
 }
 
 /**
+ * Original MiniMax Claude-format `minimax.Adaptor.DoResponse` delegates to
+ * `claude.Adaptor.DoResponse` (`ClaudeHandler` `HandleClaudeResponseData`
+ * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
+ * `dto.ClaudeResponse`). OpenAI-format chat stays hop 399. Images stay hop 400.
+ * TTS stays hop 356 / MiniMax TTS unmarshal. Extra-OK: hop 409 Moonshot Claude
+ * stays.
+ */
+export function usesMiniMaxClaudeUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_MINIMAX) return false;
+  return mode === "messages";
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for MiniMax Claude-format. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function miniMaxClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
  * Original `minimax.miniMaxImageHandler` `common.Unmarshal` (`NewOpenAIError`
  * `ErrorCodeBadResponseBody`). Chat stays `openai.Adaptor.DoResponse` (hop 399).
  * Audio speech stays `handleTTSResponse` (hop 384). Extra-OK: hop 362
