@@ -1492,6 +1492,55 @@ export function geminiEmbeddingResponseUnmarshalError(text: string): string | nu
   return null;
 }
 
+/**
+ * Original `gemini.Adaptor.DoResponse` `RelayModeGemini` `:embedContent` /
+ * `:batchEmbedContents` uses `NativeGeminiEmbeddingHandler` (`common.Unmarshal`
+ * `NewOpenAIError` `ErrorCodeBadResponseBody` into `dto.GeminiEmbeddingResponse`
+ * or batch `dto.GeminiBatchEmbeddingResponse`). Successful Unmarshal copies the
+ * native body (HTTP 200). Extra-OK: hop 449 OpenAI-format `GeminiEmbeddingHandler`
+ * stays. Extra-OK: hop 360 native `generateContent` `GeminiTextGenerationHandler`
+ * / OpenAI-format `GeminiChatHandler` stays. Extra-OK: Vertex RequestModeGemini
+ * native uses `GeminiTextGenerationHandler` (not this handler).
+ */
+export function usesNativeGeminiEmbeddingUnmarshal(
+  channelType: number,
+  mode: string,
+  path: string,
+): boolean {
+  if (channelType !== CHANNEL_TYPE_GEMINI) return false;
+  if (mode !== "gemini") return false;
+  const p = String(path || "");
+  return p.includes(":embedContent") || p.includes(":batchEmbedContents");
+}
+
+/** Original `info.IsGeminiBatchEmbedding` from `HasSuffix(..., "batchEmbedContents")`. */
+export function isGeminiNativeBatchEmbeddingPath(path: string): boolean {
+  const p = String(path || "");
+  return p.endsWith("batchEmbedContents") || p.includes(":batchEmbedContents");
+}
+
+/** Original `NativeGeminiEmbeddingHandler` `common.Unmarshal` target type. */
+export function nativeGeminiEmbeddingUnmarshalTypeName(path: string): string {
+  return isGeminiNativeBatchEmbeddingPath(path)
+    ? "dto.GeminiBatchEmbeddingResponse"
+    : "dto.GeminiEmbeddingResponse";
+}
+
+/**
+ * Original `NativeGeminiEmbeddingHandler` `common.Unmarshal` into
+ * `dto.GeminiEmbeddingResponse` or `dto.GeminiBatchEmbeddingResponse`. Syntax
+ * errors match `encoding/json`. JSON `null` succeeds as a zero-value struct.
+ */
+export function nativeGeminiEmbeddingResponseUnmarshalError(text: string, path: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${nativeGeminiEmbeddingUnmarshalTypeName(path)}`;
+  }
+  return null;
+}
+
 export function geminiUpstreamToOpenAIChat(
   text: string,
   model: string,
