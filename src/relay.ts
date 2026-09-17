@@ -2519,6 +2519,10 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         res = new Response(streamText, { status: res.status, headers: res.headers });
       }
+      if (!res.body) {
+        await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, "bad_response_body", extra);
+        return writeRelayNewAPIError(opts.req, 500, "bad_response_body", ERROR_CODE_BAD_RESPONSE_BODY);
+      }
       if (
         (usesOpenAIAdaptor(channel.type) ||
           (delegatesClaudeToOpenAIAdaptor(channel.type) && clientFormat === "anthropic") ||
