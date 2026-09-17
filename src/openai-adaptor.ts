@@ -1072,6 +1072,37 @@ export function miniMaxResponseUnmarshalError(text: string, mode = "chat"): stri
 }
 
 /**
+ * Original `minimax.miniMaxImageHandler` `common.Unmarshal` (`NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Chat stays `openai.Adaptor.DoResponse` (hop 399).
+ * Audio speech stays `handleTTSResponse` (hop 384). Extra-OK: hop 362
+ * `minimax_image_error` `WithOpenAIError` stays leftover. Extra-OK: hop 399
+ * MiniMax chat stays.
+ */
+export function usesMiniMaxImageUnmarshal(channelType: number, mode: string): boolean {
+  return channelType === CHANNEL_TYPE_MINIMAX && mode === "images";
+}
+
+/** Original `common.Unmarshal` target type name for MiniMax images. */
+export function miniMaxImageUnmarshalTypeName(): string {
+  return "minimax.MiniMaxImageResponse";
+}
+
+/**
+ * Original `common.Unmarshal` into `minimax.MiniMaxImageResponse`. Syntax
+ * errors match `encoding/json`. JSON `null` succeeds as a zero-value struct.
+ * Extra-OK: nested field type mismatches are left to convert (original fails).
+ */
+export function miniMaxImageResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${miniMaxImageUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
