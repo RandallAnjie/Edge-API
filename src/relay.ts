@@ -109,12 +109,13 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, usesAliSiliconflowRerankUnmarshal, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions } from "./openai-adaptor.js";
+import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, cohereRerankResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, usesAliSiliconflowRerankUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCohereRerankUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import {
   abortWithOpenAiMessage,
   clientIp,
+  ERROR_CODE_BAD_RESPONSE_BODY,
   ERROR_CODE_CHANNEL_INVALID_KEY,
   ERROR_CODE_CONVERT_REQUEST_FAILED,
   ERROR_CODE_DO_REQUEST_FAILED,
@@ -2816,6 +2817,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         return writeOpenaiHandlerUnmarshalError(opts.req, unmarshalErr);
       }
     }
+    if (usesCohereRerankUnmarshal(channel.type, mode)) {
+      const unmarshalErr = cohereRerankResponseUnmarshalError(text);
+      if (unmarshalErr) {
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
+        return writeRelayNewAPIError(opts.req, 500, unmarshalErr, ERROR_CODE_BAD_RESPONSE_BODY);
+      }
+    }
     let parsed: Record<string, unknown> = {};
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
@@ -2837,6 +2845,12 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
       if (
         usesAliSiliconflowRerankUnmarshal(channel.type, mode) &&
+        (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
+      ) {
+        parsed = {};
+      }
+      if (
+        usesCohereRerankUnmarshal(channel.type, mode) &&
         (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
       ) {
         parsed = {};

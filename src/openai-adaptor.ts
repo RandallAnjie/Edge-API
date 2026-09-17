@@ -111,8 +111,8 @@ export function usesOpenaiHandlerGetOpenAIError(mode: string): boolean {
 
 /**
  * Original `common_handler.RerankHandler` (`openai.Adaptor` RelayModeRerank
- * including Xinference, and `jina.Adaptor` rerank). Ali / Siliconflow /
- * Cohere use other rerank handlers.
+ * including Xinference, and `jina.Adaptor` rerank). Ali / Siliconflow use
+ * `usesAliSiliconflowRerankUnmarshal`. Cohere uses `usesCohereRerankUnmarshal`.
  */
 export function usesRerankHandlerUnmarshal(channelType: number, mode: string): boolean {
   if (mode !== "rerank") return false;
@@ -144,7 +144,8 @@ export function rerankHandlerResponseUnmarshalError(text: string, channelType: n
 
 /**
  * Original `ali.RerankHandler` / `siliconflowRerankHandler` `json.Unmarshal`
- * (`NewOpenAIError` `ErrorCodeBadResponseBody`). Cohere uses `NewError`.
+ * (`NewOpenAIError` `ErrorCodeBadResponseBody`). Cohere uses `NewError`
+ * (`usesCohereRerankUnmarshal`).
  */
 export function usesAliSiliconflowRerankUnmarshal(channelType: number, mode: string): boolean {
   if (mode !== "rerank") return false;
@@ -169,6 +170,34 @@ export function aliSiliconflowRerankResponseUnmarshalError(text: string, channel
   if (parsed.value === null) return null;
   if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
     return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${aliSiliconflowRerankUnmarshalTypeName(channelType)}`;
+  }
+  return null;
+}
+
+/**
+ * Original `cohere.cohereRerankHandler` `json.Unmarshal` (`NewError`
+ * `ErrorCodeBadResponseBody`, not `NewOpenAIError`).
+ */
+export function usesCohereRerankUnmarshal(channelType: number, mode: string): boolean {
+  return mode === "rerank" && channelType === CHANNEL_TYPE_COHERE;
+}
+
+/** Original `json.Unmarshal` target type name for Cohere rerank. */
+export function cohereRerankUnmarshalTypeName(): string {
+  return "cohere.CohereRerankResponseResult";
+}
+
+/**
+ * Original `json.Unmarshal` into `cohere.CohereRerankResponseResult`. Syntax
+ * errors match `encoding/json`. JSON `null` succeeds as a zero-value struct.
+ * Extra-OK: nested field type mismatches are left to convert (original fails).
+ */
+export function cohereRerankResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${cohereRerankUnmarshalTypeName()}`;
   }
   return null;
 }
