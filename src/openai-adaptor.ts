@@ -2,6 +2,7 @@
 
 import { isNovaModel } from "./aws-convert.js";
 import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
+import { vertexRequestMode } from "./vertex-convert.js";
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   CHANNEL_TYPE_ALI,
@@ -687,6 +688,47 @@ export function usesJinaEmbeddingsUnmarshal(channelType: number, mode: string): 
  * nested field type mismatches are left to convert (original fails).
  */
 export function jinaEmbeddingsResponseUnmarshalError(text: string, mode = "embeddings"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
+ * Original `vertex.Adaptor.DoResponse` non-stream `RequestModeOpenSource`
+ * path (`openai.OpenaiHandler` `common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). RequestMode is `llama` / `-maas` (hop 390).
+ * Stream uses `openai.OaiStreamHandler` (log/continue, not leftover gin.H).
+ * Gemini / Claude RequestMode stay native handlers. Images use gemini
+ * ConvertImageRequest before DoResponse. Audio / embeddings / rerank /
+ * responses convert `"not implemented"` before DoResponse (hop 350). Extra-OK:
+ * API-key OpenSource GetRequestURL `"unsupported request mode"` stays hop 350.
+ * Extra-OK: ConvertClaudeRequest always wraps (RequestMode not consulted).
+ * Extra-OK: ConvertGeminiRequest always strips IDs then gemini adaptor.
+ */
+export function usesVertexOpenSourceUnmarshal(channelType: number, mode: string, model: string): boolean {
+  if (channelType !== CHANNEL_TYPE_VERTEX) return false;
+  if (vertexRequestMode(model) !== "opensource") return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "embeddings":
+    case "responses":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.OpenaiHandler` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` for Vertex RequestModeOpenSource chat /
+ * completions. Syntax errors match `encoding/json`. JSON `null` succeeds as a
+ * zero-value struct. Extra-OK: nested field type mismatches are left to convert
+ * (original fails).
+ */
+export function vertexOpenSourceResponseUnmarshalError(text: string, mode = "chat"): string | null {
   return openaiHandlerResponseUnmarshalError(text, mode);
 }
 

@@ -917,7 +917,7 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * `openai.OpenaiHandler` (native adaptor) unmarshal also uses this envelope.
  * Extra-OK: Mistral chat / completions `openai.OpenaiHandler` (native adaptor)
  * unmarshal also uses this envelope. Extra-OK: Submodel chat / completions
- * `openai.OpenaiHandler` (native adaptor) unmarshal also uses this envelope. Extra-OK: Jina embeddings `openai.OpenaiHandler` (native adaptor) unmarshal also uses this envelope.
+ * `openai.OpenaiHandler` (native adaptor) unmarshal also uses this envelope. Extra-OK: Jina embeddings `openai.OpenaiHandler` (native adaptor) unmarshal also uses this envelope. Extra-OK: Vertex RequestModeOpenSource `openai.OpenaiHandler` (native adaptor) unmarshal also uses this envelope.
  * Extra-OK: Ollama `ollamaEmbeddingHandler` /
  * `ollamaChatHandler` unmarshal also uses this envelope. Extra-OK: Zhipu v4
  * `zhipu4vImageHandler` unmarshal also uses this envelope. Extra-OK: Replicate
