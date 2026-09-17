@@ -1866,6 +1866,7 @@ export function usesAdvancedCustomClaudeStreamUnmarshal(
  * Extra-OK: hop 360 Gemini channel stays. Extra-OK: hop 419 Claude stays.
  * Extra-OK: hop 423 Gemini channel stream stays. Extra-OK: hop 436 Claude stream stays.
  * Extra-OK: hop 451 embedding-model `GeminiEmbeddingHandler` stays.
+ * Extra-OK: hop 453 imagen `GeminiImageHandler` stays.
  */
 export function usesAdvancedCustomGeminiUnmarshal(
   channelType: number,
@@ -1929,6 +1930,29 @@ export function usesAdvancedCustomGeminiEmbeddingUnmarshal(
   ) {
     return false;
   }
+  return String(converter || CONVERTER_NONE).trim() === CONVERTER_CHAT_TO_GEMINI;
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` chat-to-Gemini converter
+ * delegates to `gemini.Adaptor.DoResponse`, which uses `GeminiImageHandler`
+ * (`common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody` into
+ * `dto.GeminiImageResponse`) for imagen prefixes even when the client streams.
+ * Images-mode converters Convert `"does not support image requests"` before
+ * DoResponse (hop 350). Extra-OK: hop 448 Gemini/Vertex `GeminiImageHandler`
+ * stays. Extra-OK: hop 420 non-imagen `GeminiChatHandler` stays. Extra-OK:
+ * hop 451 embedding-model `GeminiEmbeddingHandler` stays.
+ */
+export function usesAdvancedCustomGeminiImageUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  mapped = "",
+): boolean {
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  if (mode === "gemini" || mode === "responses") return false;
+  if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
+  if (!String(mapped || "").startsWith("imagen")) return false;
   return String(converter || CONVERTER_NONE).trim() === CONVERTER_CHAT_TO_GEMINI;
 }
 

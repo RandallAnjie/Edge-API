@@ -1415,6 +1415,7 @@ export function geminiChatStreamSseUnmarshalError(text: string): string | null {
  * OpenAI `openaiImageJSONAsStreamHandler` stays. Extra-OK: empty `predictions`
  * leftover `no images generated` stays convert after successful Unmarshal.
  * Extra-OK: hop 449 embedding-model `GeminiEmbeddingHandler` stays.
+ * Extra-OK: hop 453 advanced-custom imagen `GeminiImageHandler` stays.
  */
 export function usesGeminiImageUnmarshal(
   channelType: number,
