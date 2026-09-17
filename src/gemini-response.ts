@@ -1409,6 +1409,7 @@ export function geminiChatStreamSseUnmarshalError(text: string): string | null {
  * Extra-OK: hop 360 non-imagen `GeminiChatHandler` stays. Extra-OK: hop 447
  * OpenAI `openaiImageJSONAsStreamHandler` stays. Extra-OK: empty `predictions`
  * leftover `no images generated` stays convert after successful Unmarshal.
+ * Extra-OK: hop 449 embedding-model `GeminiEmbeddingHandler` stays.
  */
 export function usesGeminiImageUnmarshal(
   channelType: number,
@@ -1437,6 +1438,56 @@ export function geminiImageResponseUnmarshalError(text: string): string | null {
   if (parsed.value === null) return null;
   if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
     return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${geminiImageUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
+ * Original `gemini.Adaptor.DoResponse` embedding-model prefixes
+ * (`text-embedding` / `embedding` / `gemini-embedding`) use
+ * `GeminiEmbeddingHandler` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody` into `dto.GeminiBatchEmbeddingResponse`) even
+ * when the client streams. Native `RelayModeGemini` `:embedContent` /
+ * `:batchEmbedContents` is hop 450 (`NativeGeminiEmbeddingHandler`). Vertex
+ * embeddings Convert `"not implemented"` stays hop 350. Extra-OK: hop 448
+ * imagen `GeminiImageHandler` stays. Extra-OK: hop 360 non-embedding
+ * `GeminiChatHandler` stays. Extra-OK: missing `embeddings` after successful
+ * Unmarshal stays convert (`[]`). Extra-OK: hop 440 `/v1/responses` stays
+ * `GeminiResponsesHandler`.
+ */
+export function usesGeminiEmbeddingUnmarshal(
+  channelType: number,
+  mapped: string,
+  mode = "",
+): boolean {
+  if (mode === "gemini" || mode === "responses") return false;
+  const name = String(mapped || "");
+  if (
+    !name.startsWith("text-embedding") &&
+    !name.startsWith("embedding") &&
+    !name.startsWith("gemini-embedding")
+  ) {
+    return false;
+  }
+  return channelType === CHANNEL_TYPE_GEMINI;
+}
+
+/** Original `GeminiEmbeddingHandler` `common.Unmarshal` target type. */
+export function geminiEmbeddingUnmarshalTypeName(): string {
+  return "dto.GeminiBatchEmbeddingResponse";
+}
+
+/**
+ * Original `GeminiEmbeddingHandler` `common.Unmarshal` into
+ * `dto.GeminiBatchEmbeddingResponse`. Syntax errors match `encoding/json`.
+ * JSON `null` succeeds as a zero-value struct.
+ */
+export function geminiEmbeddingResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${geminiEmbeddingUnmarshalTypeName()}`;
   }
   return null;
 }

@@ -29,7 +29,7 @@ import {
   writeGeminiChatUnmarshalError,
   writeRelayNewAPIError,
 } from "../src/http.js";
-import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiImageResponseUnmarshalError, geminiResponsesStreamSseUnmarshalError, usesGeminiChatStreamUnmarshal, usesGeminiImageUnmarshal, usesGeminiResponsesStreamUnmarshal } from "../src/gemini-response.js";
+import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiEmbeddingResponseUnmarshalError, geminiImageResponseUnmarshalError, geminiResponsesStreamSseUnmarshalError, usesGeminiChatStreamUnmarshal, usesGeminiEmbeddingUnmarshal, usesGeminiImageUnmarshal, usesGeminiResponsesStreamUnmarshal } from "../src/gemini-response.js";
 import { claudeSseToResponsesSse, geminiSseToResponsesSse, oaiChatSseToResponsesSse } from "../src/responses-stream.js";
 import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, volcResponseUnmarshalError, miniMaxResponseUnmarshalError, miniMaxImageResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesVolcUnmarshal, usesMiniMaxUnmarshal, usesMiniMaxImageUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4Unmarshal, usesZhipuV4ImageUnmarshal, usesNewApiUnmarshal, usesSub2apiUnmarshal, usesAdvancedCustomUnmarshal, usesAdvancedCustomClaudeUnmarshal, usesAdvancedCustomClaudeStreamUnmarshal, usesAdvancedCustomGeminiUnmarshal, usesAdvancedCustomGeminiStreamUnmarshal, usesAdvancedCustomGeminiResponsesStreamUnmarshal, advancedCustomGeminiResponsesStreamSseUnmarshalError, usesOaiChatToResponsesStreamUnmarshal, oaiChatToResponsesStreamSseUnmarshalError, usesOaiChatToResponsesUnmarshal, oaiChatToResponsesResponseUnmarshalError, usesOaiResponsesToChatStreamUnmarshal, oaiResponsesToChatStreamSseUnmarshalError, usesOaiResponsesToChatUnmarshal, oaiResponsesToChatResponseUnmarshalError, usesOaiResponsesToChatBufferedStreamUnmarshal, oaiResponsesToChatBufferedStreamSseUnmarshalError, usesOpenaiImageJSONAsStreamUnmarshal, openaiImageJSONAsStreamResponseUnmarshalError, usesCodexUnmarshal, usesClaudeHandlerUnmarshal, usesClaudeStreamUnmarshal, usesClaudeResponsesStreamUnmarshal, claudeResponsesStreamSseUnmarshalError, usesAwsClaudeUnmarshal, usesAwsClaudeStreamUnmarshal, usesAwsAkskClaudeUnmarshal, usesAwsAkskClaudeStreamUnmarshal, usesVertexClaudeUnmarshal, usesVertexClaudeStreamUnmarshal, usesMoonshotClaudeUnmarshal, usesMoonshotClaudeStreamUnmarshal, usesMiniMaxClaudeUnmarshal, usesMiniMaxClaudeStreamUnmarshal, usesDeepseekClaudeUnmarshal, usesDeepseekClaudeStreamUnmarshal, usesZhipuV4ClaudeUnmarshal, usesZhipuV4ClaudeStreamUnmarshal, usesNewApiClaudeUnmarshal, usesNewApiClaudeStreamUnmarshal, usesSub2apiClaudeUnmarshal, usesSub2apiClaudeStreamUnmarshal, usesOllamaClaudeUnmarshal, usesOllamaClaudeStreamUnmarshal, usesOllamaStreamUnmarshal, ollamaStreamUnmarshalError, usesAliClaudeUnmarshal, usesAliClaudeStreamUnmarshal, usesVolcClaudeUnmarshal, usesVolcClaudeStreamUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError, newApiResponseUnmarshalError, sub2apiResponseUnmarshalError, advancedCustomResponseUnmarshalError, advancedCustomClaudeResponseUnmarshalError, advancedCustomGeminiResponseUnmarshalError, codexResponseUnmarshalError, claudeHandlerResponseUnmarshalError, claudeStreamSseUnmarshalError, awsClaudeResponseUnmarshalError, awsAkskClaudeResponseUnmarshalError, vertexClaudeResponseUnmarshalError, moonshotClaudeResponseUnmarshalError, miniMaxClaudeResponseUnmarshalError, deepseekClaudeResponseUnmarshalError, zhipuV4ClaudeResponseUnmarshalError, newApiClaudeResponseUnmarshalError, sub2apiClaudeResponseUnmarshalError, ollamaClaudeResponseUnmarshalError, aliClaudeResponseUnmarshalError, volcClaudeResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
@@ -16558,4 +16558,268 @@ test("original leftover GeminiImageHandler Unmarshal gin.H does not change AUTH 
   );
   const vendorItemsHop448 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop448.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover GeminiEmbeddingHandler Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop449"), true);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop449", "embeddings"), true);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop449", "chat"), true);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "embedding-hop449", "embeddings"), true);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "gemini-embedding-hop449", "embeddings"), true);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop449", "gemini"), false);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop449", "responses"), false);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_VERTEX, "text-embedding-hop449", "embeddings"), false);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_OPENAI, "text-embedding-hop449", "embeddings"), false);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "imagen-hop449", "embeddings"), false);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "gemini-hop449-chat", "chat"), false);
+  assert.equal(usesGeminiImageUnmarshal(CHANNEL_TYPE_GEMINI, "imagen-hop449", false), true);
+  assert.equal(usesGeminiChatStreamUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop449", "embeddings", true), false);
+  assert.equal(
+    geminiEmbeddingResponseUnmarshalError("not-json"),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(
+    geminiEmbeddingResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type dto.GeminiBatchEmbeddingResponse",
+  );
+  assert.equal(geminiEmbeddingResponseUnmarshalError("null"), null);
+  assert.equal(geminiEmbeddingResponseUnmarshalError("{}"), null);
+  assert.equal(geminiEmbeddingResponseUnmarshalError('{"embeddings":[]}'), null);
+
+  const helper = writeGeminiChatUnmarshalError(
+    new Request("http://local/v1/embeddings", { headers: { "x-oneapi-request-id": "hop449-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(helper.status, 500);
+  assert.deepEqual(await helper.json(), {
+    error: {
+      message: messageWithRequestId("invalid character 'o' looking for beginning of value", "hop449-helper"),
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "198.51.100.152" });
+  await mergeModelRatio(new Store(e.DB), {
+    "text-embedding-hop449": 1,
+    "imagen-hop449": 1,
+    "gemini-hop449-chat": 1,
+  });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const created = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.153" },
+      body: JSON.stringify({
+        name: "hop449-gemini",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey",
+        models: "text-embedding-hop449,imagen-hop449,gemini-hop449-chat",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("generativelanguage.googleapis.com")) return origFetch(input, init);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("chat-hop449-stay")) {
+      return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("empty-embed-stay")) {
+      return new Response(JSON.stringify({ embeddings: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("image-hop448-stay")) {
+      return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const embedHit = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.154", "x-oneapi-request-id": "hop449-embed-unmarshal" },
+        body: JSON.stringify({ model: "text-embedding-hop449", input: "hello" }),
+      }),
+      e,
+    );
+    assert.equal(embedHit.res.status, 500, embedHit.text);
+    assert.equal("type" in embedHit.body && embedHit.body.type === "error", false, embedHit.text);
+    const embedErr = embedHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(
+      embedErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop449-embed-unmarshal"),
+    );
+    assert.equal(embedErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(embedErr.param, "");
+    assert.equal(embedErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(
+      embedHit.text.includes("dto.GeminiChatResponse") || embedErr.message.includes("dto.GeminiChatResponse"),
+      false,
+      embedHit.text,
+    );
+
+    const embedArray = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.155", "x-oneapi-request-id": "hop449-embed-array" },
+        body: JSON.stringify({ model: "text-embedding-hop449", input: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(embedArray.res.status, 500, embedArray.text);
+    const embedArrayErr = embedArray.body.error as { message: string; type: string };
+    assert.equal(
+      embedArrayErr.message,
+      messageWithRequestId(
+        "json: cannot unmarshal array into Go value of type dto.GeminiBatchEmbeddingResponse",
+        "hop449-embed-array",
+      ),
+    );
+    assert.equal(embedArrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const emptyStay = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.156", "x-oneapi-request-id": "hop449-empty-stay" },
+        body: JSON.stringify({ model: "text-embedding-hop449", input: "empty-embed-stay" }),
+      }),
+      e,
+    );
+    assert.equal(emptyStay.res.status, 200, emptyStay.text);
+    assert.equal(emptyStay.body.object, "list");
+    assert.deepEqual(emptyStay.body.data, []);
+    assert.equal(emptyStay.body.model, "text-embedding-hop449");
+
+    const imageStay = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.157", "x-oneapi-request-id": "hop449-hop448-stay" },
+        body: JSON.stringify({ model: "imagen-hop449", prompt: "image-hop448-stay" }),
+      }),
+      e,
+    );
+    assert.equal(imageStay.res.status, 500, imageStay.text);
+    const imageErr = imageStay.body.error as { message: string; type: string };
+    assert.equal(
+      imageErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop449-hop448-stay"),
+    );
+    assert.equal(imageErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(
+      imageStay.text.includes("dto.GeminiBatchEmbeddingResponse") || imageErr.message.includes("dto.GeminiBatchEmbeddingResponse"),
+      false,
+      imageStay.text,
+    );
+
+    const chatStay = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.158", "x-oneapi-request-id": "hop449-hop360-stay" },
+        body: JSON.stringify({
+          model: "gemini-hop449-chat",
+          messages: [{ role: "user", content: "chat-hop449-stay" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chatStay.res.status, 500, chatStay.text);
+    const chatErr = chatStay.body.error as { message: string; type: string };
+    assert.equal(
+      chatErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop449-hop360-stay"),
+    );
+    assert.equal(chatErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(
+      chatStay.text.includes("dto.GeminiBatchEmbeddingResponse") || chatErr.message.includes("dto.GeminiBatchEmbeddingResponse"),
+      false,
+      chatStay.text,
+    );
+
+    const streamHit = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.159", "x-oneapi-request-id": "hop449-embed-stream" },
+        body: JSON.stringify({ model: "text-embedding-hop449", input: "hello-stream", stream: true }),
+      }),
+      e,
+    );
+    assert.equal(streamHit.res.status, 500, streamHit.text);
+    const streamErr = streamHit.body.error as { message: string; type: string };
+    assert.equal(
+      streamErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop449-embed-stream"),
+    );
+    assert.equal(streamErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const chatAsEmbed = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "198.51.100.161", "x-oneapi-request-id": "hop449-chat-as-embed" },
+        body: JSON.stringify({
+          model: "text-embedding-hop449",
+          messages: [{ role: "user", content: "chat-as-embed-hop449" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(chatAsEmbed.res.status, 500, chatAsEmbed.text);
+    const chatAsEmbedErr = chatAsEmbed.body.error as { message: string; type: string };
+    assert.equal(
+      chatAsEmbedErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop449-chat-as-embed"),
+    );
+    assert.equal(chatAsEmbedErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(
+      chatAsEmbed.text.includes("dto.GeminiChatResponse") || chatAsEmbedErr.message.includes("dto.GeminiChatResponse"),
+      false,
+      chatAsEmbed.text,
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover GeminiEmbeddingHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "198.51.100.162" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.163", "x-oneapi-request-id": "hop449-vendor-create" },
+      body: JSON.stringify({ name: "hop449-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop449-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop449 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop449.some((item) => item.action === "vendor.create"), listed.text);
 });

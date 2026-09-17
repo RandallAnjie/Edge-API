@@ -48,7 +48,7 @@ import {
   getOpenAISystemRoleName,
 } from "./convert.js";
 import { claudeUpstreamToOpenAIChat } from "./claude-response.js";
-import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiImageResponseUnmarshalError, geminiUpstreamToOpenAIChat, usesGeminiChatStreamUnmarshal, usesGeminiImageUnmarshal } from "./gemini-response.js";
+import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError, geminiChatStreamSseUnmarshalError, geminiEmbeddingResponseUnmarshalError, geminiImageResponseUnmarshalError, geminiUpstreamToOpenAIChat, usesGeminiChatStreamUnmarshal, usesGeminiEmbeddingUnmarshal, usesGeminiImageUnmarshal } from "./gemini-response.js";
 import { compactUuid, looksLikeSse } from "./openai-usage.js";
 import { convertAwsClaudeRequest, isNovaModel, openaiFromNovaResponse } from "./aws-convert.js";
 import { openAIHttpMediaDialect, prefetchOpenAIHttpMedia } from "./openai-media.js";
@@ -1441,6 +1441,7 @@ function attachSettleUsage(
  * Original Gemini adaptor DoResponse unmarshals `dto.GeminiChatResponse` in
  * GeminiChatHandler / GeminiResponsesHandler / native GeminiTextGenerationHandler
  * (not imagen / embedding). Extra-OK: hop 448 imagen `GeminiImageHandler` stays.
+ * Extra-OK: hop 449 embedding-model `GeminiEmbeddingHandler` stays.
  */
 function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mode: string): boolean {
   if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
@@ -2699,6 +2700,15 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         }
         res = new Response(streamText, { status: res.status, headers: res.headers });
       }
+      if (usesGeminiEmbeddingUnmarshal(channel.type, mapped, mode)) {
+        const streamText = await res.text();
+        const unmarshalErr = geminiEmbeddingResponseUnmarshalError(streamText);
+        if (unmarshalErr) {
+          await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
+          return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
+        }
+        res = new Response(streamText, { status: res.status, headers: res.headers });
+      }
       if (!res.body) {
         await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, "bad_response_body", extra);
         return writeRelayNewAPIError(opts.req, 500, "bad_response_body", ERROR_CODE_BAD_RESPONSE_BODY);
@@ -3000,6 +3010,13 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     }
     if (usesGeminiImageUnmarshal(channel.type, mapped, opts.stream)) {
       const unmarshalErr = geminiImageResponseUnmarshalError(text);
+      if (unmarshalErr) {
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
+        return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
+      }
+    }
+    if (usesGeminiEmbeddingUnmarshal(channel.type, mapped, mode)) {
+      const unmarshalErr = geminiEmbeddingResponseUnmarshalError(text);
       if (unmarshalErr) {
         await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
         return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
@@ -3394,6 +3411,9 @@ export async function relay(opts: RelayRequest): Promise<Response> {
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
       if (usesGeminiChatResponseUnmarshal(channel.type, mapped, mode) && (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))) {
+        parsed = {};
+      }
+      if (usesGeminiEmbeddingUnmarshal(channel.type, mapped, mode) && (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))) {
         parsed = {};
       }
       if (
