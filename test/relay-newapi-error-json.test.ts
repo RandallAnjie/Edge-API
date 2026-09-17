@@ -17873,7 +17873,7 @@ test("original leftover native GeminiTextGenerationHandler Unmarshal NewOpenAIEr
       new Request("http://local" + predictPath, {
         method: "POST",
         headers: { ...skAuth, "cf-connecting-ip": "198.51.100.208", "x-oneapi-request-id": "hop454-predict-unmarshal" },
-        body: JSON.stringify({ instances: [{ prompt: "hello" }] }),
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hello" }] }] }),
       }),
       e,
     );
@@ -17897,7 +17897,7 @@ test("original leftover native GeminiTextGenerationHandler Unmarshal NewOpenAIEr
       new Request("http://local" + predictPath, {
         method: "POST",
         headers: { ...skAuth, "cf-connecting-ip": "198.51.100.209", "x-oneapi-request-id": "hop454-predict-array" },
-        body: JSON.stringify({ instances: [{ prompt: "as-array" }] }),
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "as-array" }] }] }),
       }),
       e,
     );
@@ -17950,7 +17950,7 @@ test("original leftover native GeminiTextGenerationHandler Unmarshal NewOpenAIEr
       new Request("http://local" + predictPath, {
         method: "POST",
         headers: { ...skAuth, "cf-connecting-ip": "198.51.100.213", "x-oneapi-request-id": "hop454-native-stay" },
-        body: JSON.stringify({ instances: [{ prompt: "native-predict-stay" }] }),
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "native-predict-stay" }] }] }),
       }),
       e,
     );
@@ -17967,7 +17967,7 @@ test("original leftover native GeminiTextGenerationHandler Unmarshal NewOpenAIEr
           "cf-connecting-ip": "198.51.100.214",
           "x-oneapi-request-id": "hop454-predict-stream",
         },
-        body: JSON.stringify({ instances: [{ prompt: "stream-hop454" }], stream: true }),
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "stream-hop454" }] }], stream: true }),
       }),
       e,
     );
