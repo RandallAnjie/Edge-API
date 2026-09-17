@@ -30,14 +30,19 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { openaiHandlerResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
 import {
+  CHANNEL_TYPE_ALI,
+  CHANNEL_TYPE_COHERE,
   CHANNEL_TYPE_GEMINI,
   CHANNEL_TYPE_JIMENG,
+  CHANNEL_TYPE_JINA,
   CHANNEL_TYPE_MINIMAX,
   CHANNEL_TYPE_OPENAI,
   CHANNEL_TYPE_PALM,
+  CHANNEL_TYPE_SILICONFLOW,
   CHANNEL_TYPE_TENCENT,
+  CHANNEL_TYPE_XINFERENCE,
   CHANNEL_TYPE_XUNFEI,
   CHANNEL_TYPE_ZHIPU,
   CHANNEL_TYPE_ZHIPU_V4,
@@ -2193,5 +2198,205 @@ test("original leftover OpenaiHandler Unmarshal gin.H does not change AUTH Statu
   );
   const vendorItemsHop365 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop365.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover RerankHandler Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(usesRerankHandlerUnmarshal(CHANNEL_TYPE_OPENAI, "rerank"), true);
+  assert.equal(usesRerankHandlerUnmarshal(CHANNEL_TYPE_XINFERENCE, "rerank"), true);
+  assert.equal(usesRerankHandlerUnmarshal(CHANNEL_TYPE_JINA, "rerank"), true);
+  assert.equal(usesRerankHandlerUnmarshal(CHANNEL_TYPE_OPENAI, "chat"), false);
+  assert.equal(usesRerankHandlerUnmarshal(CHANNEL_TYPE_ALI, "rerank"), false);
+  assert.equal(usesRerankHandlerUnmarshal(CHANNEL_TYPE_SILICONFLOW, "rerank"), false);
+  assert.equal(usesRerankHandlerUnmarshal(CHANNEL_TYPE_COHERE, "rerank"), false);
+  assert.equal(rerankHandlerResponseUnmarshalError("not-json", CHANNEL_TYPE_OPENAI), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    rerankHandlerResponseUnmarshalError("[]", CHANNEL_TYPE_OPENAI),
+    "json: cannot unmarshal array into Go value of type dto.RerankResponse",
+  );
+  assert.equal(
+    rerankHandlerResponseUnmarshalError("[]", CHANNEL_TYPE_JINA),
+    "json: cannot unmarshal array into Go value of type dto.RerankResponse",
+  );
+  assert.equal(
+    rerankHandlerResponseUnmarshalError("[]", CHANNEL_TYPE_XINFERENCE),
+    "json: cannot unmarshal array into Go value of type xinference.XinRerankResponse",
+  );
+  assert.equal(rerankHandlerResponseUnmarshalError("null", CHANNEL_TYPE_OPENAI), null);
+  assert.equal(rerankHandlerResponseUnmarshalError("{}", CHANNEL_TYPE_OPENAI), null);
+
+  const rerankHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/rerank", { headers: { "x-oneapi-request-id": "hop366-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(rerankHelper.status, 500);
+  assert.deepEqual(await rerankHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.30" });
+  await mergeModelRatio(new Store(e.DB), {
+    "jina-reranker-v2-base-multilingual": 1,
+    "hop366-xin-rerank": 1,
+  });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const openaiCh = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.31" },
+      body: JSON.stringify({
+        name: "hop366-openai-rerank",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop366",
+        models: "gpt-4o",
+        group: "default",
+        status_code_mapping: JSON.stringify({ "500": "503" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(openaiCh.body.success, true, openaiCh.text);
+  const jinaCh = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.32" },
+      body: JSON.stringify({
+        name: "hop366-jina-rerank",
+        type: CHANNEL_TYPE_JINA,
+        key: "jina-hop366",
+        models: "jina-reranker-v2-base-multilingual",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(jinaCh.body.success, true, jinaCh.text);
+  const xinCh = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.33" },
+      body: JSON.stringify({
+        name: "hop366-xinference-rerank",
+        type: CHANNEL_TYPE_XINFERENCE,
+        key: "xin-hop366",
+        models: "hop366-xin-rerank",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(xinCh.body.success, true, xinCh.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const openaiRerank = await send(
+      new Request("http://local/v1/rerank", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.34", "x-oneapi-request-id": "hop366-openai-unmarshal" },
+        body: JSON.stringify({ model: "gpt-4o", query: "hi", documents: ["a"] }),
+      }),
+      e,
+    );
+    assert.equal(openaiRerank.res.status, 500, openaiRerank.text);
+    assert.equal("type" in openaiRerank.body && openaiRerank.body.type === "error", false, openaiRerank.text);
+    const openaiErr = openaiRerank.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(openaiErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(openaiErr.message.includes("hop366-openai-unmarshal"), false);
+    assert.equal(openaiErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(openaiErr.param, "");
+    assert.equal(openaiErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const asArray = await send(
+      new Request("http://local/v1/rerank", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.35", "x-oneapi-request-id": "hop366-openai-array" },
+        body: JSON.stringify({ model: "gpt-4o", query: "as-array", documents: ["a"] }),
+      }),
+      e,
+    );
+    assert.equal(asArray.res.status, 500, asArray.text);
+    const arrayErr = asArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(arrayErr.message, "json: cannot unmarshal array into Go value of type dto.RerankResponse");
+    assert.equal(arrayErr.message.includes("hop366-openai-array"), false);
+    assert.equal(arrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(arrayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const jinaRerank = await send(
+      new Request("http://local/v1/rerank", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.36", "x-oneapi-request-id": "hop366-jina-unmarshal" },
+        body: JSON.stringify({ model: "jina-reranker-v2-base-multilingual", query: "hi", documents: ["a"] }),
+      }),
+      e,
+    );
+    assert.equal(jinaRerank.res.status, 500, jinaRerank.text);
+    const jinaErr = jinaRerank.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(jinaErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(jinaErr.message.includes("hop366-jina-unmarshal"), false);
+    assert.equal(jinaErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(jinaErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const xinRerank = await send(
+      new Request("http://local/v1/rerank", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.37", "x-oneapi-request-id": "hop366-xin-array" },
+        body: JSON.stringify({ model: "hop366-xin-rerank", query: "as-array", documents: ["a"] }),
+      }),
+      e,
+    );
+    assert.equal(xinRerank.res.status, 500, xinRerank.text);
+    const xinErr = xinRerank.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(xinErr.message, "json: cannot unmarshal array into Go value of type xinference.XinRerankResponse");
+    assert.equal(xinErr.message.includes("hop366-xin-array"), false);
+    assert.equal(xinErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(xinErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover RerankHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.38" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.39", "x-oneapi-request-id": "hop366-vendor-create" },
+      body: JSON.stringify({ name: "hop366-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop366-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop366 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop366.some((item) => item.action === "vendor.create"), listed.text);
 });
 

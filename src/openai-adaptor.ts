@@ -36,6 +36,7 @@ import {
   CHANNEL_TYPE_VERTEX,
   CHANNEL_TYPE_VOLC,
   CHANNEL_TYPE_XAI,
+  CHANNEL_TYPE_XINFERENCE,
   CHANNEL_TYPE_XUNFEI,
   CHANNEL_TYPE_ZHIPU,
   CHANNEL_TYPE_ZHIPU_V4,
@@ -92,7 +93,8 @@ export function usesOpenAIAdaptor(channelType: number): boolean {
 /**
  * Original `openai.Adaptor.DoResponse` paths that call `GetOpenAIError`
  * (`OpenaiHandler`, `OpenaiImageHandler`, `OaiResponsesHandler`). Audio /
- * realtime / rerank use other handlers.
+ * realtime / rerank use other handlers (`RerankHandler` leftover unmarshal
+ * is `usesRerankHandlerUnmarshal`).
  */
 export function usesOpenaiHandlerGetOpenAIError(mode: string): boolean {
   switch (mode) {
@@ -105,6 +107,39 @@ export function usesOpenaiHandlerGetOpenAIError(mode: string): boolean {
     default:
       return true;
   }
+}
+
+/**
+ * Original `common_handler.RerankHandler` (`openai.Adaptor` RelayModeRerank
+ * including Xinference, and `jina.Adaptor` rerank). Ali / Siliconflow /
+ * Cohere use other rerank handlers.
+ */
+export function usesRerankHandlerUnmarshal(channelType: number, mode: string): boolean {
+  if (mode !== "rerank") return false;
+  return usesOpenAIAdaptor(channelType) || channelType === CHANNEL_TYPE_JINA;
+}
+
+/** Original `common.Unmarshal` target type name for `RerankHandler`. */
+export function rerankHandlerUnmarshalTypeName(channelType: number): string {
+  if (channelType === CHANNEL_TYPE_XINFERENCE) return "xinference.XinRerankResponse";
+  return "dto.RerankResponse";
+}
+
+/**
+ * Original `common.Unmarshal` into `dto.RerankResponse` /
+ * `xinference.XinRerankResponse`. Syntax errors match `encoding/json`. JSON
+ * `null` succeeds as a zero-value struct. Non-object JSON is
+ * `json: cannot unmarshal … into Go value of type …`. Extra-OK: nested
+ * field type mismatches are left to convert (original fails).
+ */
+export function rerankHandlerResponseUnmarshalError(text: string, channelType: number): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${rerankHandlerUnmarshalTypeName(channelType)}`;
+  }
+  return null;
 }
 
 /** Original `common.Unmarshal` target type name for `openai.Adaptor.DoResponse`. */
