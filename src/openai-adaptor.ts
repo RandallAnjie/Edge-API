@@ -694,6 +694,41 @@ export function replicateResponseUnmarshalError(text: string): string | null {
 }
 
 /**
+ * Original `minimax.handleTTSResponse` `json.Unmarshal` (`NewErrorWithStatusCode`
+ * `ErrorCodeBadResponseBody` HTTP 500, wrap `"failed to unmarshal minimax TTS
+ * response: %w"`). Chat / images use other DoResponse handlers. Extra-OK:
+ * `base_resp` / empty audio stay hop 356 `bad_response` HTTP 400.
+ */
+export function usesMiniMaxTTSUnmarshal(channelType: number, mode: string): boolean {
+  return channelType === CHANNEL_TYPE_MINIMAX && mode === "audio_speech";
+}
+
+/** Original `json.Unmarshal` target type name for MiniMax TTS. */
+export function miniMaxTTSUnmarshalTypeName(): string {
+  return "minimax.MiniMaxTTSResponse";
+}
+
+/**
+ * Original `json.Unmarshal` into `minimax.MiniMaxTTSResponse`, wrapped as
+ * `fmt.Errorf("failed to unmarshal minimax TTS response: %w", unmarshalErr)`.
+ * Syntax errors match `encoding/json`. JSON `null` succeeds as a zero-value
+ * struct. Extra-OK: nested field type mismatches are left to convert
+ * (original fails).
+ */
+export function miniMaxTTSResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  const inner = !parsed.ok
+    ? parsed.message
+    : parsed.value === null
+      ? null
+      : typeof parsed.value !== "object" || Array.isArray(parsed.value)
+        ? `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${miniMaxTTSUnmarshalTypeName()}`
+        : null;
+  if (inner == null) return null;
+  return `failed to unmarshal minimax TTS response: ${inner}`;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */

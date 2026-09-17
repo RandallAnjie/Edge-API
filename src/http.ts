@@ -917,7 +917,8 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * `ollamaChatHandler` unmarshal also uses this envelope. Extra-OK: Zhipu v4
  * `zhipu4vImageHandler` unmarshal also uses this envelope. Extra-OK: Replicate
  * `Adaptor.DoResponse` unmarshal uses `NewError` + `writeRelayNewAPIError`
- * instead.
+ * instead. Extra-OK: MiniMax `handleTTSResponse` unmarshal uses `NewError` +
+ * `writeRelayNewAPIError` instead.
  */
 export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {
   return writeOpenaiHandlerOpenAIError(req, 500, {

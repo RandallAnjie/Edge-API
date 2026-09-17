@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_BAIDU,
@@ -50,6 +50,7 @@ import {
   CHANNEL_TYPE_REPLICATE,
   CHANNEL_TYPE_SILICONFLOW,
   CHANNEL_TYPE_TENCENT,
+  CHANNEL_TYPE_VOLC,
   CHANNEL_TYPE_XAI,
   CHANNEL_TYPE_XINFERENCE,
   CHANNEL_TYPE_XUNFEI,
@@ -5192,6 +5193,144 @@ test("original leftover Replicate Unmarshal gin.H does not change AUTH StatusTex
   );
   const vendorItemsHop383 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop383.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover MiniMax TTS Unmarshal NewError gin.H", async () => {
+  assert.equal(usesMiniMaxTTSUnmarshal(CHANNEL_TYPE_MINIMAX, "audio_speech"), true);
+  assert.equal(usesMiniMaxTTSUnmarshal(CHANNEL_TYPE_MINIMAX, "chat"), false);
+  assert.equal(usesMiniMaxTTSUnmarshal(CHANNEL_TYPE_MINIMAX, "images"), false);
+  assert.equal(usesMiniMaxTTSUnmarshal(CHANNEL_TYPE_MINIMAX, "embeddings"), false);
+  assert.equal(usesMiniMaxTTSUnmarshal(CHANNEL_TYPE_VOLC, "audio_speech"), false);
+  assert.equal(usesMiniMaxTTSUnmarshal(CHANNEL_TYPE_OPENAI, "audio_speech"), false);
+  assert.equal(
+    miniMaxTTSResponseUnmarshalError("not-json"),
+    "failed to unmarshal minimax TTS response: invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(
+    miniMaxTTSResponseUnmarshalError("[]"),
+    "failed to unmarshal minimax TTS response: json: cannot unmarshal array into Go value of type minimax.MiniMaxTTSResponse",
+  );
+  assert.equal(miniMaxTTSResponseUnmarshalError("null"), null);
+  assert.equal(miniMaxTTSResponseUnmarshalError("{}"), null);
+
+  const ttsHelper = writeRelayNewAPIError(
+    new Request("http://local/v1/audio/speech", { headers: { "x-oneapi-request-id": "hop384-helper" } }),
+    500,
+    "failed to unmarshal minimax TTS response: invalid character 'o' looking for beginning of value",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(ttsHelper.status, 500);
+  assert.deepEqual(await ttsHelper.json(), {
+    error: {
+      message:
+        "failed to unmarshal minimax TTS response: invalid character 'o' looking for beginning of value (request id: hop384-helper)",
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.188" });
+  await mergeModelRatio(new Store(e.DB), { "hop384-speech": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const minimax = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.189" },
+      body: JSON.stringify({
+        name: "hop384-minimax",
+        type: CHANNEL_TYPE_MINIMAX,
+        key: "mm-hop384",
+        models: "hop384-speech",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(minimax.body.success, true, minimax.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const ttsHit = await send(
+      new Request("http://local/v1/audio/speech", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.190", "x-oneapi-request-id": "hop384-minimax-unmarshal" },
+        body: JSON.stringify({ model: "hop384-speech", input: "hello", voice: "female-shaonv" }),
+      }),
+      e,
+    );
+    assert.equal(ttsHit.res.status, 500, ttsHit.text);
+    assert.equal("type" in ttsHit.body && ttsHit.body.type === "error", false, ttsHit.text);
+    const ttsErr = ttsHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(
+      ttsErr.message,
+      "failed to unmarshal minimax TTS response: invalid character 'o' looking for beginning of value (request id: hop384-minimax-unmarshal)",
+    );
+    assert.equal(ttsErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(ttsErr.param, "");
+    assert.equal(ttsErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const ttsArray = await send(
+      new Request("http://local/v1/audio/speech", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.191", "x-oneapi-request-id": "hop384-minimax-array" },
+        body: JSON.stringify({ model: "hop384-speech", input: "as-array", voice: "female-shaonv" }),
+      }),
+      e,
+    );
+    assert.equal(ttsArray.res.status, 500, ttsArray.text);
+    const ttsArrayErr = ttsArray.body.error as { message: string; type: string };
+    assert.equal(
+      ttsArrayErr.message,
+      "failed to unmarshal minimax TTS response: json: cannot unmarshal array into Go value of type minimax.MiniMaxTTSResponse (request id: hop384-minimax-array)",
+    );
+    assert.equal(ttsArrayErr.type, ERROR_TYPE_NEW_API_ERROR);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover MiniMax TTS Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.192" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.193", "x-oneapi-request-id": "hop384-vendor-create" },
+      body: JSON.stringify({ name: "hop384-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop384-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop384 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop384.some((item) => item.action === "vendor.create"), listed.text);
 });
 
 
