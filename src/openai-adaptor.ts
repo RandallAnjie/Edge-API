@@ -1867,9 +1867,11 @@ export function usesAdvancedCustomClaudeStreamUnmarshal(
  * Extra-OK: hop 423 Gemini channel stream stays. Extra-OK: hop 436 Claude stream stays.
  * Extra-OK: hop 451 embedding-model `GeminiEmbeddingHandler` stays.
  * Extra-OK: hop 453 imagen `GeminiImageHandler` stays.
- * Extra-OK: hop 454 native `:predict` imagen `GeminiTextGenerationHandler` stays.
- * Extra-OK: hop 459 `/v1/responses` embedding / imagen prefixes use
- * `GeminiResponsesHandler` (RelayModeResponses first).
+ * Extra-OK: hop 454 Gemini-channel native `:predict` imagen
+ * `GeminiTextGenerationHandler` stays. Extra-OK: hop 459 `/v1/responses`
+ * embedding / imagen prefixes use `GeminiResponsesHandler`
+ * (RelayModeResponses first). Extra-OK: hop 460 native `RelayModeGemini`
+ * `:predict` imagen uses `GeminiTextGenerationHandler` (RelayModeGemini first).
  */
 export function usesAdvancedCustomGeminiUnmarshal(
   channelType: number,
@@ -1880,7 +1882,7 @@ export function usesAdvancedCustomGeminiUnmarshal(
 ): boolean {
   if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
   if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
-  if (mapped.startsWith("imagen") && mode !== "responses") return false;
+  if (mapped.startsWith("imagen") && mode !== "responses" && mode !== "gemini") return false;
   if (
     (mapped.startsWith("text-embedding") ||
       mapped.startsWith("embedding") ||
@@ -1945,7 +1947,8 @@ export function usesAdvancedCustomGeminiEmbeddingUnmarshal(
  * Images-mode converters Convert `"does not support image requests"` before
  * DoResponse (hop 350). Extra-OK: hop 448 Gemini/Vertex `GeminiImageHandler`
  * stays. Extra-OK: hop 420 non-imagen `GeminiChatHandler` stays. Extra-OK:
- * hop 451 embedding-model `GeminiEmbeddingHandler` stays.
+ * hop 451 embedding-model `GeminiEmbeddingHandler` stays. Extra-OK: hop 460
+ * native `RelayModeGemini` `:predict` imagen `GeminiTextGenerationHandler` stays.
  */
 export function usesAdvancedCustomGeminiImageUnmarshal(
   channelType: number,
@@ -1981,7 +1984,8 @@ export function advancedCustomGeminiResponseUnmarshalError(text: string): string
  * `FailResponsesStream`; hop 440 Gemini channel stays). Extra-OK: hop 420
  * non-stream `GeminiChatHandler` stays. Extra-OK: hop 423 Gemini channel stream
  * stays. Extra-OK: hop 436 Claude stream stays. Extra-OK: hop 421 non-stream
- * `GeminiResponsesHandler` stays.
+ * `GeminiResponsesHandler` stays. Extra-OK: hop 460 native `:predict` imagen
+ * stream uses `GeminiTextGenerationStreamHandler` (same wrap).
  */
 export function usesAdvancedCustomGeminiStreamUnmarshal(
   channelType: number,
@@ -2009,7 +2013,8 @@ export function usesAdvancedCustomGeminiStreamUnmarshal(
  * `ChatToResponsesStreamState` so `FailResponsesStream` is handled.
  * Extra-OK: hop 442 `OaiChatToResponsesStreamHandler` stays. Extra-OK: hop 459
  * `/v1/responses` embedding / imagen prefixes use this handler
- * (RelayModeResponses first).
+ * (RelayModeResponses first). Extra-OK: hop 460 native `:predict` imagen
+ * stream stays hop 437 `GeminiTextGenerationStreamHandler`.
  */
 export function usesAdvancedCustomGeminiResponsesStreamUnmarshal(
   channelType: number,
