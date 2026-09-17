@@ -895,6 +895,29 @@ export function moonshotResponseUnmarshalError(text: string, mode = "chat"): str
 }
 
 /**
+ * Original Moonshot Claude-format `moonshot.Adaptor.DoResponse` delegates to
+ * `claude.Adaptor.DoResponse` (`ClaudeHandler` `HandleClaudeResponseData`
+ * `common.Unmarshal` `NewError` `ErrorCodeBadResponseBody` into
+ * `dto.ClaudeResponse`). OpenAI format stays hop 394 (`clientFormat ===
+ * "openai"` gate). Audio / responses Convert `"not supported"` / `"not
+ * implemented"` before DoResponse (hop 350). ConvertRerank leftover hop 366.
+ * Extra-OK: hop 408 Vertex Claude stays.
+ */
+export function usesMoonshotClaudeUnmarshal(channelType: number, mode: string): boolean {
+  return usesMoonshotUnmarshal(channelType, mode);
+}
+
+/**
+ * Original `HandleClaudeResponseData` `common.Unmarshal` into
+ * `dto.ClaudeResponse` for Moonshot Claude-format. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function moonshotClaudeResponseUnmarshalError(text: string): string | null {
+  return claudeHandlerResponseUnmarshalError(text);
+}
+
+/**
  * Original `baidu_v2.Adaptor.DoResponse` always delegates to
  * `openai.Adaptor.DoResponse`. Non-stream chat uses `openai.OpenaiHandler`
  * (`common.Unmarshal` `NewOpenAIError` `ErrorCodeBadResponseBody`). Completions
