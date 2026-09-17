@@ -19,6 +19,7 @@ import {
   messageWithRequestId,
   getOpenAIError,
   writeOpenaiHandlerOpenAIError,
+  writeOpenaiHandlerUnmarshalError,
   noAvailableChannelRetryMessage,
   relayErrorHandler,
   relayUsesClaudeError,
@@ -29,6 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
+import { openaiHandlerResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_GEMINI,
   CHANNEL_TYPE_JIMENG,
@@ -1992,5 +1994,204 @@ test("original leftover OpenaiHandler GetOpenAIError gin.H does not change AUTH 
   );
   const vendorItemsHop364 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop364.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover OpenaiHandler Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(openaiHandlerResponseUnmarshalError("not-json", "chat"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    openaiHandlerResponseUnmarshalError("[]", "chat"),
+    "json: cannot unmarshal array into Go value of type dto.OpenAITextResponse",
+  );
+  assert.equal(
+    openaiHandlerResponseUnmarshalError("[]", "images"),
+    "json: cannot unmarshal array into Go value of type dto.SimpleResponse",
+  );
+  assert.equal(
+    openaiHandlerResponseUnmarshalError("[]", "responses"),
+    "json: cannot unmarshal array into Go value of type dto.OpenAIResponsesResponse",
+  );
+  assert.equal(openaiHandlerResponseUnmarshalError("null", "chat"), null);
+  assert.equal(openaiHandlerResponseUnmarshalError("{}", "chat"), null);
+
+  const chatHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop365-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(chatHelper.status, 500);
+  assert.deepEqual(await chatHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+  const claudeHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/messages", { headers: { "x-oneapi-request-id": "hop365-helper-claude" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(claudeHelper.status, 500);
+  assert.deepEqual(await claudeHelper.json(), {
+    type: "error",
+    error: {
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      message: messageWithRequestId("invalid character 'o' looking for beginning of value", "hop365-helper-claude"),
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.10" });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ch = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.11" },
+      body: JSON.stringify({
+        name: "hop365-openai",
+        type: CHANNEL_TYPE_OPENAI,
+        key: "sk-hop365",
+        models: "gpt-4o,dall-e-3",
+        group: "default",
+        status_code_mapping: JSON.stringify({ "500": "503" }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(ch.body.success, true, ch.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const chat = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.12", "x-oneapi-request-id": "hop365-chat-unmarshal" },
+        body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(chat.res.status, 500, chat.text);
+    assert.equal("type" in chat.body && chat.body.type === "error", false, chat.text);
+    const chatErr = chat.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(chatErr.message.includes("hop365-chat-unmarshal"), false);
+    assert.equal(chatErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const asArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.13", "x-oneapi-request-id": "hop365-chat-array" },
+        body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(asArray.res.status, 500, asArray.text);
+    const arrayErr = asArray.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(arrayErr.message, "json: cannot unmarshal array into Go value of type dto.OpenAITextResponse");
+    assert.equal(arrayErr.message.includes("hop365-chat-array"), false);
+    assert.equal(arrayErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(arrayErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const claude = await send(
+      new Request("http://local/v1/messages", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          "cf-connecting-ip": "192.0.2.14",
+          "anthropic-version": "2023-06-01",
+          "x-oneapi-request-id": "hop365-claude-unmarshal",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          max_tokens: 32,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      e,
+    );
+    assert.equal(claude.res.status, 500, claude.text);
+    assert.equal(claude.body.type, "error");
+    const claudeErr = claude.body.error as { type: string; message: string; code?: string; param?: string };
+    assert.equal(claudeErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(
+      claudeErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop365-claude-unmarshal"),
+    );
+    assert.equal(claudeErr.code, undefined);
+    assert.equal(claudeErr.param, undefined);
+
+    const images = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.15", "x-oneapi-request-id": "hop365-image-array" },
+        body: JSON.stringify({ model: "dall-e-3", prompt: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(images.res.status, 500, images.text);
+    const imagesErr = images.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(imagesErr.message, "json: cannot unmarshal array into Go value of type dto.SimpleResponse");
+    assert.equal(imagesErr.message.includes("hop365-image-array"), false);
+    assert.equal(imagesErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(imagesErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const responses = await send(
+      new Request("http://local/v1/responses", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.16", "x-oneapi-request-id": "hop365-responses-unmarshal" },
+        body: JSON.stringify({ model: "gpt-4o", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(responses.res.status, 500, responses.text);
+    const responsesErr = responses.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(responsesErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(responsesErr.message.includes("hop365-responses-unmarshal"), false);
+    assert.equal(responsesErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(responsesErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover OpenaiHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.17" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.18", "x-oneapi-request-id": "hop365-vendor-create" },
+      body: JSON.stringify({ name: "hop365-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop365-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop365 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop365.some((item) => item.action === "vendor.create"), listed.text);
 });
 

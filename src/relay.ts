@@ -109,7 +109,7 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesTextHelperStreamOptions } from "./openai-adaptor.js";
+import { applyTextHelperStreamOptions, delegatesClaudeToOpenAIAdaptor, openaiHandlerResponseUnmarshalError, usesClaudeAdaptorForClaudeRequest, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import {
@@ -133,6 +133,7 @@ import {
   openaiError,
   relayErrorHandler,
   writeOpenaiHandlerOpenAIError,
+  writeOpenaiHandlerUnmarshalError,
   tokenModelForbiddenMessage,
   writeGeminiChatEmptyCandidatesError,
   writeGeminiChatUnmarshalError,
@@ -2794,10 +2795,24 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
       }
     }
+    if (usesOpenAIAdaptor(channel.type) && usesOpenaiHandlerGetOpenAIError(mode)) {
+      const unmarshalErr = openaiHandlerResponseUnmarshalError(text, mode);
+      if (unmarshalErr) {
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
+        return writeOpenaiHandlerUnmarshalError(opts.req, unmarshalErr);
+      }
+    }
     let parsed: Record<string, unknown> = {};
     try {
       parsed = JSON.parse(text) as Record<string, unknown>;
       if (usesGeminiChatResponseUnmarshal(channel.type, mapped, mode) && (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))) {
+        parsed = {};
+      }
+      if (
+        usesOpenAIAdaptor(channel.type) &&
+        usesOpenaiHandlerGetOpenAIError(mode) &&
+        (parsed == null || typeof parsed !== "object" || Array.isArray(parsed))
+      ) {
         parsed = {};
       }
       ingestUpstreamToolUsage(extra.toolUsage, { json: parsed });

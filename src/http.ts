@@ -889,6 +889,23 @@ export const ERROR_CODE_CHANNEL_INVALID_KEY = "channel:invalid_key";
 /** Original `types.ErrorCodeBadResponseBody`. */
 export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
 
+/**
+ * Original leftover Relay defer `c.JSON` gin.H after `OpenaiHandler` /
+ * `OpenaiImageHandler` / `OaiResponsesHandler` `common.Unmarshal` fail
+ * (`NewOpenAIError` `ErrorCodeBadResponseBody` HTTP 500, `ErrorTypeOpenAIError`).
+ * Chat `ToOpenAIError` uses RelayError.Message (no request id). Claude
+ * `ToClaudeError` uses `e.Error()` after `SetMessage`. Extra-OK: generated
+ * RequestId is not appended (hop 314).
+ */
+export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {
+  return writeOpenaiHandlerOpenAIError(req, 500, {
+    message,
+    type: ERROR_CODE_BAD_RESPONSE_BODY,
+    param: "",
+    code: ERROR_CODE_BAD_RESPONSE_BODY,
+  });
+}
+
 /** Original `types.ErrorCodeBadResponseStatusCode`. */
 export const ERROR_CODE_BAD_RESPONSE_STATUS_CODE = "bad_response_status_code";
 

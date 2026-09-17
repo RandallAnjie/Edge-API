@@ -1,5 +1,6 @@
 /** Original `relay.GetAdaptor` → `openai.Adaptor` (APITypeOpenAI, OpenRouter, Xinference, unknown→OpenAI). */
 
+import { goJSONKind, goUnmarshalJSON } from "./channel-validate.js";
 import {
   CHANNEL_TYPE_ADVANCED_CUSTOM,
   CHANNEL_TYPE_ALI,
@@ -104,6 +105,30 @@ export function usesOpenaiHandlerGetOpenAIError(mode: string): boolean {
     default:
       return true;
   }
+}
+
+/** Original `common.Unmarshal` target type name for `openai.Adaptor.DoResponse`. */
+export function openaiHandlerUnmarshalTypeName(mode: string): string {
+  if (mode === "images") return "dto.SimpleResponse";
+  if (mode === "responses") return "dto.OpenAIResponsesResponse";
+  return "dto.OpenAITextResponse";
+}
+
+/**
+ * Original `common.Unmarshal` into `OpenAITextResponse` / `SimpleResponse` /
+ * `OpenAIResponsesResponse`. Syntax errors match `encoding/json`. JSON `null`
+ * succeeds as a zero-value struct. Non-object JSON is
+ * `json: cannot unmarshal … into Go value of type dto.*`. Extra-OK: nested
+ * field type mismatches are left to convert (original fails).
+ */
+export function openaiHandlerResponseUnmarshalError(text: string, mode: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${openaiHandlerUnmarshalTypeName(mode)}`;
+  }
+  return null;
 }
 
 /**
