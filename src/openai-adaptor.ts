@@ -1874,6 +1874,8 @@ export function usesAdvancedCustomClaudeStreamUnmarshal(
  * `:predict` imagen uses `GeminiTextGenerationHandler` (RelayModeGemini first).
  * Extra-OK: hop 462 native `RelayModeGemini` `:generateContent` embedding prefixes
  * use `GeminiTextGenerationHandler` (RelayModeGemini first; embed paths stay hop 452).
+ * Extra-OK: hop 465 `/v1/responses` empty-candidates leftover is
+ * `GeminiResponsesHandler` `NewOpenAIError` gin.H (not convert).
  */
 export function usesAdvancedCustomGeminiUnmarshal(
   channelType: number,
@@ -2023,7 +2025,9 @@ export function usesAdvancedCustomGeminiStreamUnmarshal(
  * (RelayModeResponses first). Extra-OK: hop 460 native `:predict` imagen
  * stream stays hop 437 `GeminiTextGenerationStreamHandler`. Extra-OK: hop 462
  * native `:generateContent` embedding prefixes stay hop 437
- * `GeminiTextGenerationStreamHandler`.
+ * `GeminiTextGenerationStreamHandler`. Extra-OK: hop 465 non-stream
+ * empty-candidates leftover gin.H stays (this stream handler is
+ * typically FailResponsesStream HTTP 200).
  */
 export function usesAdvancedCustomGeminiResponsesStreamUnmarshal(
   channelType: number,

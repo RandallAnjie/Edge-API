@@ -1479,10 +1479,23 @@ function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mo
  * leftover empty-candidates gin.H (not native GeminiTextGenerationHandler / imagen / embedding).
  * Extra-OK: hop 464 `/v1/responses` leftover is `GeminiResponsesHandler` `NewOpenAIError`
  * Relay defer (`ErrorTypeOpenAIError` `ToOpenAIError`, not `writeRelayNewAPIError`).
+ * Extra-OK: hop 465 advanced-custom `ConverterOpenAIResponsesToGemini` delegates to
+ * `gemini.Adaptor.DoResponse` `GeminiResponsesHandler` empty-candidates same leftover
+ * gin.H (`empty_response` / `prompt_blocked`, no request-id append, ResetStatusCode).
+ * Native `RelayModeGemini` still copies HTTP 200 (GeminiTextGenerationHandler).
  */
-function usesGeminiEmptyCandidatesHandler(channelType: number, mapped: string, mode: string): boolean {
+function usesGeminiEmptyCandidatesHandler(
+  channelType: number,
+  mapped: string,
+  mode: string,
+  converter = "none",
+): boolean {
   if (mode === "gemini") return false;
-  return usesGeminiChatResponseUnmarshal(channelType, mapped, mode);
+  if (usesGeminiChatResponseUnmarshal(channelType, mapped, mode)) return true;
+  if (mode !== "responses") return false;
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  const id = String(converter || CONVERTER_NONE).trim() || CONVERTER_NONE;
+  return id === CONVERTER_RESPONSES_TO_GEMINI;
 }
 
 /** Original adaptor request format after ConvertRequest; client format is InitRequestConversionChain. */
@@ -3854,7 +3867,7 @@ export async function relay(opts: RelayRequest): Promise<Response> {
         });
       }
     }
-    if (usesGeminiEmptyCandidatesHandler(channel.type, mapped, mode)) {
+    if (usesGeminiEmptyCandidatesHandler(channel.type, mapped, mode, advancedConverter || "none")) {
       const empty = geminiChatEmptyCandidatesError(parsed);
       if (empty) {
         const status = resetNewAPIErrorStatusCode(empty.status, String(channel.status_code_mapping || ""));
