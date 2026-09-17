@@ -2601,7 +2601,15 @@ export async function relay(opts: RelayRequest): Promise<Response> {
           await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, false, unmarshalErr.slice(0, 2000), extra);
           return writeGeminiChatUnmarshalError(opts.req, unmarshalErr);
         }
-        res = new Response(streamText, { status: res.status, headers: res.headers });
+        // Original NativeGeminiEmbeddingHandler ignores IsStream and copies the
+        // native body via IOCopyBytesGracefully (hop 473). Extra-OK: hop 450 leftover
+        // Unmarshal stays above. Extra-OK: hop 471 OpenAI-format GeminiEmbeddingHandler
+        // stream JSON convert stays usesGeminiEmbeddingUnmarshal.
+        await settle(store, auth, channel, model, promptEst, 0, useTime, true, ip, rid, true, "stream", extra);
+        return new Response(streamText, {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8", "x-oneapi-request-id": rid },
+        });
       }
       if (usesGeminiChatStreamUnmarshal(channel.type, mapped, mode, opts.stream)) {
         const streamText = await res.text();

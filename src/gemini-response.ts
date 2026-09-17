@@ -1570,7 +1570,9 @@ export function geminiEmbeddingResponseUnmarshalError(text: string): string | nu
  * advanced-custom OpenAI-format `GeminiEmbeddingHandler` stays. Extra-OK: hop 452
  * advanced-custom native embed also uses this predicate. Extra-OK: hop 461 native
  * `RelayModeGemini` `:generateContent` embedding prefixes stay
- * `GeminiTextGenerationHandler` (embed paths only).
+ * `GeminiTextGenerationHandler` (embed paths only). Extra-OK: hop 473
+ * `NativeGeminiEmbeddingHandler` copies native JSON even when the client streams
+ * (`IOCopyBytesGracefully`). Extra-OK: hop 450 leftover Unmarshal stays leftover gin.H.
  */
 export function usesNativeGeminiEmbeddingUnmarshal(
   channelType: number,

@@ -22636,3 +22636,212 @@ test("original leftover GeminiImageHandler stream JSON write does not change AUT
   assert.ok(vendorItemsHop472.some((item) => item.action === "vendor.create"), listed.text);
 });
 
+test("original leftover NativeGeminiEmbeddingHandler copy native JSON even when the client streams", async () => {
+  const embedPath = "/v1beta/models/text-embedding-hop473:embedContent";
+  const batchPath = "/v1beta/models/text-embedding-hop473:batchEmbedContents";
+  const genPath = "/v1beta/models/text-embedding-hop473:generateContent";
+  const advEmbedPath = "/v1beta/models/text-embedding-hop473-adv:embedContent";
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "gemini", embedPath), true);
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "gemini", batchPath), true);
+  assert.equal(usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "gemini", genPath), false);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop473", "gemini"), false);
+  assert.equal(usesGeminiEmbeddingUnmarshal(CHANNEL_TYPE_GEMINI, "text-embedding-hop473", "chat"), true);
+  assert.equal(
+    usesNativeGeminiEmbeddingUnmarshal(CHANNEL_TYPE_ADVANCED_CUSTOM, "gemini", advEmbedPath, "none", "gemini"),
+    true,
+  );
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "198.51.100.449" });
+  await mergeModelRatio(new Store(e.DB), {
+    "text-embedding-hop473": 1,
+    "hop473-gemini": 1,
+    "text-embedding-hop473-adv": 1,
+  });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const createdGemini = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.451" },
+      body: JSON.stringify({
+        name: "hop473-gemini",
+        type: CHANNEL_TYPE_GEMINI,
+        key: "gkey-hop473",
+        models: "text-embedding-hop473,hop473-gemini",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(createdGemini.body.success, true, createdGemini.text);
+
+  const createdAdv = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.452" },
+      body: JSON.stringify({
+        name: "hop473-adv-native-embed",
+        type: CHANNEL_TYPE_ADVANCED_CUSTOM,
+        key: "sk-hop473",
+        models: "text-embedding-hop473-adv",
+        group: "default",
+        base_url: "https://generativelanguage.googleapis.com",
+        settings: JSON.stringify({
+          advanced_custom: {
+            advanced_routes: [
+              {
+                incoming_path: "/v1beta/models/{model}:embedContent",
+                upstream_path: "https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent",
+                converter: "none",
+                models: ["text-embedding-hop473-adv"],
+              },
+            ],
+          },
+        }),
+      }),
+    }),
+    e,
+  );
+  assert.equal(createdAdv.body.success, true, createdAdv.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (!url.includes("generativelanguage.googleapis.com")) return origFetch(input, init);
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("not-json-hop450-stay-473")) {
+      return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (raw.includes("openai-embed-hop471-stay-473")) {
+      return new Response(JSON.stringify({ embeddings: [{ values: [0.3, 0.4] }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ embedding: { values: [0.1, 0.2] } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const nativeStream = await send(
+      new Request("http://local" + embedPath, {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.453",
+          "x-oneapi-request-id": "hop473-native-stream",
+        },
+        body: JSON.stringify({ content: { parts: [{ text: "hello-native-stream" }] }, stream: true }),
+      }),
+      e,
+    );
+    assert.equal(nativeStream.res.status, 200, nativeStream.text);
+    assert.equal((nativeStream.res.headers.get("content-type") || "").includes("application/json"), true, String(nativeStream.res.headers.get("content-type")));
+    assert.equal((nativeStream.res.headers.get("content-type") || "").includes("text/event-stream"), false, String(nativeStream.res.headers.get("content-type")));
+    assert.deepEqual(nativeStream.body.embedding, { values: [0.1, 0.2] });
+    assert.equal(nativeStream.body.object === "list", false, nativeStream.text);
+    assert.equal(nativeStream.text.startsWith("data:"), false, nativeStream.text);
+
+    const unmarshalStay = await send(
+      new Request("http://local" + embedPath, {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.454",
+          "x-oneapi-request-id": "hop473-hop450-stay",
+        },
+        body: JSON.stringify({ content: { parts: [{ text: "not-json-hop450-stay-473" }] }, stream: true }),
+      }),
+      e,
+    );
+    assert.equal(unmarshalStay.res.status, 500, unmarshalStay.text);
+    const unmarshalErr = unmarshalStay.body.error as { message: string; type: string };
+    assert.equal(
+      unmarshalErr.message,
+      messageWithRequestId("invalid character 'o' looking for beginning of value", "hop473-hop450-stay"),
+    );
+    assert.equal(unmarshalErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const openaiStay = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.456",
+          "x-oneapi-request-id": "hop473-hop471-stay",
+        },
+        body: JSON.stringify({
+          model: "text-embedding-hop473",
+          messages: [{ role: "user", content: "openai-embed-hop471-stay-473" }],
+          stream: true,
+        }),
+      }),
+      e,
+    );
+    assert.equal(openaiStay.res.status, 200, openaiStay.text);
+    assert.equal(openaiStay.body.object, "list");
+    assert.deepEqual(openaiStay.body.data, [{ object: "embedding", embedding: [0.3, 0.4], index: 0 }]);
+    assert.equal("embedding" in openaiStay.body && openaiStay.body.embedding != null && !Array.isArray(openaiStay.body.data), false, openaiStay.text);
+
+    const advStream = await send(
+      new Request("http://local" + advEmbedPath, {
+        method: "POST",
+        headers: {
+          ...skAuth,
+          accept: "text/event-stream",
+          "cf-connecting-ip": "198.51.100.457",
+          "x-oneapi-request-id": "hop473-adv-stream",
+        },
+        body: JSON.stringify({ content: { parts: [{ text: "hello-adv-native-stream" }] }, stream: true }),
+      }),
+      e,
+    );
+    assert.equal(advStream.res.status, 200, advStream.text);
+    assert.equal((advStream.res.headers.get("content-type") || "").includes("application/json"), true, String(advStream.res.headers.get("content-type")));
+    assert.deepEqual(advStream.body.embedding, { values: [0.1, 0.2] });
+    assert.equal(advStream.body.object === "list", false, advStream.text);
+    assert.equal(advStream.text.startsWith("data:"), false, advStream.text);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover NativeGeminiEmbeddingHandler stream JSON copy does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "198.51.100.458" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "198.51.100.459", "x-oneapi-request-id": "hop473-vendor-create" },
+      body: JSON.stringify({ name: "hop473-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop473-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop473 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop473.some((item) => item.action === "vendor.create"), listed.text);
+});
+
