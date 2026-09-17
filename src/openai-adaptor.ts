@@ -812,6 +812,47 @@ export function siliconflowResponseUnmarshalError(text: string, mode = "chat"): 
 }
 
 /**
+ * Original `deepseek.Adaptor.DoResponse` default path always delegates to
+ * `openai.Adaptor.DoResponse`. Claude format uses `claude.Adaptor.DoResponse`
+ * (`clientFormat === "openai"` gate in relay). Non-stream chat / completions
+ * use `openai.OpenaiHandler` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Responses Convert succeeds then
+ * `OaiResponsesHandler` (`dto.OpenAIResponsesResponse`). Stream uses
+ * `openai.OaiStreamHandler` (log/continue, not leftover gin.H). Images /
+ * audio / embeddings convert `"not implemented"` before DoResponse (hop 350).
+ * Extra-OK: ConvertClaudeRequest uses `claude.Adaptor`. Extra-OK:
+ * ConvertGeminiRequest `"not implemented"` stays hop 350. Extra-OK:
+ * ConvertRerankRequest `nil, nil` rerank Unmarshal stays leftover. Extra-OK:
+ * hop 392 Siliconflow stays.
+ */
+export function usesDeepseekUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_DEEPSEEK) return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "embeddings":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` / `dto.OpenAIResponsesResponse` for Deepseek
+ * OpenAI-format. Syntax errors match `encoding/json`. JSON `null` succeeds as
+ * a zero-value struct. Extra-OK: nested field type mismatches are left to
+ * convert (original fails).
+ */
+export function deepseekResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses
