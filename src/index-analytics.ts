@@ -1,9 +1,10 @@
 /**
  * Original `InjectUmamiAnalytics` / `InjectGoogleAnalytics` leftover on
- * `indexPage`, plus `embedFileSystem.Open("/")` ErrNotExist so GET `/` uses
+ * `indexPage`, plus `embedFileSystem.Open("/")` ErrNotExist so `/` uses
  * the injected IndexPage instead of static `index.html`.
  * Placeholders are `bytes.ReplaceAll`'d at startup in the original; the
  * worker applies the same replacements when serving IndexPage.
+ * Original NoRoute last handler does not check method (`c.Data` IndexPage).
  */
 import type { Env } from "./types.js";
 
@@ -70,8 +71,17 @@ export function injectIndexAnalytics(
 }
 
 /**
+ * Original NoRoute last handler reads in-memory `assets.IndexPage` for any
+ * method. Worker always GET `/index.html` so HEAD/POST do not depend on ASSETS
+ * method support. Extra-OK: OPTIONS 204 still runs first and never reaches here.
+ */
+export function noRouteIndexPageAssetRequest(req: Request): Request {
+  return new Request(new URL("/index.html", req.url));
+}
+
+/**
  * Original NoRoute `c.Data(http.StatusOK, "text/html; charset=utf-8", IndexPage)`
- * after startup inject. Static `/index.html` is not rewritten.
+ * after startup inject, for any method. Static `/index.html` is not rewritten.
  */
 export async function withIndexAnalytics(
   res: Response,

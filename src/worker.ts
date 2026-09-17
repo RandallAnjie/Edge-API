@@ -35,7 +35,7 @@ import { criticalRateLimit } from "./critical-rate-limit.js";
 import { globalApiRateLimit } from "./global-api-rate-limit.js";
 import { globalWebRateLimit } from "./global-web-rate-limit.js";
 import { withRelayNotFoundWebCache, withSpaCacheHeaders, withWebCacheHeaders } from "./web-cache.js";
-import { embedFolderExists, withIndexAnalytics } from "./index-analytics.js";
+import { embedFolderExists, noRouteIndexPageAssetRequest, withIndexAnalytics } from "./index-analytics.js";
 import { emitSetUpLogger } from "./gin-logger.js";
 import {
   emitBodyStorageCleanup,
@@ -1047,20 +1047,20 @@ async function dispatchFetch(req: Request, env: Env, ctx: ExecutionContextLike):
       const res = await env.ASSETS.fetch(req);
       if (res.status !== 404) return withWebCacheHeaders(req, res);
     }
-    if (req.method === "GET") {
-      const skipSpa =
-        path.startsWith("/api") ||
-        path.startsWith("/v1") ||
-        path.startsWith("/v1beta") ||
-        path.startsWith("/mj") ||
-        path.startsWith("/pg") ||
-        path.startsWith("/static") ||
-        path.startsWith("/assets") ||
-        path.startsWith("/dashboard/billing");
-      if (!skipSpa) {
-        const spa = await env.ASSETS.fetch(new Request(new URL("/index.html", req.url), req));
-        return withSpaCacheHeaders(await withIndexAnalytics(spa, env));
-      }
+    // Original NoRoute last handler serves IndexPage for any method after
+    // static.Serve skips. Extra-OK: OPTIONS 204 still runs first.
+    const skipSpa =
+      path.startsWith("/api") ||
+      path.startsWith("/v1") ||
+      path.startsWith("/v1beta") ||
+      path.startsWith("/mj") ||
+      path.startsWith("/pg") ||
+      path.startsWith("/static") ||
+      path.startsWith("/assets") ||
+      path.startsWith("/dashboard/billing");
+    if (!skipSpa) {
+      const spa = await env.ASSETS.fetch(noRouteIndexPageAssetRequest(req));
+      return withSpaCacheHeaders(await withIndexAnalytics(spa, env));
     }
   }
   if (path.startsWith("/v1") || path.startsWith("/api") || path.startsWith("/assets")) {
