@@ -1446,7 +1446,9 @@ function attachSettleUsage(
  * embedding-model `GeminiEmbeddingHandler` stays. Extra-OK: hop 457
  * `/v1/responses` imagen uses `GeminiResponsesHandler` (RelayModeResponses first).
  * Extra-OK: hop 458 `/v1/responses` embedding-model prefixes use
- * `GeminiResponsesHandler` (RelayModeResponses first).
+ * `GeminiResponsesHandler` (RelayModeResponses first). Extra-OK: hop 461 native
+ * `RelayModeGemini` `:generateContent` embedding-model prefixes use
+ * `GeminiTextGenerationHandler` (RelayModeGemini first; embed paths stay hop 450).
  */
 function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mode: string): boolean {
   if (mode === "images" || mode === "embeddings" || mode === "engines_embeddings") return false;
@@ -1455,7 +1457,8 @@ function usesGeminiChatResponseUnmarshal(channelType: number, mapped: string, mo
     (mapped.startsWith("text-embedding") ||
       mapped.startsWith("embedding") ||
       mapped.startsWith("gemini-embedding")) &&
-    mode !== "responses"
+    mode !== "responses" &&
+    mode !== "gemini"
   ) {
     return false;
   }
