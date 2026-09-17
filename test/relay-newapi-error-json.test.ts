@@ -30,10 +30,11 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, mokaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesMokaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, mokaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesMokaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_BAIDU,
+  CHANNEL_TYPE_CLOUDFLARE,
   CHANNEL_TYPE_COHERE,
   CHANNEL_TYPE_COZE,
   CHANNEL_TYPE_DIFY,
@@ -4239,5 +4240,240 @@ test("original leftover Moka Unmarshal gin.H does not change AUTH StatusText or 
   );
   const vendorItemsHop377 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop377.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+function hop378AudioForm(model: string): { buf: ArrayBuffer; ct: string } {
+  const boundary = "----Hop378CfAudio";
+  const raw =
+    `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\nContent-Type: audio/wav\r\n\r\nRIFFWAV\r\n` +
+    `--${boundary}--\r\n`;
+  const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  const out = new Uint8Array(bytes.byteLength);
+  out.set(bytes);
+  return { buf: out.buffer, ct: `multipart/form-data; boundary=${boundary}` };
+}
+
+test("original leftover Cloudflare Unmarshal NewError gin.H", async () => {
+  assert.equal(usesCloudflareUnmarshal(CHANNEL_TYPE_CLOUDFLARE, "chat"), true);
+  assert.equal(usesCloudflareUnmarshal(CHANNEL_TYPE_CLOUDFLARE, "embeddings"), true);
+  assert.equal(usesCloudflareUnmarshal(CHANNEL_TYPE_CLOUDFLARE, "audio_transcription"), true);
+  assert.equal(usesCloudflareUnmarshal(CHANNEL_TYPE_CLOUDFLARE, "audio_translation"), true);
+  assert.equal(usesCloudflareUnmarshal(CHANNEL_TYPE_CLOUDFLARE, "completions"), false);
+  assert.equal(usesCloudflareUnmarshal(CHANNEL_TYPE_CLOUDFLARE, "responses"), false);
+  assert.equal(usesCloudflareUnmarshal(CHANNEL_TYPE_CLOUDFLARE, "images"), false);
+  assert.equal(usesCloudflareUnmarshal(CHANNEL_TYPE_OPENAI, "chat"), false);
+  assert.equal(cloudflareResponseUnmarshalError("not-json", "chat"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    cloudflareResponseUnmarshalError("[]", "chat"),
+    "json: cannot unmarshal array into Go value of type dto.TextResponse",
+  );
+  assert.equal(
+    cloudflareResponseUnmarshalError("[]", "embeddings"),
+    "json: cannot unmarshal array into Go value of type dto.TextResponse",
+  );
+  assert.equal(
+    cloudflareResponseUnmarshalError("[]", "audio_transcription"),
+    "json: cannot unmarshal array into Go value of type cloudflare.CfAudioResponse",
+  );
+  assert.equal(
+    cloudflareResponseUnmarshalError("[]", "audio_translation"),
+    "json: cannot unmarshal array into Go value of type cloudflare.CfAudioResponse",
+  );
+  assert.equal(cloudflareResponseUnmarshalError("null", "chat"), null);
+  assert.equal(cloudflareResponseUnmarshalError("{}", "chat"), null);
+  assert.equal(cloudflareResponseUnmarshalError("null", "audio_transcription"), null);
+
+  const chatHelper = writeRelayNewAPIError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop378-helper" } }),
+    500,
+    "invalid character 'o' looking for beginning of value",
+    ERROR_CODE_BAD_RESPONSE_BODY,
+  );
+  assert.equal(chatHelper.status, 500);
+  assert.deepEqual(await chatHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value (request id: hop378-helper)",
+      type: ERROR_TYPE_NEW_API_ERROR,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.145" });
+  await mergeModelRatio(new Store(e.DB), { "hop378-cf": 1, "hop378-array": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const cloudflare = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.146" },
+      body: JSON.stringify({
+        name: "hop378-cloudflare",
+        type: CHANNEL_TYPE_CLOUDFLARE,
+        key: "cf-hop378",
+        other: "acct-1",
+        models: "hop378-cf,hop378-array",
+        group: "default",
+      }),
+    }),
+    e,
+  );
+  assert.equal(cloudflare.body.success, true, cloudflare.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/ai/run/hop378-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.includes("/ai/run/")) {
+      return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const chatHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.147", "x-oneapi-request-id": "hop378-cf-unmarshal" },
+        body: JSON.stringify({ model: "hop378-cf", messages: [{ role: "user", content: "hi" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatHit.res.status, 500, chatHit.text);
+    assert.equal("type" in chatHit.body && chatHit.body.type === "error", false, chatHit.text);
+    const chatErr = chatHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, "invalid character 'o' looking for beginning of value (request id: hop378-cf-unmarshal)");
+    assert.equal(chatErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const chatArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.148", "x-oneapi-request-id": "hop378-cf-array" },
+        body: JSON.stringify({ model: "hop378-cf", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatArray.res.status, 500, chatArray.text);
+    const chatArrayErr = chatArray.body.error as { message: string };
+    assert.equal(
+      chatArrayErr.message,
+      "json: cannot unmarshal array into Go value of type dto.TextResponse (request id: hop378-cf-array)",
+    );
+
+    const embedHit = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.149", "x-oneapi-request-id": "hop378-cf-embed" },
+        body: JSON.stringify({ model: "hop378-cf", input: "hi" }),
+      }),
+      e,
+    );
+    assert.equal(embedHit.res.status, 500, embedHit.text);
+    const embedErr = embedHit.body.error as { message: string; type: string; code: string };
+    assert.equal(embedErr.message, "invalid character 'o' looking for beginning of value (request id: hop378-cf-embed)");
+    assert.equal(embedErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(embedErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const embedArray = await send(
+      new Request("http://local/v1/embeddings", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.150", "x-oneapi-request-id": "hop378-cf-embed-array" },
+        body: JSON.stringify({ model: "hop378-cf", input: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(embedArray.res.status, 500, embedArray.text);
+    const embedArrayErr = embedArray.body.error as { message: string };
+    assert.equal(
+      embedArrayErr.message,
+      "json: cannot unmarshal array into Go value of type dto.TextResponse (request id: hop378-cf-embed-array)",
+    );
+
+    const sttForm = hop378AudioForm("hop378-cf");
+    const sttHit = await send(
+      new Request("http://local/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer " + sk,
+          "content-type": sttForm.ct,
+          "cf-connecting-ip": "192.0.2.151",
+          "x-oneapi-request-id": "hop378-cf-stt",
+        },
+        body: sttForm.buf,
+      }),
+      e,
+    );
+    assert.equal(sttHit.res.status, 500, sttHit.text);
+    const sttErr = sttHit.body.error as { message: string; type: string; code: string };
+    assert.equal(sttErr.message, "invalid character 'o' looking for beginning of value (request id: hop378-cf-stt)");
+    assert.equal(sttErr.type, ERROR_TYPE_NEW_API_ERROR);
+    assert.equal(sttErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const sttArrayForm = hop378AudioForm("hop378-array");
+    const sttArray = await send(
+      new Request("http://local/v1/audio/translations", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer " + sk,
+          "content-type": sttArrayForm.ct,
+          "cf-connecting-ip": "192.0.2.152",
+          "x-oneapi-request-id": "hop378-cf-stt-array",
+        },
+        body: sttArrayForm.buf,
+      }),
+      e,
+    );
+    assert.equal(sttArray.res.status, 500, sttArray.text);
+    const sttArrayErr = sttArray.body.error as { message: string };
+    assert.equal(
+      sttArrayErr.message,
+      "json: cannot unmarshal array into Go value of type cloudflare.CfAudioResponse (request id: hop378-cf-stt-array)",
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Cloudflare Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.153" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.154", "x-oneapi-request-id": "hop378-vendor-create" },
+      body: JSON.stringify({ name: "hop378-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop378-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop378 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop378.some((item) => item.action === "vendor.create"), listed.text);
 });
 

@@ -910,6 +910,8 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * `NewError` + `writeRelayNewAPIError` instead. Extra-OK: Dify `difyHandler`
  * uses `NewError` + `writeRelayNewAPIError` instead. Extra-OK: Moka
  * `mokaEmbeddingHandler` uses `NewError` + `writeRelayNewAPIError` instead.
+ * Extra-OK: Cloudflare `cfHandler` / `cfSTTHandler` use `NewError` +
+ * `writeRelayNewAPIError` instead.
  */
 export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {
   return writeOpenaiHandlerOpenAIError(req, 500, {

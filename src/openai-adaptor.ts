@@ -440,6 +440,51 @@ export function mokaResponseUnmarshalError(text: string): string | null {
 }
 
 /**
+ * Original `cloudflare.cfHandler` / `cloudflare.cfSTTHandler` `json.Unmarshal`
+ * (`NewError` `ErrorCodeBadResponseBody`, not `NewOpenAIError`). Chat and
+ * embeddings fallthrough share `cfHandler`. Stream uses `cfStreamHandler`
+ * (log/continue, not leftover gin.H). Responses uses `openai.OaiResponsesHandler`.
+ * Completions is not in original DoResponse (returns nil, nil).
+ */
+export function usesCloudflareUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_CLOUDFLARE) return false;
+  switch (mode) {
+    case "chat":
+    case "embeddings":
+    case "audio_transcription":
+    case "audio_translation":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Original `json.Unmarshal` target type name for Cloudflare chat / embeddings / STT. */
+export function cloudflareUnmarshalTypeName(mode: string): string {
+  if (mode === "audio_transcription" || mode === "audio_translation") {
+    return "cloudflare.CfAudioResponse";
+  }
+  return "dto.TextResponse";
+}
+
+/**
+ * Original `json.Unmarshal` into `dto.TextResponse` (`cfHandler`, including
+ * embeddings fallthrough) or `cloudflare.CfAudioResponse` (`cfSTTHandler`).
+ * Syntax errors match `encoding/json`. JSON `null` succeeds as a zero-value
+ * struct. Extra-OK: nested field type mismatches are left to convert
+ * (original fails).
+ */
+export function cloudflareResponseUnmarshalError(text: string, mode: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${cloudflareUnmarshalTypeName(mode)}`;
+  }
+  return null;
+}
+
+/**
  * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
  * `openrouter_enterprise`; nil/false is off).
  */
