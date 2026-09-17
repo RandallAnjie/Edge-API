@@ -1979,8 +1979,8 @@ export function advancedCustomGeminiResponsesStreamSseUnmarshalError(text: strin
  * `FailResponsesStream` is unhandled. Extra-OK: hop 441 responses-to-Gemini
  * stays. Extra-OK: hop 438 Ollama OpenAI stream leftover gin.H stays. Extra-OK:
  * replica convert always has `ChatToResponsesStreamState` so
- * `FailResponsesStream` is handled for `/v1/responses`. Extra-OK: non-stream
- * `OaiChatToResponsesHandler` leftover gin.H stays later hop.
+ * `FailResponsesStream` is handled for `/v1/responses`. Extra-OK: hop 443
+ * non-stream `OaiChatToResponsesHandler` leftover gin.H stays.
  */
 export function usesOaiChatToResponsesStreamUnmarshal(
   channelType: number,
@@ -1992,6 +1992,35 @@ export function usesOaiChatToResponsesStreamUnmarshal(
   if (mode !== "responses") return false;
   if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
   return String(converter || CONVERTER_NONE).trim() === CONVERTER_RESPONSES_TO_CHAT;
+}
+
+/**
+ * Original `advancedcustom.Adaptor.DoResponse` ConverterOpenAIResponsesToOpenAIChat
+ * non-stream uses `OaiChatToResponsesHandler` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody` into `dto.OpenAITextResponse`). Stream stays hop
+ * 442 (`OaiChatToResponsesStreamHandler` typically `FailResponsesStream`).
+ * Extra-OK: hop 404 OpenAI-shaped ConverterNone stays. Extra-OK: hop 421
+ * responses-to-Gemini stays.
+ */
+export function usesOaiChatToResponsesUnmarshal(
+  channelType: number,
+  mode: string,
+  converter = "none",
+  isStream = false,
+): boolean {
+  if (isStream) return false;
+  if (mode !== "responses") return false;
+  if (channelType !== CHANNEL_TYPE_ADVANCED_CUSTOM) return false;
+  return String(converter || CONVERTER_NONE).trim() === CONVERTER_RESPONSES_TO_CHAT;
+}
+
+/**
+ * Original `OaiChatToResponsesHandler` `common.Unmarshal` into
+ * `dto.OpenAITextResponse`. Syntax errors match `encoding/json`. JSON `null`
+ * succeeds as a zero-value struct.
+ */
+export function oaiChatToResponsesResponseUnmarshalError(text: string): string | null {
+  return openaiHandlerResponseUnmarshalError(text, "chat");
 }
 
 /** Original `OaiChatToResponsesStreamHandler` `UnmarshalJsonStr` target type. */
