@@ -733,6 +733,46 @@ export function vertexOpenSourceResponseUnmarshalError(text: string, mode = "cha
 }
 
 /**
+ * Original `perplexity.Adaptor.DoResponse` always delegates to
+ * `openai.Adaptor.DoResponse`. Non-stream chat / completions use
+ * `openai.OpenaiHandler` (`common.Unmarshal` `NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Responses Convert succeeds and uses
+ * `OaiResponsesHandler` (same leftover OpenAI envelope; type
+ * `dto.OpenAIResponsesResponse`). Stream uses `openai.OaiStreamHandler`
+ * (log/continue, not leftover gin.H). Images / audio / embeddings convert
+ * `"not implemented"` before DoResponse (hop 350). Extra-OK: ConvertClaudeRequest
+ * delegates to `openai.Adaptor`. Extra-OK: ConvertGeminiRequest
+ * `"not implemented"` stays hop 350. Extra-OK: ConvertRerankRequest `nil, nil`
+ * rerank Unmarshal stays leftover. Extra-OK: hop 390 Vertex OpenSource stays.
+ */
+export function usesPerplexityUnmarshal(channelType: number, mode: string): boolean {
+  if (channelType !== CHANNEL_TYPE_PERPLEXITY) return false;
+  switch (mode) {
+    case "images":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+    case "embeddings":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Original `openai.Adaptor.DoResponse` `common.Unmarshal` into
+ * `dto.OpenAITextResponse` / `dto.OpenAIResponsesResponse` for Perplexity.
+ * Syntax errors match `encoding/json`. JSON `null` succeeds as a zero-value
+ * struct. Extra-OK: nested field type mismatches are left to convert
+ * (original fails).
+ */
+export function perplexityResponseUnmarshalError(text: string, mode = "chat"): string | null {
+  return openaiHandlerResponseUnmarshalError(text, mode);
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses

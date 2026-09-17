@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_AWS,
@@ -49,6 +49,7 @@ import {
   CHANNEL_TYPE_OPENAI,
   CHANNEL_TYPE_OPENROUTER,
   CHANNEL_TYPE_PALM,
+  CHANNEL_TYPE_PERPLEXITY,
   CHANNEL_TYPE_REPLICATE,
   CHANNEL_TYPE_SILICONFLOW,
   CHANNEL_TYPE_SUBMODEL,
@@ -6162,6 +6163,147 @@ test("original leftover Vertex RequestModeOpenSource OpenaiHandler Unmarshal gin
   );
   const vendorItemsHop390 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop390.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Perplexity openai.Adaptor.DoResponse Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(usesPerplexityUnmarshal(CHANNEL_TYPE_PERPLEXITY, "chat"), true);
+  assert.equal(usesPerplexityUnmarshal(CHANNEL_TYPE_PERPLEXITY, "completions"), true);
+  assert.equal(usesPerplexityUnmarshal(CHANNEL_TYPE_PERPLEXITY, "responses"), true);
+  assert.equal(usesPerplexityUnmarshal(CHANNEL_TYPE_PERPLEXITY, "images"), false);
+  assert.equal(usesPerplexityUnmarshal(CHANNEL_TYPE_PERPLEXITY, "embeddings"), false);
+  assert.equal(usesPerplexityUnmarshal(CHANNEL_TYPE_PERPLEXITY, "audio_speech"), false);
+  assert.equal(usesPerplexityUnmarshal(CHANNEL_TYPE_PERPLEXITY, "rerank"), false);
+  assert.equal(usesPerplexityUnmarshal(CHANNEL_TYPE_OPENAI, "chat"), false);
+  assert.equal(usesPerplexityUnmarshal(CHANNEL_TYPE_VERTEX, "chat"), false);
+  assert.equal(usesVertexOpenSourceUnmarshal(CHANNEL_TYPE_PERPLEXITY, "chat", "hop390-llama"), false);
+  assert.equal(usesJinaEmbeddingsUnmarshal(CHANNEL_TYPE_PERPLEXITY, "embeddings"), false);
+  assert.equal(usesJinaEmbeddingsUnmarshal(CHANNEL_TYPE_JINA, "embeddings"), true);
+  assert.equal(perplexityResponseUnmarshalError("not-json"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    perplexityResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type dto.OpenAITextResponse",
+  );
+  assert.equal(
+    perplexityResponseUnmarshalError("[]", "responses"),
+    "json: cannot unmarshal array into Go value of type dto.OpenAIResponsesResponse",
+  );
+  assert.equal(perplexityResponseUnmarshalError("null"), null);
+  assert.equal(perplexityResponseUnmarshalError("{}"), null);
+
+  const chatHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/chat/completions", { headers: { "x-oneapi-request-id": "hop391-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(chatHelper.status, 500);
+  assert.deepEqual(await chatHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "192.0.2.230" });
+  await mergeModelRatio(new Store(e.DB), { "hop391-perplexity": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const perplexity = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.231" },
+      body: JSON.stringify({
+        name: "hop391-perplexity",
+        type: CHANNEL_TYPE_PERPLEXITY,
+        key: "pplx-hop391",
+        models: "hop391-perplexity",
+        group: "default",
+        base_url: "https://api.perplexity.ai",
+      }),
+    }),
+    e,
+  );
+  assert.equal(perplexity.body.success, true, perplexity.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const chatHit = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.232", "x-oneapi-request-id": "hop391-perplexity-unmarshal" },
+        body: JSON.stringify({ model: "hop391-perplexity", messages: [{ role: "user", content: "hello" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatHit.res.status, 500, chatHit.text);
+    assert.equal("type" in chatHit.body && chatHit.body.type === "error", false, chatHit.text);
+    const chatErr = chatHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(chatErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(chatErr.message.includes("hop391-perplexity-unmarshal"), false);
+    assert.equal(chatErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(chatErr.param, "");
+    assert.equal(chatErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const chatArray = await send(
+      new Request("http://local/v1/chat/completions", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "192.0.2.233", "x-oneapi-request-id": "hop391-perplexity-array" },
+        body: JSON.stringify({ model: "hop391-perplexity", messages: [{ role: "user", content: "as-array" }] }),
+      }),
+      e,
+    );
+    assert.equal(chatArray.res.status, 500, chatArray.text);
+    const chatArrayErr = chatArray.body.error as { message: string };
+    assert.equal(
+      chatArrayErr.message,
+      "json: cannot unmarshal array into Go value of type dto.OpenAITextResponse",
+    );
+    assert.equal(chatArrayErr.message.includes("hop391-perplexity-array"), false);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Perplexity openai.Adaptor.DoResponse Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "192.0.2.234" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "192.0.2.235", "x-oneapi-request-id": "hop391-vendor-create" },
+      body: JSON.stringify({ name: "hop391-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop391-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop391 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop391.some((item) => item.action === "vendor.create"), listed.text);
 });
 
 
