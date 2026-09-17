@@ -12,6 +12,7 @@ import {
 } from "./advanced-custom-convert.js";
 import { openaiFromAnthropicResponse } from "./claude-response.js";
 import { openaiFromGeminiResponse } from "./gemini-response.js";
+import { openaiFromImagenResponse } from "./vertex-convert.js";
 import {
   chatCompletionToResponsesResponse,
   claudeResponseToResponsesResponse,
@@ -76,6 +77,13 @@ function geminiAdaptorDoResponse(
     });
   }
   if (client === "gemini") return upstreamJson;
+  // Original chat-to-Gemini DoResponse uses GeminiImageHandler for imagen prefixes
+  // (hop 467 empty predictions leftover `no images generated`). Extra-OK: hop 465
+  // `/v1/responses` stays GeminiResponsesHandler above. Extra-OK: hop 460 native
+  // RelayModeGemini `:predict` copies via client === "gemini".
+  if (model.startsWith("imagen")) {
+    return openaiFromImagenResponse(upstreamJson, { created: opts.created });
+  }
   return openaiFromGeminiResponse(upstreamJson, model, {
     id: chatCompletionId(opts, ""),
     created: opts.created,

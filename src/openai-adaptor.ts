@@ -1958,6 +1958,8 @@ export function usesAdvancedCustomGeminiEmbeddingUnmarshal(
  * stays. Extra-OK: hop 420 non-imagen `GeminiChatHandler` stays. Extra-OK:
  * hop 451 embedding-model `GeminiEmbeddingHandler` stays. Extra-OK: hop 460
  * native `RelayModeGemini` `:predict` imagen `GeminiTextGenerationHandler` stays.
+ * Extra-OK: hop 467 empty `predictions` leftover `no images generated` stays
+ * convert after successful Unmarshal (same as hop 448 GEMINI).
  */
 export function usesAdvancedCustomGeminiImageUnmarshal(
   channelType: number,
