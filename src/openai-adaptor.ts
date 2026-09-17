@@ -965,6 +965,38 @@ export function aliResponseUnmarshalError(text: string, mode = "chat"): string |
 }
 
 /**
+ * Original `ali.aliImageHandler` `common.Unmarshal` (`NewOpenAIError`
+ * `ErrorCodeBadResponseBody`). Chat / completions / embeddings / responses stay
+ * `openai.Adaptor.DoResponse` (hop 396). Rerank stays `ali.RerankHandler`
+ * (hop 367). Audio Convert `"not implemented"` before DoResponse (hop 350).
+ * Extra-OK: `updateTask` Unmarshal logs and continues (not leftover gin.H).
+ * Extra-OK: hop 396 Ali openai.Adaptor stays.
+ */
+export function usesAliImageUnmarshal(channelType: number, mode: string): boolean {
+  return channelType === CHANNEL_TYPE_ALI && mode === "images";
+}
+
+/** Original `common.Unmarshal` target type name for Ali images. */
+export function aliImageUnmarshalTypeName(): string {
+  return "ali.AliResponse";
+}
+
+/**
+ * Original `common.Unmarshal` into `ali.AliResponse`. Syntax errors match
+ * `encoding/json`. JSON `null` succeeds as a zero-value struct. Extra-OK:
+ * nested field type mismatches are left to convert (original fails).
+ */
+export function aliImageResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${aliImageUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
  * Original `ollama.ollamaEmbeddingHandler` / `ollama.ollamaChatHandler`
  * `common.Unmarshal` (`NewOpenAIError` `ErrorCodeBadResponseBody`). Stream uses
  * `ollamaStreamHandler` (log/continue, not leftover gin.H). Responses uses

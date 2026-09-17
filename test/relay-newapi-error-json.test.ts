@@ -30,7 +30,7 @@ import {
   writeRelayNewAPIError,
 } from "../src/http.js";
 import { geminiChatEmptyCandidatesError, geminiChatResponseUnmarshalError } from "../src/gemini-response.js";
-import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
+import { aliSiliconflowRerankResponseUnmarshalError, awsNovaResponseUnmarshalError, awsNovaUnmarshalTypeName, baiduResponseUnmarshalError, cloudflareResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, cozeResponseUnmarshalError, difyResponseUnmarshalError, jimengChatResponseUnmarshalError, jimengResponseUnmarshalError, jinaEmbeddingsResponseUnmarshalError, mistralChatResponseUnmarshalError, vertexOpenSourceResponseUnmarshalError, perplexityResponseUnmarshalError, siliconflowResponseUnmarshalError, deepseekResponseUnmarshalError, moonshotResponseUnmarshalError, baiduV2ResponseUnmarshalError, aliResponseUnmarshalError, aliImageResponseUnmarshalError, mokaResponseUnmarshalError, ollamaResponseUnmarshalError, openaiDoResponseUnmarshalMode, openaiHandlerResponseUnmarshalError, openRouterEnterpriseResponseUnmarshalError, OPENROUTER_ENTERPRISE_SUCCESS_FALSE, palmTencentZhipuResponseUnmarshalError, rerankHandlerResponseUnmarshalError, submodelChatResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesAwsNovaUnmarshal, usesBaiduUnmarshal, usesCloudflareUnmarshal, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesCozeUnmarshal, usesDifyUnmarshal, usesJimengChatUnmarshal, usesJimengUnmarshal, usesJinaEmbeddingsUnmarshal, usesMistralChatUnmarshal, usesVertexOpenSourceUnmarshal, usesPerplexityUnmarshal, usesSiliconflowUnmarshal, usesDeepseekUnmarshal, usesMoonshotUnmarshal, usesBaiduV2Unmarshal, usesAliUnmarshal, usesAliImageUnmarshal, usesMokaUnmarshal, usesOllamaUnmarshal, usesOpenRouterEnterpriseUnwrap, usesPalmTencentZhipuUnmarshal, usesRerankHandlerUnmarshal, usesReplicateUnmarshal, usesMiniMaxTTSUnmarshal, usesSubmodelChatUnmarshal, usesXaiUnmarshal, usesZhipuV4ImageUnmarshal, miniMaxTTSResponseUnmarshalError, replicateResponseUnmarshalError, xaiResponseUnmarshalError, zhipuV4ImageResponseUnmarshalError } from "../src/openai-adaptor.js";
 import {
   CHANNEL_TYPE_ALI,
   CHANNEL_TYPE_AWS,
@@ -7012,4 +7012,137 @@ test("original leftover Ali openai.Adaptor.DoResponse Unmarshal gin.H does not c
   );
   const vendorItemsHop396 = ((listed.body.data as { items: { action: string }[] }).items || []);
   assert.ok(vendorItemsHop396.some((item) => item.action === "vendor.create"), listed.text);
+});
+
+test("original leftover Ali image aliImageHandler Unmarshal NewOpenAIError gin.H", async () => {
+  assert.equal(usesAliImageUnmarshal(CHANNEL_TYPE_ALI, "images"), true);
+  assert.equal(usesAliImageUnmarshal(CHANNEL_TYPE_ALI, "chat"), false);
+  assert.equal(usesAliImageUnmarshal(CHANNEL_TYPE_ALI, "rerank"), false);
+  assert.equal(usesAliImageUnmarshal(CHANNEL_TYPE_OPENAI, "images"), false);
+  assert.equal(usesAliUnmarshal(CHANNEL_TYPE_ALI, "chat"), true);
+  assert.equal(usesAliUnmarshal(CHANNEL_TYPE_ALI, "images"), false);
+  assert.equal(usesAliUnmarshal(CHANNEL_TYPE_ALI, "rerank"), false);
+  assert.equal(usesAliSiliconflowRerankUnmarshal(CHANNEL_TYPE_ALI, "rerank"), true);
+  assert.equal(aliImageResponseUnmarshalError("not-json"), "invalid character 'o' looking for beginning of value");
+  assert.equal(
+    aliImageResponseUnmarshalError("[]"),
+    "json: cannot unmarshal array into Go value of type ali.AliResponse",
+  );
+  assert.equal(aliImageResponseUnmarshalError("null"), null);
+  assert.equal(aliImageResponseUnmarshalError("{}"), null);
+
+  const imageHelper = writeOpenaiHandlerUnmarshalError(
+    new Request("http://local/v1/images/generations", { headers: { "x-oneapi-request-id": "hop397-helper" } }),
+    "invalid character 'o' looking for beginning of value",
+  );
+  assert.equal(imageHelper.status, 500);
+  assert.deepEqual(await imageHelper.json(), {
+    error: {
+      message: "invalid character 'o' looking for beginning of value",
+      type: ERROR_CODE_BAD_RESPONSE_BODY,
+      param: "",
+      code: ERROR_CODE_BAD_RESPONSE_BODY,
+    },
+  });
+
+  resetSchemaFlag();
+  const e = env();
+  const { auth, sk } = await boot(e, { "cf-connecting-ip": "203.0.113.13" });
+  await mergeModelRatio(new Store(e.DB), { "hop397-z-image": 1 });
+  const skAuth = { authorization: "Bearer " + sk, "content-type": "application/json" };
+  const ali = await send(
+    new Request("http://local/api/channel/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "203.0.113.14" },
+      body: JSON.stringify({
+        name: "hop397-ali-image",
+        type: CHANNEL_TYPE_ALI,
+        key: "ali-hop397",
+        models: "hop397-z-image",
+        group: "default",
+        base_url: "https://dashscope.aliyuncs.com",
+      }),
+    }),
+    e,
+  );
+  assert.equal(ali.body.success, true, ali.text);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const raw = typeof init?.body === "string" ? init.body : "";
+    if (raw.includes("as-array")) {
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const imageHit = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "203.0.113.15", "x-oneapi-request-id": "hop397-ali-image-unmarshal" },
+        body: JSON.stringify({ model: "hop397-z-image", prompt: "a mountain" }),
+      }),
+      e,
+    );
+    assert.equal(imageHit.res.status, 500, imageHit.text);
+    assert.equal("type" in imageHit.body && imageHit.body.type === "error", false, imageHit.text);
+    const imageErr = imageHit.body.error as { message: string; type: string; param: string; code: string };
+    assert.equal(imageErr.message, "invalid character 'o' looking for beginning of value");
+    assert.equal(imageErr.message.includes("hop397-ali-image-unmarshal"), false);
+    assert.equal(imageErr.type, ERROR_CODE_BAD_RESPONSE_BODY);
+    assert.equal(imageErr.param, "");
+    assert.equal(imageErr.code, ERROR_CODE_BAD_RESPONSE_BODY);
+
+    const imageArray = await send(
+      new Request("http://local/v1/images/generations", {
+        method: "POST",
+        headers: { ...skAuth, "cf-connecting-ip": "203.0.113.16", "x-oneapi-request-id": "hop397-ali-image-array" },
+        body: JSON.stringify({ model: "hop397-z-image", prompt: "as-array" }),
+      }),
+      e,
+    );
+    assert.equal(imageArray.res.status, 500, imageArray.text);
+    const imageArrayErr = imageArray.body.error as { message: string };
+    assert.equal(
+      imageArrayErr.message,
+      "json: cannot unmarshal array into Go value of type ali.AliResponse",
+    );
+    assert.equal(imageArrayErr.message.includes("hop397-ali-image-array"), false);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("original leftover Ali image aliImageHandler Unmarshal gin.H does not change AUTH StatusText or hop 323 vendor.create", async () => {
+  resetSchemaFlag();
+  const e = env();
+  const { auth } = await boot(e, { "cf-connecting-ip": "203.0.113.17" });
+
+  const unauth = await send(
+    new Request("http://local/api/oauth/email/bind/start", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept-language": "zh-CN" },
+      body: JSON.stringify({ email: "new@example.com" }),
+    }),
+    e,
+  );
+  assert.equal(unauth.res.status, 401);
+  assert.equal(unauth.body.code, "AUTH_UNAUTHORIZED");
+  assert.equal(unauth.body.message, "Unauthorized");
+
+  const created = await send(
+    new Request("http://local/api/vendors/", {
+      method: "POST",
+      headers: { ...auth, "cf-connecting-ip": "203.0.113.18", "x-oneapi-request-id": "hop397-vendor-create" },
+      body: JSON.stringify({ name: "hop397-vendor-create", description: "d", icon: "" }),
+    }),
+    e,
+  );
+  assert.equal(created.body.success, true, created.text);
+  const listed = await send(
+    new Request("http://local/api/audit?page_size=100&request_id=hop397-vendor-create", { headers: auth }),
+    e,
+  );
+  const vendorItemsHop397 = ((listed.body.data as { items: { action: string }[] }).items || []);
+  assert.ok(vendorItemsHop397.some((item) => item.action === "vendor.create"), listed.text);
 });
