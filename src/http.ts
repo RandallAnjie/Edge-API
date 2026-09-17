@@ -898,6 +898,8 @@ export const ERROR_CODE_BAD_RESPONSE_BODY = "bad_response_body";
  * request id). Claude `ToClaudeError` uses `e.Error()` after `SetMessage`.
  * Extra-OK: generated RequestId is not appended (hop 314). Extra-OK: Cohere
  * `cohereRerankHandler` uses `NewError` + `writeRelayNewAPIError` instead.
+ * Extra-OK: OpenRouter enterprise unwrap (`Success=false` /
+ * `OpenRouterEnterpriseResponse` unmarshal) also uses this envelope.
  */
 export function writeOpenaiHandlerUnmarshalError(req: Request, message: string): Response {
   return writeOpenaiHandlerOpenAIError(req, 500, {

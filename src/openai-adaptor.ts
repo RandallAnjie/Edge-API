@@ -25,6 +25,7 @@ import {
   CHANNEL_TYPE_NEW_API,
   CHANNEL_TYPE_OLLAMA,
   CHANNEL_TYPE_OPENAI,
+  CHANNEL_TYPE_OPENROUTER,
   CHANNEL_TYPE_PALM,
   CHANNEL_TYPE_PERPLEXITY,
   CHANNEL_TYPE_REPLICATE,
@@ -230,6 +231,93 @@ export function cohereChatResponseUnmarshalError(text: string): string | null {
     return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${cohereChatUnmarshalTypeName()}`;
   }
   return null;
+}
+
+/**
+ * Original `ChannelOtherSettings.IsOpenRouterEnterprise` (`*bool`
+ * `openrouter_enterprise`; nil/false is off).
+ */
+export function isOpenRouterEnterprise(settings: string | undefined | null): boolean {
+  const raw = String(settings || "").trim();
+  if (!raw) return false;
+  const parsed = goUnmarshalJSON(raw);
+  if (!parsed.ok) return false;
+  if (parsed.value == null || typeof parsed.value !== "object" || Array.isArray(parsed.value)) return false;
+  return (parsed.value as Record<string, unknown>).openrouter_enterprise === true;
+}
+
+/**
+ * Original `OpenaiHandler` OpenRouter enterprise unwrap (`ChannelTypeOpenRouter`
+ * && `IsOpenRouterEnterprise`). Images / responses / audio / realtime / rerank
+ * / stream use other handlers (Extra-OK stay).
+ */
+export function usesOpenRouterEnterpriseUnwrap(
+  channelType: number,
+  settings: string | undefined | null,
+  mode: string,
+): boolean {
+  if (channelType !== CHANNEL_TYPE_OPENROUTER) return false;
+  if (!isOpenRouterEnterprise(settings)) return false;
+  switch (mode) {
+    case "images":
+    case "responses":
+    case "realtime":
+    case "audio_speech":
+    case "audio_translation":
+    case "audio_transcription":
+    case "rerank":
+      return false;
+    default:
+      return true;
+  }
+}
+
+/** Original `common.Unmarshal` target type name for enterprise unwrap. */
+export function openRouterEnterpriseUnmarshalTypeName(): string {
+  return "openrouter.OpenRouterEnterpriseResponse";
+}
+
+/** Original `fmt.Errorf("openrouter response success=false")`. */
+export const OPENROUTER_ENTERPRISE_SUCCESS_FALSE = "openrouter response success=false";
+
+/**
+ * Original `common.Unmarshal` into `openrouter.OpenRouterEnterpriseResponse`.
+ * Syntax errors match `encoding/json`. JSON `null` succeeds as a zero-value
+ * struct (`Success=false`). Extra-OK: nested field type mismatches are left
+ * to convert (original fails).
+ */
+export function openRouterEnterpriseResponseUnmarshalError(text: string): string | null {
+  const parsed = goUnmarshalJSON(text);
+  if (!parsed.ok) return parsed.message;
+  if (parsed.value === null) return null;
+  if (typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+    return `json: cannot unmarshal ${goJSONKind(parsed.value)} into Go value of type ${openRouterEnterpriseUnmarshalTypeName()}`;
+  }
+  return null;
+}
+
+/**
+ * Original `OpenaiHandler` enterprise unwrap before `OpenAITextResponse`.
+ * Unmarshal fail and `Success=false` are `NewOpenAIError`
+ * `ErrorCodeBadResponseBody`. `Success=true` replaces the body with `Data`
+ * (`json.RawMessage`; missing `data` is empty bytes).
+ */
+export function unwrapOpenRouterEnterpriseResponse(
+  text: string,
+): { ok: true; body: string } | { ok: false; message: string } {
+  const unmarshalErr = openRouterEnterpriseResponseUnmarshalError(text);
+  if (unmarshalErr) return { ok: false, message: unmarshalErr };
+  const parsed = goUnmarshalJSON(text);
+  const value = parsed.ok ? parsed.value : null;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, message: OPENROUTER_ENTERPRISE_SUCCESS_FALSE };
+  }
+  const obj = value as Record<string, unknown>;
+  if (obj.success !== true) return { ok: false, message: OPENROUTER_ENTERPRISE_SUCCESS_FALSE };
+  if (!Object.prototype.hasOwnProperty.call(obj, "data")) return { ok: true, body: "" };
+  if (obj.data === undefined) return { ok: true, body: "" };
+  if (obj.data === null) return { ok: true, body: "null" };
+  return { ok: true, body: JSON.stringify(obj.data) };
 }
 
 /** Original `common.Unmarshal` target type name for `openai.Adaptor.DoResponse`. */

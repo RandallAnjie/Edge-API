@@ -109,7 +109,7 @@ import {
 } from "./ali-convert.js";
 import { convertOpenAIImageEditForm, usesOpenAIImageEditAdaptor, type OpenAIImageEditForm } from "./openai-image-convert.js";
 import { convertOpenAIAudioForm, usesOpenAIAudioAdaptor } from "./openai-audio-convert.js";
-import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, usesAliSiliconflowRerankUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions } from "./openai-adaptor.js";
+import { applyTextHelperStreamOptions, aliSiliconflowRerankResponseUnmarshalError, cohereChatResponseUnmarshalError, cohereRerankResponseUnmarshalError, delegatesClaudeToOpenAIAdaptor, openaiHandlerResponseUnmarshalError, rerankHandlerResponseUnmarshalError, unwrapOpenRouterEnterpriseResponse, usesAliSiliconflowRerankUnmarshal, usesClaudeAdaptorForClaudeRequest, usesCohereChatUnmarshal, usesCohereRerankUnmarshal, usesOpenAIAdaptor, usesOpenaiHandlerGetOpenAIError, usesOpenRouterEnterpriseUnwrap, usesRerankHandlerUnmarshal, usesTextHelperStreamOptions } from "./openai-adaptor.js";
 import { newApiUnsupportedEndpoint } from "./newapi-convert.js";
 import type { EncodedMultipart } from "./multipart-form.js";
 import {
@@ -2788,7 +2788,15 @@ export async function relay(opts: RelayRequest): Promise<Response> {
       }
     }
 
-    const text = await res.text();
+    let text = await res.text();
+    if (usesOpenRouterEnterpriseUnwrap(channel.type, channel.settings, mode)) {
+      const unwrapped = unwrapOpenRouterEnterpriseResponse(text);
+      if (!unwrapped.ok) {
+        await settle(store, auth, channel, model, promptEst, 0, useTime, false, ip, rid, false, unwrapped.message.slice(0, 2000), extra);
+        return writeOpenaiHandlerUnmarshalError(opts.req, unwrapped.message);
+      }
+      text = unwrapped.body;
+    }
     if (usesGeminiChatResponseUnmarshal(channel.type, mapped, mode)) {
       const unmarshalErr = geminiChatResponseUnmarshalError(text);
       if (unmarshalErr) {
